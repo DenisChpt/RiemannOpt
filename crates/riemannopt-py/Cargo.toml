@@ -1,0 +1,21 @@
+[package]
+name = "riemannopt-py"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python bindings for RiemannOpt"
+
+[lib]
+name = "riemannopt"
+crate-type = ["cdylib"]
+
+[dependencies]
+riemannopt = { path = "../riemannopt", version = "0.1.0", features = ["full"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+numpy = "0.22"
+
+[features]
+default = ["pyo3/extension-module"]

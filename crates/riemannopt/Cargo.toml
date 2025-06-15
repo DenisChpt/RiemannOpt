@@ -1,0 +1,35 @@
+[package]
+name = "riemannopt"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "High-performance Riemannian optimization in Rust"
+
+[dependencies]
+riemannopt-core = { path = "../riemannopt-core", version = "0.1.0" }
+riemannopt-manifolds = { path = "../riemannopt-manifolds", version = "0.1.0" }
+riemannopt-optim = { path = "../riemannopt-optim", version = "0.1.0" }
+riemannopt-autodiff = { path = "../riemannopt-autodiff", version = "0.1.0", optional = true }
+
+# Re-export key dependencies
+nalgebra = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["riemannopt-core/std", "riemannopt-manifolds/std", "riemannopt-optim/std"]
+parallel = ["riemannopt-manifolds/parallel", "riemannopt-optim/parallel"]
+autodiff = ["riemannopt-autodiff"]
+serde = ["riemannopt-core/serde", "riemannopt-manifolds/serde", "riemannopt-optim/serde"]
+full = ["std", "parallel", "autodiff", "serde"]
+
+[dev-dependencies]
+criterion = { workspace = true }
+pretty_assertions = { workspace = true }
