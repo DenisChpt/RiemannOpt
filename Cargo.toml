@@ -1,0 +1,117 @@
+[workspace]
+members = [
+	"crates/riemannopt-core",
+	"crates/riemannopt-manifolds", 
+	"crates/riemannopt-optim",
+	"crates/riemannopt-autodiff",
+	"crates/riemannopt",
+	"crates/riemannopt-py",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Denis Chaput <denis.chaput77@gmail.com>"]
+edition = "2021"
+rust-version = "1.87.0"
+license = "MIT"
+repository = "https://github.com/DenisChpt/RiemannOpt"
+homepage = "https://github.com/DenisChpt/RiemannOpt"
+documentation = "https://docs.rs/riemannopt"
+readme = "README.md"
+keywords = ["optimization", "manifold", "riemannian", "geometry", "mathematics"]
+categories = ["mathematics", "science", "algorithms"]
+
+[workspace.dependencies]
+
+# Core mathematical library
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+
+# Error handling
+thiserror = "2.0"
+
+# Numerics
+num-traits = "0.2"
+approx = "0.5"
+
+# Random number generation
+rand = { version = "0.8", features = ["small_rng"] }
+rand_distr = "0.4"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Parallel computing
+rayon = { version = "1.10" }
+
+# SIMD support
+wide = { version = "0.7" }
+
+# GPU support
+cust = { version = "0.3" }
+cudarc = { version = "0.12" }
+
+# Testing
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+pretty_assertions = "1.4"
+
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+strip = false
+debug = true
+
+[profile.bench]
+inherits = "release"
+lto = "thin"
+
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
+
+[profile.test]
+opt-level = 2
+debug = true
+
+# Main crate configuration
+[package]
+name = "riemannopt-workspace"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Internal crates
+riemannopt-core = { path = "crates/riemannopt-core" }
+riemannopt-manifolds = { path = "crates/riemannopt-manifolds" }
+riemannopt-optim = { path = "crates/riemannopt-optim" }
+
+# External dependencies for examples
+nalgebra = { workspace = true }
+
+# Workspace-level lints
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Allow some pedantic lints that are too strict
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

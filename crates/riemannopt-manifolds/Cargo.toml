@@ -1,0 +1,31 @@
+[package]
+name = "riemannopt-manifolds"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/riemannopt-manifolds"
+description = "Manifold implementations for Riemannian optimization"
+
+[dependencies]
+riemannopt-core = { path = "../riemannopt-core", version = "0.1.0" }
+nalgebra = { workspace = true }
+num-traits = { workspace = true }
+approx = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+thiserror = { workspace = true }
+rayon = { workspace = true, optional = true }
+
+[features]
+default = ["std"]
+std = ["riemannopt-core/std"]
+parallel = ["rayon", "nalgebra/rayon"]
+serde = ["riemannopt-core/serde"]
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+pretty_assertions = { workspace = true }
