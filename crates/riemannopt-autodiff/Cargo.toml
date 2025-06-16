@@ -22,3 +22,4 @@ std = ["riemannopt-core/std"]
 [dev-dependencies]
 proptest = { workspace = true }
 approx = { workspace = true }
+riemannopt-manifolds = { path = "../riemannopt-manifolds", version = "0.1.0" }
