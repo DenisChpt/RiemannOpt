@@ -38,6 +38,9 @@ pub mod optimizer_state;
 pub mod retraction;
 pub mod tangent;
 pub mod types;
+pub mod step_size;
+pub mod preconditioner;
+pub mod fisher;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;

@@ -324,18 +324,16 @@ where
 /// This trait defines the interface that all optimizers must implement.
 /// It provides methods for setting up the optimization problem and
 /// running the optimization algorithm.
+///
+/// The trait is generic over the cost function and manifold types to allow
+/// maximum flexibility. Optimizers can work with any cost function and manifold
+/// that satisfy the required bounds.
 pub trait Optimizer<T, D>: Debug
 where
     T: Scalar,
     D: Dim,
     DefaultAllocator: Allocator<D>,
 {
-    /// The type of the cost function
-    type CostFunction;
-
-    /// The type of the manifold
-    type Manifold: Manifold<T, D>;
-
     /// Returns the name of the optimizer.
     fn name(&self) -> &str;
 
@@ -351,13 +349,16 @@ where
     /// # Returns
     ///
     /// An `OptimizationResult` containing the optimal point and metadata.
-    fn optimize(
+    fn optimize<C, M>(
         &mut self,
-        cost_fn: &Self::CostFunction,
-        manifold: &Self::Manifold,
+        cost_fn: &C,
+        manifold: &M,
         initial_point: &Point<T, D>,
         stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, D>>;
+    ) -> Result<OptimizationResult<T, D>>
+    where
+        C: crate::cost_function::CostFunction<T, D>,
+        M: Manifold<T, D>;
 
     /// Performs a single optimization step.
     ///
@@ -373,12 +374,15 @@ where
     /// # Returns
     ///
     /// Updated state after one iteration.
-    fn step(
+    fn step<C, M>(
         &mut self,
-        cost_fn: &Self::CostFunction,
-        manifold: &Self::Manifold,
+        cost_fn: &C,
+        manifold: &M,
         state: &mut OptimizerState<T, D>,
-    ) -> Result<()>;
+    ) -> Result<()>
+    where
+        C: crate::cost_function::CostFunction<T, D>,
+        M: Manifold<T, D>;
 }
 
 /// Convergence checker for optimization algorithms.
