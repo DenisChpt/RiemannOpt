@@ -34,12 +34,25 @@
 
 pub mod sgd;
 pub mod adam;
-// pub mod lbfgs;    // TODO: Implement in next phase  
-// pub mod trust_region; // TODO: Implement in next phase
+pub mod lbfgs;
+pub mod trust_region;
+pub mod conjugate_gradient;
+pub mod natural_gradient;
 
 // Re-export main optimizers for convenience
-pub use sgd::{SGD, SGDConfig, StepSizeSchedule, MomentumMethod};
+pub use sgd::{SGD, SGDConfig, MomentumMethod};
 pub use adam::{Adam, AdamConfig};
+pub use lbfgs::{LBFGS, LBFGSConfig};
+pub use trust_region::{TrustRegion, TrustRegionConfig};
+pub use conjugate_gradient::{ConjugateGradient, CGConfig};
+pub use natural_gradient::{NaturalGradient, NaturalGradientConfig};
+
+// Re-export commonly used items from core
+pub use riemannopt_core::{
+    step_size::StepSizeSchedule,
+    preconditioner::{Preconditioner, IdentityPreconditioner},
+    fisher::FisherApproximation,
+};
 
 #[cfg(test)]
 mod tests {

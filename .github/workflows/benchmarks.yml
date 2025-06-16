@@ -1,0 +1,173 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: 'Baseline branch/tag/commit to compare against'
+        required: false
+        default: 'main'
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenblas-dev gnuplot
+          
+      - name: Install cargo-criterion
+        run: cargo install cargo-criterion
+        
+      - name: Run benchmarks
+        run: |
+          cargo criterion --all-features --message-format=json > criterion-output.json
+          
+      - name: Generate benchmark report
+        run: |
+          mkdir -p benchmark-results
+          cargo criterion --all-features --plotting-backend gnuplot
+          cp -r target/criterion/* benchmark-results/
+          
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-results
+          path: benchmark-results/
+          
+      - name: Comment PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('criterion-output.json', 'utf8');
+            const results = JSON.parse(output);
+            
+            let comment = '## Benchmark Results\n\n';
+            comment += '| Benchmark | Time | Change |\n';
+            comment += '|-----------|------|--------|\n';
+            
+            // Parse and format results (simplified)
+            for (const [name, data] of Object.entries(results)) {
+              if (data.mean) {
+                comment += `| ${name} | ${data.mean.estimate}${data.mean.unit} | - |\n`;
+              }
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # Compare benchmarks against baseline
+  benchmark-compare:
+    name: Compare Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Checkout baseline
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenblas-dev
+          cargo install cargo-criterion critcmp
+          
+      - name: Run baseline benchmarks
+        run: |
+          cargo criterion --all-features --save-baseline baseline
+          
+      - name: Checkout PR branch
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          
+      - name: Run current benchmarks
+        run: |
+          cargo criterion --all-features --save-baseline current
+          
+      - name: Compare results
+        run: |
+          critcmp baseline current > comparison.txt
+          cat comparison.txt
+          
+      - name: Post comparison results
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const comparison = fs.readFileSync('comparison.txt', 'utf8');
+            
+            const comment = `## Benchmark Comparison
+            
+            <details>
+            <summary>Performance comparison against baseline</summary>
+            
+            \`\`\`
+            ${comparison}
+            \`\`\`
+            
+            </details>`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # Continuous benchmarking
+  continuous-benchmark:
+    name: Continuous Benchmarking
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenblas-dev
+          
+      - name: Run benchmarks
+        run: cargo bench --all-features
+        
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: target/criterion/*/new/estimates.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+          alert-threshold: '150%'
+          comment-always: false
+          save-data-file: true
+          benchmark-data-dir-path: 'benchmarks'

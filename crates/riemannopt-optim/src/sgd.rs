@@ -24,112 +24,13 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::Result,
     manifold::{Manifold, Point, TangentVector},
-    optimizer::{OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    step_size::StepSizeSchedule,
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};
-use num_traits::Float;
 use std::time::Instant;
 
-/// Step size scheduling strategy for SGD.
-pub enum StepSizeSchedule<T>
-where
-    T: Scalar,
-{
-    /// Constant step size throughout optimization
-    Constant(T),
-    
-    /// Exponential decay: alpha_k = alpha_0 * gamma^k
-    ExponentialDecay {
-        initial: T,
-        decay_rate: T,
-    },
-    
-    /// Polynomial decay: alpha_k = alpha_0 / (1 + k)^p
-    PolynomialDecay {
-        initial: T,
-        power: T,
-    },
-    
-    /// Square root decay: alpha_k = alpha_0 / sqrt(1 + k)
-    SquareRootDecay {
-        initial: T,
-    },
-}
-
-impl<T> std::fmt::Debug for StepSizeSchedule<T>
-where
-    T: Scalar + std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StepSizeSchedule::Constant(alpha) => f.debug_tuple("Constant").field(alpha).finish(),
-            StepSizeSchedule::ExponentialDecay { initial, decay_rate } => f
-                .debug_struct("ExponentialDecay")
-                .field("initial", initial)
-                .field("decay_rate", decay_rate)
-                .finish(),
-            StepSizeSchedule::PolynomialDecay { initial, power } => f
-                .debug_struct("PolynomialDecay")
-                .field("initial", initial)
-                .field("power", power)
-                .finish(),
-            StepSizeSchedule::SquareRootDecay { initial } => f
-                .debug_struct("SquareRootDecay")
-                .field("initial", initial)
-                .finish(),
-        }
-    }
-}
-
-impl<T> Clone for StepSizeSchedule<T>
-where
-    T: Scalar,
-{
-    fn clone(&self) -> Self {
-        match self {
-            StepSizeSchedule::Constant(alpha) => StepSizeSchedule::Constant(*alpha),
-            StepSizeSchedule::ExponentialDecay { initial, decay_rate } => {
-                StepSizeSchedule::ExponentialDecay {
-                    initial: *initial,
-                    decay_rate: *decay_rate,
-                }
-            }
-            StepSizeSchedule::PolynomialDecay { initial, power } => {
-                StepSizeSchedule::PolynomialDecay {
-                    initial: *initial,
-                    power: *power,
-                }
-            }
-            StepSizeSchedule::SquareRootDecay { initial } => {
-                StepSizeSchedule::SquareRootDecay { initial: *initial }
-            }
-        }
-    }
-}
-
-impl<T> StepSizeSchedule<T>
-where
-    T: Scalar,
-{
-    /// Computes the step size for a given iteration.
-    pub fn step_size(&self, iteration: usize) -> T {
-        match self {
-            Self::Constant(alpha) => *alpha,
-            Self::ExponentialDecay { initial, decay_rate } => {
-                *initial * <T as Float>::powf(*decay_rate, <T as Scalar>::from_f64(iteration as f64))
-            }
-            Self::PolynomialDecay { initial, power } => {
-                let k = <T as Scalar>::from_f64(iteration as f64);
-                *initial / <T as Float>::powf(T::one() + k, *power)
-            }
-            Self::SquareRootDecay { initial } => {
-                let k = <T as Scalar>::from_f64(iteration as f64);
-                *initial / <T as Float>::sqrt(T::one() + k)
-            }
-        }
-    }
-}
 
 /// Momentum method for SGD.
 #[derive(Debug, Clone)]
@@ -543,7 +444,7 @@ where
             self.line_search_step_size(cost_fn, manifold, &state.point, &search_direction, cost)?
         } else {
             // Use scheduled step size
-            self.config.step_size.step_size(state.iteration)
+            self.config.step_size.get_step_size(state.iteration)
         };
         
         // Take the step using retraction
@@ -576,7 +477,7 @@ where
     {
         // Simple backtracking line search (Armijo condition)
         let c1 = <T as Scalar>::from_f64(1e-4); // Armijo parameter
-        let initial_step = self.config.step_size.step_size(0);
+        let initial_step = self.config.step_size.get_step_size(0);
         let shrink_factor = <T as Scalar>::from_f64(0.5);
         
         let direction_norm = direction.norm();
@@ -635,24 +536,25 @@ mod tests {
     fn test_step_size_schedules() {
         // Test constant step size
         let constant = StepSizeSchedule::Constant(0.1);
-        assert_relative_eq!(constant.step_size(0), 0.1, epsilon = 1e-10);
-        assert_relative_eq!(constant.step_size(100), 0.1, epsilon = 1e-10);
+        assert_relative_eq!(constant.get_step_size(0), 0.1, epsilon = 1e-10);
+        assert_relative_eq!(constant.get_step_size(100), 0.1, epsilon = 1e-10);
         
         // Test exponential decay
         let exp_decay = StepSizeSchedule::ExponentialDecay {
             initial: 1.0,
             decay_rate: 0.9,
         };
-        assert_relative_eq!(exp_decay.step_size(0), 1.0, epsilon = 1e-10);
-        assert!(exp_decay.step_size(10) < 1.0);
+        assert_relative_eq!(exp_decay.get_step_size(0), 1.0, epsilon = 1e-10);
+        assert!(exp_decay.get_step_size(10) < 1.0);
         
         // Test polynomial decay
         let poly_decay = StepSizeSchedule::PolynomialDecay {
             initial: 1.0,
+            decay_rate: 1.0,
             power: 1.0,
         };
-        assert_relative_eq!(poly_decay.step_size(0), 1.0, epsilon = 1e-10);
-        assert_relative_eq!(poly_decay.step_size(1), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(poly_decay.get_step_size(0), 1.0, epsilon = 1e-10);
+        assert_relative_eq!(poly_decay.get_step_size(1), 0.5, epsilon = 1e-10);
     }
     
     #[test]
@@ -733,5 +635,46 @@ mod tests {
         // Should converge, potentially faster than without momentum
         assert!(result.point.norm() < 1e-3);
         assert!(result.iterations <= 500);
+    }
+}
+
+// Implementation of the Optimizer trait from core
+impl<T, D> Optimizer<T, D> for SGD<T>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    fn name(&self) -> &str {
+        "Riemannian SGD"
+    }
+
+    fn optimize<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &Point<T, D>,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, D>>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        // Call the concrete optimize method (not a recursive call)
+        SGD::optimize(self, cost_fn, manifold, initial_point, stopping_criterion)
+    }
+
+    fn step<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, D>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        // Call the concrete step method (not a recursive call)
+        SGD::step(self, cost_fn, manifold, state)
     }
 }
