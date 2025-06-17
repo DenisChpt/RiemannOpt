@@ -27,42 +27,111 @@ pub type TangentVector<T, D> = OVector<T, D>;
 
 /// Trait for Riemannian manifolds.
 ///
+/// A Riemannian manifold (ℳ, g) is a smooth manifold ℳ equipped with a Riemannian 
+/// metric g that provides an inner product structure on each tangent space T_p ℳ.
+///
 /// This trait defines the interface that all manifolds must implement to be used
 /// with Riemannian optimization algorithms. It provides methods for:
-/// - Checking manifold membership
-/// - Computing tangent space projections
-/// - Performing retractions and their inverses
-/// - Computing Riemannian metrics and gradients
-/// - Parallel transport of vectors
+///
+/// ## Core Operations
+/// - **Manifold membership**: Check if a point p ∈ ℳ
+/// - **Projection**: Project ambient points onto the manifold: Π: ℝⁿ → ℳ
+/// - **Tangent projection**: Project vectors to tangent space: P_p: ℝⁿ → T_p ℳ
+/// - **Retraction**: Approximate exponential map: R_p: T_p ℳ → ℳ
+/// - **Riemannian metric**: Inner product ⟨·,·⟩_p: T_p ℳ × T_p ℳ → ℝ
+///
+/// ## Mathematical Properties
+/// 
+/// The trait ensures the following mathematical properties:
+/// 
+/// 1. **Projection idempotency**: Π(Π(x)) = Π(x) for all x ∈ ℝⁿ
+/// 2. **Tangent orthogonality**: ⟨P_p(v), p⟩ = 0 for embedded manifolds
+/// 3. **Retraction constraints**: R_p(0) = p and dR_p(0) = id_{T_p ℳ}
+/// 4. **Metric properties**: ⟨·,·⟩_p is symmetric, bilinear, and positive definite
 ///
 /// # Type Parameters
 ///
 /// - `T`: The scalar type (f32 or f64)
-/// - `D`: The dimension of the manifold's representation
+/// - `D`: The dimension type of the manifold's representation
 ///
-/// # Example
+/// # Implementation Notes
+///
+/// When implementing this trait:
+/// - Ensure numerical stability for all operations
+/// - Maintain manifold constraints (e.g., orthogonality, normalization)
+/// - Use efficient algorithms (e.g., QR decomposition for Stiefel)
+/// - Consider caching expensive computations
+///
+/// # Examples
+///
+/// ## Unit Sphere Implementation
 ///
 /// ```rust,ignore
 /// use riemannopt_core::prelude::*;
-/// use nalgebra::Const;
+/// use nalgebra::{Const, DVector};
 ///
-/// // Example implementation for the unit sphere
-/// struct Sphere<T: Scalar, const N: usize>;
+/// /// Unit sphere S^{n-1} = {x ∈ ℝⁿ : ||x|| = 1}
+/// struct Sphere<T: Scalar> {
+///     ambient_dim: usize,
+/// }
 ///
-/// impl<T: Scalar, const N: usize> Manifold<T, Const<N>> for Sphere<T, N> {
-///     fn name(&self) -> &str {
-///         "Sphere"
-///     }
+/// impl<T: Scalar> Manifold<T, nalgebra::Dyn> for Sphere<T> {
+///     fn name(&self) -> &str { "Sphere" }
 ///     
 ///     fn dimension(&self) -> usize {
-///         N - 1  // Sphere S^{n-1} embedded in R^n
+///         self.ambient_dim - 1  // S^{n-1} has dimension n-1
 ///     }
 ///     
-///     fn is_point_on_manifold(&self, point: &Point<T, Const<N>>, tol: T) -> bool {
+///     fn is_point_on_manifold(&self, point: &DVector<T>, tol: T) -> bool {
+///         // Check ||x|| = 1
 ///         (point.norm_squared() - T::one()).abs() < tol
 ///     }
 ///     
-///     // ... other required methods
+///     fn project(&self, point: &DVector<T>) -> Result<DVector<T>> {
+///         // Π(x) = x / ||x||
+///         let norm = point.norm();
+///         if norm < T::epsilon() {
+///             return Err(ManifoldError::NumericalError);
+///         }
+///         Ok(point / norm)
+///     }
+///     
+///     fn tangent_projection(&self, point: &DVector<T>, vector: &DVector<T>) 
+///         -> Result<DVector<T>> {
+///         // P_p(v) = v - ⟨v, p⟩ p  (orthogonal projection)
+///         Ok(vector - point * vector.dot(point))
+///     }
+/// }
+/// ```
+///
+/// ## Stiefel Manifold Implementation
+///
+/// ```rust,ignore
+/// /// Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = I_p}
+/// struct Stiefel<T: Scalar> {
+///     n: usize,  // Number of rows
+///     p: usize,  // Number of columns
+/// }
+///
+/// impl<T: Scalar> Manifold<T, nalgebra::Dyn> for Stiefel<T> {
+///     fn name(&self) -> &str { "Stiefel" }
+///     
+///     fn dimension(&self) -> usize {
+///         self.n * self.p - self.p * (self.p + 1) / 2
+///     }
+///     
+///     fn project(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
+///         // QR decomposition: X = QR, return Q
+///         let qr = matrix.qr();
+///         Ok(qr.q())
+///     }
+///     
+///     fn retract(&self, point: &DMatrix<T>, tangent: &DMatrix<T>) 
+///         -> Result<DMatrix<T>> {
+///         // QR-based retraction: R_X(V) = qf(X + V)
+///         let sum = point + tangent;
+///         self.project(&sum)
+///     }
 /// }
 /// ```
 pub trait Manifold<T, D>: Debug + Send + Sync
@@ -135,18 +204,36 @@ where
 
     /// Projects a vector onto the tangent space at a given point.
     ///
+    /// The tangent space T_p ℳ at point p is the linear space of all possible
+    /// directions of motion on the manifold at p. This method computes the
+    /// orthogonal projection onto this space:
+    ///
+    /// P_p: ℝⁿ → T_p ℳ
+    ///
+    /// For embedded manifolds, this typically involves:
+    /// - **Sphere**: P_p(v) = v - ⟨v,p⟩p (remove normal component)
+    /// - **Stiefel**: P_p(V) = V - X(X^T V + V^T X)/2 (skew-symmetric projection)
+    /// - **Grassmann**: P_p(V) = (I - XX^T)V (orthogonal complement projection)
+    ///
+    /// # Mathematical Properties
+    ///
+    /// The projection satisfies:
+    /// 1. **Idempotency**: P_p(P_p(v)) = P_p(v)
+    /// 2. **Linearity**: P_p(αu + βv) = αP_p(u) + βP_p(v)
+    /// 3. **Orthogonality**: For embedded manifolds, ⟨P_p(v), n⟩ = 0 where n is normal to ℳ
+    ///
     /// # Arguments
     ///
-    /// * `point` - A point on the manifold
-    /// * `vector` - The vector to project
+    /// * `point` - A point p ∈ ℳ on the manifold
+    /// * `vector` - The ambient vector v ∈ ℝⁿ to project
     ///
     /// # Returns
     ///
-    /// The projection of `vector` onto T_point M.
+    /// The projected tangent vector P_p(v) ∈ T_p ℳ.
     ///
     /// # Errors
     ///
-    /// Returns an error if `point` is not on the manifold.
+    /// Returns an error if `point` is not on the manifold within numerical tolerance.
     fn project_tangent(
         &self,
         point: &Point<T, D>,
@@ -155,20 +242,38 @@ where
 
     /// Computes the Riemannian inner product between two tangent vectors.
     ///
+    /// The Riemannian metric g provides an inner product on each tangent space:
+    /// g_p: T_p ℳ × T_p ℳ → ℝ
+    ///
+    /// Common metrics include:
+    /// - **Canonical metric**: For embedded manifolds, inherit the Euclidean metric
+    ///   - Sphere: ⟨u,v⟩_p = u^T v (standard Euclidean inner product)
+    ///   - Stiefel: ⟨U,V⟩_X = trace(U^T V) (Frobenius inner product)
+    /// - **Invariant metrics**: Metrics that preserve group symmetries
+    /// - **Pullback metrics**: Induced from the ambient space
+    ///
+    /// # Mathematical Properties
+    ///
+    /// The Riemannian metric satisfies:
+    /// 1. **Symmetry**: ⟨u,v⟩_p = ⟨v,u⟩_p
+    /// 2. **Bilinearity**: ⟨αu₁ + βu₂,v⟩_p = α⟨u₁,v⟩_p + β⟨u₂,v⟩_p
+    /// 3. **Positive definiteness**: ⟨u,u⟩_p > 0 for all u ≠ 0
+    /// 4. **Smoothness**: The metric varies smoothly with the point p
+    ///
     /// # Arguments
     ///
-    /// * `point` - A point on the manifold
-    /// * `u` - First tangent vector
-    /// * `v` - Second tangent vector
+    /// * `point` - A point p ∈ ℳ on the manifold
+    /// * `u` - First tangent vector u ∈ T_p ℳ
+    /// * `v` - Second tangent vector v ∈ T_p ℳ
     ///
     /// # Returns
     ///
-    /// The inner product g_point(u, v).
+    /// The Riemannian inner product ⟨u,v⟩_p ∈ ℝ.
     ///
     /// # Errors
     ///
     /// Returns an error if `point` is not on the manifold or if `u` or `v`
-    /// are not in the tangent space.
+    /// are not in the tangent space at `point`.
     fn inner_product(
         &self,
         point: &Point<T, D>,
@@ -195,22 +300,46 @@ where
 
     /// Performs a retraction from the tangent space to the manifold.
     ///
-    /// A retraction at point p is a smooth mapping R_p: T_p M → M such that:
-    /// - R_p(0) = p
-    /// - dR_p(0) = identity on T_p M
+    /// A retraction R_p: T_p ℳ → ℳ is a smooth mapping that provides a way to 
+    /// "move" from a point p on the manifold in the direction of a tangent vector v.
+    /// It serves as an efficient approximation to the exponential map.
+    ///
+    /// # Mathematical Definition
+    ///
+    /// A retraction R_p must satisfy:
+    /// 1. **Identity property**: R_p(0) = p (staying at p with zero step)
+    /// 2. **Tangent condition**: dR_p(0) = id_{T_p ℳ} (first-order agreement with exp)
+    /// 3. **Manifold constraint**: R_p(v) ∈ ℳ for all v ∈ T_p ℳ
+    ///
+    /// # Common Retractions
+    ///
+    /// Different manifolds use different retraction strategies:
+    /// - **Sphere**: R_p(v) = (p + v)/||p + v|| (projection retraction)
+    /// - **Stiefel**: R_X(V) = qf(X + V) where qf is QR decomposition Q-factor
+    /// - **SPD**: R_X(V) = X + V + ½VX⁻¹V (symmetric retraction)
+    /// - **Grassmann**: Via lifting to Stiefel and projection
+    ///
+    /// # Computational Considerations
+    ///
+    /// - **Efficiency**: Retractions are typically much faster than exponential maps
+    /// - **Stability**: Good retractions maintain numerical manifold constraints
+    /// - **Order**: Higher-order retractions provide better approximation to exp_p
     ///
     /// # Arguments
     ///
-    /// * `point` - A point on the manifold
-    /// * `tangent` - A tangent vector at `point`
+    /// * `point` - A point p ∈ ℳ on the manifold
+    /// * `tangent` - A tangent vector v ∈ T_p ℳ (direction and magnitude of step)
     ///
     /// # Returns
     ///
-    /// A new point on the manifold.
+    /// A new point R_p(v) ∈ ℳ on the manifold.
     ///
     /// # Errors
     ///
-    /// Returns an error if the inputs are invalid.
+    /// Returns an error if:
+    /// - `point` is not on the manifold
+    /// - `tangent` is not in the tangent space at `point`
+    /// - Numerical issues prevent computation (e.g., singularities)
     fn retract(&self, point: &Point<T, D>, tangent: &TangentVector<T, D>) -> Result<Point<T, D>>;
 
     /// Computes the inverse retraction (logarithmic map).

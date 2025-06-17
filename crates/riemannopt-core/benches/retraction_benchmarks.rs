@@ -177,7 +177,7 @@ fn bench_retraction_methods(c: &mut Criterion) {
 
         // Benchmark exponential retraction
         group.bench_with_input(BenchmarkId::new("exponential", dim), &dim, |b, _| {
-            let retraction = ExponentialRetraction;
+            let retraction = ExponentialRetraction::new();
             let mut idx = 0;
             b.iter(|| {
                 let (point, tangent) = &test_data[idx % test_data.len()];
@@ -257,7 +257,7 @@ fn bench_retraction_small_steps(c: &mut Criterion) {
         });
 
         group.bench_with_input(BenchmarkId::new("exponential", scale), &scale, |b, _| {
-            let retraction = ExponentialRetraction;
+            let retraction = ExponentialRetraction::new();
             let mut idx = 0;
             b.iter(|| {
                 let (point, tangent) = &test_data[idx % test_data.len()];

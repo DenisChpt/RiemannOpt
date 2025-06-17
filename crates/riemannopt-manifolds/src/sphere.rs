@@ -1,12 +1,111 @@
-//! Sphere manifold S^{n-1} = {x in R^n : ||x|| = 1}
+//! # Unit Sphere Manifold S^{n-1}
 //!
-//! The unit sphere is one of the most fundamental manifolds in optimization.
-//! It naturally appears in:
-//! - Principal Component Analysis (PCA)
-//! - Independent Component Analysis (ICA)
-//! - Sparse coding with unit norm constraints
-//! - Eigenvalue problems
-//! - Neural network weight normalization
+//! The unit sphere S^{n-1} = {x ∈ ℝⁿ : ‖x‖ = 1} is the set of all unit vectors
+//! in n-dimensional Euclidean space. It is one of the most fundamental and
+//! well-studied manifolds in differential geometry and optimization.
+//!
+//! ## Mathematical Structure
+//!
+//! The unit sphere is a (n-1)-dimensional manifold embedded in ℝⁿ with:
+//!
+//! - **Intrinsic dimension**: n-1
+//! - **Ambient dimension**: n  
+//! - **Sectional curvature**: +1 (constant positive curvature)
+//! - **Diameter**: π (maximum geodesic distance)
+//! - **Volume**: 2π^{n/2}/Γ(n/2) (surface area)
+//!
+//! ## Geometric Properties
+//!
+//! ### Tangent Space
+//! The tangent space at point x ∈ S^{n-1} is:
+//! ```text
+//! T_x S^{n-1} = {v ∈ ℝⁿ : ⟨v, x⟩ = 0}
+//! ```
+//! This is the orthogonal complement of x in ℝⁿ.
+//!
+//! ### Exponential Map
+//! The exponential map has the closed form:
+//! ```text
+//! exp_x(v) = cos(‖v‖) x + sin(‖v‖) v/‖v‖
+//! ```
+//! This follows great circles on the sphere.
+//!
+//! ### Logarithmic Map
+//! The logarithmic map (inverse of exponential) is:
+//! ```text
+//! log_x(y) = θ (y - cos(θ)x) / sin(θ)
+//! ```
+//! where θ = arccos(⟨x, y⟩) is the geodesic distance.
+//!
+//! ### Riemannian Distance
+//! The geodesic distance between points x, y ∈ S^{n-1} is:
+//! ```text
+//! d(x, y) = arccos(⟨x, y⟩)
+//! ```
+//!
+//! ## Optimization Applications
+//!
+//! The sphere manifold appears naturally in many optimization problems:
+//!
+//! ### 1. Principal Component Analysis (PCA)
+//! Finding the first principal component:
+//! ```text
+//! max_{x ∈ S^{n-1}} x^T Σ x
+//! ```
+//! where Σ is the covariance matrix.
+//!
+//! ### 2. Sparse Dictionary Learning
+//! Learning unit-norm dictionary atoms:
+//! ```text
+//! min_{D, X} ‖Y - DX‖_F^2 + λ‖X‖_1
+//! s.t. ‖d_i‖ = 1 for all columns d_i of D
+//! ```
+//!
+//! ### 3. Spherical Regression
+//! Regression with directional data:
+//! ```text
+//! min_{β ∈ S^{p-1}} Σᵢ L(yᵢ, ⟨xᵢ, β⟩)
+//! ```
+//!
+//! ### 4. Neural Network Weight Normalization
+//! Constraining weights to unit norm:
+//! ```text
+//! w_normalized = w / ‖w‖
+//! ```
+//!
+//! ## Implementation Features
+//!
+//! This implementation provides:
+//! - Exact exponential and logarithmic maps
+//! - Efficient projection operations
+//! - Parallel transport along geodesics
+//! - Uniform random sampling
+//! - Numerical stability for edge cases
+//!
+//! ## Example Usage
+//!
+//! ```rust
+//! use riemannopt_manifolds::Sphere;
+//! use riemannopt_core::manifold::Manifold;
+//! use nalgebra::{DVector, Dyn};
+//!
+//! // Create 3D sphere (2-dimensional manifold)
+//! let sphere = Sphere::new(3).unwrap();
+//!
+//! // Generate random point
+//! let x: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::random_point(&sphere);
+//! assert!((x.norm() - 1.0f64).abs() < 1e-10f64);
+//!
+//! // Project arbitrary vector to sphere
+//! let y = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+//! let projected: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_point(&sphere, &y);
+//! assert!((projected.norm() - 1.0f64).abs() < 1e-10f64);
+//!
+//! // Work with tangent vectors
+//! let tangent = DVector::from_vec(vec![0.0, 1.0, 0.0]);
+//! let tangent_proj: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_tangent(&sphere, &x, &tangent).unwrap();
+//! assert!(x.dot(&tangent_proj).abs() < 1e-10f64);
+//! ```
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
@@ -17,43 +116,177 @@ use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, Dyn, OVector, U1};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
-/// The unit sphere S^{n-1} in R^n.
+/// The unit sphere S^{n-1} = {x ∈ ℝⁿ : ‖x‖ = 1}.
 ///
-/// This manifold represents all unit vectors in n-dimensional Euclidean space.
-/// Points on the sphere satisfy ||x|| = 1, and the tangent space at x consists
-/// of all vectors orthogonal to x.
+/// The unit sphere is a fundamental Riemannian manifold consisting of all unit vectors
+/// in n-dimensional Euclidean space. It is a (n-1)-dimensional manifold embedded in ℝⁿ.
 ///
-/// # Mathematical Properties
+/// # Mathematical Definition
 ///
-/// - **Dimension**: n-1 (for sphere in R^n)
-/// - **Tangent space**: T_x S^{n-1} = {v in R^n : x^T v = 0}
-/// - **Riemannian metric**: Inherited from Euclidean space (canonical metric)
-/// - **Exponential map**: exp_x(v) = cos(||v||) x + sin(||v||) v/||v||
-/// - **Logarithmic map**: log_x(y) = θ (y - cos(θ)x) / sin(θ), θ = arccos(x^T y)
+/// The unit sphere S^{n-1} is defined as:
+/// ```text
+/// S^{n-1} = {x ∈ ℝⁿ : ‖x‖₂ = 1}
+/// ```
 ///
-/// # Applications
+/// Key geometric properties:
+/// - **Intrinsic dimension**: n-1
+/// - **Ambient dimension**: n
+/// - **Sectional curvature**: K = +1 (constant positive curvature)
+/// - **Diameter**: π (maximum geodesic distance)
+/// - **Injectivity radius**: π (radius of geodesic balls without cut locus)
 ///
-/// - **PCA**: Finding principal directions on the sphere
-/// - **Matrix completion**: Unit norm constraints
-/// - **Neural networks**: Weight normalization layers
-/// - **Robotics**: Unit quaternions for rotations (S^3)
+/// # Tangent Space Structure
+///
+/// The tangent space at point x ∈ S^{n-1} is the orthogonal complement:
+/// ```text
+/// T_x S^{n-1} = {v ∈ ℝⁿ : ⟨v, x⟩ = 0}
+/// ```
+///
+/// The Riemannian metric is the restriction of the Euclidean inner product:
+/// ```text
+/// g_x(u, v) = ⟨u, v⟩_ℝⁿ  for u, v ∈ T_x S^{n-1}
+/// ```
+///
+/// # Geodesics and Exponential Map
+///
+/// Geodesics on the sphere are great circles. The exponential map has the closed form:
+/// ```text
+/// exp_x(v) = cos(‖v‖) x + sin(‖v‖) v/‖v‖
+/// ```
+///
+/// This provides exact geodesics without numerical integration.
+///
+/// # Optimization Context
+///
+/// The sphere manifold is crucial in constrained optimization problems where variables
+/// must have unit norm. Common applications include:
+///
+/// ## Principal Component Analysis
+/// Maximize variance: max_{x ∈ S^{n-1}} x^T Σ x
+///
+/// ## Dictionary Learning  
+/// Learn normalized dictionary atoms for sparse coding
+///
+/// ## Directional Statistics
+/// Analyze data on spheres (e.g., wind directions, protein conformations)
+///
+/// ## Neural Networks
+/// Weight normalization and spherical embeddings
+///
+/// # Implementation Notes
+///
+/// This implementation provides:
+/// - **Exact algorithms**: Closed-form exponential/logarithmic maps
+/// - **Numerical stability**: Careful handling of antipodal points and near-zero vectors
+/// - **Efficient projections**: Fast normalization-based projection
+/// - **Random sampling**: Uniform distribution via Gaussian normalization
+///
+/// # Examples
+///
+/// ## Basic Usage
+/// ```rust
+/// use riemannopt_manifolds::Sphere;
+/// use riemannopt_core::manifold::Manifold;
+/// use nalgebra::{DVector, Dyn};
+///
+/// // Create unit sphere in ℝ³ (2D manifold)
+/// let sphere = Sphere::new(3).unwrap();
+/// assert_eq!(<Sphere as Manifold<f64, Dyn>>::dimension(&sphere), 2);
+/// assert_eq!(sphere.ambient_dimension(), 3);
+///
+/// // Generate random unit vector
+/// let x: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::random_point(&sphere);
+/// assert!((x.norm() - 1.0f64).abs() < 1e-12f64);
+/// ```
+///
+/// ## Projection Operations
+/// ```rust
+/// # use riemannopt_manifolds::Sphere;
+/// # use riemannopt_core::manifold::Manifold;
+/// # use nalgebra::{DVector, Dyn};
+/// # let sphere = Sphere::new(3).unwrap();
+///
+/// // Project arbitrary point to sphere
+/// let point = DVector::from_vec(vec![3.0, 4.0, 0.0]);
+/// let projected: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_point(&sphere, &point);
+/// assert!((projected.norm() - 1.0f64).abs() < 1e-12f64);
+/// assert!((projected - &point / point.norm()).norm() < 1e-12f64);
+///
+/// // Project vector to tangent space
+/// let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+/// let v = DVector::from_vec(vec![0.5, 1.0, 2.0]);
+/// let v_tangent: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_tangent(&sphere, &x, &v).unwrap();
+/// assert!(x.dot(&v_tangent).abs() < 1e-12f64); // Orthogonal to x
+/// ```
+///
+/// ## Geodesics
+/// ```rust
+/// # use riemannopt_manifolds::Sphere;
+/// # use nalgebra::DVector;
+/// # let sphere = Sphere::new(3).unwrap();
+///
+/// let x = DVector::<f64>::from_vec(vec![1.0, 0.0, 0.0]);
+/// let v = DVector::<f64>::from_vec(vec![0.0, 1.0, 0.0]);  // Tangent vector
+///
+/// // Move along geodesic
+/// let y: DVector<f64> = sphere.exp_map(&x, &v).unwrap();
+/// assert!((y.norm() - 1.0f64).abs() < 1e-12f64);
+///
+/// // Inverse operation
+/// let v_recovered: DVector<f64> = sphere.log_map(&x, &y).unwrap();
+/// assert!((v - v_recovered).norm() < 1e-12f64);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Sphere {
-    /// Ambient dimension (n)
+    /// Ambient dimension n (sphere S^{n-1} embedded in ℝⁿ)
     ambient_dim: usize,
 }
 
 impl Sphere {
-    /// Creates a new sphere S^{n-1} embedded in R^n.
+    /// Creates a new unit sphere S^{n-1} embedded in ℝⁿ.
     ///
     /// # Arguments
-    /// * `ambient_dim` - The dimension of the ambient space (n)
+    /// * `ambient_dim` - The dimension n of the ambient Euclidean space ℝⁿ
     ///
     /// # Returns
-    /// A sphere manifold with intrinsic dimension n-1
+    /// A sphere manifold with:
+    /// - Intrinsic dimension: n-1
+    /// - Ambient dimension: n
+    /// - Constant sectional curvature: +1
     ///
     /// # Errors
-    /// Returns an error if `ambient_dim` < 2
+    /// Returns `ManifoldError::InvalidPoint` if `ambient_dim < 2`, since
+    /// a sphere requires at least 2 ambient dimensions to be well-defined.
+    ///
+    /// # Mathematical Background
+    /// The sphere S^{n-1} has intrinsic dimension n-1 because locally it looks like
+    /// (n-1)-dimensional Euclidean space. Common examples:
+    /// - S¹ (circle): 1D manifold in ℝ²
+    /// - S² (sphere): 2D manifold in ℝ³  
+    /// - S³ (3-sphere): 3D manifold in ℝ⁴ (used for quaternions)
+    ///
+    /// # Examples
+    /// ```rust
+    /// use riemannopt_manifolds::Sphere;
+    /// use riemannopt_core::manifold::Manifold;
+    /// use nalgebra::Dyn;
+    ///
+    /// // Standard 2D sphere (surface of ball in 3D)
+    /// let sphere = Sphere::new(3).unwrap();
+    /// assert_eq!(<Sphere as Manifold<f64, Dyn>>::dimension(&sphere), 2);
+    /// assert_eq!(sphere.ambient_dimension(), 3);
+    ///
+    /// // Circle (1D manifold in 2D)
+    /// let circle = Sphere::new(2).unwrap();
+    /// assert_eq!(<Sphere as Manifold<f64, Dyn>>::dimension(&circle), 1);
+    ///
+    /// // Higher dimensional sphere
+    /// let sphere_4d = Sphere::new(5).unwrap();
+    /// assert_eq!(<Sphere as Manifold<f64, Dyn>>::dimension(&sphere_4d), 4);
+    ///
+    /// // Error case: too small dimension
+    /// assert!(Sphere::new(1).is_err());
+    /// ```
     pub fn new(ambient_dim: usize) -> Result<Self> {
         if ambient_dim < 2 {
             return Err(ManifoldError::invalid_point(
@@ -68,12 +301,52 @@ impl Sphere {
         self.ambient_dim
     }
 
-    /// Computes the exponential map at point x in direction v.
+    /// Computes the exponential map exp_x(v) at point x in direction v.
     ///
-    /// The exponential map on the sphere has the closed form:
-    /// exp_x(v) = cos(||v||) x + sin(||v||) v/||v||
+    /// The exponential map on the sphere follows geodesics (great circles) and has
+    /// the exact closed form:
+    /// ```text
+    /// exp_x(v) = cos(‖v‖) x + sin(‖v‖) v/‖v‖
+    /// ```
     ///
-    /// This moves along a great circle from x in direction v.
+    /// # Mathematical Properties
+    /// - **Domain**: T_x S^{n-1} (tangent space at x)
+    /// - **Codomain**: S^{n-1} (the sphere)
+    /// - **Geodesic property**: exp_x(tv) traces a geodesic for t ∈ ℝ
+    /// - **Distance**: ‖v‖ equals the geodesic distance from x to exp_x(v)
+    /// - **Periodicity**: exp_x(v + 2πv/‖v‖) = exp_x(v)
+    ///
+    /// # Special Cases
+    /// - **Identity**: exp_x(0) = x
+    /// - **Antipodal**: exp_x(πv/‖v‖) = -x (opposite point)
+    /// - **Small v**: exp_x(v) ≈ x + v (first-order approximation)
+    ///
+    /// # Geometric Interpretation
+    /// Starting at point x, move distance ‖v‖ along the great circle in direction v.
+    /// The great circle lies in the 2D plane spanned by {x, v}.
+    ///
+    /// # Arguments
+    /// * `point` - Base point x ∈ S^{n-1}
+    /// * `tangent` - Tangent vector v ∈ T_x S^{n-1}
+    ///
+    /// # Returns
+    /// Point exp_x(v) ∈ S^{n-1} reached by following the geodesic
+    ///
+    /// # Examples
+    /// ```rust
+    /// use riemannopt_manifolds::Sphere;
+    /// use nalgebra::DVector;
+    ///
+    /// let sphere = Sphere::new(3).unwrap();
+    /// let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+    /// let v = DVector::from_vec(vec![0.0, std::f64::consts::PI/2.0, 0.0]);
+    ///
+    /// let y = sphere.exp_map(&x, &v).unwrap();
+    /// // Should reach (0, 1, 0) after π/2 rotation
+    /// assert!((y[0] - 0.0).abs() < 1e-12);
+    /// assert!((y[1] - 1.0).abs() < 1e-12);
+    /// assert!((y[2] - 0.0).abs() < 1e-12);
+    /// ```
     pub fn exp_map<T, D>(&self, point: &Point<T, D>, tangent: &OVector<T, D>) -> Result<Point<T, D>>
     where
         T: Scalar,
@@ -94,11 +367,57 @@ impl Sphere {
         Ok(point * cos_norm + normalized_tangent * sin_norm)
     }
 
-    /// Computes the logarithmic map from point x to point y.
+    /// Computes the logarithmic map log_x(y) from point x to point y.
     ///
-    /// The logarithmic map on the sphere is:
+    /// The logarithmic map is the inverse of the exponential map, giving the
+    /// tangent vector v ∈ T_x S^{n-1} such that exp_x(v) = y.
+    ///
+    /// # Mathematical Formula
+    /// ```text
     /// log_x(y) = θ (y - cos(θ)x) / sin(θ)
-    /// where θ = arccos(clamp(x^T y, -1, 1))
+    /// ```
+    /// where θ = arccos(⟨x, y⟩) is the geodesic distance.
+    ///
+    /// # Mathematical Properties
+    /// - **Domain**: S^{n-1} \ {-x} (sphere minus antipodal point)
+    /// - **Codomain**: T_x S^{n-1} (tangent space at x)
+    /// - **Inverse**: exp_x(log_x(y)) = y for y ≠ -x
+    /// - **Distance**: ‖log_x(y)‖ = d(x, y) (geodesic distance)
+    /// - **Direction**: log_x(y)/‖log_x(y)‖ points toward y
+    ///
+    /// # Special Cases
+    /// - **Identity**: log_x(x) = 0
+    /// - **Antipodal**: log_x(-x) is not unique (any tangent vector of length π)
+    /// - **Close points**: log_x(y) ≈ y - x when ‖y - x‖ is small
+    ///
+    /// # Numerical Considerations
+    /// - Input inner product ⟨x, y⟩ is clamped to [-1, 1] to avoid numerical errors
+    /// - For antipodal points (sin(θ) ≈ 0), returns an arbitrary tangent vector of length π
+    /// - For nearby points (θ ≈ 0), returns zero vector
+    ///
+    /// # Arguments
+    /// * `point` - Base point x ∈ S^{n-1}
+    /// * `other` - Target point y ∈ S^{n-1}
+    ///
+    /// # Returns
+    /// Tangent vector log_x(y) ∈ T_x S^{n-1}
+    ///
+    /// # Examples
+    /// ```rust
+    /// use riemannopt_manifolds::Sphere;
+    /// use nalgebra::DVector;
+    ///
+    /// let sphere = Sphere::new(3).unwrap();
+    /// let x = DVector::<f64>::from_vec(vec![1.0, 0.0, 0.0]);
+    /// let y = DVector::<f64>::from_vec(vec![0.0, 1.0, 0.0]);
+    ///
+    /// let log_xy: DVector<f64> = sphere.log_map(&x, &y).unwrap();
+    /// // Distance should be π/2
+    /// assert!((log_xy.norm() - std::f64::consts::PI/2.0).abs() < 1e-12f64);
+    /// // Should be orthogonal to x
+    /// let dot_product: f64 = x.dot(&log_xy);
+    /// assert!(dot_product.abs() < 1e-12f64);
+    /// ```
     pub fn log_map<T, D>(&self, point: &Point<T, D>, other: &Point<T, D>) -> Result<OVector<T, D>>
     where
         T: Scalar,
@@ -201,10 +520,12 @@ where
         let norm = point.norm();
         if norm < T::epsilon() {
             // Handle zero vector by creating a standard basis vector
+            // Choose e₁ = (1, 0, ..., 0) as canonical representative
             let mut result = DVector::zeros(self.ambient_dim);
             result[0] = T::one();
             result
         } else {
+            // Standard projection: Π(x) = x / ‖x‖
             point / norm
         }
     }
@@ -214,7 +535,9 @@ where
         point: &DVector<T>,
         vector: &DVector<T>,
     ) -> Result<DVector<T>> {
-        // Project to tangent space: v - <v,x>x
+        // Orthogonal projection to tangent space T_x S^{n-1}
+        // Formula: P_x(v) = v - ⟨v, x⟩x
+        // This removes the component of v in the normal direction x
         let inner = point.dot(vector);
         Ok(vector - point * inner)
     }
@@ -225,12 +548,15 @@ where
         u: &DVector<T>,
         v: &DVector<T>,
     ) -> Result<T> {
-        // Use Euclidean inner product (canonical metric)
+        // Canonical Riemannian metric: restriction of Euclidean inner product
+        // g_x(u, v) = ⟨u, v⟩_ℝⁿ for u, v ∈ T_x S^{n-1}
         Ok(u.dot(v))
     }
 
     fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
         // Use exponential map as retraction (exact on sphere)
+        // R_x(v) = exp_x(v) = cos(‖v‖)x + sin(‖v‖)v/‖v‖
+        // This is the optimal retraction for the sphere
         self.exp_map(point, tangent)
     }
 
@@ -248,7 +574,9 @@ where
         point: &DVector<T>,
         grad: &DVector<T>,
     ) -> Result<DVector<T>> {
-        // Project Euclidean gradient to tangent space
+        // For embedded manifolds with canonical metric,
+        // Riemannian gradient = projection of Euclidean gradient
+        // grad_ℳ f(x) = P_x(∇f(x))
         self.project_tangent(point, grad)
     }
 
@@ -256,7 +584,9 @@ where
         let mut rng = rand::thread_rng();
         let mut point = DVector::zeros(self.ambient_dim);
         
-        // Sample from standard normal and normalize
+        // Sample from multivariate standard normal N(0, I)
+        // and normalize to get uniform distribution on sphere
+        // This is the Muller method for sampling on spheres
         for i in 0..self.ambient_dim {
             let val: f64 = StandardNormal.sample(&mut rng);
             point[i] = <T as Scalar>::from_f64(val);
@@ -279,8 +609,9 @@ where
         to: &DVector<T>,
         vector: &DVector<T>,
     ) -> Result<DVector<T>> {
-        // Parallel transport on sphere using the connection
-        // Formula: P_{x->y}(v) = v - <v,y>y - <v,x>x + <x,y><v,x>y
+        // Parallel transport on sphere preserves angles and lengths
+        // Formula for sphere: P_{x→y}(v) = v - ⟨v,y⟩y - ⟨v,x⟩x + ⟨x,y⟩⟨v,x⟩y
+        // This transports v ∈ T_x S^{n-1} to T_y S^{n-1}
         let inner_vx = vector.dot(from);
         let inner_vy = vector.dot(to);
         let inner_xy = from.dot(to);
@@ -294,6 +625,8 @@ where
     }
 
     fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
+        // Geodesic distance on sphere: d(x, y) = arccos(⟨x, y⟩)
+        // This is the length of the shorter great circle arc connecting x and y
         let inner_product = point1.dot(point2);
         let cos_theta = <T as Float>::max(
             <T as Float>::min(inner_product, T::one()),

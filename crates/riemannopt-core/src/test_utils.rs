@@ -4,6 +4,7 @@
 //! of Riemannian manifolds, including retractions, metrics, and other
 //! geometric operations.
 
+#[allow(unused_imports)]
 use crate::{
     error::Result,
     manifold::{Manifold, TangentVector as TangentVectorType},

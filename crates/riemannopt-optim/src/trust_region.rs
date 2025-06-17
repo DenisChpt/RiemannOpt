@@ -174,7 +174,7 @@ where
     fn update_radius(&mut self, ratio: T, config: &TrustRegionConfig<T>) {
         if ratio < config.decrease_threshold {
             // Poor agreement: shrink trust region
-            self.radius = self.radius * config.decrease_factor;
+            self.radius *= config.decrease_factor;
             self.consecutive_rejections += 1;
         } else if ratio > config.increase_threshold {
             // Good agreement: expand trust region
@@ -249,7 +249,7 @@ impl SteiahugCG {
             if dhd <= T::zero() {
                 // Find tau such that ||s + tau*d|| = radius
                 let (tau, _) = Self::boundary_intersection(&s, &d, radius, manifold, point)?;
-                s = s + d * tau;
+                s += d * tau;
                 boundary_hit = true;
                 break;
             }
@@ -265,14 +265,14 @@ impl SteiahugCG {
             if s_new_norm >= radius {
                 // Find tau such that ||s + tau*d|| = radius
                 let (tau, _) = Self::boundary_intersection(&s, &d, radius, manifold, point)?;
-                s = s + d * tau;
+                s += d * tau;
                 boundary_hit = true;
                 break;
             }
             
             // Update CG iteration
             s = s_new;
-            r = r - hd * alpha;
+            r -= hd * alpha;
             let r_norm_sq_new = manifold.inner_product(point, &r, &r)?;
             
             // Check convergence

@@ -35,7 +35,7 @@ use riemannopt_core::{
     manifold::{Manifold, Point},
     optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     optimizer_state::OptimizerStateData,
-    retraction::Retraction,
+    retraction::{Retraction, DefaultRetraction},
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OVector};
@@ -335,7 +335,7 @@ where
 
         // Second loop: compute search direction
         let mut r = q;
-        for i in 0..m {
+        for (i, alpha_i) in alpha.iter().enumerate().take(m) {
             let s = &storage.s_vectors[i];
             let y = &storage.y_vectors[i];
             let rho = storage.rho_values[i];
@@ -345,7 +345,7 @@ where
             let beta = rho * yr_inner;
             
             // r = r + (alpha[i] - beta) * s[i]
-            let coeff = alpha[i] - beta;
+            let coeff = *alpha_i - beta;
             r = &r + &(s * coeff);
         }
 
@@ -440,7 +440,6 @@ where
         &mut self,
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
-        retraction: &impl Retraction<T, D>,
         initial_point: &OVector<T, D>,
         stopping_criterion: &StoppingCriterion<T>,
     ) -> Result<OptimizationResult<T, D>> {
@@ -468,8 +467,57 @@ where
             }
             
             // Perform one optimization step
-            self.step_internal(cost_fn, manifold, retraction, &mut state, &mut lbfgs_state)?;
+            let retraction = DefaultRetraction;
+            self.step_internal(cost_fn, manifold, &retraction, &mut state, &mut lbfgs_state)?;
         }
+    }
+}
+
+// Implementation of the Optimizer trait from core
+impl<T, D> Optimizer<T, D> for LBFGS<T, D>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    fn name(&self) -> &str {
+        "Riemannian L-BFGS"
+    }
+
+    fn optimize<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &Point<T, D>,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, D>>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        self.optimize(cost_fn, manifold, initial_point, stopping_criterion)
+    }
+
+    fn step<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, D>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        // For the step method, we need to maintain internal state
+        // This is a limitation of the current design where L-BFGS requires a retraction
+        use riemannopt_core::retraction::DefaultRetraction;
+        let retraction = DefaultRetraction;
+        
+        // Create a temporary L-BFGS state if needed
+        let mut lbfgs_state = LBFGSState::new(self.config.memory_size);
+        
+        // Perform the step
+        self.step_internal(cost_fn, manifold, &retraction, state, &mut lbfgs_state)
     }
 }
 
@@ -574,7 +622,7 @@ mod tests {
     #[test]
     fn test_lbfgs_on_sphere() {
         let manifold = TestSphereManifold::new(3);
-        let retraction = ExponentialRetraction::new();
+        let _retraction = ExponentialRetraction::<f64>::new();
         
         // Target point on sphere
         let target = DVector::from_vec(vec![1.0, 0.0, 0.0]);
@@ -590,7 +638,7 @@ mod tests {
             .with_max_iterations(100)
             .with_gradient_tolerance(1e-6);
         
-        let result = optimizer.optimize(&cost_fn, &manifold, &retraction, &initial, &stopping_criterion).unwrap();
+        let result = optimizer.optimize(&cost_fn, &manifold, &initial, &stopping_criterion).unwrap();
         
         // L-BFGS should at least reduce the gradient norm significantly
         assert!(result.gradient_norm.unwrap() < 1e-3);
@@ -654,56 +702,5 @@ mod tests {
         
         // Should be different due to quasi-Newton approximation
         assert!(diff_norm > 1e-10);
-    }
-}
-
-// Implementation of the Optimizer trait from core
-impl<T, D> Optimizer<T, D> for LBFGS<T, D>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    fn name(&self) -> &str {
-        "Riemannian L-BFGS"
-    }
-
-    fn optimize<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        initial_point: &Point<T, D>,
-        stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, D>>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Use the default retraction for manifolds
-        use riemannopt_core::retraction::DefaultRetraction;
-        let retraction = DefaultRetraction;
-        self.optimize(cost_fn, manifold, &retraction, initial_point, stopping_criterion)
-    }
-
-    fn step<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        state: &mut OptimizerState<T, D>,
-    ) -> Result<()>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // For the step method, we need to maintain internal state
-        // This is a limitation of the current design where L-BFGS requires a retraction
-        use riemannopt_core::retraction::DefaultRetraction;
-        let retraction = DefaultRetraction;
-        
-        // Create a temporary L-BFGS state if needed
-        let mut lbfgs_state = LBFGSState::new(self.config.memory_size);
-        
-        // Perform the step
-        self.step_internal(cost_fn, manifold, &retraction, state, &mut lbfgs_state)
     }
 }

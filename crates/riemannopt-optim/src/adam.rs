@@ -199,7 +199,7 @@ where
     }
 
     /// Creates a new Adam optimizer with default configuration.
-    pub fn default() -> Self {
+    pub fn with_default_config() -> Self {
         Self::new(AdamConfig::default())
     }
 
@@ -429,6 +429,47 @@ where
     }
 }
 
+// Implementation of the Optimizer trait from core
+impl<T, D> Optimizer<T, D> for Adam<T>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    fn name(&self) -> &str {
+        "Riemannian Adam"
+    }
+
+    fn optimize<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &Point<T, D>,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, D>>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        // Call the concrete optimize method (not a recursive call)
+        Adam::optimize(self, cost_fn, manifold, initial_point, stopping_criterion)
+    }
+
+    fn step<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, D>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        // Call the concrete step method (not a recursive call)
+        Adam::step(self, cost_fn, manifold, state)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,46 +665,5 @@ mod tests {
         for i in 0..2 {
             assert!(max_moment[i] >= adam_state.second_moment[i]);
         }
-    }
-}
-
-// Implementation of the Optimizer trait from core
-impl<T, D> Optimizer<T, D> for Adam<T>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    fn name(&self) -> &str {
-        "Riemannian Adam"
-    }
-
-    fn optimize<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        initial_point: &Point<T, D>,
-        stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, D>>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Call the concrete optimize method (not a recursive call)
-        Adam::optimize(self, cost_fn, manifold, initial_point, stopping_criterion)
-    }
-
-    fn step<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        state: &mut OptimizerState<T, D>,
-    ) -> Result<()>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Call the concrete step method (not a recursive call)
-        Adam::step(self, cost_fn, manifold, state)
     }
 }

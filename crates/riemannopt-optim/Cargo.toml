@@ -16,6 +16,7 @@ nalgebra = { workspace = true }
 num-traits = { workspace = true }
 approx = { workspace = true }
 thiserror = { workspace = true }
+rand = { workspace = true }
 
 [features]
 default = ["std"]
@@ -28,3 +29,7 @@ riemannopt-core = { path = "../riemannopt-core", version = "0.1.0", features = [
 proptest = { workspace = true }
 criterion = { workspace = true }
 pretty_assertions = { workspace = true }
+
+[[bench]]
+name = "optimizer_comparison"
+harness = false

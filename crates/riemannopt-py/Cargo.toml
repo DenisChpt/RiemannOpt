@@ -14,8 +14,12 @@ crate-type = ["cdylib"]
 
 [dependencies]
 riemannopt = { path = "../riemannopt", version = "0.1.0", features = ["full"] }
+riemannopt-core = { path = "../riemannopt-core", version = "0.1.0" }
+riemannopt-manifolds = { path = "../riemannopt-manifolds", version = "0.1.0" }
+riemannopt-optim = { path = "../riemannopt-optim", version = "0.1.0" }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
 numpy = "0.22"
+nalgebra = { workspace = true }
 
 [features]
 default = ["pyo3/extension-module"]

@@ -457,7 +457,7 @@ fn bench_retraction_comparison(c: &mut Criterion) {
 
     // Exponential retraction
     group.bench_function("exponential_retraction", |b| {
-        let retraction = ExponentialRetraction;
+        let retraction = ExponentialRetraction::new();
         b.iter_batched(
             || manifold.random_point(),
             |initial_point| {

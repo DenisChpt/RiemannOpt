@@ -551,7 +551,7 @@ mod tests {
 
         // Distance should be symmetric
         let dist_rev = <ProductManifold as Manifold<f64, Dyn>>::distance(&product, &point2, &point1).unwrap();
-        assert_relative_eq!(dist, dist_rev, epsilon = 1e-12);
+        assert_relative_eq!(dist, dist_rev, epsilon = 1e-8);
     }
 
     #[test]

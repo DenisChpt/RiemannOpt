@@ -98,6 +98,7 @@ riemannopt-optim = { path = "crates/riemannopt-optim" }
 
 # External dependencies for examples
 nalgebra = { workspace = true }
+rand = { workspace = true }
 
 # Workspace-level lints
 [workspace.lints.rust]
