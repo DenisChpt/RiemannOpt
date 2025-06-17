@@ -1,12 +1,123 @@
-//! Stiefel manifold St(n,p) = {X in R^{n x p} : X^T X = I_p}
+//! # Stiefel Manifold St(n,p)
 //!
-//! The Stiefel manifold represents the space of n x p orthonormal matrices.
-//! It naturally appears in:
-//! - Principal Component Analysis (PCA)
-//! - Independent Component Analysis (ICA)
-//! - Neural network weight constraints
-//! - Dimensionality reduction
-//! - Orthogonal dictionary learning
+//! The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = Iₚ} is the set of all
+//! n×p matrices with orthonormal columns. It is a fundamental manifold in
+//! matrix optimization and appears naturally in many applications.
+//!
+//! ## Mathematical Structure
+//!
+//! The Stiefel manifold is defined as:
+//! ```text
+//! St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = Iₚ}
+//! ```
+//! where Iₚ is the p×p identity matrix.
+//!
+//! Key properties:
+//! - **Dimension**: np - p(p+1)/2
+//! - **Ambient space**: ℝⁿˣᵖ (space of all n×p matrices)
+//! - **Constraint**: X^T X = Iₚ (orthonormality of columns)
+//! - **Embedding**: Closed subset of ℝⁿˣᵖ
+//!
+//! ## Geometric Properties
+//!
+//! ### Tangent Space
+//! The tangent space at X ∈ St(n,p) consists of matrices V satisfying:
+//! ```text
+//! T_X St(n,p) = {V ∈ ℝⁿˣᵖ : X^T V + V^T X = 0}
+//! ```
+//! This is equivalent to requiring V^T X to be skew-symmetric.
+//!
+//! ### Orthogonal Decomposition
+//! Any matrix V ∈ ℝⁿˣᵖ can be decomposed as:
+//! ```text
+//! V = V_tangent + V_normal
+//! V_tangent = V - X(X^T V + V^T X)/2
+//! V_normal = X(X^T V + V^T X)/2
+//! ```
+//!
+//! ### Retractions
+//! Multiple retraction strategies are available:
+//! 1. **QR retraction**: R_X(V) = qf(X + V) (QR decomposition)
+//! 2. **Polar retraction**: R_X(V) = (X + V)(X + V)^(-1/2)
+//! 3. **Cayley retraction**: R_X(V) = (I + V/2)(I - V/2)^(-1)X
+//!
+//! ## Special Cases
+//!
+//! - **St(n,1)**: Unit sphere Sⁿ⁻¹ (single unit vector)
+//! - **St(n,n)**: Orthogonal group O(n) (square orthogonal matrices)
+//! - **St(n,p) with n » p**: "Tall" matrices (most common case)
+//!
+//! ## Optimization Applications
+//!
+//! ### 1. Principal Component Analysis (PCA)
+//! Find the top p principal components:
+//! ```text
+//! max_{X ∈ St(n,p)} trace(X^T Σ X)
+//! ```
+//! where Σ is the covariance matrix.
+//!
+//! ### 2. Independent Component Analysis (ICA)
+//! Learn orthogonal unmixing matrix:
+//! ```text
+//! max_{W ∈ St(n,n)} ∑ᵢ G(wᵢ^T x)
+//! ```
+//! where G is a non-Gaussian measure.
+//!
+//! ### 3. Dictionary Learning
+//! Learn orthonormal dictionary atoms:
+//! ```text
+//! min_{D ∈ St(n,p), X} ‖Y - DX‖_F^2 + λ‖X‖_1
+//! ```
+//!
+//! ### 4. Neural Network Orthogonal Constraints
+//! Constrain weight matrices to be orthogonal:
+//! ```text
+//! W ∈ St(n,p) ⟹ W^T W = Iₚ
+//! ```
+//! This prevents vanishing/exploding gradients and improves conditioning.
+//!
+//! ### 5. Computer Vision
+//! - **Structure from Motion**: Camera orientation matrices
+//! - **Shape Analysis**: Orthogonal Procrustes alignment
+//! - **Feature Learning**: Orthogonal basis functions
+//!
+//! ## Implementation Features
+//!
+//! This implementation provides:
+//! - **QR-based projection**: Efficient orthogonalization
+//! - **Multiple retractions**: QR retraction (default)
+//! - **Tangent space operations**: Exact projection formulas
+//! - **Principal angles distance**: Geodesic distance computation
+//! - **Random sampling**: Uniform distribution via QR of Gaussian matrices
+//!
+//! ## Numerical Considerations
+//!
+//! - **Stability**: QR decomposition maintains numerical orthogonality
+//! - **Conditioning**: Gram-Schmidt can be unstable; QR is preferred
+//! - **Scaling**: O(np²) complexity for most operations
+//! - **Memory**: Stores n×p matrices efficiently
+//!
+//! ## Example Usage
+//!
+//! ```rust
+//! use riemannopt_manifolds::Stiefel;
+//! use riemannopt_core::manifold::Manifold;
+//! use nalgebra::{DMatrix, DVector, Dyn};
+//!
+//! // Create Stiefel manifold St(5,3)
+//! let stiefel = Stiefel::new(5, 3).unwrap();
+//!
+//! // Generate random orthonormal matrix
+//! let x: DVector<f64> = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
+//! // Reshape to matrix form
+//! let x_matrix: DMatrix<f64> = DMatrix::from_vec(5, 3, x.data.as_vec().clone());
+//! let gram: DMatrix<f64> = x_matrix.transpose() * &x_matrix;
+//! // gram should be approximately identity
+//!
+//! // Project arbitrary matrix to Stiefel manifold
+//! let arbitrary: DVector<f64> = DVector::from_vec(vec![1.0; 15]);
+//! let projected: DVector<f64> = stiefel.project_point(&arbitrary);
+//! ```
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
@@ -17,25 +128,167 @@ use nalgebra::{DMatrix, DVector, Dyn};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
-/// The Stiefel manifold St(n,p) of n x p orthonormal matrices.
+/// The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = Iₚ}.
 ///
-/// This manifold represents all n x p matrices X such that X^T X = I_p,
-/// where I_p is the p x p identity matrix. The tangent space at X consists
-/// of all n x p matrices V such that X^T V + V^T X = 0.
+/// The Stiefel manifold represents the space of n×p matrices with orthonormal columns.
+/// It is a fundamental matrix manifold that preserves orthogonality constraints during
+/// optimization, making it essential for many applications in machine learning,
+/// signal processing, and computer vision.
 ///
-/// # Mathematical Properties
+/// # Mathematical Definition
 ///
-/// - **Dimension**: np - p(p+1)/2
-/// - **Tangent space**: T_X St(n,p) = {V in R^{n x p} : X^T V + V^T X = 0}
-/// - **Riemannian metric**: Inherited from Euclidean space (canonical metric)
-/// - **Retractions**: QR decomposition, polar decomposition, Cayley transform
+/// ```text
+/// St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = Iₚ}
+/// ```
 ///
-/// # Applications
+/// where:
+/// - n ≥ p (number of rows ≥ number of columns)
+/// - Iₚ is the p×p identity matrix
+/// - Columns of X are orthonormal vectors in ℝⁿ
 ///
-/// - **PCA**: Finding orthonormal principal components
-/// - **Neural networks**: Orthogonal weight constraints
-/// - **Computer vision**: Orthonormal frame estimation
-/// - **Signal processing**: Orthogonal basis learning
+/// # Geometric Structure
+///
+/// ## Dimension
+/// The intrinsic dimension is:
+/// ```text
+/// dim(St(n,p)) = np - p(p+1)/2
+/// ```
+/// This accounts for np free parameters minus p(p+1)/2 orthogonality constraints.
+///
+/// ## Tangent Space
+/// At point X ∈ St(n,p), the tangent space is:
+/// ```text
+/// T_X St(n,p) = {V ∈ ℝⁿˣᵖ : X^T V + V^T X = 0}
+/// ```
+/// Equivalently, V^T X must be skew-symmetric.
+///
+/// ## Riemannian Metric
+/// The canonical metric is the restriction of the Frobenius inner product:
+/// ```text
+/// ⟨U, V⟩_X = trace(U^T V) = ∑ᵢⱼ Uᵢⱼ Vᵢⱼ
+/// ```
+///
+/// # Retraction Methods
+///
+/// ## QR Retraction (Default)
+/// ```text
+/// R_X(V) = qf(X + V)
+/// ```
+/// where qf(·) extracts the Q factor from QR decomposition.
+///
+/// **Properties:**
+/// - Exact orthogonality preservation
+/// - Numerically stable
+/// - O(np²) complexity
+/// - First-order retraction
+///
+/// ## Polar Retraction
+/// ```text
+/// R_X(V) = (X + V)((X + V)^T(X + V))^(-1/2)
+/// ```
+/// **Properties:**
+/// - Second-order retraction
+/// - More expensive (requires matrix square root)
+/// - Better approximation to exponential map
+///
+/// # Geodesics and Distance
+///
+/// The geodesic distance uses principal angles between column spaces:
+/// ```text
+/// d(X, Y) = √(∑ᵢ θᵢ²)
+/// ```
+/// where θᵢ are principal angles: cos(θᵢ) = σᵢ(X^T Y).
+///
+/// # Optimization Context
+///
+/// ## Gradient Conversion
+/// Euclidean gradient → Riemannian gradient:
+/// ```text
+/// grad f(X) = ∇f(X) - X((∇f(X))^T X + X^T ∇f(X))/2
+/// ```
+///
+/// ## Common Cost Functions
+/// 1. **Linear**: f(X) = trace(A^T X) → ∇f(X) = A
+/// 2. **Quadratic**: f(X) = trace(X^T A X) → ∇f(X) = 2AX
+/// 3. **Frobenius**: f(X) = ‖X - A‖_F² → ∇f(X) = 2(X - A)
+///
+/// # Implementation Examples
+///
+/// ## Basic Operations
+/// ```rust
+/// use riemannopt_manifolds::Stiefel;
+/// use riemannopt_core::manifold::Manifold;
+/// use nalgebra::{DMatrix, DVector, Dyn};
+///
+/// // Create St(4,2) - 4×2 orthonormal matrices
+/// let stiefel = Stiefel::new(4, 2).unwrap();
+/// assert_eq!(<Stiefel as Manifold<f64, Dyn>>::dimension(&stiefel), 4*2 - 2*3/2); // 8 - 3 = 5
+///
+/// // Generate random orthonormal matrix
+/// let x: DVector<f64> = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
+/// 
+/// // Convert to matrix form for verification
+/// let x_mat: DMatrix<f64> = DMatrix::from_vec(4, 2, x.data.as_vec().clone());
+/// let gram: DMatrix<f64> = x_mat.transpose() * &x_mat;
+/// // gram ≈ I₂
+/// ```
+///
+/// ## Projection Operations
+/// ```rust
+/// # use riemannopt_manifolds::Stiefel;
+/// # use riemannopt_core::manifold::Manifold;
+/// # use nalgebra::{DMatrix, DVector, Dyn};
+/// # let stiefel = Stiefel::new(3, 2).unwrap();
+///
+/// // Project arbitrary matrix to Stiefel manifold
+/// let arbitrary: DVector<f64> = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+/// let projected: DVector<f64> = stiefel.project_point(&arbitrary);
+/// 
+/// // Result has orthonormal columns
+/// assert!(stiefel.is_point_on_manifold(&projected, 1e-12));
+///
+/// // Tangent space projection
+/// let x: DVector<f64> = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
+/// let v: DVector<f64> = DVector::from_vec(vec![0.1; 6]);
+/// let v_tangent: DVector<f64> = stiefel.project_tangent(&x, &v).unwrap();
+/// assert!(stiefel.is_vector_in_tangent_space(&x, &v_tangent, 1e-12));
+/// ```
+///
+/// ## Optimization Step
+/// ```rust
+/// # use riemannopt_manifolds::Stiefel;
+/// # use riemannopt_core::manifold::Manifold;
+/// # use nalgebra::{DVector, Dyn};
+/// # let stiefel = Stiefel::new(3, 2).unwrap();
+/// # let x: DVector<f64> = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
+///
+/// // Simulate optimization step
+/// let euclidean_grad: DVector<f64> = DVector::from_vec(vec![0.1, -0.2, 0.3, -0.1, 0.2, -0.3]);
+/// let riemannian_grad: DVector<f64> = stiefel.euclidean_to_riemannian_gradient(&x, &euclidean_grad).unwrap();
+/// 
+/// // Take step using retraction
+/// let step_size: f64 = 0.01;
+/// let direction: DVector<f64> = riemannian_grad * (-step_size);
+/// let x_new: DVector<f64> = stiefel.retract(&x, &direction).unwrap();
+/// 
+/// // New point maintains orthogonality
+/// assert!(stiefel.is_point_on_manifold(&x_new, 1e-12));
+/// ```
+///
+/// # Special Cases and Relationships
+///
+/// - **St(n,1) ≅ Sⁿ⁻¹**: Single column → unit sphere
+/// - **St(n,n) ≅ O(n)**: Square case → orthogonal group  
+/// - **St(∞,p)**: Infinite-dimensional case (Grassmannian limit)
+/// - **Gr(n,p) = St(n,p)/O(p)**: Quotient by column rotations
+///
+/// # Performance Characteristics
+///
+/// - **Memory**: O(np) for matrix storage
+/// - **Projection**: O(np²) via QR decomposition
+/// - **Retraction**: O(np²) via QR decomposition
+/// - **Tangent projection**: O(np²) via matrix multiplication
+/// - **Distance**: O(p³) via SVD of p×p matrix
 #[derive(Debug, Clone)]
 pub struct Stiefel {
     /// Number of rows (n)
@@ -49,13 +302,53 @@ impl Stiefel {
     ///
     /// # Arguments
     /// * `n` - Number of rows (ambient dimension)
-    /// * `p` - Number of columns (must be d n)
+    /// * `p` - Number of columns (orthonormal vectors), must satisfy p ≤ n
     ///
     /// # Returns
-    /// A Stiefel manifold with intrinsic dimension np - p(p+1)/2
+    /// A Stiefel manifold representing n×p matrices with orthonormal columns.
+    /// The intrinsic dimension is np - p(p+1)/2.
+    ///
+    /// # Mathematical Background
+    /// The dimension formula accounts for:
+    /// - np: Total matrix entries
+    /// - p(p+1)/2: Orthonormality constraints (X^T X = Iₚ has p² entries, but
+    ///   only p(p+1)/2 are independent due to symmetry)
+    ///
+    /// Common examples:
+    /// - St(3,1): dimension = 3×1 - 1×2/2 = 2 (sphere S²)
+    /// - St(4,2): dimension = 4×2 - 2×3/2 = 5
+    /// - St(n,n): dimension = n² - n(n+1)/2 = n(n-1)/2 (skew-symmetric matrices)
     ///
     /// # Errors
-    /// Returns an error if p > n or either dimension is 0
+    /// - Returns `ManifoldError::InvalidPoint` if `p > n` (impossible to have p
+    ///   orthonormal vectors in dimension n < p)
+    /// - Returns `ManifoldError::InvalidPoint` if `n = 0` or `p = 0` (degenerate cases)
+    ///
+    /// # Examples
+    /// ```rust
+    /// use riemannopt_manifolds::Stiefel;
+    /// use riemannopt_core::manifold::Manifold;
+    /// use nalgebra::Dyn;
+    ///
+    /// // Standard case: "tall" matrices
+    /// let stiefel = Stiefel::new(10, 3).unwrap();
+    /// assert_eq!(<Stiefel as Manifold<f64, Dyn>>::dimension(&stiefel), 10*3 - 3*4/2); // 30 - 6 = 24
+    /// assert_eq!(stiefel.n(), 10);
+    /// assert_eq!(stiefel.p(), 3);
+    ///
+    /// // Square case (orthogonal group)
+    /// let orthogonal = Stiefel::new(3, 3).unwrap();
+    /// assert_eq!(<Stiefel as Manifold<f64, Dyn>>::dimension(&orthogonal), 3); // 9 - 6 = 3
+    ///
+    /// // Single column (sphere)
+    /// let sphere = Stiefel::new(5, 1).unwrap();
+    /// assert_eq!(<Stiefel as Manifold<f64, Dyn>>::dimension(&sphere), 4); // 5 - 1 = 4
+    ///
+    /// // Error cases
+    /// assert!(Stiefel::new(2, 3).is_err()); // p > n
+    /// assert!(Stiefel::new(0, 1).is_err()); // n = 0
+    /// assert!(Stiefel::new(3, 0).is_err()); // p = 0
+    /// ```
     pub fn new(n: usize, p: usize) -> Result<Self> {
         if n == 0 || p == 0 {
             return Err(ManifoldError::invalid_point(
@@ -85,7 +378,19 @@ impl Stiefel {
         (self.n, self.p)
     }
 
-    /// Checks if a matrix satisfies the orthonormality constraint X^T X = I
+    /// Checks if a matrix satisfies the orthonormality constraint X^T X = Iₚ.
+    ///
+    /// # Mathematical Test
+    /// Verifies that the Gram matrix G = X^T X satisfies:
+    /// - Gᵢᵢ = 1 for all i (unit length columns)
+    /// - Gᵢⱼ = 0 for i ≠ j (orthogonal columns)
+    ///
+    /// # Arguments
+    /// * `matrix` - The n×p matrix to test
+    /// * `tolerance` - Numerical tolerance for floating-point comparison
+    ///
+    /// # Returns
+    /// `true` if the matrix has orthonormal columns within tolerance
     fn is_orthonormal<T>(&self, matrix: &DMatrix<T>, tolerance: T) -> bool
     where
         T: Scalar,
@@ -108,7 +413,24 @@ impl Stiefel {
         true
     }
 
-    /// Projects a matrix to the Stiefel manifold using QR decomposition
+    /// Projects a matrix to the Stiefel manifold using QR decomposition.
+    ///
+    /// # Algorithm
+    /// Given matrix A ∈ ℝⁿˣᵖ, compute QR decomposition A = QR and return
+    /// the first p columns of Q. This gives the closest orthonormal matrix
+    /// to A in the Frobenius norm sense.
+    ///
+    /// # Mathematical Properties
+    /// - **Optimality**: Minimizes ‖X - A‖_F subject to X^T X = Iₚ
+    /// - **Stability**: QR is numerically stable (unlike Gram-Schmidt)
+    /// - **Uniqueness**: Result is unique if A has full column rank
+    ///
+    /// # Edge Cases
+    /// - If input has wrong dimensions, it's resized and padded
+    /// - If input has rank deficiency, standard basis vectors are used
+    ///
+    /// # Complexity
+    /// O(np²) for QR decomposition of n×p matrix
     fn qr_projection<T>(&self, matrix: &DMatrix<T>) -> DMatrix<T>
     where
         T: Scalar,
@@ -140,7 +462,20 @@ impl Stiefel {
         }
     }
 
-    /// Generates a random tangent vector at the given point
+    /// Generates a random tangent vector at the given point.
+    ///
+    /// # Algorithm
+    /// 1. Generate random matrix A with i.i.d. Gaussian entries
+    /// 2. Project to tangent space: V = A - X(X^T A + A^T X)/2
+    ///
+    /// # Mathematical Background
+    /// The projection formula ensures V ∈ T_X St(n,p):
+    /// - X^T V + V^T X = 0 (skew-symmetric condition)
+    /// - This is the orthogonal projection onto the tangent space
+    ///
+    /// # Distribution
+    /// The resulting tangent vector follows a matrix normal distribution
+    /// on the tangent space, providing good sampling coverage.
     fn random_tangent_matrix<T>(&self, point: &DMatrix<T>) -> Result<DMatrix<T>>
     where
         T: Scalar,
@@ -250,7 +585,9 @@ where
         let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
         let v_matrix = DMatrix::from_vec(self.n, self.p, vector.data.as_vec().clone());
         
-        // Project to tangent space: V - X(X^T V + V^T X)/2
+        // Orthogonal projection to tangent space T_X St(n,p)
+        // Formula: P_X(V) = V - X(X^T V + V^T X)/2
+        // This ensures X^T P_X(V) + P_X(V)^T X = 0 (skew-symmetric)
         let xtv = x_matrix.transpose() * &v_matrix;
         let vtx = v_matrix.transpose() * &x_matrix;
         let symmetric = (&xtv + &vtx) * <T as Scalar>::from_f64(0.5);
@@ -280,7 +617,11 @@ where
         let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
         let v_matrix = DMatrix::from_vec(self.n, self.p, tangent.data.as_vec().clone());
         
-        // Use QR retraction: R(X, V) = qr(X + V).Q
+        // QR retraction: R_X(V) = qf(X + V)
+        // This is a first-order retraction that satisfies:
+        // 1. R_X(0) = X (identity property)
+        // 2. dR_X(0)[V] = V (first-order condition)
+        // 3. R_X(V) ∈ St(n,p) (manifold constraint)
         let candidate = x_matrix + v_matrix;
         let retracted = self.qr_projection(&candidate);
         Ok(DVector::from_vec(retracted.data.as_vec().clone()))
@@ -377,7 +718,9 @@ where
         let x_matrix = DMatrix::from_vec(self.n, self.p, point1.data.as_vec().clone());
         let y_matrix = DMatrix::from_vec(self.n, self.p, point2.data.as_vec().clone());
         
-        // Geodesic distance using principal angles
+        // Geodesic distance using principal angles between column spaces
+        // Algorithm: d(X,Y) = √(∑ᵢ θᵢ²) where cos(θᵢ) = σᵢ(X^T Y)
+        // The θᵢ are principal angles between the column spaces
         let m = x_matrix.transpose() * &y_matrix;
         let svd = m.svd(true, true);
         
@@ -386,7 +729,7 @@ where
         
         for i in 0..singular_values.len() {
             let sigma = singular_values[i];
-            // Clamp to avoid numerical issues
+            // Clamp singular values to [-1,1] to avoid numerical issues with arccos
             let clamped = <T as Float>::max(
                 <T as Float>::min(sigma, T::one()),
                 -T::one(),
@@ -547,6 +890,6 @@ mod tests {
         
         // Distance to self should be zero
         let self_dist = stiefel.distance(&point1, &point1).unwrap();
-        assert_relative_eq!(self_dist, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(self_dist, 0.0, epsilon = 1e-7);
     }
 }

@@ -41,6 +41,7 @@ pub mod types;
 pub mod step_size;
 pub mod preconditioner;
 pub mod fisher;
+pub mod parallel;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -89,5 +90,8 @@ pub mod prelude {
         constants, DMatrix, DSquareMatrix, DVector, Dimension, Matrix, SMatrix, SSquareMatrix,
         SVector, Scalar, Vector,
     };
-    // Additional trait re-exports will be added as we implement them
+    pub use crate::parallel::{
+        ParallelBatch, ParallelLineSearch, ParallelSGD, ParallelAverage,
+        PointBatch, TangentBatch,
+    };
 }

@@ -1,24 +1,179 @@
-//! Riemannian Stochastic Gradient Descent (SGD) optimizer.
+//! # Riemannian Stochastic Gradient Descent (SGD)
 //!
-//! This module implements the SGD optimizer adapted for Riemannian manifolds.
-//! SGD is the fundamental optimization algorithm, extended to handle the 
-//! non-Euclidean geometry of manifolds through retraction operations.
+//! This module implements the Stochastic Gradient Descent optimizer adapted for
+//! Riemannian manifolds. SGD is the most fundamental optimization algorithm,
+//! here extended to handle the non-Euclidean geometry of manifolds through
+//! retraction operations and proper handling of the Riemannian metric.
 //!
-//! # Algorithm Overview
+//! ## Mathematical Foundation
 //!
-//! The Riemannian SGD algorithm performs the following steps:
-//! 1. Compute the Euclidean gradient at the current point
-//! 2. Convert to Riemannian gradient using the manifold metric
-//! 3. Take a step in the negative gradient direction using retraction
-//! 4. Apply momentum if enabled
+//! Given a smooth cost function f: ℳ → ℝ on a Riemannian manifold (ℳ, g),
+//! Riemannian SGD iteratively minimizes f by following steepest descent directions
+//! adapted to the manifold geometry.
 //!
-//! # Features
+//! ### Basic Algorithm
+//! For k = 0, 1, 2, ...:
+//! ```text
+//! 1. Compute Riemannian gradient: ξ_k = grad f(x_k)
+//! 2. Choose step size: α_k > 0
+//! 3. Update: x_{k+1} = R_{x_k}(-α_k ξ_k)
+//! ```
+//! where R_{x_k} is a retraction at x_k.
 //!
-//! - **Step size scheduling**: Constant, exponential decay, polynomial decay
-//! - **Momentum methods**: Classical momentum and Nesterov acceleration  
-//! - **Gradient clipping**: Prevents exploding gradients
-//! - **Line search integration**: Optional Armijo/Wolfe line search
-//! - **Batch processing**: Support for mini-batch gradients
+//! ### Momentum Variants
+//!
+//! #### Classical Momentum
+//! ```text
+//! v_0 = 0
+//! v_{k+1} = β v_k + grad f(x_k)
+//! x_{k+1} = R_{x_k}(-α_k v_{k+1})
+//! ```
+//! where β ∈ [0,1) is the momentum coefficient.
+//!
+//! #### Nesterov Acceleration
+//! ```text
+//! v_0 = 0
+//! y_k = R_{x_k}(β v_k)                    # Lookahead step
+//! v_{k+1} = β v_k + grad f(y_k)              # Update momentum
+//! x_{k+1} = R_{x_k}(-α_k v_{k+1})           # Take step
+//! ```
+//!
+//! ## Convergence Theory
+//!
+//! ### Assumptions
+//! - f is continuously differentiable
+//! - f is bounded below: inf f(x) > -∞
+//! - Riemannian gradient is Lipschitz continuous
+//!
+//! ### Convergence Rate
+//! - **Convex functions**: O(1/√k) convergence in function value
+//! - **Strongly convex**: Linear convergence with appropriate step sizes
+//! - **Non-convex**: Convergence to stationary points (||grad f|| → 0)
+//!
+//! ### Step Size Schedules
+//! 1. **Constant**: α_k = α (requires line search for convergence guarantees)
+//! 2. **Diminishing**: α_k = α/(1 + βk) with ∑ α_k = ∞, ∑ α_k² < ∞
+//! 3. **Exponential decay**: α_k = α_0 γ^k with γ ∈ (0,1)
+//!
+//! ## Implementation Features
+//!
+//! ### Core Capabilities
+//! - **Multiple manifolds**: Works with any manifold implementing the Manifold trait
+//! - **Step size scheduling**: Constant, exponential decay, polynomial decay, custom
+//! - **Momentum methods**: None, Classical, Nesterov with proper parallel transport
+//! - **Gradient clipping**: Prevents exploding gradients in unstable regions
+//! - **Line search**: Optional Armijo backtracking for adaptive step sizes
+//!
+//! ### Numerical Considerations
+//! - **Retraction choice**: QR, exponential map, or custom retractions
+//! - **Parallel transport**: Momentum vectors transported between tangent spaces
+//! - **Gradient projection**: Euclidean → Riemannian gradient conversion
+//! - **Numerical stability**: Careful handling of small gradients and step sizes
+//!
+//! ## Practical Applications
+//!
+//! ### Machine Learning
+//! - **Neural networks**: Training with orthogonal weight constraints (Stiefel)
+//! - **Matrix factorization**: Low-rank approximations with manifold constraints
+//! - **Dimensionality reduction**: PCA, ICA on appropriate manifolds
+//!
+//! ### Computer Vision  
+//! - **Structure from motion**: Camera pose optimization (rotation groups)
+//! - **Shape analysis**: Kendall shape spaces, diffeomorphism groups
+//! - **Image registration**: Diffeomorphic registration on appropriate manifolds
+//!
+//! ### Signal Processing
+//! - **Dictionary learning**: Sparse coding with unit norm constraints
+//! - **Blind source separation**: ICA on Stiefel manifolds
+//! - **Beamforming**: Optimization on complex unit spheres
+//!
+//! ## Usage Examples
+//!
+//! ### Basic SGD
+//! ```rust
+//! # use riemannopt_optim::{SGD, SGDConfig};
+//! # use riemannopt_manifolds::Sphere;
+//! # use riemannopt_core::{
+//! #     manifold::Manifold,
+//! #     optimizer::{Optimizer, StoppingCriterion},
+//! #     cost_function::CostFunction,
+//! #     error::Result,
+//! # };
+//! # use nalgebra::DVector;
+//! # 
+//! # fn example() -> Result<()> {
+//! # // Setup test cost function
+//! # #[derive(Debug)]
+//! # struct TestCost;
+//! # impl CostFunction<f64, nalgebra::Dyn> for TestCost {
+//! #     fn cost(&self, x: &DVector<f64>) -> Result<f64> {
+//! #         Ok(x.norm_squared())
+//! #     }
+//! #     fn gradient(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
+//! #         Ok(x * 2.0)
+//! #     }
+//! # }
+//! # let cost_fn = TestCost;
+//! # let x0 = DVector::from_vec(vec![1.0; 10]);
+//! # let stopping_criterion = StoppingCriterion::new().with_max_iterations(100);
+//! #
+//! let manifold = Sphere::new(10).unwrap();
+//! let mut sgd = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
+//!
+//! // Optimize cost function on sphere
+//! let result = sgd.optimize(&cost_fn, &manifold, &x0, &stopping_criterion)?;
+//! # Ok(())
+//! # }
+//! # example().unwrap();
+//! ```
+//!
+//! ### Advanced Configuration
+//! ```rust
+//! use riemannopt_optim::{SGD, SGDConfig, MomentumMethod};
+//!
+//! let sgd = SGD::new(
+//!     SGDConfig::new()
+//!         .with_exponential_decay(0.1, 0.95)     // Initial step 0.1, decay 0.95
+//!         .with_classical_momentum(0.9)           // Momentum coefficient 0.9
+//!         .with_gradient_clip(1.0)                // Clip gradients to norm 1.0
+//!         .with_line_search(20)                   // Armijo line search, 20 max iter
+//! );
+//! ```
+//!
+//! ## Algorithm Variants
+//!
+//! This implementation supports several algorithmic variants:
+//!
+//! ### Vanilla SGD
+//! The basic algorithm without momentum, suitable for:
+//! - Simple optimization problems
+//! - When memory is constrained
+//! - As a baseline for comparison
+//!
+//! ### SGD with Classical Momentum  
+//! Accelerates convergence by accumulating gradient history:
+//! - Faster convergence on smooth objectives
+//! - Helps navigate ravines and plateaus
+//! - Requires careful tuning of momentum coefficient
+//!
+//! ### SGD with Nesterov Acceleration
+//! "Lookahead" variant that often converges faster:
+//! - Theoretically optimal for strongly convex functions
+//! - Better oscillation damping than classical momentum
+//! - More complex implementation but often worth it
+//!
+//! ## Performance Characteristics
+//!
+//! - **Memory**: O(d) where d is manifold ambient dimension
+//! - **Per-iteration cost**: O(d) + cost of retraction and gradient computation
+//! - **Convergence**: Highly dependent on problem conditioning and step size
+//! - **Parallelization**: Easily parallelizable for batch processing
+//!
+//! ## References
+//!
+//! 1. Absil, P.-A., Mahony, R., & Sepulchre, R. (2008). *Optimization Algorithms on Matrix Manifolds*.
+//! 2. Boumal, N. (2023). *An Introduction to Optimization on Smooth Manifolds*.
+//! 3. Sutskever, I., et al. (2013). "On the importance of initialization and momentum in deep learning."
 
 use riemannopt_core::{
     cost_function::CostFunction,
@@ -32,45 +187,155 @@ use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};
 use std::time::Instant;
 
 
-/// Momentum method for SGD.
+/// Momentum method for Riemannian SGD.
+///
+/// Momentum methods accelerate convergence by incorporating information from
+/// previous gradients. On Riemannian manifolds, this requires careful handling
+/// of momentum vectors as they move between different tangent spaces.
+///
+/// # Mathematical Background
+///
+/// In Euclidean space, momentum methods maintain a velocity vector v_k that
+/// accumulates gradient information. On manifolds, these vectors live in 
+/// different tangent spaces and must be transported appropriately.
+///
+/// # Variants
+///
+/// - **None**: Standard gradient descent without momentum
+/// - **Classical**: Heavy ball method with exponential averaging  
+/// - **Nesterov**: Accelerated method with lookahead step
 #[derive(Debug, Clone)]
 pub enum MomentumMethod<T>
 where
     T: Scalar,
 {
-    /// No momentum
+    /// No momentum - pure gradient descent.
+    /// 
+    /// Update rule: x_{k+1} = R_{x_k}(-α_k grad f(x_k))
+    /// 
+    /// **Advantages:**
+    /// - Simple and robust
+    /// - Low memory requirements
+    /// - No hyperparameter tuning
+    /// 
+    /// **Disadvantages:**
+    /// - Slow convergence on ill-conditioned problems
+    /// - Sensitive to step size choice
     None,
     
-    /// Classical momentum: v_k = beta*v_{k-1} + grad_k
+    /// Classical momentum (Heavy Ball method).
+    /// 
+    /// Update rule:
+    /// ```text
+    /// v_{k+1} = β Τ_{x_k}^{x_{k+1}}(v_k) + grad f(x_k)
+    /// x_{k+1} = R_{x_k}(-α_k v_{k+1})
+    /// ```
+    /// where Τ denotes parallel transport and β ∈ [0,1) is the momentum coefficient.
+    /// 
+    /// **Advantages:**
+    /// - Accelerates convergence on smooth objectives
+    /// - Helps escape local plateaus
+    /// - Dampens oscillations in narrow valleys
+    /// 
+    /// **Typical values:** β ∈ [0.8, 0.99]
     Classical {
+        /// Momentum coefficient β ∈ [0,1). Higher values give more momentum.
         coefficient: T,
     },
     
-    /// Nesterov accelerated gradient
+    /// Nesterov Accelerated Gradient (NAG).
+    /// 
+    /// Update rule:
+    /// ```text
+    /// y_k = R_{x_k}(β Τ_{x_{k-1}}^{x_k}(v_k))    # Lookahead
+    /// v_{k+1} = β Τ_{x_k}^{x_{k+1}}(v_k) + grad f(y_k)  # Update momentum
+    /// x_{k+1} = R_{x_k}(-α_k v_{k+1})              # Take step
+    /// ```
+    /// 
+    /// **Advantages:**
+    /// - Theoretically optimal convergence rate for strongly convex functions
+    /// - Better oscillation control than classical momentum
+    /// - Often faster practical convergence
+    /// 
+    /// **Disadvantages:**
+    /// - More complex implementation
+    /// - Requires additional gradient evaluation
+    /// 
+    /// **Typical values:** β ∈ [0.9, 0.99]
     Nesterov {
+        /// Momentum coefficient β ∈ [0,1). Should be close to 1 for best acceleration.
         coefficient: T,
     },
 }
 
-/// Configuration for the SGD optimizer.
+/// Configuration for the Riemannian SGD optimizer.
+///
+/// This struct encapsulates all hyperparameters and options for SGD optimization.
+/// It provides a builder pattern for easy configuration.
+///
+/// # Default Configuration
+/// 
+/// - Step size: Constant 0.01
+/// - Momentum: None
+/// - Gradient clipping: Disabled
+/// - Line search: Disabled
+///
+/// # Examples
+///
+/// ```rust
+/// use riemannopt_optim::{SGDConfig, MomentumMethod};
+/// 
+/// // Basic configuration
+/// let config = SGDConfig::new().with_constant_step_size(0.01);
+/// 
+/// // Advanced configuration
+/// let config = SGDConfig::new()
+///     .with_exponential_decay(0.1, 0.95)
+///     .with_classical_momentum(0.9)
+///     .with_gradient_clip(1.0)
+///     .with_line_search(20);
+/// ```
 #[derive(Debug, Clone)]
 pub struct SGDConfig<T>
 where
     T: Scalar,
 {
-    /// Step size schedule
+    /// Step size schedule controlling how α_k evolves over iterations.
+    /// 
+    /// Common choices:
+    /// - Constant: Good for well-conditioned problems
+    /// - Exponential decay: Ensures convergence guarantees
+    /// - Polynomial decay: Theoretical convergence for non-convex problems
     pub step_size: StepSizeSchedule<T>,
     
-    /// Momentum method
+    /// Momentum method for acceleration.
+    /// 
+    /// Momentum can significantly improve convergence on smooth objectives
+    /// but requires careful tuning of the momentum coefficient.
     pub momentum: MomentumMethod<T>,
     
-    /// Gradient clipping threshold (None = no clipping)
+    /// Gradient clipping threshold to prevent exploding gradients.
+    /// 
+    /// If Some(threshold), gradients with norm > threshold are scaled to
+    /// have norm = threshold. Set to None to disable clipping.
+    /// 
+    /// **Recommended values:** 1.0 to 10.0 for most problems
     pub gradient_clip: Option<T>,
     
-    /// Whether to use line search for step size
+    /// Whether to use line search for adaptive step size selection.
+    /// 
+    /// When enabled, overrides the step size schedule and uses Armijo
+    /// backtracking to find acceptable step sizes automatically.
+    /// 
+    /// **Trade-off:** More function evaluations vs. better step sizes
     pub use_line_search: bool,
     
-    /// Maximum line search iterations
+    /// Maximum iterations for line search procedures.
+    /// 
+    /// Controls the computational budget for finding acceptable step sizes.
+    /// Higher values allow more thorough search but increase per-iteration cost.
+    /// 
+    /// **Typical values:** 10-50 iterations
     pub max_line_search_iterations: usize,
 }
 
@@ -179,34 +444,239 @@ where
 
 /// Riemannian Stochastic Gradient Descent optimizer.
 ///
-/// This optimizer implements SGD adapted for Riemannian manifolds,
-/// with support for various step size schedules, momentum methods,
-/// and gradient clipping.
+/// This optimizer implements SGD adapted for Riemannian manifolds, providing
+/// the foundation for optimization on curved spaces with proper handling of
+/// the manifold geometry through retractions and Riemannian gradients.
 ///
-/// # Mathematical Foundation
+/// # Mathematical Algorithm
 ///
-/// Given a cost function f: M -> R on manifold M, SGD performs:
-/// 
-/// 1. Compute Riemannian gradient: grad_f(x_k)
-/// 2. Update: x_{k+1} = R_{x_k}(-alpha_k * d_k)
-/// 
-/// where R is the retraction operation and d_k is the search direction
-/// (possibly including momentum).
+/// Given a smooth cost function f: ℳ → ℝ on a Riemannian manifold (ℳ, g),
+/// Riemannian SGD performs the following update:
 ///
-/// # Examples
+/// ```text
+/// For k = 0, 1, 2, ...:
+///   1. ξ_k ← grad f(x_k)                    // Riemannian gradient
+///   2. d_k ← ComputeDirection(ξ_k)          // Apply momentum if enabled
+///   3. α_k ← GetStepSize(k)                 // Step size from schedule/line search
+///   4. x_{k+1} ← R_{x_k}(α_k d_k)           // Retraction step
+/// ```
 ///
+/// where:
+/// - grad f(x) is the Riemannian gradient (unique tangent vector satisfying g_x(grad f(x), v) = Df(x)[v])
+/// - R_x: T_xℳ → ℳ is a retraction mapping from tangent space to manifold
+/// - d_k is the search direction (negative gradient plus momentum)
+///
+/// # Convergence Guarantees
+///
+/// Under standard assumptions (Lipschitz gradients, bounded below objective):
+///
+/// ## Convex Case
+/// With diminishing step sizes ∑ α_k = ∞, ∑ α_k² < ∞:
+/// ```text
+/// min_{0≤j≤k} f(x_j) - f* = O(1/√k)
+/// ```
+///
+/// ## Strongly Convex Case  
+/// With constant or appropriately chosen step sizes:
+/// ```text
+/// f(x_k) - f* = O(ρ^k)
+/// ```
+/// for some ρ ∈ (0,1) (linear convergence).
+///
+/// ## Non-convex Case
+/// With diminishing step sizes:
+/// ```text
+/// lim inf_{k→∞} ||∇f(x_k)|| = 0
+/// ```
+/// (convergence to stationary points).
+///
+/// # Implementation Features
+///
+/// ## Core Capabilities
+/// - **Universal manifold support**: Works with any manifold implementing the Manifold trait
+/// - **Flexible step sizing**: Constant, decay schedules, or adaptive line search
+/// - **Momentum acceleration**: Classical and Nesterov variants with proper parallel transport
+/// - **Numerical robustness**: Gradient clipping and careful handling of edge cases
+///
+/// ## Advanced Features
+/// - **Line search integration**: Armijo backtracking for automatic step size selection
+/// - **Parallel transport**: Proper handling of momentum vectors between tangent spaces
+/// - **Gradient conversion**: Automatic Euclidean → Riemannian gradient transformation
+/// - **Early stopping**: Integration with convergence criteria and stopping conditions
+///
+/// # Usage Patterns
+///
+/// ## Basic Optimization
 /// ```rust
-/// use riemannopt_optim::{SGD, SGDConfig, StepSizeSchedule, MomentumMethod};
-/// 
-/// // Basic SGD with constant step size
-/// let sgd = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
-/// 
-/// // SGD with exponential decay and classical momentum
-/// let sgd_advanced = SGD::new(
+/// # use riemannopt_optim::{SGD, SGDConfig};
+/// # use riemannopt_manifolds::Sphere;
+/// # use riemannopt_core::{
+/// #     optimizer::{Optimizer, StoppingCriterion},
+/// #     cost_function::CostFunction,
+/// #     error::Result,
+/// # };
+/// # use nalgebra::DVector;
+/// # 
+/// # fn example() -> Result<()> {
+/// # // Setup test cost function
+/// # #[derive(Debug)]
+/// # struct TestCost;
+/// # impl CostFunction<f64, nalgebra::Dyn> for TestCost {
+/// #     fn cost(&self, x: &DVector<f64>) -> Result<f64> {
+/// #         Ok(x.norm_squared())
+/// #     }
+/// #     fn gradient(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
+/// #         Ok(x * 2.0)
+/// #     }
+/// # }
+/// # let cost_fn = TestCost;
+/// # let x0 = DVector::from_vec(vec![1.0; 10]);
+/// # let stopping_criterion = StoppingCriterion::new().with_max_iterations(100);
+/// #
+/// let manifold = Sphere::new(10).unwrap();
+/// let mut sgd = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
+///
+/// let result = sgd.optimize(&cost_fn, &manifold, &x0, &stopping_criterion)?;
+/// println!("Converged: {}, Final cost: {}", result.converged, result.value);
+/// # Ok(())
+/// # }
+/// # example().unwrap();
+/// ```
+///
+/// ## Advanced Configuration
+/// ```rust
+/// use riemannopt_optim::{SGD, SGDConfig, MomentumMethod};
+///
+/// let sgd = SGD::new(
 ///     SGDConfig::new()
-///         .with_exponential_decay(0.1, 0.95)
+///         .with_exponential_decay(0.1, 0.95)     // Start at 0.1, decay by 0.95 each iter
+///         .with_classical_momentum(0.9)           // Momentum coefficient 0.9
+///         .with_gradient_clip(1.0)                // Clip gradients to unit norm
+///         .with_line_search(20)                   // Armijo line search, max 20 iters
+/// );
+/// ```
+///
+/// ## Custom Optimization Loop
+/// ```rust
+/// # use riemannopt_optim::{SGD, SGDConfig};
+/// # use riemannopt_manifolds::Sphere;
+/// # use riemannopt_core::{
+/// #     optimizer::{OptimizerState, StoppingCriterion, ConvergenceChecker},
+/// #     cost_function::CostFunction,
+/// #     error::Result,
+/// # };
+/// # use nalgebra::DVector;
+/// # 
+/// # fn example() -> Result<()> {
+/// # // Setup test cost function
+/// # #[derive(Debug)]
+/// # struct TestCost;
+/// # impl CostFunction<f64, nalgebra::Dyn> for TestCost {
+/// #     fn cost(&self, x: &DVector<f64>) -> Result<f64> {
+/// #         Ok(x.norm_squared())
+/// #     }
+/// #     fn gradient(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
+/// #         Ok(x * 2.0)
+/// #     }
+/// # }
+/// # let cost_fn = TestCost;
+/// # let manifold = Sphere::new(10).unwrap();
+/// # let x0 = DVector::from_vec(vec![1.0; 10]);
+/// # let initial_cost = 10.0;
+/// # let stopping_criterion = StoppingCriterion::new().with_max_iterations(10);
+/// #
+/// let mut sgd = SGD::new(SGDConfig::default());
+/// let mut state = OptimizerState::new(x0.clone(), initial_cost);
+///
+/// while ConvergenceChecker::check(&state, &manifold, &stopping_criterion)?.is_none() {
+///     sgd.step(&cost_fn, &manifold, &mut state)?;
+///     println!("Iteration {}: cost = {}", state.iteration, state.value);
+/// }
+/// # Ok(())
+/// # }
+/// # example().unwrap();
+/// ```
+///
+/// # Performance Considerations
+///
+/// ## Computational Complexity
+/// - **Per iteration**: O(d) + O(retraction) + O(gradient evaluation)
+/// - **Memory**: O(d) for momentum vector (if enabled)
+/// - **Function evaluations**: 1 per iteration (+ line search if enabled)
+///
+/// ## Hyperparameter Guidelines
+///
+/// ### Step Size
+/// - Start with 0.01-0.1 for most problems
+/// - Use line search if unsure about appropriate range
+/// - Decay for convergence guarantees in non-convex settings
+///
+/// ### Momentum
+/// - Classical: β ∈ [0.8, 0.95] for most problems
+/// - Nesterov: β ∈ [0.9, 0.99] for smooth objectives
+/// - Disable for very noisy gradients
+///
+/// ### Gradient Clipping
+/// - Threshold 1.0-10.0 for most problems
+/// - Essential for training deep networks on manifolds
+/// - Monitor gradient norms to set appropriate thresholds
+///
+/// # Relationship to Other Optimizers
+///
+/// SGD serves as the foundation for more advanced optimizers:
+/// - **Adam**: Adds adaptive per-parameter step sizes
+/// - **L-BFGS**: Uses second-order information (limited memory)
+/// - **Natural Gradient**: Uses the Fisher information metric
+/// - **Trust Region**: Constrains step size based on model validity
+///
+/// # Examples by Application Domain
+///
+/// ## Machine Learning: Neural Network Training
+/// ```rust
+/// # use riemannopt_optim::{SGD, SGDConfig};
+/// # use riemannopt_manifolds::Stiefel;
+/// // Orthogonal weight constraints on Stiefel manifold
+/// let stiefel = Stiefel::new(784, 128).unwrap();
+/// let sgd = SGD::new(
+///     SGDConfig::new()
+///         .with_constant_step_size(0.001)
 ///         .with_classical_momentum(0.9)
 ///         .with_gradient_clip(1.0)
+/// );
+/// ```
+///
+/// ## Computer Vision: Structure from Motion
+/// ```rust
+/// # use riemannopt_optim::{SGD, SGDConfig};
+/// # // Note: SpecialOrthogonal manifold is not yet implemented
+/// # struct SpecialOrthogonal;
+/// # impl SpecialOrthogonal {
+/// #     fn new(_n: usize) -> Result<Self, &'static str> { Ok(SpecialOrthogonal) }
+/// # }
+/// // Camera rotation optimization on SO(3)
+/// let so3 = SpecialOrthogonal::new(3).unwrap();
+/// let sgd = SGD::new(
+///     SGDConfig::new()
+///         .with_exponential_decay(0.01, 0.99)
+///         .with_line_search(10)
+/// );
+/// ```
+///
+/// ## Signal Processing: Dictionary Learning
+/// ```rust
+/// # use riemannopt_optim::{SGD, SGDConfig};
+/// # use riemannopt_manifolds::Sphere;
+/// # use riemannopt_core::step_size::StepSizeSchedule;
+/// // Unit norm dictionary atoms on sphere
+/// let sphere = Sphere::new(256).unwrap();
+/// let sgd = SGD::new(
+///     SGDConfig::new()
+///         .with_step_size(StepSizeSchedule::PolynomialDecay {
+///             initial: 0.1,
+///             decay_rate: 0.1,
+///             power: 0.5,
+///         })
+///         .with_nesterov_momentum(0.95)
 /// );
 /// ```
 #[derive(Debug)]
@@ -227,7 +697,8 @@ where
     }
     
     /// Creates an SGD optimizer with default configuration.
-    pub fn default() -> Self {
+    /// Creates a new SGD optimizer with default configuration.
+    pub fn with_default_config() -> Self {
         Self::new(SGDConfig::default())
     }
     
@@ -329,6 +800,21 @@ where
     }
     
     /// Clips the gradient if gradient clipping is enabled.
+    ///
+    /// Gradient clipping prevents exploding gradients by scaling down gradients
+    /// that exceed a specified threshold. This is crucial for numerical stability
+    /// in deep learning and optimization with poor conditioning.
+    ///
+    /// # Algorithm
+    /// If ||ξ|| > threshold, then ξ ← ξ * (threshold / ||ξ||)
+    ///
+    /// # Arguments
+    /// * `gradient` - Tangent vector to clip (modified in-place)
+    ///
+    /// # Mathematical Properties
+    /// - Preserves gradient direction: clipped gradient ∝ original gradient
+    /// - Bounded norm: ||ξ_clipped|| ≤ threshold
+    /// - Identity operation when ||ξ|| ≤ threshold
     fn clip_gradient<D>(&self, gradient: &mut TangentVector<T, D>)
     where
         D: Dim,
@@ -343,6 +829,39 @@ where
     }
     
     /// Computes the search direction including momentum if enabled.
+    ///
+    /// The search direction determines the tangent vector along which to move.
+    /// Without momentum, this is simply the negative gradient. With momentum,
+    /// it incorporates information from previous iterations.
+    ///
+    /// # Momentum Implementation Details
+    ///
+    /// ## Classical Momentum
+    /// ```text
+    /// v_k = β * transport(v_{k-1}) + grad f(x_k)
+    /// direction = -v_k
+    /// ```
+    ///
+    /// ## Nesterov Momentum
+    /// ```text
+    /// v_k = β * transport(v_{k-1}) + grad f(x_k)
+    /// direction = -(β * v_k + grad f(x_k))
+    /// ```
+    ///
+    /// # Parallel Transport
+    /// 
+    /// Momentum vectors must be transported between tangent spaces as the
+    /// optimization progresses. This implementation uses tangent space
+    /// projection as an approximation to parallel transport.
+    ///
+    /// # Arguments
+    /// * `gradient` - Current Riemannian gradient ξ_k ∈ T_{x_k}ℳ
+    /// * `sgd_state` - Mutable SGD state containing momentum history
+    /// * `manifold` - Manifold for geometric operations
+    /// * `current_point` - Current point x_k ∈ ℳ
+    ///
+    /// # Returns
+    /// Search direction d_k ∈ T_{x_k}ℳ (typically negative for minimization)
     fn compute_search_direction<D, M>(
         &self,
         gradient: &TangentVector<T, D>,
@@ -460,7 +979,37 @@ where
         Ok(())
     }
     
-    /// Performs line search to find an appropriate step size.
+    /// Performs backtracking line search to find an appropriate step size.
+    ///
+    /// Implements the Armijo condition for sufficient decrease:
+    /// f(R_x(α d)) ≤ f(x) + c_1 α ⟨grad f(x), d⟩
+    ///
+    /// where c_1 ∈ (0, 1) is the Armijo parameter (typically 10^-4).
+    ///
+    /// # Algorithm
+    /// 1. Start with initial step size α_0
+    /// 2. Check Armijo condition
+    /// 3. If failed, reduce α ← ρ * α (typically ρ = 0.5)
+    /// 4. Repeat until condition satisfied or max iterations reached
+    ///
+    /// # Benefits
+    /// - Automatic step size adaptation
+    /// - Convergence guarantees without manual tuning
+    /// - Robust to poor initial step size estimates
+    ///
+    /// # Cost
+    /// - Additional function evaluations (typically 1-5 per iteration)
+    /// - More complex implementation
+    ///
+    /// # Arguments
+    /// * `cost_fn` - Cost function for evaluation
+    /// * `manifold` - Manifold for retraction operations
+    /// * `point` - Current point x_k
+    /// * `direction` - Search direction d_k
+    /// * `current_cost` - Current function value f(x_k)
+    ///
+    /// # Returns
+    /// Step size α_k > 0 satisfying Armijo condition
     fn line_search_step_size<D, C, M>(
         &self,
         cost_fn: &C,
@@ -499,7 +1048,7 @@ where
                 return Ok(step_size);
             }
             
-            step_size = step_size * shrink_factor;
+            step_size *= shrink_factor;
             
             if step_size < T::epsilon() {
                 break;
@@ -508,6 +1057,47 @@ where
         
         // If line search fails, return a small step size
         Ok(<T as Scalar>::from_f64(1e-8))
+    }
+}
+
+// Implementation of the Optimizer trait from core
+impl<T, D> Optimizer<T, D> for SGD<T>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    fn name(&self) -> &str {
+        "Riemannian SGD"
+    }
+
+    fn optimize<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &Point<T, D>,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, D>>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        // Call the concrete optimize method (not a recursive call)
+        SGD::optimize(self, cost_fn, manifold, initial_point, stopping_criterion)
+    }
+
+    fn step<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, D>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+    {
+        // Call the concrete step method (not a recursive call)
+        SGD::step(self, cost_fn, manifold, state)
     }
 }
 
@@ -635,46 +1225,5 @@ mod tests {
         // Should converge, potentially faster than without momentum
         assert!(result.point.norm() < 1e-3);
         assert!(result.iterations <= 500);
-    }
-}
-
-// Implementation of the Optimizer trait from core
-impl<T, D> Optimizer<T, D> for SGD<T>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    fn name(&self) -> &str {
-        "Riemannian SGD"
-    }
-
-    fn optimize<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        initial_point: &Point<T, D>,
-        stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, D>>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Call the concrete optimize method (not a recursive call)
-        SGD::optimize(self, cost_fn, manifold, initial_point, stopping_criterion)
-    }
-
-    fn step<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        state: &mut OptimizerState<T, D>,
-    ) -> Result<()>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Call the concrete step method (not a recursive call)
-        SGD::step(self, cost_fn, manifold, state)
     }
 }
