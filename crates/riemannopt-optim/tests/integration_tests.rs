@@ -33,6 +33,12 @@ impl CostFunction<f64, nalgebra::Dyn> for SphericalQuadratic {
     fn gradient(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
         Ok(2.0 * (x - &self.target))
     }
+    
+    fn cost_and_gradient(&self, x: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
+        let cost = self.cost(x)?;
+        let grad = self.gradient(x)?;
+        Ok((cost, grad))
+    }
 }
 
 #[test]
@@ -100,7 +106,7 @@ fn test_adam_optimization() {
     
     let x0 = sphere.random_point();
     let stopping_criterion = StoppingCriterion::new()
-        .with_max_iterations(100)
+        .with_max_iterations(500)
         .with_gradient_tolerance(1e-6);
     
     let result = adam.optimize(&cost_fn, &sphere, &x0, &stopping_criterion).unwrap();

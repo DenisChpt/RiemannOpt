@@ -323,6 +323,107 @@ impl SPD {
         let candidate = point + symmetric_tangent;
         self.project_to_spd(&candidate)
     }
+
+    /// Computes the matrix logarithm using eigenvalue decomposition.
+    ///
+    /// For a symmetric positive definite matrix A = V D V^T where D is diagonal
+    /// with positive eigenvalues, log(A) = V log(D) V^T.
+    fn matrix_logarithm<T>(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>>
+    where
+        T: Scalar,
+    {
+        // Compute eigenvalue decomposition
+        let eigen = matrix.clone().symmetric_eigen();
+        
+        // Check all eigenvalues are positive
+        let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
+        let epsilon = T::epsilon();
+        
+        for &eigenval in eigen.eigenvalues.iter() {
+            if eigenval <= min_eigenvalue {
+                return Err(ManifoldError::numerical_error(
+                    "Matrix logarithm requires positive eigenvalues"
+                ));
+            }
+        }
+        
+        // Compute log of eigenvalues with numerical stability
+        let log_eigenvals = eigen.eigenvalues.map(|x| {
+            // Clamp eigenvalues to avoid numerical issues
+            let clamped_x = <T as Float>::max(x, epsilon);
+            <T as Float>::ln(clamped_x)
+        });
+        
+        // Reconstruct: log(A) = V * diag(log(λ)) * V^T
+        let log_diag = DMatrix::from_diagonal(&log_eigenvals);
+        let log_matrix = &eigen.eigenvectors * &log_diag * eigen.eigenvectors.transpose();
+        
+        // Ensure the result is symmetric (numerical errors might break symmetry)
+        Ok((log_matrix.clone() + log_matrix.transpose()) * <T as Scalar>::from_f64(0.5))
+    }
+
+    /// Computes the logarithmic map (inverse retraction) for the affine-invariant metric.
+    ///
+    /// The formula is: log_X(Y) = X^{1/2} log(X^{-1/2} Y X^{-1/2}) X^{1/2}
+    fn logarithmic_map<T>(&self, point: &DMatrix<T>, other: &DMatrix<T>) -> Result<DMatrix<T>>
+    where
+        T: Scalar,
+    {
+        // First check if points are close - use first-order approximation for numerical stability
+        let diff = other - point;
+        let diff_norm = diff.norm();
+        let point_norm = point.norm();
+        
+        // If points are very close, use first-order approximation to avoid numerical issues
+        let relative_distance = diff_norm / point_norm;
+        if relative_distance < <T as Scalar>::from_f64(1e-8) {
+            // For very close points, log_X(Y) ≈ Y - X (projected to tangent space)
+            return Ok(self.project_to_tangent(point, &diff));
+        }
+        
+        // Compute X^{1/2} and X^{-1/2}
+        let x_eigen = point.clone().symmetric_eigen();
+        
+        // Check for positive definiteness
+        let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
+        let epsilon = T::epsilon();
+        
+        for &eigenval in x_eigen.eigenvalues.iter() {
+            if eigenval <= min_eigenvalue {
+                return Err(ManifoldError::invalid_point(
+                    "Base point must be positive definite for logarithmic map"
+                ));
+            }
+        }
+        
+        // Compute square root and inverse square root with stability
+        let x_sqrt_eigenvals = x_eigen.eigenvalues.map(|x| {
+            let clamped_x = <T as Float>::max(x, epsilon);
+            <T as Float>::sqrt(clamped_x)
+        });
+        let x_sqrt_inv_eigenvals = x_eigen.eigenvalues.map(|x| {
+            let clamped_x = <T as Float>::max(x, epsilon);
+            T::one() / <T as Float>::sqrt(clamped_x)
+        });
+        
+        let x_sqrt = &x_eigen.eigenvectors * DMatrix::from_diagonal(&x_sqrt_eigenvals) * x_eigen.eigenvectors.transpose();
+        let x_sqrt_inv = &x_eigen.eigenvectors * DMatrix::from_diagonal(&x_sqrt_inv_eigenvals) * x_eigen.eigenvectors.transpose();
+        
+        // Compute X^{-1/2} Y X^{-1/2}
+        let middle = &x_sqrt_inv * other * &x_sqrt_inv;
+        
+        // Ensure middle matrix is symmetric (numerical errors might break symmetry)
+        let symmetric_middle = (middle.clone() + middle.transpose()) * <T as Scalar>::from_f64(0.5);
+        
+        // Compute log of the middle matrix
+        let log_middle = self.matrix_logarithm(&symmetric_middle)?;
+        
+        // Return X^{1/2} log(X^{-1/2} Y X^{-1/2}) X^{1/2}
+        let result = &x_sqrt * &log_middle * &x_sqrt;
+        
+        // Ensure the final result is symmetric
+        Ok((result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5))
+    }
 }
 
 impl<T> Manifold<T, Dyn> for SPD
@@ -496,11 +597,11 @@ where
         let point_matrix = self.vector_to_matrix(point)?;
         let other_matrix = self.vector_to_matrix(other)?;
 
-        // Approximate inverse retraction: V H Q - P
-        let tangent_matrix = other_matrix - &point_matrix;
-        let projected_tangent = self.project_to_tangent(&point_matrix, &tangent_matrix);
+        // Use the proper logarithmic map for affine-invariant metric
+        let tangent_matrix = self.logarithmic_map(&point_matrix, &other_matrix)?;
         
-        Ok(self.matrix_to_vector(&projected_tangent))
+        // The result is already in the tangent space (symmetric matrix)
+        Ok(self.matrix_to_vector(&tangent_matrix))
     }
 
     fn euclidean_to_riemannian_gradient(
@@ -546,19 +647,64 @@ where
     }
 
     fn has_exact_exp_log(&self) -> bool {
-        false // SPD manifold exp/log are computationally expensive
+        true // We now implement exact logarithmic map
     }
 
     fn parallel_transport(
         &self,
-        _from: &DVector<T>,
+        from: &DVector<T>,
         to: &DVector<T>,
         vector: &DVector<T>,
     ) -> Result<DVector<T>> {
-        // Use projection-based parallel transport for simplicity
-        // More sophisticated transport using the Levi-Civita connection
-        // could be implemented but is computationally expensive
-        self.project_tangent(to, vector)
+        let expected_dim = self.n * (self.n + 1) / 2;
+        if from.len() != expected_dim || to.len() != expected_dim || vector.len() != expected_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "All vectors must have correct dimensions",
+                format!("expected: {}", expected_dim),
+            ));
+        }
+
+        let x_matrix = self.vector_to_matrix(from)?;
+        let y_matrix = self.vector_to_matrix(to)?;
+        let v_matrix = self.vector_to_matrix(vector)?;
+
+        // Implement the correct parallel transport for the affine-invariant metric
+        // P_{X→Y}(V) = Y^{1/2} (Y^{-1/2} X Y^{-1/2})^{1/2} X^{-1/2} V X^{-1/2} (Y^{-1/2} X Y^{-1/2})^{1/2} Y^{1/2}
+
+        // Compute Y^{1/2} and Y^{-1/2}
+        let y_eigen = y_matrix.clone().symmetric_eigen();
+        let y_sqrt_eigenvals = y_eigen.eigenvalues.map(|x| <T as Float>::sqrt(x));
+        let y_sqrt_inv_eigenvals = y_eigen.eigenvalues.map(|x| T::one() / <T as Float>::sqrt(x));
+        
+        let y_sqrt = &y_eigen.eigenvectors * DMatrix::from_diagonal(&y_sqrt_eigenvals) * y_eigen.eigenvectors.transpose();
+        let y_sqrt_inv = &y_eigen.eigenvectors * DMatrix::from_diagonal(&y_sqrt_inv_eigenvals) * y_eigen.eigenvectors.transpose();
+
+        // Compute X^{-1/2}
+        let x_eigen = x_matrix.clone().symmetric_eigen();
+        let x_sqrt_inv_eigenvals = x_eigen.eigenvalues.map(|x| T::one() / <T as Float>::sqrt(x));
+        let x_sqrt_inv = &x_eigen.eigenvectors * DMatrix::from_diagonal(&x_sqrt_inv_eigenvals) * x_eigen.eigenvectors.transpose();
+
+        // Compute A = Y^{-1/2} X Y^{-1/2}
+        let a = &y_sqrt_inv * &x_matrix * &y_sqrt_inv;
+
+        // Compute A^{1/2} = (Y^{-1/2} X Y^{-1/2})^{1/2}
+        let a_eigen = a.symmetric_eigen();
+        let a_sqrt_eigenvals = a_eigen.eigenvalues.map(|x| {
+            let clamped_x = <T as Float>::max(x, T::epsilon());
+            <T as Float>::sqrt(clamped_x)
+        });
+        let a_sqrt = &a_eigen.eigenvectors * DMatrix::from_diagonal(&a_sqrt_eigenvals) * a_eigen.eigenvectors.transpose();
+
+        // Compute the transported vector
+        // P_{X→Y}(V) = Y^{1/2} A^{1/2} X^{-1/2} V X^{-1/2} A^{1/2} Y^{1/2}
+        let temp1 = &x_sqrt_inv * &v_matrix * &x_sqrt_inv;
+        let temp2 = &a_sqrt * &temp1 * &a_sqrt;
+        let transported_matrix = &y_sqrt * &temp2 * &y_sqrt;
+
+        // Ensure symmetry of the result
+        let symmetric_transported = (&transported_matrix + transported_matrix.transpose()) * <T as Scalar>::from_f64(0.5);
+        
+        Ok(self.matrix_to_vector(&symmetric_transported))
     }
 
     fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
@@ -815,6 +961,87 @@ mod tests {
                 for j in 0..3 {
                     assert_relative_eq!(matrix[(i, j)], reconstructed[(i, j)], epsilon = 1e-10);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_logarithmic_map() {
+        let spd = SPD::new(2).unwrap();
+        
+        // Test 1: log_X(X) should be zero
+        let point = spd.random_point();
+        let log_self = spd.inverse_retract(&point, &point).unwrap();
+        assert_relative_eq!(log_self.norm(), 0.0, epsilon = 1e-10);
+        
+        // Test 2: For nearby points, verify consistency
+        let tangent = spd.random_tangent(&point).unwrap();
+        let small_tangent = tangent * 0.01; // Small step
+        let nearby_point = spd.retract(&point, &small_tangent).unwrap();
+        let log_map = spd.inverse_retract(&point, &nearby_point).unwrap();
+        
+        // Since we use approximate retraction but exact log, they won't match perfectly
+        // But the result should still be in the tangent space
+        assert!(spd.is_vector_in_tangent_space(&point, &log_map, 1e-10));
+        // For very small tangent vectors, the approximation should be quite good
+        let relative_error = (&log_map - &small_tangent).norm() / small_tangent.norm();
+        assert!(relative_error < 0.1, 
+                "For small steps, log map should be close to original tangent, relative error: {}", relative_error);
+        
+        // Test 3: Verify logarithmic map properties
+        let point1 = spd.random_point();
+        let point2 = spd.random_point();
+        
+        // log map should give tangent vector
+        let tangent_vec = spd.inverse_retract(&point1, &point2).unwrap();
+        assert!(spd.is_vector_in_tangent_space(&point1, &tangent_vec, 1e-10));
+        
+        // Test 4: Specific case with known matrices
+        let identity = DMatrix::<f64>::identity(2, 2);
+        let id_vec = spd.matrix_to_vector(&identity);
+        
+        let scaled = &identity * 4.0; // Scale by 4
+        let scaled_vec = spd.matrix_to_vector(&scaled);
+        
+        let log_vec = spd.inverse_retract(&id_vec, &scaled_vec).unwrap();
+        let log_mat = spd.vector_to_matrix(&log_vec).unwrap();
+        
+        // log(4*I) at I should be log(4)*I = ln(4)*I
+        let expected = &identity * f64::ln(4.0);
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_relative_eq!(log_mat[(i, j)], expected[(i, j)], epsilon = 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn test_matrix_logarithm() {
+        let spd = SPD::new(2).unwrap();
+        
+        // Test diagonal matrix
+        let diag = DMatrix::from_vec(2, 2, vec![2.0, 0.0, 0.0, 3.0]);
+        let log_diag = spd.matrix_logarithm(&diag).unwrap();
+        
+        // log of diagonal matrix should be diagonal with log of eigenvalues
+        assert_relative_eq!(log_diag[(0, 0)], f64::ln(2.0), epsilon = 1e-10);
+        assert_relative_eq!(log_diag[(1, 1)], f64::ln(3.0), epsilon = 1e-10);
+        assert_relative_eq!(log_diag[(0, 1)], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(log_diag[(1, 0)], 0.0, epsilon = 1e-10);
+        
+        // Test that exp(log(A)) = A
+        let random_spd = spd.random_spd_matrix::<f64>();
+        let log_matrix = spd.matrix_logarithm(&random_spd).unwrap();
+        
+        // Compute matrix exponential via eigendecomposition
+        let log_eigen = log_matrix.symmetric_eigen();
+        let exp_eigenvals = log_eigen.eigenvalues.map(|x| f64::exp(x));
+        let exp_matrix = &log_eigen.eigenvectors * DMatrix::from_diagonal(&exp_eigenvals) * log_eigen.eigenvectors.transpose();
+        
+        // Should recover original matrix
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_relative_eq!(exp_matrix[(i, j)], random_spd[(i, j)], epsilon = 1e-8);
             }
         }
     }

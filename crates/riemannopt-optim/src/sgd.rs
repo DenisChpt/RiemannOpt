@@ -227,10 +227,11 @@ where
     /// 
     /// Update rule:
     /// ```text
-    /// v_{k+1} = β Τ_{x_k}^{x_{k+1}}(v_k) + grad f(x_k)
+    /// v_{k+1} = β Τ_{x_{k-1}}^{x_k}(v_k) + grad f(x_k)
     /// x_{k+1} = R_{x_k}(-α_k v_{k+1})
     /// ```
-    /// where Τ denotes parallel transport and β ∈ [0,1) is the momentum coefficient.
+    /// where Τ denotes parallel transport from the previous point to the current point,
+    /// and β ∈ [0,1) is the momentum coefficient.
     /// 
     /// **Advantages:**
     /// - Accelerates convergence on smooth objectives
@@ -247,10 +248,10 @@ where
     /// 
     /// Update rule:
     /// ```text
-    /// y_k = R_{x_k}(β Τ_{x_{k-1}}^{x_k}(v_k))    # Lookahead
-    /// v_{k+1} = β Τ_{x_k}^{x_{k+1}}(v_k) + grad f(y_k)  # Update momentum
-    /// x_{k+1} = R_{x_k}(-α_k v_{k+1})              # Take step
+    /// v_{k+1} = β Τ_{x_{k-1}}^{x_k}(v_k) + grad f(x_k)
+    /// x_{k+1} = R_{x_k}(-α_k (β v_{k+1} + grad f(x_k)))
     /// ```
+    /// where Τ denotes parallel transport from the previous point to the current point.
     /// 
     /// **Advantages:**
     /// - Theoretically optimal convergence rate for strongly convex functions
@@ -426,6 +427,9 @@ where
     
     /// Previous gradient for momentum calculation  
     previous_gradient: Option<TangentVector<T, D>>,
+    
+    /// Previous point for parallel transport
+    previous_point: Option<Point<T, D>>,
 }
 
 impl<T, D> SGDState<T, D>
@@ -438,6 +442,7 @@ where
         Self {
             momentum: None,
             previous_gradient: None,
+            previous_point: None,
         }
     }
 }
@@ -851,8 +856,9 @@ where
     /// # Parallel Transport
     /// 
     /// Momentum vectors must be transported between tangent spaces as the
-    /// optimization progresses. This implementation uses tangent space
-    /// projection as an approximation to parallel transport.
+    /// optimization progresses. This implementation uses proper parallel
+    /// transport to move the momentum vector from the previous point to
+    /// the current point, preserving its geometric properties.
     ///
     /// # Arguments
     /// * `gradient` - Current Riemannian gradient ξ_k ∈ T_{x_k}ℳ
@@ -882,12 +888,12 @@ where
             MomentumMethod::Classical { coefficient } => {
                 // Classical momentum: v_k = beta*v_{k-1} + grad_k
                 let direction = if let Some(ref prev_momentum) = sgd_state.momentum {
-                    // Transport previous momentum to current point if needed
-                    let transported_momentum = if let Some(ref _prev_grad) = sgd_state.previous_gradient {
-                        // For simplicity, we use the current tangent space
-                        // In practice, parallel transport could be used for better accuracy
-                        manifold.project_tangent(current_point, prev_momentum)?
+                    // Transport previous momentum to current point using parallel transport
+                    let transported_momentum = if let Some(ref prev_point) = sgd_state.previous_point {
+                        // Use proper parallel transport from previous point to current point
+                        manifold.parallel_transport(prev_point, current_point, prev_momentum)?
                     } else {
+                        // First iteration: no previous point, just use the momentum as-is
                         prev_momentum.clone()
                     };
                     
@@ -904,7 +910,14 @@ where
             MomentumMethod::Nesterov { coefficient } => {
                 // Nesterov momentum: lookahead then gradient step
                 let direction = if let Some(ref prev_momentum) = sgd_state.momentum {
-                    let transported_momentum = manifold.project_tangent(current_point, prev_momentum)?;
+                    // Transport previous momentum to current point using parallel transport
+                    let transported_momentum = if let Some(ref prev_point) = sgd_state.previous_point {
+                        // Use proper parallel transport from previous point to current point
+                        manifold.parallel_transport(prev_point, current_point, prev_momentum)?
+                    } else {
+                        // First iteration: no previous point, just use the momentum as-is
+                        prev_momentum.clone()
+                    };
                     
                     // v_k = beta*v_{k-1} + grad_k
                     let new_momentum = transported_momentum * *coefficient + gradient;
@@ -972,6 +985,9 @@ where
         
         // Evaluate cost at new point
         let new_cost = cost_fn.cost(&new_point)?;
+        
+        // Store the current point as previous point for next iteration
+        sgd_state.previous_point = Some(state.point.clone());
         
         // Update state
         state.update(new_point, new_cost);
