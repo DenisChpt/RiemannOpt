@@ -1291,6 +1291,211 @@ impl PySPD {
         Ok(arr.reshape([shape[0], shape[1]])?)
     }
 
+    /// Check if a point is on the manifold.
+    ///
+    /// Args:
+    ///     point: Point to check
+    ///     tolerance: Tolerance for checking (default: 1e-10)
+    ///
+    /// Returns:
+    ///     True if point is on the manifold
+    pub fn is_point_on_manifold(&self, point: PyReadonlyArray2<'_, f64>, tolerance: Option<f64>) -> PyResult<bool> {
+        let tol = tolerance.unwrap_or(1e-10);
+        let shape = point.shape();
+        
+        // Convert numpy array to nalgebra matrix
+        let mut point_mat = DMatrix::zeros(shape[0], shape[1]);
+        let point_slice = point.as_slice()?;
+        
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                point_mat[(i, j)] = point_slice[i * shape[1] + j];
+            }
+        }
+        
+        // Convert to upper triangular vector
+        let point_vec = self.matrix_to_vector(&point_mat);
+        
+        // Check if on manifold
+        Ok(self.inner.is_point_on_manifold(&point_vec, tol))
+    }
+
+    /// Check if a vector is in the tangent space.
+    ///
+    /// Args:
+    ///     point: Point on the manifold
+    ///     vector: Vector to check
+    ///     tolerance: Tolerance for checking (default: 1e-10)
+    ///
+    /// Returns:
+    ///     True if vector is in tangent space
+    pub fn is_vector_in_tangent_space(
+        &self,
+        point: PyReadonlyArray2<'_, f64>,
+        vector: PyReadonlyArray2<'_, f64>,
+        tolerance: Option<f64>,
+    ) -> PyResult<bool> {
+        let tol = tolerance.unwrap_or(1e-10);
+        let shape = point.shape();
+        
+        // Convert numpy arrays to nalgebra matrices
+        let mut point_mat = DMatrix::zeros(shape[0], shape[1]);
+        let mut vector_mat = DMatrix::zeros(shape[0], shape[1]);
+        let point_slice = point.as_slice()?;
+        let vector_slice = vector.as_slice()?;
+        
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                point_mat[(i, j)] = point_slice[i * shape[1] + j];
+                vector_mat[(i, j)] = vector_slice[i * shape[1] + j];
+            }
+        }
+        
+        // Convert to upper triangular vectors
+        let point_vec = self.matrix_to_vector(&point_mat);
+        let vector_vec = self.matrix_to_vector(&vector_mat);
+        
+        // Check if in tangent space
+        Ok(self.inner.is_vector_in_tangent_space(&point_vec, &vector_vec, tol))
+    }
+
+    /// Compute the Riemannian inner product.
+    ///
+    /// Args:
+    ///     point: Point on the manifold
+    ///     u: First tangent vector
+    ///     v: Second tangent vector
+    ///
+    /// Returns:
+    ///     Inner product value
+    pub fn inner_product(
+        &self,
+        point: PyReadonlyArray2<'_, f64>,
+        u: PyReadonlyArray2<'_, f64>,
+        v: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<f64> {
+        let shape = point.shape();
+        
+        // Convert numpy arrays to nalgebra matrices
+        let mut point_mat = DMatrix::zeros(shape[0], shape[1]);
+        let mut u_mat = DMatrix::zeros(shape[0], shape[1]);
+        let mut v_mat = DMatrix::zeros(shape[0], shape[1]);
+        let point_slice = point.as_slice()?;
+        let u_slice = u.as_slice()?;
+        let v_slice = v.as_slice()?;
+        
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                point_mat[(i, j)] = point_slice[i * shape[1] + j];
+                u_mat[(i, j)] = u_slice[i * shape[1] + j];
+                v_mat[(i, j)] = v_slice[i * shape[1] + j];
+            }
+        }
+        
+        // Convert to upper triangular vectors
+        let point_vec = self.matrix_to_vector(&point_mat);
+        let u_vec = self.matrix_to_vector(&u_mat);
+        let v_vec = self.matrix_to_vector(&v_mat);
+        
+        // Compute inner product
+        self.inner.inner_product(&point_vec, &u_vec, &v_vec)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Compute the Riemannian distance between two points.
+    ///
+    /// Args:
+    ///     point1: First point on the manifold
+    ///     point2: Second point on the manifold
+    ///
+    /// Returns:
+    ///     Riemannian distance
+    pub fn distance(
+        &self,
+        point1: PyReadonlyArray2<'_, f64>,
+        point2: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<f64> {
+        let shape = point1.shape();
+        
+        // Convert numpy arrays to nalgebra matrices
+        let mut point1_mat = DMatrix::zeros(shape[0], shape[1]);
+        let mut point2_mat = DMatrix::zeros(shape[0], shape[1]);
+        let point1_slice = point1.as_slice()?;
+        let point2_slice = point2.as_slice()?;
+        
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                point1_mat[(i, j)] = point1_slice[i * shape[1] + j];
+                point2_mat[(i, j)] = point2_slice[i * shape[1] + j];
+            }
+        }
+        
+        // Convert to upper triangular vectors
+        let point1_vec = self.matrix_to_vector(&point1_mat);
+        let point2_vec = self.matrix_to_vector(&point2_mat);
+        
+        // Compute distance
+        self.inner.distance(&point1_vec, &point2_vec)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Compute the inverse retraction (logarithmic map).
+    ///
+    /// Args:
+    ///     point: Base point on the manifold
+    ///     other: Target point on the manifold
+    ///
+    /// Returns:
+    ///     Tangent vector at point that maps to other
+    pub fn inverse_retract<'py>(
+        &self,
+        py: Python<'py>,
+        point: PyReadonlyArray2<'_, f64>,
+        other: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let shape = point.shape();
+        
+        // Convert numpy arrays to nalgebra matrices
+        let mut point_mat = DMatrix::zeros(shape[0], shape[1]);
+        let mut other_mat = DMatrix::zeros(shape[0], shape[1]);
+        let point_slice = point.as_slice()?;
+        let other_slice = other.as_slice()?;
+        
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                point_mat[(i, j)] = point_slice[i * shape[1] + j];
+                other_mat[(i, j)] = other_slice[i * shape[1] + j];
+            }
+        }
+        
+        // Convert to upper triangular vectors
+        let point_vec = self.matrix_to_vector(&point_mat);
+        let other_vec = self.matrix_to_vector(&other_mat);
+        
+        // Compute inverse retraction
+        let tangent_vec = self.inner.inverse_retract(&point_vec, &other_vec)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        
+        // Convert back to full matrix
+        let tangent_mat = self.vector_to_matrix(&tangent_vec, shape[0]);
+        
+        // Convert to numpy
+        let mut result = Vec::with_capacity(shape[0] * shape[1]);
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                result.push(tangent_mat[(i, j)]);
+            }
+        }
+        
+        let arr = numpy::PyArray1::from_vec_bound(py, result);
+        Ok(arr.reshape([shape[0], shape[1]])?)
+    }
+
+    /// Alias for project method (for compatibility).
+    pub fn project_point<'py>(&self, py: Python<'py>, matrix: PyReadonlyArray2<'_, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        self.project(py, matrix)
+    }
+
     /// Alias for retract method (for compatibility).
     pub fn retraction<'py>(
         &self,

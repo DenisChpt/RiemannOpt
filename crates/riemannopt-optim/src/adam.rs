@@ -9,11 +9,13 @@
 //!
 //! The Riemannian Adam update at iteration t:
 //! 1. Compute Riemannian gradient: g_t = grad f(x_t)
-//! 2. Update biased first moment: m_t = β₁ m_{t-1} + (1-β₁) g_t
-//! 3. Update biased second moment: v_t = β₂ v_{t-1} + (1-β₂) g_t ⊙ g_t
-//! 4. Bias correction: m̂_t = m_t / (1-β₁^t), v̂_t = v_t / (1-β₂^t)
-//! 5. Compute update: u_t = -α m̂_t / (√v̂_t + ε)
-//! 6. Update position: x_{t+1} = R_{x_t}(u_t)
+//! 2. Parallel transport moments: m_{t-1} → Γ(m_{t-1}), v_{t-1} → Γ(√v_{t-1})²
+//! 3. Update biased first moment: m_t = β₁ Γ(m_{t-1}) + (1-β₁) g_t
+//! 4. Update biased second moment: v_t = β₂ Γ(√v_{t-1})² + (1-β₂) g_t ⊙ g_t
+//! 5. Bias correction: m̂_t = m_t / (1-β₁^t), v̂_t = v_t / (1-β₂^t)
+//! 6. Compute update: u_t = -α m̂_t / (√v̂_t + ε)
+//! 7. Project to tangent space: ũ_t = P_{x_t}(u_t)
+//! 8. Update position: x_{t+1} = R_{x_t}(ũ_t)
 //!
 //! # Key Features
 //!
@@ -361,22 +363,63 @@ where
         let grad_norm = gradient.norm();
         state.set_gradient(gradient.clone(), grad_norm);
         
-        // Transport previous moments to current tangent space if needed
-        if state.iteration > 0 {
-            // For efficiency, we assume moments are already in current tangent space
-            // In practice, parallel transport might be needed for non-flat manifolds
-            adam_state.first_moment = manifold.project_tangent(&state.point, &adam_state.first_moment)?;
-            adam_state.second_moment = manifold.project_tangent(&state.point, &adam_state.second_moment)?;
+        // Transport previous moments to current tangent space
+        // This is crucial for maintaining correct geometry across iterations
+        if state.iteration > 0 && state.previous_point.is_some() {
+            let prev_point = state.previous_point.as_ref().unwrap();
+            
+            // Parallel transport first moment from previous to current point
+            adam_state.first_moment = manifold.parallel_transport(
+                prev_point,
+                &state.point,
+                &adam_state.first_moment
+            )?;
+            
+            // For second moment, we transport the square root to preserve positive definiteness
+            // This follows the approach from "Riemannian Adaptive Optimization Methods"
+            let mut sqrt_second_moment = adam_state.second_moment.clone();
+            for i in 0..sqrt_second_moment.len() {
+                sqrt_second_moment[i] = <T as Float>::sqrt(sqrt_second_moment[i]);
+            }
+            sqrt_second_moment = manifold.parallel_transport(
+                prev_point,
+                &state.point,
+                &sqrt_second_moment
+            )?;
+            
+            // Square the transported values
+            for i in 0..adam_state.second_moment.len() {
+                adam_state.second_moment[i] = sqrt_second_moment[i] * sqrt_second_moment[i];
+            }
+            
+            // Transport max moment for AMSGrad
             if let Some(ref mut max_moment) = adam_state.max_second_moment {
-                *max_moment = manifold.project_tangent(&state.point, max_moment)?;
+                let mut sqrt_max_moment = max_moment.clone();
+                for i in 0..sqrt_max_moment.len() {
+                    sqrt_max_moment[i] = <T as Float>::sqrt(sqrt_max_moment[i]);
+                }
+                sqrt_max_moment = manifold.parallel_transport(
+                    prev_point,
+                    &state.point,
+                    &sqrt_max_moment
+                )?;
+                for i in 0..max_moment.len() {
+                    (*max_moment)[i] = sqrt_max_moment[i] * sqrt_max_moment[i];
+                }
             }
         }
         
-        // Update biased first moment estimate
+        // Update biased first moment estimate (momentum)
         adam_state.first_moment = &adam_state.first_moment * self.config.beta1 
             + &gradient * (T::one() - self.config.beta1);
         
-        // Update biased second moment estimate (element-wise square)
+        // Update biased second moment estimate
+        // Use component-wise squaring as in standard Adam
+        // The key Riemannian adaptation is in the parallel transport, not here
+        // TODO: Future work could explore using the Riemannian metric for second moment
+        // computation, e.g., v_t = β₂ v_{t-1} + (1-β₂) diag(G(x_t)^{1/2} g_t g_t^T G(x_t)^{1/2})
+        // where G(x_t) is the metric tensor at x_t. However, this is computationally expensive
+        // and the benefit over the current approach (with proper parallel transport) is unclear.
         let gradient_squared = gradient.component_mul(&gradient);
         adam_state.second_moment = &adam_state.second_moment * self.config.beta2 
             + &gradient_squared * (T::one() - self.config.beta2);
@@ -408,6 +451,9 @@ where
         
         // Scale by learning rate
         direction *= self.config.learning_rate;
+        
+        // Project direction to ensure it's in the tangent space
+        direction = manifold.project_tangent(&state.point, &direction)?;
         
         // Update position on manifold
         let new_point = manifold.retract(&state.point, &direction)?;
