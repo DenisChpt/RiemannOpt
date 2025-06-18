@@ -277,7 +277,11 @@ class TestStiefelRetraction:
         
         # Check that error decreases faster than linearly
         for i in range(len(errors) - 1):
-            assert errors[i+1] / errors[i] < 150  # Roughly quadratic
+            if errors[i] > 1e-15:  # Avoid division by zero
+                assert errors[i+1] / errors[i] < 150  # Roughly quadratic
+            else:
+                # If error is essentially zero, just check the next one is small too
+                assert errors[i+1] < 1e-10
 
 
 class TestStiefelRandomGeneration:

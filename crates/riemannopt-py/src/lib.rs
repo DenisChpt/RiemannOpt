@@ -33,12 +33,14 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEuclidean>()?;
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
+    m.add_class::<PyProductManifold>()?;
     
     // Add optimizer classes
     m.add_class::<PySGD>()?;
     m.add_class::<PyAdam>()?;
     m.add_class::<PyLBFGS>()?;
     m.add_class::<PyConjugateGradient>()?;
+    m.add_class::<PyTrustRegion>()?;
     
     // Add cost function class
     m.add_class::<PyCostFunction>()?;
@@ -72,6 +74,7 @@ fn init_manifolds_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEuclidean>()?;
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
+    m.add_class::<PyProductManifold>()?;
     Ok(())
 }
 
@@ -81,5 +84,6 @@ fn init_optimizers_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAdam>()?;
     m.add_class::<PyLBFGS>()?;
     m.add_class::<PyConjugateGradient>()?;
+    m.add_class::<PyTrustRegion>()?;
     Ok(())
 }
