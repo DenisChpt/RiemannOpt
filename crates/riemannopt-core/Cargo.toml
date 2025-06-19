@@ -85,3 +85,6 @@ name = "cached_optimization"
 
 [[example]]
 name = "backend_selection"
+
+[[example]]
+name = "specialized_ops"
