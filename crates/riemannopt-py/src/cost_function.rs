@@ -6,7 +6,13 @@
 use numpy::{PyArray1, PyReadonlyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
-use nalgebra::DVector;
+use nalgebra::{DVector, Dyn};
+
+use riemannopt_core::{
+    cost_function::CostFunction,
+    error::Result,
+    manifold::{Point, TangentVector},
+};
 
 /// Python cost function wrapper.
 ///
@@ -144,6 +150,72 @@ def g(x):
     let g = globals.get_item("g")?.unwrap().to_object(py);
     
     Ok(PyCostFunction::new(f, Some(g)))
+}
+
+// Implement Debug trait for PyCostFunction
+impl std::fmt::Debug for PyCostFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyCostFunction")
+            .field("has_gradient", &self.gradient.is_some())
+            .finish()
+    }
+}
+
+// Implement CostFunction trait to bridge Python functions with Rust optimization
+impl CostFunction<f64, Dyn> for PyCostFunction {
+    fn cost(&self, point: &Point<f64, Dyn>) -> Result<f64> {
+        Python::with_gil(|py| {
+            let np_point = numpy::PyArray1::from_slice_bound(py, point.as_slice());
+            let value = self.function.call1(py, (np_point.to_object(py),))
+                .map_err(|e| riemannopt_core::error::ManifoldError::numerical_error(
+                    format!("Python cost function error: {}", e)
+                ))?
+                .extract::<f64>(py)
+                .map_err(|e| riemannopt_core::error::ManifoldError::numerical_error(
+                    format!("Cost function must return a float: {}", e)
+                ))?;
+            Ok(value)
+        })
+    }
+    
+    fn cost_and_gradient(&self, point: &Point<f64, Dyn>) -> Result<(f64, TangentVector<f64, Dyn>)> {
+        Python::with_gil(|py| {
+            self.value_and_gradient(py, point)
+                .map_err(|e| riemannopt_core::error::ManifoldError::numerical_error(
+                    format!("Python gradient computation error: {}", e)
+                ))
+        })
+    }
+    
+    fn gradient(&self, point: &Point<f64, Dyn>) -> Result<TangentVector<f64, Dyn>> {
+        Python::with_gil(|py| {
+            let np_point = numpy::PyArray1::from_slice_bound(py, point.as_slice());
+            
+            let gradient = if let Some(ref grad_fn) = self.gradient {
+                let grad_result = grad_fn.call1(py, (np_point.to_object(py),))
+                    .map_err(|e| riemannopt_core::error::ManifoldError::numerical_error(
+                        format!("Python gradient function error: {}", e)
+                    ))?;
+                let grad_array = grad_result.extract::<Bound<'_, PyArray1<f64>>>(py)
+                    .map_err(|e| riemannopt_core::error::ManifoldError::numerical_error(
+                        format!("Gradient must return a numpy array: {}", e)
+                    ))?;
+                let grad_readonly = grad_array.readonly();
+                let grad_slice = grad_readonly.as_slice()
+                    .map_err(|e| riemannopt_core::error::ManifoldError::numerical_error(
+                        format!("Failed to read gradient array: {}", e)
+                    ))?;
+                DVector::from_column_slice(grad_slice)
+            } else {
+                self.finite_difference_gradient(py, point)
+                    .map_err(|e| riemannopt_core::error::ManifoldError::numerical_error(
+                        format!("Finite difference gradient error: {}", e)
+                    ))?
+            };
+            
+            Ok(gradient)
+        })
+    }
 }
 
 /// Create a Rosenbrock cost function for testing.

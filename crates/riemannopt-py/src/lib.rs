@@ -7,12 +7,21 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
 mod manifolds;
+mod manifolds_oblique;
+mod manifolds_fixed_rank;
+mod manifolds_psd_cone;
 mod optimizers;
+mod optimizers_newton;
 mod cost_function;
 mod utils;
+mod validation;
 
 use manifolds::*;
+use manifolds_oblique::PyOblique;
+use manifolds_fixed_rank::PyFixedRank;
+use manifolds_psd_cone::PyPSDCone;
 use optimizers::*;
+use optimizers_newton::PyNewton;
 use cost_function::{PyCostFunction, quadratic_cost, rosenbrock_cost};
 use utils::{format_result, validate_point_shape, default_line_search};
 
@@ -34,6 +43,9 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
     m.add_class::<PyProductManifold>()?;
+    m.add_class::<PyOblique>()?;
+    m.add_class::<PyFixedRank>()?;
+    m.add_class::<PyPSDCone>()?;
     
     // Add optimizer classes
     m.add_class::<PySGD>()?;
@@ -41,6 +53,7 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLBFGS>()?;
     m.add_class::<PyConjugateGradient>()?;
     m.add_class::<PyTrustRegion>()?;
+    m.add_class::<PyNewton>()?;
     
     // Add cost function class
     m.add_class::<PyCostFunction>()?;
@@ -75,6 +88,9 @@ fn init_manifolds_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
     m.add_class::<PyProductManifold>()?;
+    m.add_class::<PyOblique>()?;
+    m.add_class::<PyFixedRank>()?;
+    m.add_class::<PyPSDCone>()?;
     Ok(())
 }
 
@@ -85,5 +101,6 @@ fn init_optimizers_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLBFGS>()?;
     m.add_class::<PyConjugateGradient>()?;
     m.add_class::<PyTrustRegion>()?;
+    m.add_class::<PyNewton>()?;
     Ok(())
 }

@@ -24,7 +24,12 @@ use riemannopt_optim::{
 use riemannopt_core::step_size::StepSizeSchedule;
 
 use crate::manifolds::*;
+use crate::manifolds_oblique::PyOblique;
+use crate::manifolds_fixed_rank::PyFixedRank;
+use crate::manifolds_psd_cone::PyPSDCone;
 use crate::cost_function::PyCostFunction;
+#[allow(unused_imports)]
+use crate::validation::*;
 
 // Helper functions for matrix conversion between NumPy and nalgebra
 fn numpy_to_nalgebra_matrix(array: &PyReadonlyArray2<'_, f64>) -> PyResult<DMatrix<f64>> {
@@ -89,13 +94,21 @@ impl PySGD {
     ) -> PyResult<Self> {
         // Validate parameters
         if step_size <= 0.0 {
-            return Err(PyValueError::new_err("step_size must be positive"));
+            return Err(PyValueError::new_err(
+                format!("SGD step_size must be positive. Got {}, but step_size > 0 is required \
+                        for gradient descent. Typical values are between 0.001 and 0.1.", step_size)
+            ));
         }
         if momentum < 0.0 || momentum >= 1.0 {
-            return Err(PyValueError::new_err("momentum must be in [0, 1)"));
+            return Err(PyValueError::new_err(
+                format!("SGD momentum must be in [0, 1). Got {}, but momentum should be \
+                        between 0 (no momentum) and 0.999 (high momentum). Common values are 0.9 or 0.99.", momentum)
+            ));
         }
         if max_iterations <= 0 {
-            return Err(PyValueError::new_err("max_iterations must be positive"));
+            return Err(PyValueError::new_err(
+                format!("SGD max_iterations must be positive. Got {}, but at least 1 iteration is required.", max_iterations)
+            ));
         }
         if tolerance <= 0.0 {
             return Err(PyValueError::new_err("tolerance must be positive"));
@@ -147,8 +160,15 @@ impl PySGD {
         // Handle different manifold types
         if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>() {
             // Sphere uses 1D arrays
-            let point_array = point.extract::<PyReadonlyArray1<'_, f64>>()?;
-            let gradient_array = gradient.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let point_array = point.extract::<PyReadonlyArray1<'_, f64>>()
+                .map_err(|_| PyValueError::new_err(
+                    "SGD step error: For Sphere manifold, point must be a 1D numpy array. \
+                     Expected shape (n,) where n is the ambient dimension."
+                ))?;
+            let gradient_array = gradient.extract::<PyReadonlyArray1<'_, f64>>()
+                .map_err(|_| PyValueError::new_err(
+                    "SGD step error: For Sphere manifold, gradient must be a 1D numpy array with same shape as point."
+                ))?;
             
             let point_vec = DVector::from_column_slice(point_array.as_slice()?);
             let gradient_vec = DVector::from_column_slice(gradient_array.as_slice()?);
@@ -242,6 +262,115 @@ impl PySGD {
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 
             Ok(numpy::PyArray1::from_slice_bound(py, new_point.as_slice()).into())
+        } else if let Ok(oblique) = manifold.extract::<PyRef<PyOblique>>() {
+            // Oblique uses 2D arrays (matrices)
+            let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let gradient_array = gradient.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = point_array.shape();
+            
+            // Convert numpy arrays to nalgebra matrices
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let gradient_mat = numpy_to_nalgebra_matrix(&gradient_array)?;
+            
+            // Convert to vectors for Rust API
+            let point_vec = DVector::from_vec(point_mat.as_slice().to_vec());
+            let gradient_vec = DVector::from_vec(gradient_mat.as_slice().to_vec());
+            
+            let riem_grad = oblique.get_inner().euclidean_to_riemannian_gradient(&point_vec, &gradient_vec)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let update = -learning_rate * &riem_grad;
+            let new_point_vec = oblique.get_inner().retract(&point_vec, &update)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            
+            // Convert back to matrix and then to numpy array
+            let new_point_mat = DMatrix::from_vec(shape[0], shape[1], new_point_vec.as_slice().to_vec());
+            matrix_to_numpy_array(py, &new_point_mat, shape)
+        } else if let Ok(fixed_rank) = manifold.extract::<PyRef<PyFixedRank>>() {
+            // Fixed-rank uses 2D arrays (matrices)
+            let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let gradient_array = gradient.extract::<PyReadonlyArray2<'_, f64>>()?;
+            
+            // For Fixed-rank, we need to work with the full matrix representation
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let gradient_mat = numpy_to_nalgebra_matrix(&gradient_array)?;
+            
+            // Convert to FixedRankPoint representation
+            use riemannopt_manifolds::FixedRankPoint;
+            let point_fr = FixedRankPoint::from_matrix(&point_mat, fixed_rank.get_inner().k())
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let gradient_fr = FixedRankPoint::from_matrix(&gradient_mat, fixed_rank.get_inner().k())
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            
+            let point_vec = point_fr.to_vector();
+            let gradient_vec = gradient_fr.to_vector();
+            
+            let riem_grad = fixed_rank.get_inner().euclidean_to_riemannian_gradient(&point_vec, &gradient_vec)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let update = -learning_rate * &riem_grad;
+            let new_point_vec = fixed_rank.get_inner().retract(&point_vec, &update)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            
+            // Convert back to matrix
+            let new_point_fr = FixedRankPoint::<f64>::from_vector(&new_point_vec, 
+                fixed_rank.get_inner().m(), fixed_rank.get_inner().n(), fixed_rank.get_inner().k());
+            let new_point_mat = new_point_fr.to_matrix();
+            
+            let shape = point_array.shape();
+            matrix_to_numpy_array(py, &new_point_mat, shape)
+        } else if let Ok(psd_cone) = manifold.extract::<PyRef<PyPSDCone>>() {
+            // PSD cone uses 2D arrays (matrices)
+            let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let gradient_array = gradient.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = point_array.shape();
+            
+            // Convert numpy arrays to nalgebra matrices
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let gradient_mat = numpy_to_nalgebra_matrix(&gradient_array)?;
+            
+            // Convert to vector form for manifold operations
+            let n = psd_cone.get_inner().n();
+            let dim = n * (n + 1) / 2;
+            let mut point_vec = DVector::zeros(dim);
+            let mut gradient_vec = DVector::zeros(dim);
+            let mut idx = 0;
+            
+            for i in 0..n {
+                for j in i..n {
+                    if i == j {
+                        point_vec[idx] = point_mat[(i, j)];
+                        gradient_vec[idx] = gradient_mat[(i, j)];
+                    } else {
+                        point_vec[idx] = point_mat[(i, j)] * std::f64::consts::SQRT_2;
+                        gradient_vec[idx] = gradient_mat[(i, j)] * std::f64::consts::SQRT_2;
+                    }
+                    idx += 1;
+                }
+            }
+            
+            let riem_grad = psd_cone.get_inner().euclidean_to_riemannian_gradient(&point_vec, &gradient_vec)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let update = -learning_rate * &riem_grad;
+            let new_point_vec = psd_cone.get_inner().retract(&point_vec, &update)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            
+            // Convert back to matrix
+            let mut new_point_mat = DMatrix::zeros(n, n);
+            idx = 0;
+            
+            for i in 0..n {
+                for j in i..n {
+                    if i == j {
+                        new_point_mat[(i, j)] = new_point_vec[idx];
+                    } else {
+                        let val = new_point_vec[idx] / std::f64::consts::SQRT_2;
+                        new_point_mat[(i, j)] = val;
+                        new_point_mat[(j, i)] = val;
+                    }
+                    idx += 1;
+                }
+            }
+            
+            matrix_to_numpy_array(py, &new_point_mat, shape)
         } else {
             Err(PyValueError::new_err("Unsupported manifold type"))
         }

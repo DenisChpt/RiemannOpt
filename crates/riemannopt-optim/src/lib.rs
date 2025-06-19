@@ -39,6 +39,7 @@ pub mod trust_region;
 pub mod conjugate_gradient;
 pub mod natural_gradient;
 pub mod parallel_sgd;
+pub mod newton;
 
 // Re-export main optimizers for convenience
 pub use sgd::{SGD, SGDConfig, MomentumMethod};
@@ -48,6 +49,7 @@ pub use trust_region::{TrustRegion, TrustRegionConfig};
 pub use conjugate_gradient::{ConjugateGradient, CGConfig};
 pub use natural_gradient::{NaturalGradient, NaturalGradientConfig};
 pub use parallel_sgd::ParallelSGDUtils;
+pub use newton::{Newton, NewtonConfig};
 
 // Re-export commonly used items from core
 pub use riemannopt_core::{

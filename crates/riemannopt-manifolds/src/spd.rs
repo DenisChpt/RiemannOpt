@@ -14,6 +14,7 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     types::Scalar,
+    numerical_stability::{safe_epsilon, positive_definite_tolerance, regularize_spd, is_finite_matrix},
 };
 use nalgebra::{DMatrix, DVector, Dyn};
 use num_traits::Float;
@@ -177,6 +178,14 @@ impl SPD {
     where
         T: Scalar,
     {
+        // Check for numerical issues first
+        if !is_finite_matrix(matrix) {
+            // Return identity matrix with regularization if input is not finite
+            let mut identity = DMatrix::<T>::identity(self.n, self.n);
+            regularize_spd(&mut identity, <T as Scalar>::from_f64(self.min_eigenvalue));
+            return identity;
+        }
+        
         // Ensure symmetry first
         let symmetric = (matrix + matrix.transpose()) * <T as Scalar>::from_f64(0.5);
         
@@ -185,17 +194,25 @@ impl SPD {
         let mut eigenvalues = eigen.eigenvalues.clone();
         let eigenvectors = eigen.eigenvectors;
 
-        // Clamp eigenvalues to ensure positive definiteness
+        // Clamp eigenvalues to ensure positive definiteness with numerical stability
         let min_eval = <T as Scalar>::from_f64(self.min_eigenvalue);
+        let tolerance = <T as Scalar>::from_f64(positive_definite_tolerance::<f64>());
+        
         for i in 0..eigenvalues.len() {
             if eigenvalues[i] < min_eval {
-                eigenvalues[i] = min_eval;
+                eigenvalues[i] = min_eval + tolerance;
+            } else if !eigenvalues[i].is_finite() {
+                // Handle non-finite eigenvalues
+                eigenvalues[i] = min_eval + tolerance;
             }
         }
 
         // Reconstruct matrix: P = V * diag(lambda) * V^T
         let lambda_matrix = DMatrix::from_diagonal(&eigenvalues);
-        &eigenvectors * &lambda_matrix * eigenvectors.transpose()
+        let result = &eigenvectors * &lambda_matrix * eigenvectors.transpose();
+        
+        // Final symmetry enforcement to handle numerical errors
+        (result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5)
     }
 
     /// Checks if a matrix is symmetric positive definite.
@@ -207,20 +224,27 @@ impl SPD {
             return false;
         }
 
-        // Check symmetry
+        // Check for finite values first
+        if !is_finite_matrix(matrix) {
+            return false;
+        }
+
+        // Check symmetry with numerical tolerance
+        let sym_tolerance = <T as Float>::max(tolerance, <T as Scalar>::from_f64(safe_epsilon::<f64>()));
         for i in 0..self.n {
             for j in 0..self.n {
-                if <T as Float>::abs(matrix[(i, j)] - matrix[(j, i)]) > tolerance {
+                if <T as Float>::abs(matrix[(i, j)] - matrix[(j, i)]) > sym_tolerance {
                     return false;
                 }
             }
         }
 
-        // Check positive definiteness via Cholesky decomposition
-        match matrix.clone().cholesky() {
-            Some(_) => true,
-            None => false,
-        }
+        // Check positive definiteness via eigenvalues for more robust check
+        let eigen = matrix.clone().symmetric_eigen();
+        let min_eigenvalue = <T as Scalar>::from_f64(positive_definite_tolerance::<f64>());
+        
+        // All eigenvalues must be positive and finite
+        eigen.eigenvalues.iter().all(|&eval| eval > min_eigenvalue && eval.is_finite())
     }
 
     /// Computes the affine-invariant distance between two SPD matrices.
@@ -233,7 +257,18 @@ impl SPD {
         // Compute P^{-1/2}
         let p_eigen = p.clone().symmetric_eigen();
         let p_sqrt_inv = {
-            let sqrt_inv_eigenvals = p_eigen.eigenvalues.map(|x| T::one() / <T as Float>::sqrt(x));
+            let sqrt_inv_eigenvals = p_eigen.eigenvalues.map(|x| {
+                // Safe square root handling
+                if x < T::zero() && x > -T::epsilon() {
+                    // Small negative value due to rounding, treat as zero
+                    T::zero()
+                } else if x <= T::zero() {
+                    // Actual negative value, should not happen for SPD
+                    T::zero()
+                } else {
+                    T::one() / <T as Float>::sqrt(x)
+                }
+            });
             &p_eigen.eigenvectors * DMatrix::from_diagonal(&sqrt_inv_eigenvals) * p_eigen.eigenvectors.transpose()
         };
 
@@ -242,10 +277,13 @@ impl SPD {
 
         // Compute matrix logarithm via eigendecomposition
         let middle_eigen = middle.symmetric_eigen();
-        // Ensure eigenvalues are positive before taking logarithm
+        // Use safe logarithm for numerical stability
         let log_eigenvals = middle_eigen.eigenvalues.map(|x| {
-            let clamped_x = <T as Float>::max(x, T::epsilon());
-            <T as Float>::ln(clamped_x)
+            if x <= T::zero() {
+                <T as Scalar>::from_f64(-50.0) // Large negative value for stability
+            } else {
+                <T as Float>::ln(x)
+            }
         });
         let log_middle = &middle_eigen.eigenvectors * DMatrix::from_diagonal(&log_eigenvals) * middle_eigen.eigenvectors.transpose();
 
@@ -320,7 +358,14 @@ impl SPD {
         // For efficiency, use simple retraction: P + V + V^T (if V not symmetric)
         // Then project to SPD
         let symmetric_tangent = self.project_to_tangent(point, tangent);
-        let candidate = point + symmetric_tangent;
+        let mut candidate = point + symmetric_tangent;
+        
+        // Ensure numerical stability: if candidate is not finite, add regularization
+        if !is_finite_matrix(&candidate) {
+            candidate = point.clone();
+            regularize_spd(&mut candidate, <T as Scalar>::from_f64(safe_epsilon::<f64>()));
+        }
+        
         self.project_to_spd(&candidate)
     }
 
@@ -337,7 +382,7 @@ impl SPD {
         
         // Check all eigenvalues are positive
         let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
-        let epsilon = T::epsilon();
+        let _epsilon = T::epsilon();
         
         for &eigenval in eigen.eigenvalues.iter() {
             if eigenval <= min_eigenvalue {
@@ -349,9 +394,12 @@ impl SPD {
         
         // Compute log of eigenvalues with numerical stability
         let log_eigenvals = eigen.eigenvalues.map(|x| {
-            // Clamp eigenvalues to avoid numerical issues
-            let clamped_x = <T as Float>::max(x, epsilon);
-            <T as Float>::ln(clamped_x)
+            // Use safe logarithm to handle edge cases
+            if x <= T::zero() {
+                <T as Scalar>::from_f64(-50.0) // Large negative value for stability
+            } else {
+                <T as Float>::ln(x)
+            }
         });
         
         // Reconstruct: log(A) = V * diag(log(λ)) * V^T
@@ -386,7 +434,7 @@ impl SPD {
         
         // Check for positive definiteness
         let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
-        let epsilon = T::epsilon();
+        let _epsilon = T::epsilon();
         
         for &eigenval in x_eigen.eigenvalues.iter() {
             if eigenval <= min_eigenvalue {
@@ -398,12 +446,22 @@ impl SPD {
         
         // Compute square root and inverse square root with stability
         let x_sqrt_eigenvals = x_eigen.eigenvalues.map(|x| {
-            let clamped_x = <T as Float>::max(x, epsilon);
-            <T as Float>::sqrt(clamped_x)
+            if x < T::zero() && x > -T::epsilon() {
+                T::zero()
+            } else if x <= T::zero() {
+                T::zero()
+            } else {
+                <T as Float>::sqrt(x)
+            }
         });
         let x_sqrt_inv_eigenvals = x_eigen.eigenvalues.map(|x| {
-            let clamped_x = <T as Float>::max(x, epsilon);
-            T::one() / <T as Float>::sqrt(clamped_x)
+            if x < T::zero() && x > -T::epsilon() {
+                T::zero()
+            } else if x <= T::zero() {
+                T::zero()
+            } else {
+                T::one() / <T as Float>::sqrt(x)
+            }
         });
         
         let x_sqrt = &x_eigen.eigenvectors * DMatrix::from_diagonal(&x_sqrt_eigenvals) * x_eigen.eigenvectors.transpose();
@@ -576,8 +634,38 @@ where
         let point_matrix = self.vector_to_matrix(point)?;
         let tangent_matrix = self.vector_to_matrix(tangent)?;
 
+        // Check for numerical issues in input
+        if !is_finite_matrix(&point_matrix) {
+            return Err(ManifoldError::numerical_error("Point matrix contains non-finite values"));
+        }
+        if !is_finite_matrix(&tangent_matrix) {
+            return Err(ManifoldError::numerical_error("Tangent matrix contains non-finite values"));
+        }
+
         // Use exponential map retraction
-        let retracted_matrix = self.exponential_map(&point_matrix, &tangent_matrix);
+        let mut retracted_matrix = self.exponential_map(&point_matrix, &tangent_matrix);
+        
+        // Check for numerical issues in result
+        if !is_finite_matrix(&retracted_matrix) {
+            // Fallback: use simple retraction with regularization
+            retracted_matrix = &point_matrix + &tangent_matrix;
+            regularize_spd(&mut retracted_matrix, <T as Scalar>::from_f64(positive_definite_tolerance::<f64>()));
+            retracted_matrix = self.project_to_spd(&retracted_matrix);
+        }
+        
+        // Ensure positive definiteness with stability check
+        let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
+        let tolerance = <T as Scalar>::from_f64(positive_definite_tolerance::<f64>());
+        
+        // Check if the matrix is sufficiently positive definite
+        let eigen = retracted_matrix.clone().symmetric_eigen();
+        let min_eval = eigen.eigenvalues.min();
+        
+        if min_eval < min_eigenvalue {
+            // Regularize to ensure numerical stability
+            regularize_spd(&mut retracted_matrix, min_eigenvalue - min_eval + tolerance);
+        }
+        
         Ok(self.matrix_to_vector(&retracted_matrix))
     }
 
@@ -673,15 +761,39 @@ where
 
         // Compute Y^{1/2} and Y^{-1/2}
         let y_eigen = y_matrix.clone().symmetric_eigen();
-        let y_sqrt_eigenvals = y_eigen.eigenvalues.map(|x| <T as Float>::sqrt(x));
-        let y_sqrt_inv_eigenvals = y_eigen.eigenvalues.map(|x| T::one() / <T as Float>::sqrt(x));
+        let y_sqrt_eigenvals = y_eigen.eigenvalues.map(|x| {
+            if x < T::zero() && x > -T::epsilon() {
+                T::zero()
+            } else if x <= T::zero() {
+                T::zero()
+            } else {
+                <T as Float>::sqrt(x)
+            }
+        });
+        let y_sqrt_inv_eigenvals = y_eigen.eigenvalues.map(|x| {
+            if x < T::zero() && x > -T::epsilon() {
+                T::zero()
+            } else if x <= T::zero() {
+                T::zero()
+            } else {
+                T::one() / <T as Float>::sqrt(x)
+            }
+        });
         
         let y_sqrt = &y_eigen.eigenvectors * DMatrix::from_diagonal(&y_sqrt_eigenvals) * y_eigen.eigenvectors.transpose();
         let y_sqrt_inv = &y_eigen.eigenvectors * DMatrix::from_diagonal(&y_sqrt_inv_eigenvals) * y_eigen.eigenvectors.transpose();
 
         // Compute X^{-1/2}
         let x_eigen = x_matrix.clone().symmetric_eigen();
-        let x_sqrt_inv_eigenvals = x_eigen.eigenvalues.map(|x| T::one() / <T as Float>::sqrt(x));
+        let x_sqrt_inv_eigenvals = x_eigen.eigenvalues.map(|x| {
+            if x < T::zero() && x > -T::epsilon() {
+                T::zero()
+            } else if x <= T::zero() {
+                T::zero()
+            } else {
+                T::one() / <T as Float>::sqrt(x)
+            }
+        });
         let x_sqrt_inv = &x_eigen.eigenvectors * DMatrix::from_diagonal(&x_sqrt_inv_eigenvals) * x_eigen.eigenvectors.transpose();
 
         // Compute A = Y^{-1/2} X Y^{-1/2}
@@ -690,8 +802,13 @@ where
         // Compute A^{1/2} = (Y^{-1/2} X Y^{-1/2})^{1/2}
         let a_eigen = a.symmetric_eigen();
         let a_sqrt_eigenvals = a_eigen.eigenvalues.map(|x| {
-            let clamped_x = <T as Float>::max(x, T::epsilon());
-            <T as Float>::sqrt(clamped_x)
+            if x < T::zero() && x > -T::epsilon() {
+                T::zero()
+            } else if x <= T::zero() {
+                T::zero()
+            } else {
+                <T as Float>::sqrt(x)
+            }
         });
         let a_sqrt = &a_eigen.eigenvectors * DMatrix::from_diagonal(&a_sqrt_eigenvals) * a_eigen.eigenvectors.transpose();
 
