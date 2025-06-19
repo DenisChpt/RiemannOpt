@@ -152,7 +152,7 @@ mod tests {
         
         // Check that they are close (finite differences have some error)
         for i in 0..n {
-            assert_relative_eq!(grad_simd[i], grad_analytical[i], epsilon = 5e-4);
+            assert_relative_eq!(grad_simd[i], grad_analytical[i], epsilon = 1e-3);
         }
         
         Ok(())

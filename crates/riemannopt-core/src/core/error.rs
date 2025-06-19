@@ -164,6 +164,12 @@ pub enum OptimizerError {
     /// optimization operations.
     #[error("Manifold operation failed: {0}")]
     ManifoldError(#[from] ManifoldError),
+    
+    /// Invalid search direction.
+    ///
+    /// This error occurs when the search direction is not a descent direction.
+    #[error("Invalid search direction: not a descent direction")]
+    InvalidSearchDirection,
 }
 
 impl OptimizerError {
