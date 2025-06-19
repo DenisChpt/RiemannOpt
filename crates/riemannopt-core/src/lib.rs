@@ -33,6 +33,7 @@ pub mod line_search;
 pub mod manifold;
 pub mod metric;
 pub mod numerical_validation;
+pub mod numerical_stability;
 pub mod optimizer;
 pub mod optimizer_state;
 pub mod retraction;

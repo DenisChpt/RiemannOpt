@@ -560,8 +560,8 @@ mod tests {
         let spd = SPD::new(2).unwrap();
         let product = ProductManifold::new(Box::new(sphere), Box::new(spd));
 
-        // Product should have exact exp/log if sphere does but SPD doesn't
-        assert!(!<ProductManifold as Manifold<f64, Dyn>>::has_exact_exp_log(&product)); // SPD doesn't have exact exp/log
+        // Product should have exact exp/log if both sphere and SPD do
+        assert!(<ProductManifold as Manifold<f64, Dyn>>::has_exact_exp_log(&product)); // Both sphere and SPD have exact exp/log
     }
 
     #[test]

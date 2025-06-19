@@ -9,7 +9,7 @@ use pyo3::exceptions::PyValueError;
 use nalgebra::{DVector, DMatrix, Dyn};
 
 use riemannopt_manifolds::{
-    Sphere, Stiefel, Grassmann, SPD, Hyperbolic,
+    Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique,
 };
 use riemannopt_core::manifold::Manifold;
 
@@ -259,13 +259,22 @@ impl PyStiefel {
     #[new]
     pub fn new(n: usize, p: usize) -> PyResult<Self> {
         if p > n {
-            return Err(PyValueError::new_err("p must be less than or equal to n"));
+            return Err(PyValueError::new_err(
+                format!("Stiefel manifold St(n,p) requires p <= n. Got n={}, p={}. \
+                        The Stiefel manifold consists of n×p matrices with orthonormal columns, \
+                        which is only possible when p <= n.", n, p)
+            ));
         }
         if n == 0 || p == 0 {
-            return Err(PyValueError::new_err("Dimensions must be positive"));
+            return Err(PyValueError::new_err(
+                format!("Stiefel manifold dimensions must be positive. Got n={}, p={}. \
+                        Both dimensions must be at least 1.", n, p)
+            ));
         }
         Ok(Self {
-            inner: Stiefel::new(n, p).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            inner: Stiefel::new(n, p).map_err(|e| PyValueError::new_err(
+                format!("Failed to create Stiefel manifold: {}", e)
+            ))?,
         })
     }
 
@@ -556,7 +565,7 @@ impl PyStiefel {
     pub fn parallel_transport<'py>(
         &self,
         py: Python<'py>,
-        from_point: PyReadonlyArray2<'_, f64>,
+        _from_point: PyReadonlyArray2<'_, f64>,
         to_point: PyReadonlyArray2<'_, f64>,
         tangent: PyReadonlyArray2<'_, f64>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
@@ -1034,6 +1043,13 @@ impl PyEuclidean {
     }
 }
 
+impl PyEuclidean {
+    /// Get reference to inner Euclidean
+    pub fn get_inner(&self) -> &SimpleEuclidean {
+        &self.inner
+    }
+}
+
 /// Symmetric Positive Definite manifold SPD(n) in Python.
 ///
 /// The SPD manifold consists of n×n symmetric positive definite matrices.
@@ -1051,8 +1067,16 @@ impl PySPD {
     ///     size: Matrix size (n for n×n matrices)
     #[new]
     pub fn new(size: usize) -> PyResult<Self> {
+        if size == 0 {
+            return Err(PyValueError::new_err(
+                "SPD manifold requires matrix dimension n > 0. \
+                 The SPD(n) manifold represents n×n symmetric positive definite matrices."
+            ));
+        }
         Ok(Self {
-            inner: SPD::new(size).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            inner: SPD::new(size).map_err(|e| PyValueError::new_err(
+                format!("Failed to create SPD({}) manifold: {}", size, e)
+            ))?,
         })
     }
 
@@ -1085,10 +1109,16 @@ impl PySPD {
     ///     Projected matrix on SPD manifold
     pub fn project<'py>(&self, py: Python<'py>, matrix: PyReadonlyArray2<'_, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let shape = matrix.shape();
-        if shape[0] != shape[1] || shape[0] != self.inner.matrix_dimension() {
+        if shape[0] != shape[1] {
             return Err(PyValueError::new_err(format!(
-                "Expected {}x{} matrix, got {}x{}", 
-                self.inner.matrix_dimension(), self.inner.matrix_dimension(), shape[0], shape[1]
+                "SPD manifold requires square matrices. Got {}×{} matrix, but matrices must be square (n×n).", 
+                shape[0], shape[1]
+            )));
+        }
+        if shape[0] != self.inner.matrix_dimension() {
+            return Err(PyValueError::new_err(format!(
+                "Matrix dimension mismatch. This is an SPD({}) manifold which expects {}×{} matrices, but got {}×{} matrix.", 
+                self.inner.matrix_dimension(), self.inner.matrix_dimension(), self.inner.matrix_dimension(), shape[0], shape[1]
             )));
         }
         
@@ -1098,6 +1128,17 @@ impl PySPD {
         for i in 0..shape[0] {
             for j in 0..shape[1] {
                 mat[(i, j)] = slice[i * shape[1] + j];
+            }
+        }
+        
+        // Quick check for NaN or Inf values
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                if !mat[(i, j)].is_finite() {
+                    return Err(PyValueError::new_err(
+                        "Matrix contains NaN or Inf values. SPD matrices must have finite entries."
+                    ));
+                }
             }
         }
         
@@ -1155,7 +1196,10 @@ impl PySPD {
         
         // Retract
         let retracted_vec = self.inner.retract(&point_vec, &tangent_vec)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| PyValueError::new_err(
+                format!("Retraction failed on SPD manifold: {}. \
+                        Make sure the base point is symmetric positive definite and the tangent vector is symmetric.", e)
+            ))?;
         
         // Convert back to full matrix using helper method
         let retracted = self.vector_to_matrix(&retracted_vec, shape[0]);
@@ -1206,7 +1250,10 @@ impl PySPD {
         
         // Project
         let projected_vec = self.inner.project_tangent(&point_vec, &matrix_vec)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| PyValueError::new_err(
+                format!("Tangent projection failed: {}. \
+                        The base point must be a valid SPD matrix (symmetric and positive definite).", e)
+            ))?;
         
         // Convert back to full matrix using helper method
         let projected = self.vector_to_matrix(&projected_vec, shape[0]);
@@ -1274,7 +1321,10 @@ impl PySPD {
         
         // Generate random tangent
         let tangent_vec = self.inner.random_tangent(&point_vec)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| PyValueError::new_err(
+                format!("Failed to generate random tangent vector: {}. \
+                        The base point must be a valid SPD matrix (symmetric and positive definite).", e)
+            ))?;
         
         // Convert back to full matrix using helper method
         let tangent = self.vector_to_matrix(&tangent_vec, shape[0]);
@@ -1299,6 +1349,7 @@ impl PySPD {
     ///
     /// Returns:
     ///     True if point is on the manifold
+    #[pyo3(signature = (point, tolerance=None))]
     pub fn is_point_on_manifold(&self, point: PyReadonlyArray2<'_, f64>, tolerance: Option<f64>) -> PyResult<bool> {
         let tol = tolerance.unwrap_or(1e-10);
         let shape = point.shape();
@@ -1329,6 +1380,7 @@ impl PySPD {
     ///
     /// Returns:
     ///     True if vector is in tangent space
+    #[pyo3(signature = (point, vector, tolerance=None))]
     pub fn is_vector_in_tangent_space(
         &self,
         point: PyReadonlyArray2<'_, f64>,
@@ -1399,7 +1451,10 @@ impl PySPD {
         
         // Compute inner product
         self.inner.inner_product(&point_vec, &u_vec, &v_vec)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(|e| PyValueError::new_err(
+                format!("Inner product computation failed: {}. \
+                        Ensure the base point is SPD and both vectors are symmetric matrices in the tangent space.", e)
+            ))
     }
 
     /// Compute the Riemannian distance between two points.
@@ -1436,7 +1491,10 @@ impl PySPD {
         
         // Compute distance
         self.inner.distance(&point1_vec, &point2_vec)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(|e| PyValueError::new_err(
+                format!("Distance computation failed: {}. \
+                        Both matrices must be symmetric positive definite.", e)
+            ))
     }
 
     /// Compute the inverse retraction (logarithmic map).
@@ -1474,7 +1532,10 @@ impl PySPD {
         
         // Compute inverse retraction
         let tangent_vec = self.inner.inverse_retract(&point_vec, &other_vec)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| PyValueError::new_err(
+                format!("Inverse retraction (logarithm) failed: {}. \
+                        Both matrices must be symmetric positive definite and the computation may fail if they are too far apart.", e)
+            ))?;
         
         // Convert back to full matrix
         let tangent_mat = self.vector_to_matrix(&tangent_vec, shape[0]);
@@ -1504,6 +1565,79 @@ impl PySPD {
         tangent: PyReadonlyArray2<'_, f64>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         self.retract(py, point, tangent)
+    }
+
+    /// Check if a matrix is symmetric positive definite and provide diagnostic information.
+    ///
+    /// Args:
+    ///     matrix: Matrix to check
+    ///
+    /// Returns:
+    ///     A tuple (is_spd, message) where is_spd is True if the matrix is SPD,
+    ///     and message provides diagnostic information if it's not.
+    pub fn check_spd_with_info(&self, matrix: PyReadonlyArray2<'_, f64>) -> PyResult<(bool, String)> {
+        let shape = matrix.shape();
+        
+        // Check if square
+        if shape[0] != shape[1] {
+            return Ok((false, format!("Matrix is not square: {}×{}", shape[0], shape[1])));
+        }
+        
+        // Check dimension
+        if shape[0] != self.inner.matrix_dimension() {
+            return Ok((false, format!(
+                "Wrong dimension: expected {}×{}, got {}×{}", 
+                self.inner.matrix_dimension(), self.inner.matrix_dimension(), shape[0], shape[1]
+            )));
+        }
+        
+        // Convert to nalgebra matrix
+        let mut mat = DMatrix::zeros(shape[0], shape[1]);
+        let slice = matrix.as_slice()?;
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                mat[(i, j)] = slice[i * shape[1] + j];
+            }
+        }
+        
+        // Check for NaN/Inf
+        for i in 0..shape[0] {
+            for j in 0..shape[1] {
+                if !mat[(i, j)].is_finite() {
+                    return Ok((false, format!("Matrix contains non-finite values at position ({}, {})", i, j)));
+                }
+            }
+        }
+        
+        // Check symmetry
+        let mut max_asymmetry = 0.0;
+        for i in 0..shape[0] {
+            for j in i+1..shape[1] {
+                let diff = (mat[(i, j)] - mat[(j, i)]).abs();
+                if diff > max_asymmetry {
+                    max_asymmetry = diff;
+                }
+            }
+        }
+        
+        if max_asymmetry > 1e-10 {
+            return Ok((false, format!("Matrix is not symmetric. Maximum asymmetry: {:.2e}", max_asymmetry)));
+        }
+        
+        // Check positive definiteness using is_point_on_manifold
+        let point_vec = self.matrix_to_vector(&mat);
+        if self.inner.is_point_on_manifold(&point_vec, 1e-10) {
+            Ok((true, "Matrix is symmetric positive definite".to_string()))
+        } else {
+            // Try to compute eigenvalues for more info
+            let eigen = mat.symmetric_eigen();
+            let min_eigenvalue = eigen.eigenvalues.min();
+            if min_eigenvalue <= 0.0 {
+                Ok((false, format!("Matrix is not positive definite. Minimum eigenvalue: {:.2e}", min_eigenvalue)))
+            } else {
+                Ok((false, "Matrix failed SPD check (may have numerical issues)".to_string()))
+            }
+        }
     }
 
     /// String representation.
