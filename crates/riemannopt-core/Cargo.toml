@@ -82,3 +82,6 @@ name = "parallel_optimization"
 
 [[example]]
 name = "cached_optimization"
+
+[[example]]
+name = "backend_selection"
