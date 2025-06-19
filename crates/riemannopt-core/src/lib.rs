@@ -13,53 +13,59 @@
 //!
 //! # Modules
 //!
-//! - [`cost_function`]: Cost function interface for optimization
-//! - [`error`]: Error types for manifold operations
-//! - [`line_search`]: Line search algorithms
-//! - [`manifold`]: Core manifold trait and associated types
-//! - [`metric`]: Riemannian metric traits
-//! - [`optimizer`]: Optimization algorithms framework
-//! - [`optimizer_state`]: State management for optimizers
-//! - [`parallel`]: Parallel computing support with Rayon
-//! - [`retraction`]: Retraction and vector transport methods
-//! - [`simd`]: SIMD-accelerated operations for CPU performance
-//! - [`tangent`]: Tangent space operations
-//! - [`types`]: Type aliases and numerical constants
+//! - [`core`]: Core traits and types (manifold, cost function, error, types)
+//! - [`memory`]: Memory management utilities
+//! - [`compute`]: Computational backends (CPU, specialized)
+//! - [`optimization`]: Optimization algorithms and utilities
+//! - [`numerical`]: Numerical stability and validation
+//! - [`manifold_ops`]: Manifold-specific operations
+//! - [`utils`]: Utility functions and test helpers
+//! - [`config`]: Configuration utilities
+//! - [`profiling`]: Performance profiling
 //! - [`gpu`] (feature-gated): GPU acceleration with CUDA support
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-// Re-export key items
-pub mod cost_function;
-pub mod error;
-pub mod line_search;
-pub mod manifold;
-pub mod metric;
-pub mod numerical_validation;
-pub mod numerical_stability;
-pub mod optimizer;
-pub mod optimizer_state;
-pub mod retraction;
-pub mod tangent;
-pub mod types;
-pub mod step_size;
-pub mod preconditioner;
-pub mod fisher;
-pub mod parallel;
-pub mod parallel_thresholds;
-pub mod simd;
+// Module declarations
+pub mod core;
+pub mod memory;
+pub mod compute;
+pub mod optimization;
+pub mod numerical;
+pub mod manifold_ops;
+pub mod utils;
+pub mod config;
+pub mod profiling;
 
 #[cfg(feature = "cuda")]
 pub mod gpu;
 
-#[cfg(any(test, feature = "test-utils"))]
-pub mod test_utils;
+// Re-export key items from core for backward compatibility
+pub use core::{
+    cost_function, error, manifold, types,
+    ManifoldError, OptimizerError, OptimizerResult, Result,
+};
+
+// Re-export other modules for backward compatibility
+pub use optimization::{
+    line_search, optimizer, optimizer_state, preconditioner, step_size,
+};
+pub use numerical::{
+    stability as numerical_stability,
+    validation as numerical_validation,
+};
+pub use manifold_ops::{
+    fisher, metric, retraction, tangent,
+};
+pub use compute::cpu::{
+    parallel, simd,
+};
+pub use utils::{
+    parallel_thresholds,
+};
 
 #[cfg(any(test, feature = "test-utils"))]
-pub mod test_manifolds;
-
-// Re-export commonly used items at the crate root
-pub use error::{ManifoldError, OptimizerError, OptimizerResult, Result};
+pub use utils::{test_manifolds, test_utils};
 
 /// Prelude module for convenient imports.
 ///
@@ -68,47 +74,59 @@ pub use error::{ManifoldError, OptimizerError, OptimizerResult, Result};
 /// use riemannopt_core::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::cost_function::{
+    // Core types
+    pub use crate::core::{
+        // From cost_function
         CostFunction, CountingCostFunction, DerivativeChecker, QuadraticCost,
+        // From error
+        ManifoldError, OptimizerError, OptimizerResult, Result,
+        // From manifold
+        Manifold, Point, TangentVector as TangentVectorType,
+        // From types
+        constants, DMatrix, DSquareMatrix, DVector, Dimension, Matrix, SMatrix, SSquareMatrix,
+        SVector, Scalar, Vector,
     };
-    pub use crate::error::{ManifoldError, OptimizerError, OptimizerResult, Result};
-    pub use crate::line_search::{
+    
+    // Optimization components
+    pub use crate::optimization::{
+        // From line_search
         BacktrackingLineSearch, FixedStepSize, LineSearch, LineSearchParams, LineSearchResult,
         StrongWolfeLineSearch,
-    };
-    pub use crate::manifold::{Manifold, Point, TangentVector as TangentVectorType};
-    pub use crate::metric::{
-        CanonicalMetric, ChristoffelSymbols, MetricTensor, MetricUtils, WeightedMetric,
-    };
-    pub use crate::optimizer::{
+        // From optimizer
         ConvergenceChecker, OptimizationResult, Optimizer, OptimizerState, StoppingCriterion,
         TerminationReason,
-    };
-    pub use crate::optimizer_state::{
+        // From optimizer_state
         AdamState, ConjugateGradientMethod, ConjugateGradientState, LBFGSState, MomentumState,
         OptimizerStateData,
     };
-    pub use crate::retraction::{
+    
+    // Manifold operations
+    pub use crate::manifold_ops::{
+        // From metric
+        CanonicalMetric, ChristoffelSymbols, MetricTensor, MetricUtils, WeightedMetric,
+        // From retraction
         CayleyRetraction, DefaultRetraction, DifferentialRetraction, ExponentialRetraction,
         ParallelTransport, PolarRetraction, ProjectionRetraction, ProjectionTransport,
         QRRetraction, Retraction, RetractionOrder, RetractionVerifier, SchildLadder,
         VectorTransport,
+        // From tangent
+        RiemannianMetric, TangentBundle, TangentSpace, TangentVector,
     };
-    pub use crate::tangent::{RiemannianMetric, TangentBundle, TangentSpace, TangentVector};
-    pub use crate::types::{
-        constants, DMatrix, DSquareMatrix, DVector, Dimension, Matrix, SMatrix, SSquareMatrix,
-        SVector, Scalar, Vector,
-    };
-    pub use crate::parallel::{
+    
+    // Compute components
+    pub use crate::compute::cpu::{
+        // From parallel
         ParallelBatch, ParallelLineSearch, ParallelSGD, ParallelAverage,
         PointBatch, TangentBatch, SimdParallelOps,
+        // From simd
+        SimdOps, SimdVector, SimdVectorOps, SimdMatrixOps,
     };
-    pub use crate::parallel_thresholds::{
+    
+    // Utils
+    pub use crate::utils::{
+        // From parallel_thresholds
         ParallelThresholdsConfig, ParallelThresholdsBuilder, ParallelDecision,
         get_parallel_config, set_parallel_config, ShouldParallelize, DecompositionKind,
-    };
-    pub use crate::simd::{
-        SimdOps, SimdVector, SimdVectorOps, SimdMatrixOps,
     };
     
     #[cfg(feature = "cuda")]
