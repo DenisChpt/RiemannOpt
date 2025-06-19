@@ -6,6 +6,7 @@ pub mod cost_function_workspace;
 pub mod cached_cost_function_dyn;
 pub mod error;
 pub mod manifold;
+pub mod traits;
 pub mod types;
 
 // Re-export core types
