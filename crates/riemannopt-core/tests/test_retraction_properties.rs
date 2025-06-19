@@ -344,7 +344,8 @@ fn test_retraction_local_rigidity() {
     let retraction = DefaultRetraction;
 
     // Test with very small tangent vectors
-    for scale in [1e-6, 1e-8, 1e-10] {
+    // Avoid scales below 1e-8 where numerical precision issues dominate
+    for scale in [1e-4, 1e-6, 1e-8] {
         let tangent = sphere.random_tangent(&point).unwrap();
         let scaled_tangent = tangent * scale;
 
@@ -372,11 +373,11 @@ fn test_retraction_local_rigidity() {
 
         // For small vectors, ratio should be close to 1
         // Allow slightly larger tolerance for numerical stability
-        // At very small scales (< 1e-8), numerical errors dominate
+        // At very small scales (< 1e-6), numerical errors dominate
         let tolerance = if scale < 1e-7 {
-            3.0 // Much larger tolerance for very small scales due to numerical precision
+            1.0 // Larger tolerance for very small scales due to numerical precision
         } else if scale < 1e-5 {
-            0.5 // Moderate tolerance for small scales
+            0.1 // Moderate tolerance for small scales
         } else {
             (scale * 10.0).max(1e-3)
         };

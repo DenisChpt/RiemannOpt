@@ -32,7 +32,7 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
-    optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker, TerminationReason},
     retraction::Retraction,
     types::Scalar,
 };
@@ -556,7 +556,7 @@ where
                     state.value,
                     state.iteration,
                     start_time.elapsed(),
-                    riemannopt_core::optimizer::TerminationReason::Converged,
+                    TerminationReason::Converged,
                 )
                 .with_function_evaluations(state.function_evaluations)
                 .with_gradient_evaluations(state.gradient_evaluations)

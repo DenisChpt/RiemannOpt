@@ -33,7 +33,7 @@ use riemannopt_core::{
     fisher::FisherApproximation,
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point, TangentVector},
-    optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     retraction::Retraction,
     types::Scalar,
 };

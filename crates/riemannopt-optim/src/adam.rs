@@ -34,7 +34,7 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::Result,
     manifold::{Manifold, Point, TangentVector},
-    optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};

@@ -14,6 +14,57 @@ pub type PointBatch<T> = DMatrix<T>;
 /// Type alias for batch of tangent vectors.
 pub type TangentBatch<T> = DMatrix<T>;
 
+/// Configuration for parallel execution.
+#[derive(Debug, Clone)]
+pub struct ParallelConfig {
+    /// Minimum dimension to trigger parallel execution
+    pub min_dimension_for_parallel: usize,
+    /// Number of threads to use (None = use rayon default)
+    pub num_threads: Option<usize>,
+    /// Chunk size for parallel iterations
+    pub chunk_size: Option<usize>,
+}
+
+impl Default for ParallelConfig {
+    fn default() -> Self {
+        Self {
+            min_dimension_for_parallel: 100,
+            num_threads: None,
+            chunk_size: None,
+        }
+    }
+}
+
+impl ParallelConfig {
+    /// Create a new parallel configuration.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    /// Set the minimum dimension for parallel execution.
+    pub fn with_min_dimension(mut self, min_dim: usize) -> Self {
+        self.min_dimension_for_parallel = min_dim;
+        self
+    }
+    
+    /// Set the number of threads.
+    pub fn with_num_threads(mut self, threads: usize) -> Self {
+        self.num_threads = Some(threads);
+        self
+    }
+    
+    /// Set the chunk size for parallel iterations.
+    pub fn with_chunk_size(mut self, size: usize) -> Self {
+        self.chunk_size = Some(size);
+        self
+    }
+    
+    /// Check if parallel execution should be used for given dimension.
+    pub fn should_parallelize(&self, dimension: usize) -> bool {
+        dimension >= self.min_dimension_for_parallel
+    }
+}
+
 /// Parallel batch operations for optimization.
 pub struct ParallelBatch;
 
