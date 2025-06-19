@@ -13,7 +13,8 @@ pub fn project_with_workspace<T, D>(
     _point: &Point<T, D>,
     vector: &TangentVector<T, D>,
     _workspace: &mut Workspace<T>,
-) -> Result<TangentVector<T, D>>
+    result: &mut TangentVector<T, D>,
+) -> Result<()>
 where
     T: Scalar,
     D: Dim,
@@ -21,7 +22,8 @@ where
 {
     // For Euclidean manifold, projection is identity
     // More complex manifolds would use workspace for computation
-    Ok(vector.clone())
+    result.copy_from(vector);
+    Ok(())
 }
 
 /// Project a vector onto the tangent space in-place using workspace.
@@ -43,25 +45,21 @@ where
 /// Compute the orthogonal projection matrix for the tangent space using workspace.
 pub fn projection_matrix_with_workspace<T>(
     point: &DVector<T>,
-    workspace: &mut Workspace<T>,
-) -> Result<crate::types::DMatrix<T>>
+    _workspace: &mut Workspace<T>,
+    proj: &mut crate::types::DMatrix<T>,
+) -> Result<()>
 where
     T: Scalar,
 {
     let n = point.len();
-    let proj = workspace.get_or_create_matrix(BufferId::Custom(1), n, n);
+    assert_eq!(proj.nrows(), n, "Projection matrix must have correct dimensions");
+    assert_eq!(proj.ncols(), n, "Projection matrix must be square");
     
     // For Euclidean space, projection matrix is identity
+    proj.fill(T::zero());
     proj.fill_diagonal(T::one());
-    for i in 0..n {
-        for j in 0..n {
-            if i != j {
-                proj[(i, j)] = T::zero();
-            }
-        }
-    }
     
-    Ok(proj.clone())
+    Ok(())
 }
 
 /// Orthogonalize a set of tangent vectors using workspace (Gram-Schmidt).
@@ -110,7 +108,8 @@ pub fn parallel_transport_with_workspace<T, D>(
     _to_point: &Point<T, D>,
     vector: &TangentVector<T, D>,
     _workspace: &mut Workspace<T>,
-) -> Result<TangentVector<T, D>>
+    result: &mut TangentVector<T, D>,
+) -> Result<()>
 where
     T: Scalar,
     D: Dim,
@@ -118,7 +117,8 @@ where
 {
     // For Euclidean manifold, parallel transport is identity
     // More complex manifolds would use workspace for computation
-    Ok(vector.clone())
+    result.copy_from(vector);
+    Ok(())
 }
 
 /// Extension trait for tangent space operations with workspace.
@@ -134,7 +134,8 @@ where
         point: &Point<T, D>,
         vector: &TangentVector<T, D>,
         workspace: &mut Workspace<T>,
-    ) -> Result<TangentVector<T, D>>;
+        result: &mut TangentVector<T, D>,
+    ) -> Result<()>;
     
     /// Parallel transport with workspace.
     fn parallel_transport_workspace(
@@ -143,7 +144,8 @@ where
         to: &Point<T, D>,
         vector: &TangentVector<T, D>,
         workspace: &mut Workspace<T>,
-    ) -> Result<TangentVector<T, D>>;
+        result: &mut TangentVector<T, D>,
+    ) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -158,7 +160,8 @@ mod tests {
         let vector = DVector::from_element(n, 1.0);
         let mut workspace = Workspace::with_size(n);
         
-        let projected = project_with_workspace(&point, &vector, &mut workspace).unwrap();
+        let mut projected = DVector::<f64>::zeros(n);
+        project_with_workspace(&point, &vector, &mut workspace, &mut projected).unwrap();
         
         // For Euclidean space, projection is identity
         for i in 0..n {
@@ -195,11 +198,13 @@ mod tests {
         let vector = DVector::from_element(n, 2.0);
         let mut workspace = Workspace::with_size(n);
         
-        let transported = parallel_transport_with_workspace(
+        let mut transported = DVector::<f64>::zeros(n);
+        parallel_transport_with_workspace(
             &from_point,
             &to_point,
             &vector,
-            &mut workspace
+            &mut workspace,
+            &mut transported
         ).unwrap();
         
         // For Euclidean space, parallel transport is identity

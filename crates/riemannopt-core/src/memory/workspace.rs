@@ -37,6 +37,7 @@ pub enum BufferId {
 }
 
 /// Pre-allocated workspace for optimization algorithms.
+#[derive(Debug, Clone)]
 pub struct Workspace<T: Scalar> {
     /// Pre-allocated vectors indexed by buffer ID
     vectors: HashMap<BufferId, DVector<T>>,

@@ -224,7 +224,7 @@ where
 }
 
 /// State information for optimization algorithms.
-pub struct OptimizerState<T, D>
+pub struct OptimizerStateLegacy<T, D>
 where
     T: Scalar,
     D: Dim,
@@ -261,7 +261,7 @@ where
     pub start_time: Instant,
 }
 
-impl<T, D> OptimizerState<T, D>
+impl<T, D> OptimizerStateLegacy<T, D>
 where
     T: Scalar,
     D: Dim,
@@ -378,7 +378,7 @@ where
         &mut self,
         cost_fn: &C,
         manifold: &M,
-        state: &mut OptimizerState<T, D>,
+        state: &mut OptimizerStateLegacy<T, D>,
     ) -> Result<()>
     where
         C: crate::cost_function::CostFunction<T, D>,
@@ -401,7 +401,7 @@ impl ConvergenceChecker {
     ///
     /// The termination reason if any criterion is met, otherwise None.
     pub fn check<T, D>(
-        state: &OptimizerState<T, D>,
+        state: &OptimizerStateLegacy<T, D>,
         manifold: &impl Manifold<T, D>,
         criterion: &StoppingCriterion<T>,
     ) -> Result<Option<TerminationReason>>
@@ -473,7 +473,7 @@ impl ConvergenceChecker {
     /// This is a more sophisticated convergence check that requires multiple
     /// criteria to be satisfied simultaneously.
     pub fn check_strict<T, D>(
-        state: &OptimizerState<T, D>,
+        state: &OptimizerStateLegacy<T, D>,
         manifold: &impl Manifold<T, D>,
         criterion: &StoppingCriterion<T>,
         require_gradient: bool,
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn test_optimizer_state() {
         let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let mut state = OptimizerState::new(point.clone(), 1.0);
+        let mut state = OptimizerStateLegacy::new(point.clone(), 1.0);
 
         assert_eq!(state.iteration, 0);
         assert_eq!(state.function_evaluations, 1);
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn test_convergence_checker_iterations() {
         let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let mut state = OptimizerState::<f64, Dyn>::new(point, 1.0);
+        let mut state = OptimizerStateLegacy::<f64, Dyn>::new(point, 1.0);
         state.iteration = 1000;
 
         let criterion = StoppingCriterion::new().with_max_iterations(1000);
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn test_convergence_checker_gradient() {
         let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let mut state = OptimizerState::<f64, Dyn>::new(point.clone(), 1.0);
+        let mut state = OptimizerStateLegacy::<f64, Dyn>::new(point.clone(), 1.0);
         let gradient = DVector::from_vec(vec![1e-7, 0.0, 0.0]);
         state.set_gradient(gradient, 1e-7);
 

@@ -236,7 +236,7 @@ impl<T: Scalar> ParallelLineSearch<T> {
                         return alpha;
                     }
                     
-                    alpha = alpha * self.rho;
+                    alpha *= self.rho;
                 }
                 
                 alpha

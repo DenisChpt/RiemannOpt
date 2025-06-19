@@ -2,7 +2,7 @@
 
 use crate::{
     error::Result,
-    memory::{Workspace, BufferId},
+    memory::Workspace,
     types::Scalar,
 };
 use num_traits::Float;
@@ -13,8 +13,9 @@ use num_traits::Float;
 pub fn gradient_fd_with_workspace<T, F>(
     cost_fn: &F,
     point: &nalgebra::DVector<T>,
-    workspace: &mut Workspace<T>,
-) -> Result<nalgebra::DVector<T>>
+    _workspace: &mut Workspace<T>,
+    gradient: &mut nalgebra::DVector<T>,
+) -> Result<()>
 where
     T: Scalar,
     F: Fn(&nalgebra::DVector<T>) -> Result<T>,
@@ -22,34 +23,32 @@ where
     let n = point.len();
     let h = <T as Float>::sqrt(T::epsilon());
     
-    // Pre-allocate vectors
-    workspace.get_or_create_vector(BufferId::Gradient, n);
-    workspace.get_or_create_vector(BufferId::Temp1, n);
+    gradient.fill(T::zero());
     
-    // Create result vector
-    let mut result = nalgebra::DVector::zeros(n);
+    // For now, use simple allocations to avoid borrow checker issues
+    let mut e_i = nalgebra::DVector::zeros(n);
+    let mut point_plus = nalgebra::DVector::zeros(n);
+    let mut point_minus = nalgebra::DVector::zeros(n);
     
     for i in 0..n {
-        // Use temporary vector for perturbation
-        let e_i = workspace.get_or_create_vector(BufferId::Temp1, n);
+        // Create unit vector in direction i
         e_i.fill(T::zero());
         e_i[i] = T::one();
         
         // Central difference
-        let point_plus = point + &*e_i * h;
-        let point_minus = point - &*e_i * h;
+        point_plus.copy_from(point);
+        point_plus.axpy(h, &e_i, T::one());
+        
+        point_minus.copy_from(point);
+        point_minus.axpy(-h, &e_i, T::one());
         
         let f_plus = cost_fn(&point_plus)?;
         let f_minus = cost_fn(&point_minus)?;
         
-        result[i] = (f_plus - f_minus) / (h + h);
+        gradient[i] = (f_plus - f_minus) / (h + h);
     }
     
-    // Store result in workspace for future use
-    let gradient = workspace.get_or_create_vector(BufferId::Gradient, n);
-    gradient.copy_from(&result);
-    
-    Ok(result)
+    Ok(())
 }
 
 /// Compute a Hessian-vector product using a workspace.
@@ -59,8 +58,9 @@ pub fn hessian_vector_product_with_workspace<T, F>(
     gradient_fn: &F,
     point: &nalgebra::DVector<T>,
     vector: &nalgebra::DVector<T>,
-    workspace: &mut Workspace<T>,
-) -> Result<nalgebra::DVector<T>>
+    _workspace: &mut Workspace<T>,
+    result: &mut nalgebra::DVector<T>,
+) -> Result<()>
 where
     T: Scalar,
     F: Fn(&nalgebra::DVector<T>) -> Result<nalgebra::DVector<T>>,
@@ -68,33 +68,31 @@ where
     let eps = <T as Float>::sqrt(T::epsilon());
     let norm = vector.norm();
     
+    let n = point.len();
+    
     if norm < T::epsilon() {
-        return Ok(nalgebra::DVector::zeros(point.len()));
+        result.fill(T::zero());
+        return Ok(());
     }
     
     let t = eps / norm;
     
-    // Use workspace for temporary storage
-    let n = point.len();
-    let temp = workspace.get_or_create_vector(BufferId::Temp2, n);
+    // For now, use simple allocations
+    let mut perturbed = nalgebra::DVector::zeros(n);
     
-    // Store scaled vector in temp buffer
-    for i in 0..n {
-        temp[i] = vector[i] * t;
-    }
-    
-    let perturbed = point + &*temp;
+    // Compute perturbed point
+    perturbed.copy_from(point);
+    perturbed.axpy(t, vector, T::one());
     
     let grad1 = gradient_fn(point)?;
     let grad2 = gradient_fn(&perturbed)?;
     
     // Compute difference and scale
-    let result = workspace.get_or_create_vector(BufferId::Temp3, n);
-    for i in 0..n {
-        result[i] = (grad2[i] - grad1[i]) / t;
-    }
+    result.copy_from(&grad2);
+    result.axpy(-T::one(), &grad1, T::one());
+    result.scale_mut(T::one() / t);
     
-    Ok(result.clone())
+    Ok(())
 }
 
 /// Extension trait for CostFunction to add workspace methods.
@@ -107,7 +105,8 @@ where
         &self,
         point: &nalgebra::DVector<T>,
         workspace: &mut Workspace<T>,
-    ) -> Result<nalgebra::DVector<T>>;
+        gradient: &mut nalgebra::DVector<T>,
+    ) -> Result<()>;
     
     /// Compute Hessian-vector product with a workspace.
     fn hessian_vector_product_workspace(
@@ -115,7 +114,8 @@ where
         point: &nalgebra::DVector<T>,
         vector: &nalgebra::DVector<T>,
         workspace: &mut Workspace<T>,
-    ) -> Result<nalgebra::DVector<T>>;
+        result: &mut nalgebra::DVector<T>,
+    ) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -123,6 +123,7 @@ mod tests {
     use super::*;
     use nalgebra::{DMatrix, DVector};
     use approx::assert_relative_eq;
+    use crate::memory::BufferId;
     
     #[test]
     fn test_gradient_fd_workspace() {
@@ -139,7 +140,8 @@ mod tests {
         };
         
         // Compute gradient with workspace
-        let grad_workspace = gradient_fd_with_workspace(&cost_fn, &x, &mut workspace).unwrap();
+        let mut grad_workspace = DVector::<f64>::zeros(n);
+        gradient_fd_with_workspace(&cost_fn, &x, &mut workspace, &mut grad_workspace).unwrap();
         
         // Compare with analytical gradient: Ax + b
         let grad_analytical = &a * &x + &b;
@@ -165,11 +167,13 @@ mod tests {
         };
         
         // Compute Hessian-vector product with workspace
-        let hvp_workspace = hessian_vector_product_with_workspace(
+        let mut hvp_workspace = DVector::<f64>::zeros(n);
+        hessian_vector_product_with_workspace(
             &gradient_fn,
             &x,
             &v,
-            &mut workspace
+            &mut workspace,
+            &mut hvp_workspace
         ).unwrap();
         
         // Expected result: A * v
@@ -198,7 +202,8 @@ mod tests {
             let cost_fn = |x: &DVector<f64>| -> Result<f64> {
                 Ok((0.5 * x.transpose() * &a * x)[(0, 0)] + b.dot(x))
             };
-            let _grad = gradient_fd_with_workspace(&cost_fn, &x, &mut workspace).unwrap();
+            let mut grad = DVector::<f64>::zeros(n);
+            gradient_fd_with_workspace(&cost_fn, &x, &mut workspace, &mut grad).unwrap();
         }
         
         // Workspace buffers should still exist and have correct size

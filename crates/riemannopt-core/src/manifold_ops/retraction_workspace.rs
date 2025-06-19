@@ -73,27 +73,30 @@ where
 }
 
 /// Compute multiple retractions efficiently using workspace.
+/// The results vector must be pre-allocated with the correct number of elements.
 pub fn batch_retract_with_workspace<T>(
     point: &DVector<T>,
     directions: &[DVector<T>],
     t: T,
     workspace: &mut Workspace<T>,
-) -> Result<Vec<DVector<T>>>
+    results: &mut [DVector<T>],
+) -> Result<()>
 where
     T: Scalar,
 {
+    assert_eq!(directions.len(), results.len(), "Results vector must have same length as directions");
+    
     let n = point.len();
     let temp = workspace.get_or_create_vector(BufferId::Temp1, n);
     
-    let mut results = Vec::with_capacity(directions.len());
-    for direction in directions {
+    for (direction, result) in directions.iter().zip(results.iter_mut()) {
         // temp = point + t * direction
         temp.copy_from(point);
         temp.axpy(t, direction, T::one());
-        results.push(temp.clone());
+        result.copy_from(&*temp);
     }
     
-    Ok(results)
+    Ok(())
 }
 
 /// Extension trait for retraction operations with workspace.
@@ -175,7 +178,8 @@ mod tests {
         let t = 0.1;
         let mut workspace = Workspace::with_size(n);
         
-        let results = batch_retract_with_workspace(&point, &directions, t, &mut workspace).unwrap();
+        let mut results = vec![DVector::<f64>::zeros(n); 3];
+        batch_retract_with_workspace(&point, &directions, t, &mut workspace, &mut results).unwrap();
         
         assert_eq!(results.len(), 3);
         for (i, result) in results.iter().enumerate() {
