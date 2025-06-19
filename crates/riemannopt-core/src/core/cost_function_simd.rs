@@ -1,11 +1,13 @@
 //! SIMD-optimized cost function operations.
 
 use crate::{
-    compute::cpu::{SimdBackend, get_dispatcher},
+    compute::cpu::{SimdBackend, get_dispatcher, parallel::ParallelConfig},
     error::Result,
     manifold::{Point, TangentVector},
     types::Scalar,
 };
+use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, DVector};
 use num_traits::Float;
 
@@ -125,6 +127,84 @@ where
     Ok(gradient)
 }
 
+/// SIMD-accelerated parallel gradient computation using finite differences.
+///
+/// This combines SIMD operations for vector arithmetic with parallel execution
+/// across gradient components for maximum performance.
+pub fn gradient_fd_simd_parallel<T, F>(
+    cost_fn: &F,
+    point: &DVector<T>,
+    config: &ParallelConfig,
+) -> Result<DVector<T>>
+where
+    T: Scalar + 'static,
+    F: Fn(&DVector<T>) -> Result<T> + Sync,
+{
+    let n = point.len();
+    let h = <T as Float>::sqrt(T::epsilon());
+    
+    // Check if we should use parallel execution
+    if !config.should_parallelize(n) {
+        return gradient_fd_simd_dvec(cost_fn, point);
+    }
+    
+    // Get adaptive strategy for chunk size if not provided
+    let strategy = crate::compute::cpu::parallel_strategy::get_adaptive_strategy();
+    
+    // Get the SIMD dispatcher
+    let dispatcher = get_dispatcher::<T>();
+    
+    // Create thread-safe gradient vector
+    let gradient = Arc::new(Mutex::new(DVector::zeros(n)));
+    let point_arc = Arc::new(point.clone());
+    
+    // Determine chunk size for parallel execution
+    let chunk_size = config.chunk_size
+        .unwrap_or_else(|| strategy.optimal_chunk_size(n));
+    
+    // Execute in parallel
+    let indices: Vec<usize> = (0..n).collect();
+    indices
+        .par_chunks(chunk_size)
+        .try_for_each(|chunk| -> Result<()> {
+            // Process this chunk
+            let mut local_results = Vec::with_capacity(chunk.len());
+            
+            for &i in chunk {
+                let mut e_i = DVector::zeros(n);
+                e_i[i] = T::one();
+                
+                // Use SIMD for vector operations
+                let mut point_plus = (*point_arc).clone();
+                dispatcher.axpy(h, &e_i, &mut point_plus);
+                
+                let mut point_minus = (*point_arc).clone();
+                dispatcher.axpy(-h, &e_i, &mut point_minus);
+                
+                // Evaluate cost function
+                let f_plus = cost_fn(&point_plus)?;
+                let f_minus = cost_fn(&point_minus)?;
+                
+                let grad_i = (f_plus - f_minus) / (h + h);
+                local_results.push((i, grad_i));
+            }
+            
+            // Update gradient with local results
+            let mut grad_guard = gradient.lock().unwrap();
+            for (i, value) in local_results {
+                grad_guard[i] = value;
+            }
+            
+            Ok(())
+        })?;
+    
+    // Extract the gradient
+    let gradient_vec = Arc::try_unwrap(gradient)
+        .map(|mutex| mutex.into_inner().unwrap())
+        .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+    Ok(gradient_vec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +260,68 @@ mod tests {
         // Check that they are close
         for i in 0..n {
             assert_relative_eq!(hvp_simd[i], hvp_exact[i], epsilon = 1e-4);
+        }
+        
+        Ok(())
+    }
+    
+    #[test]
+    fn test_gradient_fd_simd_parallel() -> Result<()> {
+        use crate::compute::cpu::parallel::ParallelConfig;
+        
+        let n = 300; // Large dimension to test parallel execution
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let a = DMatrix::<f64>::from_fn(n, n, |_, _| rng.gen::<f64>());
+        let a = &a.transpose() * &a; // Make positive definite
+        let b = DVector::from_fn(n, |_, _| rng.gen::<f64>());
+        
+        let x = DVector::from_fn(n, |_, _| rng.gen::<f64>());
+        
+        let cost_fn = |p: &DVector<f64>| -> Result<f64> {
+            Ok(0.5 * p.dot(&(&a * p)) - b.dot(p))
+        };
+        
+        // Sequential SIMD gradient
+        let grad_simd_seq = gradient_fd_simd_dvec(&cost_fn, &x)?;
+        
+        // Parallel SIMD gradient
+        let config = ParallelConfig::default();
+        let grad_simd_par = gradient_fd_simd_parallel(&cost_fn, &x, &config)?;
+        
+        // They should be very close (within floating point tolerance)
+        for i in 0..n {
+            assert_relative_eq!(grad_simd_par[i], grad_simd_seq[i], epsilon = 1e-10);
+        }
+        
+        Ok(())
+    }
+    
+    #[test]
+    fn test_gradient_fd_simd_parallel_custom_config() -> Result<()> {
+        use crate::compute::cpu::parallel::ParallelConfig;
+        
+        let n = 150;
+        let a = DMatrix::<f64>::identity(n, n) * 3.0;
+        let b = DVector::zeros(n);
+        
+        let x = DVector::from_element(n, 1.0);
+        
+        let cost_fn = |p: &DVector<f64>| -> Result<f64> {
+            Ok(0.5 * p.dot(&(&a * p)) - b.dot(p))
+        };
+        
+        // Custom configuration
+        let config = ParallelConfig::new()
+            .with_min_dimension(100)
+            .with_chunk_size(25);
+        
+        let grad_par = gradient_fd_simd_parallel(&cost_fn, &x, &config)?;
+        let grad_analytical = &a * &x - &b;
+        
+        // Check accuracy
+        for i in 0..n {
+            assert_relative_eq!(grad_par[i], grad_analytical[i], epsilon = 1e-4);
         }
         
         Ok(())

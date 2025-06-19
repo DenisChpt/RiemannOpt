@@ -11,7 +11,7 @@ use riemannopt_core::{
     error::{Result, ManifoldError},
     line_search::{LineSearchParams, BacktrackingLineSearch, LineSearch},
     manifold::{Manifold, Point, TangentVector},
-    optimizer::{Optimizer, OptimizationResult, StoppingCriterion, OptimizerState, ConvergenceChecker, TerminationReason},
+    optimizer::{Optimizer, OptimizationResult, StoppingCriterion, OptimizerStateLegacy as OptimizerState, ConvergenceChecker, TerminationReason},
     retraction::DefaultRetraction,
     types::Scalar,
 };

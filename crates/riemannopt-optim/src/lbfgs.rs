@@ -33,15 +33,14 @@ use riemannopt_core::{
     error::Result,
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point},
-    optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
-    optimizer_state::OptimizerStateData,
+    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     retraction::{Retraction, DefaultRetraction},
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OVector};
-use std::collections::{VecDeque, HashMap};
+use std::collections::VecDeque;
 use std::time::Instant;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::marker::PhantomData;
 
 /// Configuration for the L-BFGS optimizer.
@@ -189,6 +188,7 @@ where
     }
 
     /// Clears all stored vectors.
+    #[allow(dead_code)]
     fn clear(&mut self) {
         self.s_vectors.clear();
         self.y_vectors.clear();
@@ -249,43 +249,6 @@ where
     }
 }
 
-impl<T, D> OptimizerStateData<T, D> for LBFGSState<T, D>
-where
-    T: Scalar + Display,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    fn optimizer_name(&self) -> &str {
-        "L-BFGS"
-    }
-
-    fn reset(&mut self) {
-        self.storage.clear();
-        self.prev_point = None;
-        self.prev_gradient = None;
-        self.iteration = 0;
-        self.current_value = None;
-        self.gradient_norm = None;
-    }
-
-    fn summary(&self) -> HashMap<String, String> {
-        let mut summary = HashMap::new();
-        summary.insert("optimizer".to_string(), "L-BFGS".to_string());
-        summary.insert("iteration".to_string(), self.iteration.to_string());
-        summary.insert("memory_used".to_string(), self.storage.len().to_string());
-        if let Some(value) = self.current_value {
-            summary.insert("function_value".to_string(), format!("{}", value));
-        }
-        if let Some(norm) = self.gradient_norm {
-            summary.insert("gradient_norm".to_string(), format!("{}", norm));
-        }
-        summary
-    }
-
-    fn update_iteration(&mut self, iteration: usize) {
-        self.iteration = iteration;
-    }
-}
 
 /// L-BFGS optimizer for Riemannian manifolds.
 #[derive(Debug)]
@@ -394,7 +357,7 @@ where
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
         retraction: &impl Retraction<T, D>,
-        state: &mut riemannopt_core::optimizer::OptimizerState<T, D>,
+        state: &mut OptimizerState<T, D>,
         lbfgs_state: &mut LBFGSState<T, D>,
     ) -> Result<()> {
         // Compute cost and gradient
@@ -474,7 +437,7 @@ where
         
         // Initialize optimizer state
         let initial_cost = cost_fn.cost(initial_point)?;
-        let mut state = riemannopt_core::optimizer::OptimizerState::new(initial_point.clone(), initial_cost);
+        let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         let mut lbfgs_state = LBFGSState::new(self.config.memory_size);
         
         // Main optimization loop

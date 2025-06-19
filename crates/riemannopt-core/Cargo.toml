@@ -22,6 +22,7 @@ cudarc = { workspace = true, optional = true }
 cust = { workspace = true, optional = true }
 once_cell = "1.19"
 parking_lot = "0.12"
+num_cpus = "1.16"
 
 [features]
 default = ["std", "serde", "parallel"]
@@ -69,3 +70,10 @@ harness = false
 [[bench]]
 name = "simd_benchmarks"
 harness = false
+
+[[bench]]
+name = "parallel_gradient"
+harness = false
+
+[[example]]
+name = "parallel_optimization"

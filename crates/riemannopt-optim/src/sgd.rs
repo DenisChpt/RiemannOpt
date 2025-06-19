@@ -179,7 +179,7 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::Result,
     manifold::{Manifold, Point, TangentVector},
-    optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     step_size::StepSizeSchedule,
     types::Scalar,
 };
@@ -567,7 +567,7 @@ where
 /// # use riemannopt_optim::{SGD, SGDConfig};
 /// # use riemannopt_manifolds::Sphere;
 /// # use riemannopt_core::{
-/// #     optimizer::{OptimizerState, StoppingCriterion, ConvergenceChecker},
+/// #     optimizer::{OptimizerStateLegacy as OptimizerState, StoppingCriterion, ConvergenceChecker},
 /// #     cost_function::CostFunction,
 /// #     error::Result,
 /// # };

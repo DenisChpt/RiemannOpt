@@ -38,8 +38,8 @@ use riemannopt_core::{
     error::Result,
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point},
-    optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
-    optimizer_state::{ConjugateGradientState, ConjugateGradientMethod, OptimizerStateData},
+    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    optimization::{ConjugateGradientMethod, ConjugateGradientState},
     preconditioner::{Preconditioner, IdentityPreconditioner},
     retraction::Retraction,
     types::Scalar,
@@ -233,7 +233,11 @@ where
         if dir_grad_inner >= T::zero() {
             // Not a descent direction, restart with steepest descent
             direction = -gradient.clone();
-            cg_state.reset();
+            // Reset CG state manually
+            cg_state.previous_direction = None;
+            cg_state.previous_gradient = None;
+            cg_state.previous_point = None;
+            cg_state.iterations_since_restart = 0;
         }
         
         // Perform line search
@@ -388,7 +392,6 @@ mod tests {
     #[test]
     fn test_cg_first_step() {
         // Test that the first step is just negative gradient
-        use riemannopt_core::optimizer::OptimizerState;
         
         let cost_fn = QuadraticCost::simple(Dyn(2));
         let manifold = TestEuclideanManifold::new(2);
@@ -469,7 +472,6 @@ mod tests {
     #[test]
     fn test_cg_two_iterations() {
         // Test two iterations to see where the problem is
-        use riemannopt_core::optimizer::OptimizerState;
         use riemannopt_core::retraction::DefaultRetraction;
         
         let cost_fn = QuadraticCost::simple(Dyn(2));
