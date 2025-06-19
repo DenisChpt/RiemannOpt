@@ -40,7 +40,7 @@ impl<T: Scalar> VectorPoolInner<T> {
     
     fn release(&mut self, mut vec: DVector<T>) {
         let size = vec.len();
-        let pool = self.pools.entry(size).or_insert_with(Vec::new);
+        let pool = self.pools.entry(size).or_default();
         
         // Only keep the vector if we haven't reached the limit
         if pool.len() < self.max_per_size {
@@ -53,7 +53,7 @@ impl<T: Scalar> VectorPoolInner<T> {
 }
 
 /// Thread-safe vector pool.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VectorPool<T: Scalar> {
     inner: Arc<Mutex<VectorPoolInner<T>>>,
 }
@@ -161,7 +161,7 @@ impl<T: Scalar> MatrixPoolInner<T> {
         let rows = mat.nrows();
         let cols = mat.ncols();
         let key = (rows, cols);
-        let pool = self.pools.entry(key).or_insert_with(Vec::new);
+        let pool = self.pools.entry(key).or_default();
         
         // Only keep the matrix if we haven't reached the limit
         if pool.len() < self.max_per_size {
@@ -174,7 +174,7 @@ impl<T: Scalar> MatrixPoolInner<T> {
 }
 
 /// Thread-safe matrix pool.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MatrixPool<T: Scalar> {
     inner: Arc<Mutex<MatrixPoolInner<T>>>,
 }

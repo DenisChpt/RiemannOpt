@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     manifold::{Point, TangentVector},
-    memory::{Workspace, BufferId},
+    memory::Workspace,
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, DVector};
@@ -63,13 +63,15 @@ where
 pub fn gram_matrix_with_workspace<T>(
     _point: &DVector<T>,
     tangent_vecs: &[DVector<T>],
-    workspace: &mut Workspace<T>,
-) -> Result<crate::types::DMatrix<T>>
+    _workspace: &mut Workspace<T>,
+    gram: &mut crate::types::DMatrix<T>,
+) -> Result<()>
 where
     T: Scalar,
 {
     let n = tangent_vecs.len();
-    let gram = workspace.get_or_create_matrix(BufferId::Custom(0), n, n);
+    assert_eq!(gram.nrows(), n, "Gram matrix must have correct dimensions");
+    assert_eq!(gram.ncols(), n, "Gram matrix must be square");
     
     for i in 0..n {
         for j in i..n {
@@ -81,7 +83,7 @@ where
         }
     }
     
-    Ok(gram.clone())
+    Ok(())
 }
 
 /// Extension trait for metric operations with workspace.
@@ -151,7 +153,8 @@ mod tests {
         ];
         let mut workspace = Workspace::with_size(n);
         
-        let gram = gram_matrix_with_workspace(&point, &vecs, &mut workspace).unwrap();
+        let mut gram = crate::types::DMatrix::<f64>::zeros(3, 3);
+        gram_matrix_with_workspace(&point, &vecs, &mut workspace, &mut gram).unwrap();
         
         // Should be identity matrix
         for i in 0..3 {

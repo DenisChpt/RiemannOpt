@@ -196,7 +196,7 @@ impl SimdVectorOps {
         
         // Scalar remainder
         for i in simd_end..n {
-            result = result + a_slice[i] * b_slice[i];
+            result += a_slice[i] * b_slice[i];
         }
         
         result

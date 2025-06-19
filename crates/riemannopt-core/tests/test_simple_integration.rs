@@ -2,6 +2,7 @@
 
 use nalgebra::{DVector, Dyn};
 use riemannopt_core::prelude::*;
+use riemannopt_core::optimization::OptimizerStateLegacy;
 
 /// Simple Euclidean manifold for testing.
 #[derive(Debug, Clone)]
@@ -253,7 +254,7 @@ fn test_optimizer_state_tracking() {
     let point = DVector::from_vec(vec![1.0, 2.0]);
     let gradient = DVector::from_vec(vec![0.1, 0.2]);
     
-    let state = OptimizerState {
+    let state = OptimizerStateLegacy {
         point: point.clone(),
         value: 5.0,
         gradient: Some(gradient.clone()),
@@ -279,7 +280,7 @@ fn test_convergence_checking() {
         .with_gradient_tolerance(1e-6);
     
     let point = DVector::from_vec(vec![0.0, 0.0]);
-    let state = OptimizerState {
+    let state = OptimizerStateLegacy {
         point: point,
         value: 0.0001,
         gradient: None,
