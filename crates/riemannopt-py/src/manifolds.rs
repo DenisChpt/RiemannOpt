@@ -9,7 +9,7 @@ use pyo3::exceptions::PyValueError;
 use nalgebra::{DVector, DMatrix, Dyn};
 
 use riemannopt_manifolds::{
-    Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique,
+    Sphere, Stiefel, Grassmann, SPD, Hyperbolic,
 };
 use riemannopt_core::manifold::Manifold;
 

@@ -130,9 +130,9 @@ def benchmark_manifold_operations(n_sizes: List[int]) -> pd.DataFrame:
         p = max(1, n // 10)  # Reasonable p for Stiefel
         
         # RiemannOpt manifolds
-        sphere_ro = riemannopt.manifolds.Sphere(n=n)
-        stiefel_ro = riemannopt.manifolds.Stiefel(n=n, p=p)
-        spd_ro = riemannopt.manifolds.SPD(n=min(n, 50))  # Limit SPD size
+        sphere_ro = riemannopt.manifolds.Sphere(n)
+        stiefel_ro = riemannopt.manifolds.Stiefel(n, p)
+        spd_ro = riemannopt.manifolds.SPD(min(n, 50))  # Limit SPD size
         
         # Generate test points
         x_sphere = sphere_ro.random_point()
@@ -186,7 +186,7 @@ def benchmark_manifold_operations(n_sizes: List[int]) -> pd.DataFrame:
             # Time tangent projection
             start = time.time()
             for _ in range(100):
-                manifold.project_tangent(point, tangent)
+                manifold.tangent_projection(point, tangent)
             tangent_proj_time = (time.time() - start) / 100
             
             results.append({
@@ -240,19 +240,19 @@ def benchmark_optimization(problems: List[BenchmarkProblem],
         
         # Setup manifolds
         if problem.name == "PCA":
-            manifold_ro = riemannopt.manifolds.Stiefel(n=problem.n, p=problem.p)
+            manifold_ro = riemannopt.manifolds.Stiefel(problem.n, problem.p)
             initial = manifold_ro.random_point()
         elif problem.name == "Rayleigh":
-            manifold_ro = riemannopt.manifolds.Sphere(n=problem.n)
+            manifold_ro = riemannopt.manifolds.Sphere(problem.n)
             initial = manifold_ro.random_point()
         elif problem.name == "SPD Mean":
-            manifold_ro = riemannopt.manifolds.SPD(n=problem.n)
+            manifold_ro = riemannopt.manifolds.SPD(problem.n)
             initial = manifold_ro.random_point()
         
         # RiemannOpt optimizers
         optimizers_ro = {
-            'SGD': riemannopt.optimizers.SGD(learning_rate=0.01),
-            'SGD+momentum': riemannopt.optimizers.SGD(learning_rate=0.01, momentum=0.9),
+            'SGD': riemannopt.optimizers.SGD(step_size=0.01),
+            'SGD+momentum': riemannopt.optimizers.SGD(step_size=0.01, momentum=0.9),
             'Adam': riemannopt.optimizers.Adam(learning_rate=0.01),
         }
         

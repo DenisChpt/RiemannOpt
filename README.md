@@ -26,8 +26,9 @@ Traditional optimization methods require expensive projection steps or Lagrange 
 ### Performance
 - **10-100x faster** than pure Python implementations
 - Zero-cost abstractions with Rust's ownership system
-- SIMD optimizations for matrix operations
-- Optional GPU acceleration via CUDA
+- SIMD optimizations for matrix operations (AVX2/AVX-512)
+- CPU parallel computing with Rayon for batch operations
+- Optional GPU acceleration via CUDA with memory pooling
 - Minimal memory allocations with buffer reuse
 
 ### Mathematical Rigor

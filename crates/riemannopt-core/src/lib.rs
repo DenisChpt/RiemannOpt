@@ -20,9 +20,12 @@
 //! - [`metric`]: Riemannian metric traits
 //! - [`optimizer`]: Optimization algorithms framework
 //! - [`optimizer_state`]: State management for optimizers
+//! - [`parallel`]: Parallel computing support with Rayon
 //! - [`retraction`]: Retraction and vector transport methods
+//! - [`simd`]: SIMD-accelerated operations for CPU performance
 //! - [`tangent`]: Tangent space operations
 //! - [`types`]: Type aliases and numerical constants
+//! - [`gpu`] (feature-gated): GPU acceleration with CUDA support
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -43,6 +46,11 @@ pub mod step_size;
 pub mod preconditioner;
 pub mod fisher;
 pub mod parallel;
+pub mod parallel_thresholds;
+pub mod simd;
+
+#[cfg(feature = "cuda")]
+pub mod gpu;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -93,6 +101,19 @@ pub mod prelude {
     };
     pub use crate::parallel::{
         ParallelBatch, ParallelLineSearch, ParallelSGD, ParallelAverage,
-        PointBatch, TangentBatch,
+        PointBatch, TangentBatch, SimdParallelOps,
+    };
+    pub use crate::parallel_thresholds::{
+        ParallelThresholdsConfig, ParallelThresholdsBuilder, ParallelDecision,
+        get_parallel_config, set_parallel_config, ShouldParallelize, DecompositionKind,
+    };
+    pub use crate::simd::{
+        SimdOps, SimdVector, SimdVectorOps, SimdMatrixOps,
+    };
+    
+    #[cfg(feature = "cuda")]
+    pub use crate::gpu::{
+        GpuBackend, GpuMatrix, GpuError, DeviceInfo,
+        GpuMatrixOps, GpuManifoldOps, GpuBatchOps,
     };
 }

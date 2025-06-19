@@ -187,6 +187,7 @@ use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};
 use std::time::Instant;
 
 
+
 /// Momentum method for Riemannian SGD.
 ///
 /// Momentum methods accelerate convergence by incorporating information from
