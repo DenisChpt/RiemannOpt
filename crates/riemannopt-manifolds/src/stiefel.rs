@@ -123,10 +123,15 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     types::Scalar,
+    parallel_thresholds::{ParallelDecision, DecompositionKind, get_parallel_config, ShouldParallelize},
 };
 use nalgebra::{DMatrix, DVector, Dyn};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
+use std::iter::Sum;
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = Iₚ}.
 ///
@@ -435,6 +440,32 @@ impl Stiefel {
     where
         T: Scalar,
     {
+        // Check if we should use parallel QR decomposition based on matrix size
+        let should_parallelize = get_parallel_config()
+            .should_parallelize_decomposition(self.n.min(self.p), DecompositionKind::QR);
+        
+        if should_parallelize {
+            // Log that we're using parallel QR
+            #[cfg(feature = "parallel")]
+            {
+                // In a real implementation, we would use a parallel QR algorithm here
+                // For now, we use the standard QR with the understanding that
+                // this is where parallel QR would be plugged in
+                self.qr_projection_sequential(matrix)
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                self.qr_projection_sequential(matrix)
+            }
+        } else {
+            self.qr_projection_sequential(matrix)
+        }
+    }
+    
+    fn qr_projection_sequential<T>(&self, matrix: &DMatrix<T>) -> DMatrix<T>
+    where
+        T: Scalar,
+    {
         if matrix.nrows() != self.n || matrix.ncols() != self.p {
             // Handle wrong dimensions by padding or truncating
             let mut result = DMatrix::<T>::zeros(self.n, self.p);
@@ -502,7 +533,7 @@ impl Stiefel {
 
 impl<T> Manifold<T, Dyn> for Stiefel
 where
-    T: Scalar,
+    T: Scalar + Sum,
 {
     fn name(&self) -> &str {
         "Stiefel"
@@ -761,21 +792,66 @@ where
         // Geodesic distance using principal angles between column spaces
         // Algorithm: d(X,Y) = √(∑ᵢ θᵢ²) where cos(θᵢ) = σᵢ(X^T Y)
         // The θᵢ are principal angles between the column spaces
-        let m = x_matrix.transpose() * &y_matrix;
-        let svd = m.svd(true, true);
+        
+        // Check if we should use parallel matrix multiplication
+        let m = if ParallelDecision::matrix_multiply::<T>(self.p, self.p, self.n) {
+            // For large matrices, we could use parallel GEMM here
+            // For now, use the standard multiplication
+            x_matrix.transpose() * &y_matrix
+        } else {
+            x_matrix.transpose() * &y_matrix
+        };
+        
+        // Check if we should use parallel SVD
+        let svd = if get_parallel_config()
+            .should_parallelize_decomposition(self.p, DecompositionKind::SVD) {
+            // In a real implementation, we would use parallel SVD here
+            m.svd(true, true)
+        } else {
+            m.svd(true, true)
+        };
         
         let mut distance_squared = T::zero();
         let singular_values = svd.singular_values;
         
-        for i in 0..singular_values.len() {
-            let sigma = singular_values[i];
-            // Clamp singular values to [-1,1] to avoid numerical issues with arccos
-            let clamped = <T as Float>::max(
-                <T as Float>::min(sigma, T::one()),
-                -T::one(),
-            );
-            let angle = <T as Float>::acos(clamped);
-            distance_squared = distance_squared + angle * angle;
+        // For large number of singular values, we could parallelize this loop
+        if ParallelDecision::dot_product::<T>(singular_values.len()) {
+            #[cfg(feature = "parallel")]
+            {
+                distance_squared = singular_values.as_slice()
+                    .par_iter()
+                    .map(|&sigma| {
+                        let clamped = <T as Float>::max(
+                            <T as Float>::min(sigma, T::one()),
+                            -T::one(),
+                        );
+                        let angle = <T as Float>::acos(clamped);
+                        angle * angle
+                    })
+                    .sum::<T>();
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                for i in 0..singular_values.len() {
+                    let sigma = singular_values[i];
+                    let clamped = <T as Float>::max(
+                        <T as Float>::min(sigma, T::one()),
+                        -T::one(),
+                    );
+                    let angle = <T as Float>::acos(clamped);
+                    distance_squared = distance_squared + angle * angle;
+                }
+            }
+        } else {
+            for i in 0..singular_values.len() {
+                let sigma = singular_values[i];
+                let clamped = <T as Float>::max(
+                    <T as Float>::min(sigma, T::one()),
+                    -T::one(),
+                );
+                let angle = <T as Float>::acos(clamped);
+                distance_squared = distance_squared + angle * angle;
+            }
         }
         
         Ok(<T as Float>::sqrt(distance_squared))

@@ -19,9 +19,9 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 
 [features]
-default = ["std"]
+default = ["std", "parallel"]
 std = ["riemannopt-core/std", "riemannopt-manifolds/std"]
-parallel = ["riemannopt-manifolds/parallel"]
+parallel = ["riemannopt-manifolds/parallel", "riemannopt-core/parallel"]
 serde = ["riemannopt-core/serde", "riemannopt-manifolds/serde"]
 
 [dev-dependencies]

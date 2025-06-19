@@ -13,6 +13,9 @@ pub mod oblique;
 pub mod fixed_rank;
 pub mod psd_cone;
 
+#[cfg(feature = "parallel")]
+pub mod sphere_simd;
+
 // Re-export main manifolds for convenience
 pub use sphere::Sphere;
 pub use stiefel::Stiefel;

@@ -111,10 +111,16 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::{Manifold, Point},
     types::{DVector, Scalar},
+    parallel_thresholds::ParallelDecision,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, Dyn, OVector, U1};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
+use std::iter::Sum;
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 
 /// The unit sphere S^{n-1} = {x ∈ ℝⁿ : ‖x‖ = 1}.
 ///
@@ -482,7 +488,7 @@ impl Sphere {
 
 impl<T> Manifold<T, Dyn> for Sphere
 where
-    T: Scalar,
+    T: Scalar + Sum,
 {
     fn name(&self) -> &str {
         "Sphere"
@@ -517,7 +523,24 @@ where
     }
 
     fn project_point(&self, point: &DVector<T>) -> DVector<T> {
-        let norm = point.norm();
+        let norm = if ParallelDecision::dot_product::<T>(point.len()) {
+            // Parallel norm computation for large vectors
+            #[cfg(feature = "parallel")]
+            {
+                let squared_norm = point.as_slice()
+                    .par_iter()
+                    .map(|&x| x * x)
+                    .sum::<T>();
+                <T as Float>::sqrt(squared_norm)
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                point.norm()
+            }
+        } else {
+            point.norm()
+        };
+        
         if norm < T::epsilon() {
             // Handle zero vector by creating a standard basis vector
             // Choose e₁ = (1, 0, ..., 0) as canonical representative
@@ -526,7 +549,30 @@ where
             result
         } else {
             // Standard projection: Π(x) = x / ‖x‖
-            point / norm
+            // Use parallel division for large vectors
+            if ParallelDecision::dot_product::<T>(point.len()) {
+                #[cfg(feature = "parallel")]
+                {
+                    let mut result = DVector::zeros(self.ambient_dim);
+                    let result_slice = result.as_mut_slice();
+                    let point_slice = point.as_slice();
+                    
+                    result_slice
+                        .par_iter_mut()
+                        .zip(point_slice.par_iter())
+                        .for_each(|(r, &p)| {
+                            *r = p / norm;
+                        });
+                    
+                    result
+                }
+                #[cfg(not(feature = "parallel"))]
+                {
+                    point / norm
+                }
+            } else {
+                point / norm
+            }
         }
     }
 
@@ -550,7 +596,25 @@ where
     ) -> Result<T> {
         // Canonical Riemannian metric: restriction of Euclidean inner product
         // g_x(u, v) = ⟨u, v⟩_ℝⁿ for u, v ∈ T_x S^{n-1}
-        Ok(u.dot(v))
+        
+        // Use parallel computation for large vectors
+        if ParallelDecision::dot_product::<T>(u.len()) {
+            #[cfg(feature = "parallel")]
+            {
+                let result = u.as_slice()
+                    .par_iter()
+                    .zip(v.as_slice().par_iter())
+                    .map(|(&ui, &vi)| ui * vi)
+                    .sum::<T>();
+                Ok(result)
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                Ok(u.dot(v))
+            }
+        } else {
+            Ok(u.dot(v))
+        }
     }
 
     fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {

@@ -3,7 +3,7 @@
 use numpy::{PyArray2, PyReadonlyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
-use nalgebra::{DVector, DMatrix};
+use nalgebra::DMatrix;
 
 use riemannopt_manifolds::{FixedRank, FixedRankPoint};
 use riemannopt_core::manifold::Manifold;

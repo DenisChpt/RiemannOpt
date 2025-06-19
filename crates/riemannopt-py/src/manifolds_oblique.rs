@@ -175,8 +175,6 @@ impl PyOblique {
         point: PyReadonlyArray2<'_, f64>,
         vector: PyReadonlyArray2<'_, f64>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let shape = point.shape();
-        
         let point_mat = numpy_to_nalgebra_matrix(&point)?;
         let vector_mat = numpy_to_nalgebra_matrix(&vector)?;
         let point_vec = matrix_to_vector(&point_mat);

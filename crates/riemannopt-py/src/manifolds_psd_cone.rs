@@ -226,7 +226,7 @@ impl PyPSDCone {
     pub fn tangent_projection<'py>(
         &self,
         py: Python<'py>,
-        point: PyReadonlyArray2<'_, f64>,
+        _point: PyReadonlyArray2<'_, f64>,
         vector: PyReadonlyArray2<'_, f64>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let vector_mat = numpy_to_nalgebra_matrix(&vector)?;

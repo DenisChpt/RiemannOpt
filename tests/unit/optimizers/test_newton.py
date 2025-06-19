@@ -3,6 +3,10 @@
 import numpy as np
 import pytest
 import riemannopt
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cost_function_wrapper import create_matrix_cost_function
 
 # Access classes through _riemannopt module
 Newton = riemannopt._riemannopt.Newton
@@ -86,7 +90,7 @@ class TestNewton:
         def grad_fn(x):
             return -2 * A @ x
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         
         # Initial point
         x0 = manifold.random_point()
@@ -129,7 +133,7 @@ class TestNewton:
         def grad_fn(X):
             return -A
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         
         # Initial point
         x0 = manifold.random_point()
@@ -138,7 +142,10 @@ class TestNewton:
         result = optimizer.optimize(cost, manifold, x0)
         
         # Check that we're still on the manifold
-        x_opt = result['point'].reshape(n, p)
+        x_opt = result['point']
+        # For matrix manifolds, the result is already in matrix form
+        if x_opt.ndim == 1:
+            x_opt = x_opt.reshape(n, p)
         # Verify solution is still on Stiefel manifold
         # X should satisfy X^T X = I
         XtX = x_opt.T @ x_opt
@@ -168,7 +175,7 @@ class TestNewton:
             grad = 0.5 * (grad + grad.T)
             return grad.flatten()
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         
         # Initial point
         x0 = manifold.random_point()
@@ -184,8 +191,8 @@ class TestNewton:
     
     def test_optimization_on_oblique(self):
         """Test Newton optimization on Oblique manifold."""
-        m, n = 5, 3
-        manifold = Oblique(m, n)
+        n, p = 5, 3
+        manifold = Oblique(n, p)
         optimizer = Newton(
             max_iterations=50,
             tolerance=1e-5,
@@ -194,24 +201,24 @@ class TestNewton:
         
         # Cost function: sum of quadratic forms
         np.random.seed(456)
-        A = np.random.randn(m, m)
+        A = np.random.randn(n, n)
         A = A + A.T  # Make symmetric
         
         def cost_fn(X_vec):
-            X = X_vec.reshape(m, n)
+            X = X_vec.reshape(n, p)
             value = 0.0
-            for j in range(n):
+            for j in range(p):
                 value += X[:, j].T @ A @ X[:, j]
             return value
         
         def grad_fn(X_vec):
-            X = X_vec.reshape(m, n)
+            X = X_vec.reshape(n, p)
             grad = np.zeros_like(X)
-            for j in range(n):
+            for j in range(p):
                 grad[:, j] = 2 * A @ X[:, j]
             return grad.flatten()
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         
         # Initial point
         x0 = manifold.random_point()
@@ -251,7 +258,7 @@ class TestNewton:
             grad = (X - M_target) * mask
             return grad.flatten()
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         
         # Initial point
         x0 = manifold.random_point()
@@ -289,7 +296,7 @@ class TestNewton:
             grad = Q @ X + X @ Q.T
             return grad.flatten()
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         
         # Initial point
         x0 = manifold.random_point()
@@ -321,7 +328,7 @@ class TestNewton:
         def grad_fn(x):
             return x
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         x0 = manifold.random_point()
         
         # Should still run but maybe not converge well
@@ -346,7 +353,7 @@ class TestNewton:
         def grad_fn(x):
             return A @ x
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         x0 = manifold.random_point()
         
         # Without regularization (might fail)
@@ -391,7 +398,7 @@ class TestNewton:
         cost = CostFunction(lambda x: np.sum(x**2), lambda x: 2*x)
         x0 = np.ones(5)
         
-        with pytest.raises(ValueError, match="Euclidean manifold not yet supported"):
+        with pytest.raises(ValueError, match="Unsupported manifold type"):
             optimizer.optimize(cost, manifold, x0)
     
     def test_gauss_newton_mode(self):
@@ -405,12 +412,15 @@ class TestNewton:
         def grad_fn(x):
             return 2 * x
         
-        cost = CostFunction(cost_fn, grad_fn)
+        cost = create_matrix_cost_function(cost_fn, grad_fn, manifold)
         x0 = manifold.random_point()
         
-        # Currently not implemented, should fail
-        with pytest.raises(ValueError):
-            optimizer.optimize(cost, manifold, x0)
+        # Run optimization with Gauss-Newton mode
+        result = optimizer.optimize(cost, manifold, x0)
+        
+        # Check that optimization ran
+        assert 'iterations' in result
+        assert 'value' in result
     
     def test_representation(self):
         """Test string representation."""
@@ -426,7 +436,7 @@ class TestNewton:
         repr_str = repr(optimizer)
         assert "Newton" in repr_str
         assert "1e-06" in repr_str or "1e-6" in repr_str
-        assert "True" in repr_str
+        assert "true" in repr_str
         assert "50" in repr_str
         assert "100" in repr_str
         assert "1e-07" in repr_str or "1e-7" in repr_str

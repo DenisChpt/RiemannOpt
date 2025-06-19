@@ -17,12 +17,17 @@ approx = { workspace = true }
 serde = { workspace = true, optional = true }
 rand = "0.8"
 rayon = { workspace = true }
+wide = { workspace = true }
+cudarc = { workspace = true, optional = true }
+cust = { workspace = true, optional = true }
 
 [features]
-default = ["std", "serde"]
+default = ["std", "serde", "parallel"]
 std = []
 serde = ["dep:serde", "nalgebra/serde-serialize"]
 test-utils = []
+cuda = ["dep:cudarc", "dep:cust"]
+parallel = []  # Rayon is always available, this just enables parallel features
 
 [dev-dependencies]
 proptest = "1.5"

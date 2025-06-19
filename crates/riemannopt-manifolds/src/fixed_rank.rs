@@ -3,7 +3,6 @@
 //! The manifold of m×n matrices with fixed rank k.
 
 use nalgebra::{DMatrix, DVector, Dyn, SVD};
-use nalgebra::OVector;
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
@@ -474,6 +473,7 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use nalgebra::OVector;
 
     fn create_test_manifold() -> FixedRank {
         FixedRank::new(6, 4, 2).unwrap()

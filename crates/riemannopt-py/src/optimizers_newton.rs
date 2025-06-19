@@ -1,9 +1,9 @@
 //! Python bindings for Riemannian Newton optimizer.
 
-use numpy::{PyReadonlyArray1};
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
-use nalgebra::{DVector};
+use nalgebra::{DVector, DMatrix};
 
 use riemannopt_core::{
     manifold::Manifold,
@@ -16,6 +16,17 @@ use crate::manifolds_oblique::PyOblique;
 use crate::manifolds_fixed_rank::PyFixedRank;
 use crate::manifolds_psd_cone::PyPSDCone;
 use crate::cost_function::PyCostFunction;
+
+// Helper function to convert numpy array to nalgebra matrix
+fn numpy_to_nalgebra_matrix(array: &PyReadonlyArray2<'_, f64>) -> PyResult<DMatrix<f64>> {
+    let shape = array.shape();
+    let data = array.as_slice()?.to_vec();
+    
+    // Note: NumPy arrays are row-major while nalgebra expects column-major
+    // So we need to transpose
+    let mat = DMatrix::from_vec(shape[1], shape[0], data);
+    Ok(mat.transpose())
+}
 
 /// Riemannian Newton method optimizer.
 #[pyclass(name = "Newton")]
@@ -103,13 +114,13 @@ impl PyNewton {
     ///     New point after taking the step
     pub fn step<'py>(
         &mut self,
-        py: Python<'py>,
-        manifold: &Bound<'_, PyAny>,
+        _py: Python<'py>,
+        _manifold: &Bound<'_, PyAny>,
         point: PyReadonlyArray1<'_, f64>,
         gradient: PyReadonlyArray1<'_, f64>,
     ) -> PyResult<PyObject> {
-        let point_vec = point.as_slice()?.to_vec();
-        let gradient_vec = gradient.as_slice()?.to_vec();
+        let _point_vec = point.as_slice()?.to_vec();
+        let _gradient_vec = gradient.as_slice()?.to_vec();
         
         // Note: This is a simplified version. A full implementation would need
         // access to the cost function to compute Hessian-vector products.
@@ -135,9 +146,59 @@ impl PyNewton {
         py: Python<'py>,
         cost_fn: &PyCostFunction,
         manifold: &Bound<'_, PyAny>,
-        initial_point: PyReadonlyArray1<'_, f64>,
+        initial_point: &Bound<'_, PyAny>,
     ) -> PyResult<PyObject> {
-        let x0 = DVector::from_vec(initial_point.as_slice()?.to_vec());
+        
+        // Extract initial point based on manifold type
+        let (x0, shape) = if let Ok(_sphere) = manifold.extract::<PyRef<PySphere>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
+            (x0, vec![])
+        } else if let Ok(_stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_spd) = manifold.extract::<PyRef<PySPD>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
+            (x0, vec![])
+        } else if let Ok(_oblique) = manifold.extract::<PyRef<PyOblique>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_fixed_rank) = manifold.extract::<PyRef<PyFixedRank>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_psd_cone) = manifold.extract::<PyRef<PyPSDCone>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else {
+            return Err(PyValueError::new_err(
+                "Unsupported manifold type for Newton optimizer"
+            ));
+        };
         
         let criterion = StoppingCriterion::new()
             .with_max_iterations(self.max_iterations)
@@ -145,11 +206,11 @@ impl PyNewton {
         
         // Check manifold type and perform optimization
         if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>() {
-            self.optimize_on_manifold(py, cost_fn, sphere.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, sphere.get_inner(), x0, criterion, shape)
         } else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
-            self.optimize_on_manifold(py, cost_fn, stiefel.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, stiefel.get_inner(), x0, criterion, shape)
         } else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
-            self.optimize_on_manifold(py, cost_fn, grassmann.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, grassmann.get_inner(), x0, criterion, shape)
         } else if let Ok(_euclidean) = manifold.extract::<PyRef<PyEuclidean>>() {
             // For now, Euclidean manifold is not supported directly in Newton
             Err(PyValueError::new_err(
@@ -157,15 +218,15 @@ impl PyNewton {
                  Please use one of the other manifolds."
             ))
         } else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>() {
-            self.optimize_on_manifold(py, cost_fn, spd.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, spd.get_inner(), x0, criterion, shape)
         } else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
-            self.optimize_on_manifold(py, cost_fn, hyperbolic.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, hyperbolic.get_inner(), x0, criterion, shape)
         } else if let Ok(oblique) = manifold.extract::<PyRef<PyOblique>>() {
-            self.optimize_on_manifold(py, cost_fn, oblique.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, oblique.get_inner(), x0, criterion, shape)
         } else if let Ok(fixed_rank) = manifold.extract::<PyRef<PyFixedRank>>() {
-            self.optimize_on_manifold(py, cost_fn, fixed_rank.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, fixed_rank.get_inner(), x0, criterion, shape)
         } else if let Ok(psd_cone) = manifold.extract::<PyRef<PyPSDCone>>() {
-            self.optimize_on_manifold(py, cost_fn, psd_cone.get_inner(), x0, criterion)
+            self.optimize_on_manifold(py, cost_fn, psd_cone.get_inner(), x0, criterion, shape)
         } else {
             Err(PyValueError::new_err(
                 "Unsupported manifold type for Newton optimizer"
@@ -176,7 +237,7 @@ impl PyNewton {
     /// String representation
     pub fn __repr__(&self) -> String {
         format!(
-            "Newton(hessian_regularization={}, use_gauss_newton={}, max_cg_iterations={}, cg_tolerance={}, max_iterations={}, tolerance={})",
+            "Newton(hessian_regularization={:.0e}, use_gauss_newton={}, max_cg_iterations={}, cg_tolerance={:.0e}, max_iterations={}, tolerance={:.0e})",
             self.config.hessian_regularization,
             self.config.use_gauss_newton,
             self.config.max_cg_iterations,
@@ -197,6 +258,7 @@ impl PyNewton {
         manifold: &M,
         x0: DVector<f64>,
         criterion: StoppingCriterion<f64>,
+        shape: Vec<usize>,
     ) -> PyResult<PyObject> {
         let mut optimizer = Newton::new(self.config.clone());
         
@@ -206,9 +268,30 @@ impl PyNewton {
         // Convert result to Python dictionary
         let dict = pyo3::types::PyDict::new_bound(py);
         
-        // Convert point to numpy array
-        let point_array = numpy::PyArray1::from_vec_bound(py, result.point.data.as_vec().clone());
-        dict.set_item("point", point_array)?;
+        // Convert point to numpy array with appropriate shape
+        if shape.is_empty() {
+            // 1D array
+            let point_array = numpy::PyArray1::from_vec_bound(py, result.point.data.as_vec().clone());
+            dict.set_item("point", point_array)?;
+        } else {
+            // 2D array - reshape the result
+            let data = result.point.data.as_vec().clone();
+            let n_rows = shape[0];
+            let n_cols = shape[1];
+            
+            // Convert to 2D array by creating a vector of vectors
+            let mut rows = Vec::with_capacity(n_rows);
+            for i in 0..n_rows {
+                let mut row = Vec::with_capacity(n_cols);
+                for j in 0..n_cols {
+                    row.push(data[j * n_rows + i]); // column-major to row-major
+                }
+                rows.push(row);
+            }
+            
+            let point_array = numpy::PyArray2::from_vec2_bound(py, &rows)?;
+            dict.set_item("point", point_array)?;
+        }
         
         dict.set_item("value", result.value)?;
         dict.set_item("iterations", result.iterations)?;

@@ -4,6 +4,7 @@
 //! and batch processing capabilities using Rayon.
 
 use crate::types::Scalar;
+use crate::simd::{SimdOps, SimdVectorOps, SimdMatrixOps};
 use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
 
@@ -334,6 +335,95 @@ impl ParallelAverage {
     }
 }
 
+/// SIMD-enhanced parallel operations
+pub struct SimdParallelOps;
+
+impl SimdParallelOps {
+    /// Parallel dot product with SIMD for large batches
+    pub fn batch_dot_product<T>(
+        a_batch: &PointBatch<T>,
+        b_batch: &PointBatch<T>,
+    ) -> Vec<T>
+    where
+        T: Scalar + SimdOps,
+    {
+        assert_eq!(a_batch.ncols(), b_batch.ncols());
+        
+        (0..a_batch.ncols())
+            .into_par_iter()
+            .map(|i| {
+                let a_col = a_batch.column(i).clone_owned();
+                let b_col = b_batch.column(i).clone_owned();
+                SimdVectorOps::dot_product(&a_col, &b_col)
+            })
+            .collect()
+    }
+    
+    /// Parallel normalization with SIMD
+    pub fn batch_normalize<T>(
+        points: &mut PointBatch<T>,
+    ) -> Vec<T>
+    where
+        T: Scalar + SimdOps,
+    {
+        let n_points = points.ncols();
+        let norms: Vec<T> = (0..n_points)
+            .into_par_iter()
+            .map(|i| {
+                let col = points.column(i).clone_owned();
+                SimdVectorOps::norm(&col)
+            })
+            .collect();
+        
+        // Normalize columns sequentially (can't mutate in parallel)
+        for (i, &norm) in norms.iter().enumerate() {
+            if norm > T::zero() {
+                let mut col = points.column(i).clone_owned();
+                SimdVectorOps::scale(&mut col, T::one() / norm);
+                points.set_column(i, &col);
+            }
+        }
+        
+        norms
+    }
+    
+    /// Parallel matrix-vector multiplication with SIMD
+    pub fn batch_gemv<T>(
+        matrices: &[DMatrix<T>],
+        vectors: &[DVector<T>],
+        alpha: T,
+        beta: T,
+    ) -> Vec<DVector<T>>
+    where
+        T: Scalar + SimdOps,
+    {
+        assert_eq!(matrices.len(), vectors.len());
+        
+        matrices
+            .par_iter()
+            .zip(vectors.par_iter())
+            .map(|(matrix, vector)| {
+                let mut result = DVector::zeros(matrix.nrows());
+                SimdMatrixOps::gemv(matrix, vector, &mut result, alpha, beta);
+                result
+            })
+            .collect()
+    }
+    
+    /// Parallel Frobenius norm computation with SIMD
+    pub fn batch_frobenius_norm<T>(
+        matrices: &[DMatrix<T>],
+    ) -> Vec<T>
+    where
+        T: Scalar + SimdOps,
+    {
+        matrices
+            .par_iter()
+            .map(|matrix| SimdMatrixOps::frobenius_norm(matrix))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +512,43 @@ mod tests {
         
         assert_relative_eq!(average[0], 2.4, epsilon = 1e-10); // 0.3*1 + 0.7*3
         assert_relative_eq!(average[1], 3.4, epsilon = 1e-10); // 0.3*2 + 0.7*4
+    }
+    
+    #[test]
+    fn test_simd_batch_dot_product() {
+        let a = PointBatch::from_columns(&[
+            DVector::from_vec(vec![1.0_f32, 2.0, 3.0]),
+            DVector::from_vec(vec![4.0, 5.0, 6.0]),
+        ]);
+        let b = PointBatch::from_columns(&[
+            DVector::from_vec(vec![2.0_f32, 3.0, 4.0]),
+            DVector::from_vec(vec![1.0, 2.0, 3.0]),
+        ]);
+        
+        let dots = SimdParallelOps::batch_dot_product(&a, &b);
+        
+        assert_eq!(dots.len(), 2);
+        assert_relative_eq!(dots[0], 20.0, epsilon = 1e-6); // 1*2 + 2*3 + 3*4
+        assert_relative_eq!(dots[1], 32.0, epsilon = 1e-6); // 4*1 + 5*2 + 6*3
+    }
+    
+    #[test]
+    fn test_simd_batch_normalize() {
+        let mut points = PointBatch::from_columns(&[
+            DVector::from_vec(vec![3.0_f64, 4.0]),
+            DVector::from_vec(vec![5.0, 12.0]),
+        ]);
+        
+        let norms = SimdParallelOps::batch_normalize(&mut points);
+        
+        assert_eq!(norms.len(), 2);
+        assert_relative_eq!(norms[0], 5.0, epsilon = 1e-10);
+        assert_relative_eq!(norms[1], 13.0, epsilon = 1e-10);
+        
+        // Check normalization
+        assert_relative_eq!(points[(0, 0)], 0.6, epsilon = 1e-10);
+        assert_relative_eq!(points[(1, 0)], 0.8, epsilon = 1e-10);
+        assert_relative_eq!(points[(0, 1)], 5.0/13.0, epsilon = 1e-10);
+        assert_relative_eq!(points[(1, 1)], 12.0/13.0, epsilon = 1e-10);
     }
 }
