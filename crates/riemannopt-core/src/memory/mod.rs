@@ -2,9 +2,7 @@
 
 pub mod pool;
 pub mod workspace;
-
-// Future modules will be added here:
-// pub mod cache;
+pub mod cache;
 
 // Re-export key items
 pub use pool::{
@@ -13,4 +11,9 @@ pub use pool::{
 };
 pub use workspace::{
     Workspace, WorkspaceBuilder, BufferId,
+};
+pub use cache::{
+    CacheKey, Cacheable, CachedValue, 
+    L1Cache, L2Cache, MultiLevelCache,
+    CacheStats,
 };
