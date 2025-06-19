@@ -20,6 +20,7 @@ rayon = { workspace = true }
 wide = { workspace = true }
 cudarc = { workspace = true, optional = true }
 cust = { workspace = true, optional = true }
+once_cell = "1.19"
 
 [features]
 default = ["std", "serde", "parallel"]
@@ -62,4 +63,8 @@ harness = false
 
 [[bench]]
 name = "algorithm_comparison"
+harness = false
+
+[[bench]]
+name = "simd_benchmarks"
 harness = false
