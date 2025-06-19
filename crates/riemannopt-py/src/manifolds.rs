@@ -12,6 +12,7 @@ use riemannopt_manifolds::{
     Sphere, Stiefel, Grassmann, SPD, Hyperbolic,
 };
 use riemannopt_core::manifold::Manifold;
+use crate::array_utils::{dvector_to_pyarray, pyarray_to_dmatrix, dmatrix_to_pyarray, dmatrix_to_dvector, dvector_to_dmatrix};
 
 /// Sphere manifold S^{n-1} in Python.
 ///
@@ -66,7 +67,7 @@ impl PySphere {
     pub fn project<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let point_vec = DVector::from_column_slice(point.as_slice()?);
         let projected = self.inner.project_point(&point_vec);
-        Ok(projected.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &projected))
     }
 
     /// Compute the retraction at a point.
@@ -87,7 +88,7 @@ impl PySphere {
         let tangent_vec = DVector::from_column_slice(tangent.as_slice()?);
         let retracted = self.inner.retract(&point_vec, &tangent_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(retracted.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &retracted))
     }
 
     /// Project a vector onto the tangent space at a point.
@@ -108,7 +109,7 @@ impl PySphere {
         let vector_vec = DVector::from_column_slice(vector.as_slice()?);
         let projected = self.inner.project_tangent(&point_vec, &vector_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(projected.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &projected))
     }
 
     /// Compute the exponential map.
@@ -129,7 +130,7 @@ impl PySphere {
         let tangent_vec = DVector::from_column_slice(tangent.as_slice()?);
         let result = self.inner.exp_map(&point_vec, &tangent_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &result))
     }
 
     /// Compute the logarithmic map.
@@ -149,7 +150,7 @@ impl PySphere {
         let point_vec = DVector::from_column_slice(point.as_slice()?);
         let other_vec = DVector::from_column_slice(other.as_slice()?);
         match self.inner.log_map(&point_vec, &other_vec) {
-            Ok(result) => Ok(result.as_slice().to_vec().into_pyarray_bound(py)),
+            Ok(result) => Ok(dvector_to_pyarray(py, &result)),
             Err(e) => Err(PyValueError::new_err(format!("Logarithm failed: {}", e))),
         }
     }
@@ -174,7 +175,7 @@ impl PySphere {
     ///     Random point on the sphere
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let point = self.inner.random_point();
-        Ok(point.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &point))
     }
     
     /// Generate a random tangent vector at a point.
@@ -192,7 +193,7 @@ impl PySphere {
         let point_vec = DVector::from_column_slice(point.as_slice()?);
         let tangent = self.inner.random_tangent(&point_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(tangent.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &tangent))
     }
     
     /// Compute the Riemannian inner product.
@@ -1737,7 +1738,7 @@ impl PyHyperbolic {
     pub fn project<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let point_vec = DVector::from_column_slice(point.as_slice()?);
         let projected = self.inner.project_point(&point_vec);
-        Ok(projected.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &projected))
     }
 
     /// Compute the retraction at a point.
@@ -1758,7 +1759,7 @@ impl PyHyperbolic {
         let tangent_vec = DVector::from_column_slice(tangent.as_slice()?);
         let retracted = self.inner.retract(&point_vec, &tangent_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(retracted.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &retracted))
     }
 
     /// Project a vector onto the tangent space at a point.
@@ -1779,7 +1780,7 @@ impl PyHyperbolic {
         let vector_vec = DVector::from_column_slice(vector.as_slice()?);
         let projected = self.inner.project_tangent(&point_vec, &vector_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(projected.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &projected))
     }
 
     /// Compute the exponential map.
@@ -1801,7 +1802,7 @@ impl PyHyperbolic {
         // Use retraction as exponential map may not be implemented
         let result = self.inner.retract(&point_vec, &tangent_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &result))
     }
 
     /// Compute the logarithmic map.
@@ -1842,7 +1843,7 @@ impl PyHyperbolic {
     ///     Random point on the Poincaré ball
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let point = self.inner.random_point();
-        Ok(point.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &point))
     }
     
     /// Generate a random tangent vector at a point.
@@ -1860,7 +1861,7 @@ impl PyHyperbolic {
         let point_vec = DVector::from_column_slice(point.as_slice()?);
         let tangent = self.inner.random_tangent(&point_vec)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(tangent.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(dvector_to_pyarray(py, &tangent))
     }
     
     /// Compute the Riemannian inner product.

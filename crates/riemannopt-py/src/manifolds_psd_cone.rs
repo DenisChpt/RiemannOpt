@@ -250,7 +250,7 @@ impl PyPSDCone {
     ///     Inner product value
     pub fn inner_product(
         &self,
-        point: PyReadonlyArray2<'_, f64>,
+        _point: PyReadonlyArray2<'_, f64>,
         u: PyReadonlyArray2<'_, f64>,
         v: PyReadonlyArray2<'_, f64>,
     ) -> PyResult<f64> {

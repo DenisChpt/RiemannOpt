@@ -770,12 +770,12 @@ impl PyLBFGS {
     ///     max_line_search_iters: Maximum line search iterations (default: 20)
     ///     tolerance: Convergence tolerance (default: 1e-6)
     #[new]
-    #[pyo3(signature = (memory_size=10, line_search="wolfe", max_line_search_iters=20, tolerance=1e-6))]
+    #[pyo3(signature = (memory_size=10, line_search="wolfe", _max_line_search_iters=20, _tolerance=1e-6))]
     pub fn new(
         memory_size: usize,
         line_search: &str,
-        max_line_search_iters: usize,
-        tolerance: f64,
+        _max_line_search_iters: usize,
+        _tolerance: f64,
     ) -> PyResult<Self> {
         if memory_size == 0 {
             return Err(PyValueError::new_err("memory_size must be positive"));
@@ -820,7 +820,7 @@ impl PyLBFGS {
         gradient: &Bound<'py, PyAny>,
     ) -> PyResult<PyObject> {
         // Extract point and gradient as vectors
-        let (point_vec, gradient_vec, shape) = if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>() {
+        let (point_vec, gradient_vec, shape) = if let Ok(_sphere) = manifold.extract::<PyRef<PySphere>>() {
             let point_array = point.extract::<PyReadonlyArray1<'_, f64>>()?;
             let gradient_array = gradient.extract::<PyReadonlyArray1<'_, f64>>()?;
             let point_vec = DVector::from_column_slice(point_array.as_slice()?);
@@ -1045,9 +1045,9 @@ impl PyLBFGS {
         } else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
             grassmann.get_inner().project_tangent(&point_vec, &update)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?
-        } else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>() {
+        } else if let Ok(_spd) = manifold.extract::<PyRef<PySPD>>() {
             update  // SPD doesn't need projection for tangent vectors
-        } else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
+        } else if let Ok(_hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
             update  // Hyperbolic tangent space projection might be identity
         } else {
             return Err(PyValueError::new_err("Unsupported manifold type"));

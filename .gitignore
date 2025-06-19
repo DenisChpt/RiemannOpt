@@ -40,3 +40,5 @@ docs/api/
 
 # Benchmarks
 target/criterion/
+benchmarks/python/results/
+benchmarks/python/visualizations/
