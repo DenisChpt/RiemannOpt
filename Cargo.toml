@@ -83,24 +83,8 @@ incremental = true
 opt-level = 2
 debug = true
 
-# Main crate configuration
-[package]
-name = "riemannopt-workspace"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-# Internal crates
-riemannopt-core = { path = "crates/riemannopt-core" }
-riemannopt-manifolds = { path = "crates/riemannopt-manifolds" }
-riemannopt-optim = { path = "crates/riemannopt-optim" }
-
-# External dependencies for examples
-nalgebra = { workspace = true }
-rand = { workspace = true }
-rayon = { workspace = true }
-rand_distr = { workspace = true }
+# Remove package section from workspace root - it's not needed
+# The workspace members handle their own packages
 
 # Workspace-level lints
 [workspace.lints.rust]

@@ -10,16 +10,19 @@ mod manifolds;
 mod manifolds_oblique;
 mod manifolds_fixed_rank;
 mod manifolds_psd_cone;
+mod manifolds_optimized;
 mod optimizers;
 mod optimizers_newton;
 mod cost_function;
 mod utils;
 mod validation;
+mod array_utils;
 
 use manifolds::*;
 use manifolds_oblique::PyOblique;
 use manifolds_fixed_rank::PyFixedRank;
 use manifolds_psd_cone::PyPSDCone;
+use manifolds_optimized::PyStiefelOpt;
 use optimizers::*;
 use optimizers_newton::PyNewton;
 use cost_function::{PyCostFunction, quadratic_cost, rosenbrock_cost};
@@ -91,6 +94,7 @@ fn init_manifolds_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOblique>()?;
     m.add_class::<PyFixedRank>()?;
     m.add_class::<PyPSDCone>()?;
+    m.add_class::<PyStiefelOpt>()?;
     Ok(())
 }
 
