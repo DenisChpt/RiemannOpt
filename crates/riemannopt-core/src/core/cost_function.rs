@@ -16,10 +16,12 @@ use crate::{
     error::{ManifoldError, Result},
     manifold::{Point, TangentVector},
     types::Scalar,
+    memory::workspace::{Workspace, BufferId},
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OMatrix, OVector};
 use num_traits::Float;
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Trait for cost functions on Riemannian manifolds.
 ///
@@ -202,6 +204,54 @@ where
         Ok(gradient)
     }
     
+    /// Compute gradient using finite differences with pre-allocated workspace.
+    ///
+    /// This method avoids allocations by using pre-allocated buffers from the workspace.
+    /// It's especially beneficial when computing gradients repeatedly during optimization.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point on the manifold
+    /// * `workspace` - Pre-allocated workspace containing necessary buffers
+    ///
+    /// # Returns
+    ///
+    /// An approximation of the gradient, stored in the workspace's gradient buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace doesn't contain the required buffers
+    /// or if they have incorrect dimensions.
+    fn gradient_fd_with_workspace(
+        &self,
+        point: &Point<T, D>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Default implementation: not optimized for workspace usage
+        // Implementations should override this for better performance
+        let gradient = self.gradient_fd(point)?;
+        
+        // Store result in workspace
+        let workspace_gradient = workspace.get_vector_mut(BufferId::Gradient)
+            .ok_or_else(|| ManifoldError::invalid_parameter(
+                "Workspace missing gradient buffer".to_string()
+            ))?;
+            
+        if workspace_gradient.len() != gradient.len() {
+            return Err(ManifoldError::invalid_parameter(
+                format!("Workspace gradient buffer has incorrect dimension: expected {}, got {}", 
+                    gradient.len(), workspace_gradient.len()),
+            ));
+        }
+        
+        // Copy gradient to workspace
+        for i in 0..gradient.len() {
+            workspace_gradient[i] = gradient[i];
+        }
+        
+        Ok(())
+    }
+    
     /// Compute gradient using finite differences with parallel execution.
     ///
     /// This method evaluates the gradient in parallel when the dimension is large enough.
@@ -322,11 +372,11 @@ where
     /// The underlying cost function
     pub inner: F,
     /// Number of cost evaluations
-    pub cost_count: std::cell::RefCell<usize>,
+    pub cost_count: AtomicUsize,
     /// Number of gradient evaluations
-    pub gradient_count: std::cell::RefCell<usize>,
+    pub gradient_count: AtomicUsize,
     /// Number of Hessian evaluations
-    pub hessian_count: std::cell::RefCell<usize>,
+    pub hessian_count: AtomicUsize,
     _phantom: std::marker::PhantomData<(T, D)>,
 }
 
@@ -341,26 +391,26 @@ where
     pub fn new(inner: F) -> Self {
         Self {
             inner,
-            cost_count: std::cell::RefCell::new(0),
-            gradient_count: std::cell::RefCell::new(0),
-            hessian_count: std::cell::RefCell::new(0),
+            cost_count: AtomicUsize::new(0),
+            gradient_count: AtomicUsize::new(0),
+            hessian_count: AtomicUsize::new(0),
             _phantom: std::marker::PhantomData,
         }
     }
 
     /// Resets all counters to zero.
     pub fn reset_counts(&self) {
-        *self.cost_count.borrow_mut() = 0;
-        *self.gradient_count.borrow_mut() = 0;
-        *self.hessian_count.borrow_mut() = 0;
+        self.cost_count.store(0, Ordering::Relaxed);
+        self.gradient_count.store(0, Ordering::Relaxed);
+        self.hessian_count.store(0, Ordering::Relaxed);
     }
 
     /// Returns the current evaluation counts.
     pub fn counts(&self) -> (usize, usize, usize) {
         (
-            *self.cost_count.borrow(),
-            *self.gradient_count.borrow(),
-            *self.hessian_count.borrow(),
+            self.cost_count.load(Ordering::Relaxed),
+            self.gradient_count.load(Ordering::Relaxed),
+            self.hessian_count.load(Ordering::Relaxed),
         )
     }
 }
@@ -373,18 +423,18 @@ where
     DefaultAllocator: Allocator<D>,
 {
     fn cost(&self, point: &Point<T, D>) -> Result<T> {
-        *self.cost_count.borrow_mut() += 1;
+        self.cost_count.fetch_add(1, Ordering::Relaxed);
         self.inner.cost(point)
     }
 
     fn cost_and_gradient(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
-        *self.cost_count.borrow_mut() += 1;
-        *self.gradient_count.borrow_mut() += 1;
+        self.cost_count.fetch_add(1, Ordering::Relaxed);
+        self.gradient_count.fetch_add(1, Ordering::Relaxed);
         self.inner.cost_and_gradient(point)
     }
 
     fn gradient(&self, point: &Point<T, D>) -> Result<TangentVector<T, D>> {
-        *self.gradient_count.borrow_mut() += 1;
+        self.gradient_count.fetch_add(1, Ordering::Relaxed);
         self.inner.gradient(point)
     }
 
@@ -392,7 +442,7 @@ where
     where
         DefaultAllocator: Allocator<D, D>,
     {
-        *self.hessian_count.borrow_mut() += 1;
+        self.hessian_count.fetch_add(1, Ordering::Relaxed);
         self.inner.hessian(point)
     }
 
@@ -425,6 +475,60 @@ pub trait CostFunctionParallel<T: Scalar>: CostFunction<T, nalgebra::Dyn> {
         
         gradient_fd_simd_parallel(&cost_fn, point, config)
     }
+}
+
+/// Helper function to compute gradient using finite differences with workspace for dynamic vectors.
+///
+/// This function provides an efficient implementation for dynamic-dimensional problems
+/// by reusing pre-allocated buffers from the workspace.
+pub fn gradient_fd_dvec_with_workspace<T, F>(
+    cost_fn: &F,
+    point: &nalgebra::DVector<T>,
+    workspace: &mut Workspace<T>,
+) -> Result<()>
+where
+    T: Scalar + Float,
+    F: Fn(&nalgebra::DVector<T>) -> Result<T>,
+{
+    let n = point.len();
+    let h = <T as Float>::sqrt(T::epsilon());
+    
+    // Get pre-allocated buffers from workspace
+    let (gradient, e_i, point_plus, point_minus) = workspace.get_gradient_buffers_mut()
+        .ok_or_else(|| ManifoldError::invalid_parameter(
+            "Workspace missing required gradient buffers".to_string()
+        ))?;
+        
+    // Verify dimensions
+    if gradient.len() != n || e_i.len() != n || point_plus.len() != n || point_minus.len() != n {
+        return Err(ManifoldError::invalid_parameter(
+            format!("Workspace buffers have incorrect dimensions for point of size {}", n),
+        ));
+    }
+    
+    // Clear gradient
+    gradient.fill(T::zero());
+    
+    for i in 0..n {
+        // Clear and set unit vector
+        e_i.fill(T::zero());
+        e_i[i] = T::one();
+        
+        // Compute point + h*e_i and point - h*e_i
+        point_plus.copy_from(point);
+        point_minus.copy_from(point);
+        point_plus[i] += h;
+        point_minus[i] -= h;
+        
+        // Central difference
+        let f_plus = cost_fn(point_plus)?;
+        let f_minus = cost_fn(point_minus)?;
+        
+        // Update gradient
+        gradient[i] = (f_plus - f_minus) / (h + h);
+    }
+    
+    Ok(())
 }
 
 // Blanket implementation for all cost functions with dynamic dimension

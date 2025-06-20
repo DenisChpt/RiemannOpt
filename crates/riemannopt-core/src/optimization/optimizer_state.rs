@@ -453,6 +453,77 @@ where
     }
 }
 
+/// Builder for `AdamState` with a fluent API.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let state = AdamStateBuilder::new()
+///     .beta1(0.9)
+///     .beta2(0.999)
+///     .epsilon(1e-8)
+///     .amsgrad(true)
+///     .build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct AdamStateBuilder<T: Scalar> {
+    beta1: T,
+    beta2: T,
+    epsilon: T,
+    amsgrad: bool,
+}
+
+impl<T: Scalar> AdamStateBuilder<T> {
+    /// Creates a new builder with default values.
+    pub fn new() -> Self {
+        Self {
+            beta1: T::from(0.9).unwrap(),
+            beta2: T::from(0.999).unwrap(),
+            epsilon: T::from(1e-8).unwrap(),
+            amsgrad: false,
+        }
+    }
+    
+    /// Sets the exponential decay rate for the first moment.
+    pub fn beta1(mut self, beta1: T) -> Self {
+        self.beta1 = beta1;
+        self
+    }
+    
+    /// Sets the exponential decay rate for the second moment.
+    pub fn beta2(mut self, beta2: T) -> Self {
+        self.beta2 = beta2;
+        self
+    }
+    
+    /// Sets the epsilon value for numerical stability.
+    pub fn epsilon(mut self, epsilon: T) -> Self {
+        self.epsilon = epsilon;
+        self
+    }
+    
+    /// Enables or disables the AMSGrad variant.
+    pub fn amsgrad(mut self, amsgrad: bool) -> Self {
+        self.amsgrad = amsgrad;
+        self
+    }
+    
+    /// Builds the `AdamState`.
+    pub fn build<D>(self) -> AdamState<T, D>
+    where
+        D: Dim,
+        DefaultAllocator: Allocator<D>,
+    {
+        AdamState::new(self.beta1, self.beta2, self.epsilon, self.amsgrad)
+    }
+}
+
+impl<T: Scalar> Default for AdamStateBuilder<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// State for L-BFGS optimizer.
 #[derive(Debug, Clone)]
 #[cfg_attr(

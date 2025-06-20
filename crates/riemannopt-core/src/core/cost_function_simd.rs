@@ -2,9 +2,10 @@
 
 use crate::{
     compute::cpu::{SimdBackend, get_dispatcher, parallel::ParallelConfig},
-    error::Result,
+    error::{Result, ManifoldError},
     manifold::{Point, TangentVector},
     types::Scalar,
+    memory::workspace::Workspace,
 };
 use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
@@ -203,6 +204,64 @@ where
         .map(|mutex| mutex.into_inner().unwrap())
         .unwrap_or_else(|arc| arc.lock().unwrap().clone());
     Ok(gradient_vec)
+}
+
+/// SIMD-accelerated gradient computation using finite differences with workspace.
+///
+/// This version avoids allocations by using pre-allocated buffers from the workspace.
+pub fn gradient_fd_simd_dvec_with_workspace<T, F>(
+    cost_fn: &F,
+    point: &DVector<T>,
+    workspace: &mut Workspace<T>,
+) -> Result<()>
+where
+    T: Scalar + Float + 'static,
+    F: Fn(&DVector<T>) -> Result<T>,
+{
+    let n = point.len();
+    let h = <T as Float>::sqrt(T::epsilon());
+    let dispatcher = get_dispatcher::<T>();
+    
+    // Get pre-allocated buffers from workspace
+    let (gradient, e_i, point_plus, point_minus) = workspace.get_gradient_buffers_mut()
+        .ok_or_else(|| ManifoldError::invalid_parameter(
+            "Workspace missing required gradient buffers".to_string()
+        ))?;
+        
+    // Verify dimensions
+    if gradient.len() != n || e_i.len() != n || point_plus.len() != n || point_minus.len() != n {
+        return Err(ManifoldError::invalid_parameter(
+            format!("Workspace buffers have incorrect dimensions for point of size {}", n),
+        ));
+    }
+    
+    // Process in chunks for better cache utilization
+    let chunk_size = 64;
+    for chunk_start in (0..n).step_by(chunk_size) {
+        let chunk_end = (chunk_start + chunk_size).min(n);
+        
+        // Compute all perturbations in this chunk
+        for i in chunk_start..chunk_end {
+            // Set unit vector
+            e_i.fill(T::zero());
+            e_i[i] = T::one();
+            
+            // Use SIMD for vector operations
+            point_plus.copy_from(point);
+            dispatcher.axpy(h, e_i, point_plus);
+            
+            point_minus.copy_from(point);
+            dispatcher.axpy(-h, e_i, point_minus);
+            
+            // Evaluate cost function
+            let f_plus = cost_fn(point_plus)?;
+            let f_minus = cost_fn(point_minus)?;
+            
+            gradient[i] = (f_plus - f_minus) / (h + h);
+        }
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]

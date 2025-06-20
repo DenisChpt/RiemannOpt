@@ -192,6 +192,50 @@ where
     }
 }
 
+/// Context for line search operations, bundling commonly used references.
+///
+/// This struct reduces the number of parameters passed to line search methods
+/// by grouping related references together.
+#[derive(Debug)]
+pub struct LineSearchContext<'a, T, D, C, M, R>
+where
+    T: Scalar,
+    D: Dim,
+    C: CostFunction<T, D>,
+    M: Manifold<T, D>,
+    R: Retraction<T, D>,
+    DefaultAllocator: Allocator<D>,
+{
+    /// The cost function to minimize
+    pub cost_fn: &'a C,
+    /// The manifold on which we're optimizing
+    pub manifold: &'a M,
+    /// The retraction to use for moving on the manifold
+    pub retraction: &'a R,
+    /// Phantom data for type parameters
+    _phantom: std::marker::PhantomData<(T, D)>,
+}
+
+impl<'a, T, D, C, M, R> LineSearchContext<'a, T, D, C, M, R>
+where
+    T: Scalar,
+    D: Dim,
+    C: CostFunction<T, D>,
+    M: Manifold<T, D>,
+    R: Retraction<T, D>,
+    DefaultAllocator: Allocator<D>,
+{
+    /// Create a new line search context.
+    pub fn new(cost_fn: &'a C, manifold: &'a M, retraction: &'a R) -> Self {
+        Self {
+            cost_fn,
+            manifold,
+            retraction,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
 /// Trait for line search algorithms.
 pub trait LineSearch<T, D>: Debug
 where
@@ -230,6 +274,49 @@ where
 
     /// Returns the name of this line search method.
     fn name(&self) -> &str;
+    
+    /// Performs a line search along a direction using a context.
+    ///
+    /// This method provides a cleaner API by bundling common parameters into a context.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Line search context containing cost function, manifold, and retraction
+    /// * `point` - Current point on the manifold
+    /// * `value` - Function value at the current point
+    /// * `gradient` - Gradient at the current point
+    /// * `direction` - Search direction (typically negative gradient or descent direction)
+    /// * `params` - Line search parameters
+    ///
+    /// # Returns
+    ///
+    /// A `LineSearchResult` containing the step size and new point.
+    fn search_with_context<C, M, R>(
+        &mut self,
+        ctx: &LineSearchContext<T, D, C, M, R>,
+        point: &Point<T, D>,
+        value: T,
+        gradient: &TangentVector<T, D>,
+        direction: &TangentVector<T, D>,
+        params: &LineSearchParams<T>,
+    ) -> Result<LineSearchResult<T, D>>
+    where
+        C: CostFunction<T, D>,
+        M: Manifold<T, D>,
+        R: Retraction<T, D>,
+    {
+        // Default implementation delegates to the old method
+        self.search(
+            ctx.cost_fn,
+            ctx.manifold,
+            ctx.retraction,
+            point,
+            value,
+            gradient,
+            direction,
+            params,
+        )
+    }
 }
 
 /// Backtracking line search with Armijo condition.
@@ -316,9 +403,15 @@ where
             }
         }
 
-        // Line search failed
+        // Line search failed - provide context
         Err(ManifoldError::numerical_error(
-            "Backtracking line search failed to find acceptable step",
+            format!(
+                "Backtracking line search failed after {} iterations. Final step size: {:.2e}, min threshold: {:.2e}, directional derivative: {:.2e}",
+                params.max_iterations, 
+                step_size.to_f64(), 
+                params.min_step_size.to_f64(), 
+                directional_deriv.to_f64()
+            ),
         ))
     }
 
@@ -484,7 +577,12 @@ where
         }
 
         Err(ManifoldError::numerical_error(
-            "Strong Wolfe line search failed to bracket",
+            format!(
+                "Strong Wolfe line search failed to bracket after {} iterations. Current alpha: {:.2e}, tolerance: {:.2e}",
+                params.max_iterations,
+                alpha.to_f64(),
+                self.tolerance
+            ),
         ))
     }
 
@@ -585,7 +683,13 @@ impl StrongWolfeLineSearch {
         }
 
         Err(ManifoldError::numerical_error(
-            "Strong Wolfe zoom phase failed to converge",
+            format!(
+                "Strong Wolfe zoom phase failed to converge after {} iterations. Final bracket: [{:.2e}, {:.2e}], tolerance: {:.2e}",
+                params.max_iterations,
+                alpha_low.to_f64(),
+                alpha_high.to_f64(),
+                self.tolerance
+            ),
         ))
     }
 }

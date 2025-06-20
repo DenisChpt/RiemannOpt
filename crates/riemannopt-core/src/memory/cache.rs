@@ -18,6 +18,10 @@ use std::cell::RefCell;
 
 thread_local! {
     /// Thread-local L1 cache storage
+    /// 
+    /// Note: RefCell is safe here because each thread gets its own instance
+    /// of the cache, preventing any data races. This is the standard pattern
+    /// for thread-local storage in Rust.
     static L1_CACHE: RefCell<HashMap<std::any::TypeId, Box<dyn std::any::Any>>> = RefCell::new(HashMap::new());
 }
 
