@@ -112,9 +112,9 @@ use riemannopt_core::{
     manifold::{Manifold, Point},
     types::{DVector, Scalar},
     memory::workspace::Workspace,
-    compute::{get_dispatcher, SimdBackend},
+    compute::{get_dispatcher, SimdBackend, specialized::small_dim::*},
 };
-use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, Dyn, OVector, U1};
+use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, Dyn, OVector, U1, Vector2, Vector3};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use std::iter::Sum;
@@ -524,21 +524,78 @@ where
     }
 
     fn project_point(&self, point: &DVector<T>) -> DVector<T> {
-        let dispatcher = get_dispatcher::<T>();
-        let norm = dispatcher.norm(point);
-        
-        if norm < T::epsilon() {
-            // Handle zero vector by creating a standard basis vector
-            // Choose e₁ = (1, 0, ..., 0) as canonical representative
-            let mut result = DVector::zeros(self.ambient_dim);
-            result[0] = T::one();
-            result
-        } else {
-            // Standard projection: Π(x) = x / ‖x‖
-            // The dispatcher will handle SIMD/parallel optimizations internally
-            let mut result = point.clone();
-            dispatcher.scale(&mut result, T::one() / norm);
-            result
+        // Dispatch to specialized implementations for small dimensions
+        match self.ambient_dim {
+            2 => {
+                // Use specialized 2D operations
+                let ops = Ops2D;
+                let slice = point.as_slice();
+                let norm = ops.norm_small(slice);
+                
+                if norm < T::epsilon() {
+                    // Handle zero vector
+                    DVector::from_vec(vec![T::one(), T::zero()])
+                } else {
+                    let inv_norm = T::one() / norm;
+                    DVector::from_vec(vec![slice[0] * inv_norm, slice[1] * inv_norm])
+                }
+            }
+            3 => {
+                // Use specialized 3D operations
+                let ops = Ops3D;
+                let slice = point.as_slice();
+                let norm = ops.norm_small(slice);
+                
+                if norm < T::epsilon() {
+                    // Handle zero vector
+                    DVector::from_vec(vec![T::one(), T::zero(), T::zero()])
+                } else {
+                    let inv_norm = T::one() / norm;
+                    DVector::from_vec(vec![
+                        slice[0] * inv_norm,
+                        slice[1] * inv_norm,
+                        slice[2] * inv_norm,
+                    ])
+                }
+            }
+            4 => {
+                // Use specialized 4D operations
+                let ops = Ops4D;
+                let slice = point.as_slice();
+                let norm = ops.norm_small(slice);
+                
+                if norm < T::epsilon() {
+                    // Handle zero vector
+                    DVector::from_vec(vec![T::one(), T::zero(), T::zero(), T::zero()])
+                } else {
+                    let inv_norm = T::one() / norm;
+                    DVector::from_vec(vec![
+                        slice[0] * inv_norm,
+                        slice[1] * inv_norm,
+                        slice[2] * inv_norm,
+                        slice[3] * inv_norm,
+                    ])
+                }
+            }
+            _ => {
+                // Generic implementation for higher dimensions
+                let dispatcher = get_dispatcher::<T>();
+                let norm = dispatcher.norm(point);
+                
+                if norm < T::epsilon() {
+                    // Handle zero vector by creating a standard basis vector
+                    // Choose e₁ = (1, 0, ..., 0) as canonical representative
+                    let mut result = DVector::zeros(self.ambient_dim);
+                    result[0] = T::one();
+                    result
+                } else {
+                    // Standard projection: Π(x) = x / ‖x‖
+                    // The dispatcher will handle SIMD/parallel optimizations internally
+                    let mut result = point.clone();
+                    dispatcher.scale(&mut result, T::one() / norm);
+                    result
+                }
+            }
         }
     }
 
@@ -547,15 +604,35 @@ where
         point: &DVector<T>,
         vector: &DVector<T>,
     ) -> Result<DVector<T>> {
-        // Orthogonal projection to tangent space T_x S^{n-1}
-        // Formula: P_x(v) = v - ⟨v, x⟩x
-        // This removes the component of v in the normal direction x
-        let dispatcher = get_dispatcher::<T>();
-        let inner = dispatcher.dot_product(point, vector);
-        
-        let mut result = vector.clone();
-        dispatcher.axpy(-inner, point, &mut result);
-        Ok(result)
+        // Dispatch to specialized implementations for small dimensions
+        match self.ambient_dim {
+            2 => {
+                // Use specialized 2D implementation
+                let p = Vector2::new(point[0], point[1]);
+                let mut v = Vector2::new(vector[0], vector[1]);
+                project_tangent_sphere_2d(&p, &mut v);
+                Ok(DVector::from_vec(vec![v[0], v[1]]))
+            }
+            3 => {
+                // Use specialized 3D implementation
+                let p = Vector3::new(point[0], point[1], point[2]);
+                let mut v = Vector3::new(vector[0], vector[1], vector[2]);
+                project_tangent_sphere_3d(&p, &mut v);
+                Ok(DVector::from_vec(vec![v[0], v[1], v[2]]))
+            }
+            _ => {
+                // Generic implementation for higher dimensions
+                // Orthogonal projection to tangent space T_x S^{n-1}
+                // Formula: P_x(v) = v - ⟨v, x⟩x
+                // This removes the component of v in the normal direction x
+                let dispatcher = get_dispatcher::<T>();
+                let inner = dispatcher.dot_product(point, vector);
+                
+                let mut result = vector.clone();
+                dispatcher.axpy(-inner, point, &mut result);
+                Ok(result)
+            }
+        }
     }
 
     fn inner_product(
@@ -573,10 +650,29 @@ where
     }
 
     fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
-        // Use exponential map as retraction (exact on sphere)
-        // R_x(v) = exp_x(v) = cos(‖v‖)x + sin(‖v‖)v/‖v‖
-        // This is the optimal retraction for the sphere
-        self.exp_map(point, tangent)
+        // Dispatch to specialized implementations for small dimensions
+        match self.ambient_dim {
+            2 => {
+                // Use specialized 2D implementation
+                let p = Vector2::new(point[0], point[1]);
+                let v = Vector2::new(tangent[0], tangent[1]);
+                let result = retract_sphere_2d(&p, &v, T::one());
+                Ok(DVector::from_vec(vec![result[0], result[1]]))
+            }
+            3 => {
+                // Use specialized 3D implementation
+                let p = Vector3::new(point[0], point[1], point[2]);
+                let v = Vector3::new(tangent[0], tangent[1], tangent[2]);
+                let result = retract_sphere_3d(&p, &v, T::one());
+                Ok(DVector::from_vec(vec![result[0], result[1], result[2]]))
+            }
+            _ => {
+                // Use exponential map as retraction (exact on sphere)
+                // R_x(v) = exp_x(v) = cos(‖v‖)x + sin(‖v‖)v/‖v‖
+                // This is the optimal retraction for the sphere
+                self.exp_map(point, tangent)
+            }
+        }
     }
 
     fn inverse_retract(

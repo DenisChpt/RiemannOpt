@@ -126,6 +126,8 @@ use riemannopt_core::{
     memory::workspace::Workspace,
     parallel_thresholds::{ParallelDecision, DecompositionKind, get_parallel_config, ShouldParallelize},
 };
+use crate::utils::vector_to_matrix_view;
+use crate::stiefel_small::{project_tangent_stiefel_3_2, project_tangent_stiefel_4_2, can_use_specialized_stiefel};
 use nalgebra::{DMatrix, DVector, Dyn};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
@@ -550,7 +552,10 @@ where
             return false;
         }
         
-        let matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
+        // Use view to avoid cloning
+        let matrix_view = vector_to_matrix_view(point, self.n, self.p);
+        // Need to convert view to owned matrix for is_orthonormal (gram computation requires it)
+        let matrix = matrix_view.clone_owned();
         self.is_orthonormal(&matrix, tolerance)
     }
 
@@ -564,8 +569,8 @@ where
             return false;
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.data.as_vec().clone());
+        let x_matrix = vector_to_matrix_view(point, self.n, self.p);
+        let v_matrix = vector_to_matrix_view(vector, self.n, self.p);
         
         // Check if X^T V + V^T X = 0 (skew-symmetric constraint)
         let xtv = x_matrix.transpose() * &v_matrix;
@@ -614,18 +619,14 @@ where
             ));
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.data.as_vec().clone());
+        // Create a workspace to hold the result
+        let mut result = DVector::zeros(self.n * self.p);
         
-        // Orthogonal projection to tangent space T_X St(n,p)
-        // Formula: P_X(V) = V - X(X^T V + V^T X)/2
-        // This ensures X^T P_X(V) + P_X(V)^T X = 0 (skew-symmetric)
-        let xtv = x_matrix.transpose() * &v_matrix;
-        let vtx = v_matrix.transpose() * &x_matrix;
-        let symmetric = (&xtv + &vtx) * <T as Scalar>::from_f64(0.5);
+        // Use workspace method which avoids allocations
+        let mut workspace = riemannopt_core::memory::workspace::Workspace::new();
+        self.project_tangent_with_workspace(point, vector, &mut result, &mut workspace)?;
         
-        let projected = v_matrix - &x_matrix * symmetric;
-        Ok(DVector::from_vec(projected.data.as_vec().clone()))
+        Ok(result)
     }
 
     fn inner_product(
@@ -646,17 +647,14 @@ where
             ));
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, tangent.data.as_vec().clone());
+        // Create a workspace to hold the result
+        let mut result = DVector::zeros(self.n * self.p);
         
-        // QR retraction: R_X(V) = qf(X + V)
-        // This is a first-order retraction that satisfies:
-        // 1. R_X(0) = X (identity property)
-        // 2. dR_X(0)[V] = V (first-order condition)
-        // 3. R_X(V) ∈ St(n,p) (manifold constraint)
-        let candidate = x_matrix + v_matrix;
-        let retracted = self.qr_projection(&candidate);
-        Ok(DVector::from_vec(retracted.data.as_vec().clone()))
+        // Use workspace method which avoids allocations
+        let mut workspace = riemannopt_core::memory::workspace::Workspace::new();
+        self.retract_with_workspace(point, tangent, &mut result, &mut workspace)?;
+        
+        Ok(result)
     }
 
     fn inverse_retract(
@@ -881,6 +879,30 @@ where
             *result = DVector::zeros(self.n * self.p);
         }
 
+        // Check if we can use specialized small dimension implementations
+        if can_use_specialized_stiefel(self.n, self.p) {
+            match (self.n, self.p) {
+                (3, 2) => {
+                    project_tangent_stiefel_3_2(
+                        point.as_slice(),
+                        vector.as_slice(),
+                        result.as_mut_slice(),
+                    );
+                    return Ok(());
+                }
+                (4, 2) => {
+                    project_tangent_stiefel_4_2(
+                        point.as_slice(),
+                        vector.as_slice(),
+                        result.as_mut_slice(),
+                    );
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        // Generic implementation for larger dimensions
         // Use temporary matrices from the pool
         let mut x_matrix = workspace.acquire_temp_matrix(self.n, self.p);
         let mut v_matrix = workspace.acquire_temp_matrix(self.n, self.p);
