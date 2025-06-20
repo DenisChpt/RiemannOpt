@@ -5,6 +5,7 @@
 
 pub mod sphere;
 pub mod stiefel;
+pub mod stiefel_small;
 pub mod grassmann;
 pub mod spd;
 pub mod hyperbolic;
@@ -13,6 +14,7 @@ pub mod product_static;
 pub mod oblique;
 pub mod fixed_rank;
 pub mod psd_cone;
+pub mod utils;
 
 #[cfg(feature = "parallel")]
 pub mod sphere_simd;
