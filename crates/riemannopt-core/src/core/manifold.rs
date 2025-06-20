@@ -16,7 +16,7 @@
 //! - **Riemannian gradient**: The unique vector in T_p M representing the derivative
 //! - **Parallel transport**: Moving vectors along curves while preserving angles
 
-use crate::{error::Result, types::Scalar};
+use crate::{error::Result, types::Scalar, memory::workspace::Workspace};
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OVector};
 use num_traits::Float;
 use std::fmt::Debug;
@@ -467,6 +467,177 @@ where
     /// Flat manifolds (like Euclidean space) have zero curvature.
     fn is_flat(&self) -> bool {
         false
+    }
+
+    // ========================================================================
+    // Workspace-based methods for zero-allocation operations
+    // ========================================================================
+
+    /// Projects a vector onto the tangent space at a given point using a workspace.
+    ///
+    /// This method is identical to `project_tangent` but uses pre-allocated workspace
+    /// buffers to avoid allocations in performance-critical paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point p ∈ ℳ on the manifold
+    /// * `vector` - The ambient vector v ∈ ℝⁿ to project
+    /// * `result` - Pre-allocated output buffer for the projected tangent vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) on success, with the result written to the `result` buffer.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation calls the allocating version. Manifolds should
+    /// override this for better performance.
+    fn project_tangent_with_workspace(
+        &self,
+        point: &Point<T, D>,
+        vector: &TangentVector<T, D>,
+        result: &mut TangentVector<T, D>,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Default implementation: call the allocating version
+        let projected = self.project_tangent(point, vector)?;
+        result.copy_from(&projected);
+        Ok(())
+    }
+
+    /// Performs a retraction from the tangent space to the manifold using a workspace.
+    ///
+    /// This method is identical to `retract` but uses pre-allocated workspace
+    /// buffers to avoid allocations in performance-critical paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point p ∈ ℳ on the manifold
+    /// * `tangent` - A tangent vector v ∈ T_p ℳ (direction and magnitude of step)
+    /// * `result` - Pre-allocated output buffer for the retracted point
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) on success, with the result written to the `result` buffer.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation calls the allocating version. Manifolds should
+    /// override this for better performance.
+    fn retract_with_workspace(
+        &self,
+        point: &Point<T, D>,
+        tangent: &TangentVector<T, D>,
+        result: &mut Point<T, D>,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Default implementation: call the allocating version
+        let retracted = self.retract(point, tangent)?;
+        result.copy_from(&retracted);
+        Ok(())
+    }
+
+    /// Computes the inverse retraction using a workspace.
+    ///
+    /// This method is identical to `inverse_retract` but uses pre-allocated workspace
+    /// buffers to avoid allocations in performance-critical paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point on the manifold
+    /// * `other` - Another point on the manifold
+    /// * `result` - Pre-allocated output buffer for the tangent vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) on success, with the result written to the `result` buffer.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation calls the allocating version. Manifolds should
+    /// override this for better performance.
+    fn inverse_retract_with_workspace(
+        &self,
+        point: &Point<T, D>,
+        other: &Point<T, D>,
+        result: &mut TangentVector<T, D>,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Default implementation: call the allocating version
+        let tangent = self.inverse_retract(point, other)?;
+        result.copy_from(&tangent);
+        Ok(())
+    }
+
+    /// Converts the Euclidean gradient to the Riemannian gradient using a workspace.
+    ///
+    /// This method is identical to `euclidean_to_riemannian_gradient` but uses
+    /// pre-allocated workspace buffers to avoid allocations in performance-critical paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point on the manifold
+    /// * `euclidean_grad` - The Euclidean gradient at `point`
+    /// * `result` - Pre-allocated output buffer for the Riemannian gradient
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) on success, with the result written to the `result` buffer.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation calls the allocating version. Manifolds should
+    /// override this for better performance.
+    fn euclidean_to_riemannian_gradient_with_workspace(
+        &self,
+        point: &Point<T, D>,
+        euclidean_grad: &TangentVector<T, D>,
+        result: &mut TangentVector<T, D>,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Default implementation: call the allocating version
+        let riemannian_grad = self.euclidean_to_riemannian_gradient(point, euclidean_grad)?;
+        result.copy_from(&riemannian_grad);
+        Ok(())
+    }
+
+    /// Performs parallel transport of a vector along a retraction using a workspace.
+    ///
+    /// This method is identical to `parallel_transport` but uses pre-allocated workspace
+    /// buffers to avoid allocations in performance-critical paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - Starting point on the manifold
+    /// * `to` - Ending point on the manifold
+    /// * `vector` - Tangent vector at `from` to transport
+    /// * `result` - Pre-allocated output buffer for the transported vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) on success, with the result written to the `result` buffer.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation calls the allocating version. Manifolds should
+    /// override this for better performance.
+    fn parallel_transport_with_workspace(
+        &self,
+        from: &Point<T, D>,
+        to: &Point<T, D>,
+        vector: &TangentVector<T, D>,
+        result: &mut TangentVector<T, D>,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Default implementation: call the allocating version
+        let transported = self.parallel_transport(from, to, vector)?;
+        result.copy_from(&transported);
+        Ok(())
     }
 }
 

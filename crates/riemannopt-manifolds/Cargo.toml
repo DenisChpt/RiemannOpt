@@ -29,3 +29,7 @@ serde = ["riemannopt-core/serde"]
 proptest = { workspace = true }
 criterion = { workspace = true }
 pretty_assertions = { workspace = true }
+
+[[example]]
+name = "simd_usage"
+path = "../../examples/simd_usage.rs"

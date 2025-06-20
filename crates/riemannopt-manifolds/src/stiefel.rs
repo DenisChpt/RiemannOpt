@@ -123,6 +123,7 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     types::Scalar,
+    memory::workspace::Workspace,
     parallel_thresholds::{ParallelDecision, DecompositionKind, get_parallel_config, ShouldParallelize},
 };
 use nalgebra::{DMatrix, DVector, Dyn};
@@ -855,6 +856,211 @@ where
         }
         
         Ok(<T as Float>::sqrt(distance_squared))
+    }
+
+    // ========================================================================
+    // Workspace-based methods for zero-allocation operations
+    // ========================================================================
+
+    fn project_tangent_with_workspace(
+        &self,
+        point: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if point.len() != self.n * self.p || vector.len() != self.n * self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point and vector must have correct dimensions for Stiefel manifold",
+                format!("point: {}, vector: {}", point.len(), vector.len()),
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.n * self.p {
+            *result = DVector::zeros(self.n * self.p);
+        }
+
+        // Use temporary matrices from the pool
+        let mut x_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        let mut v_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        let mut xtv = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut vtx = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut symmetric = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut temp = workspace.acquire_temp_matrix(self.n, self.p);
+
+        // Fill x_matrix from point vector (column-major order)
+        for j in 0..self.p {
+            for i in 0..self.n {
+                x_matrix[(i, j)] = point[j * self.n + i];
+            }
+        }
+
+        // Fill v_matrix from vector (column-major order)
+        for j in 0..self.p {
+            for i in 0..self.n {
+                v_matrix[(i, j)] = vector[j * self.n + i];
+            }
+        }
+
+        // Compute X^T V
+        xtv.gemm(T::one(), &x_matrix.transpose(), &v_matrix, T::zero());
+        
+        // Compute V^T X
+        vtx.gemm(T::one(), &v_matrix.transpose(), &x_matrix, T::zero());
+
+        // Compute symmetric part: (X^T V + V^T X) / 2
+        for i in 0..self.p {
+            for j in 0..self.p {
+                symmetric[(i, j)] = (xtv[(i, j)] + vtx[(i, j)]) * <T as Scalar>::from_f64(0.5);
+            }
+        }
+
+        // Compute X * symmetric
+        temp.gemm(T::one(), &x_matrix, &symmetric, T::zero());
+
+        // Compute result = V - X * symmetric (column-major order)
+        for j in 0..self.p {
+            for i in 0..self.n {
+                let idx = j * self.n + i;
+                result[idx] = v_matrix[(i, j)] - temp[(i, j)];
+            }
+        }
+
+        Ok(())
+    }
+
+    fn retract_with_workspace(
+        &self,
+        point: &DVector<T>,
+        tangent: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if point.len() != self.n * self.p || tangent.len() != self.n * self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point and tangent must have correct dimensions",
+                format!("point: {}, tangent: {}", point.len(), tangent.len()),
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.n * self.p {
+            *result = DVector::zeros(self.n * self.p);
+        }
+
+        // Use temporary matrices from the pool
+        let mut x_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        let mut v_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        let mut candidate = workspace.acquire_temp_matrix(self.n, self.p);
+
+        // Fill matrices from vectors (column-major order)
+        for j in 0..self.p {
+            for i in 0..self.n {
+                let idx = j * self.n + i;
+                x_matrix[(i, j)] = point[idx];
+                v_matrix[(i, j)] = tangent[idx];
+            }
+        }
+
+        // Compute X + V
+        for i in 0..self.n {
+            for j in 0..self.p {
+                candidate[(i, j)] = x_matrix[(i, j)] + v_matrix[(i, j)];
+            }
+        }
+
+        // QR decomposition (this still allocates, but we minimize other allocations)
+        let qr = candidate.clone().qr();
+        let q = qr.q();
+
+        // Copy first p columns of Q to result (column-major order)
+        for j in 0..self.p {
+            for i in 0..self.n {
+                result[j * self.n + i] = q[(i, j)];
+            }
+        }
+
+        Ok(())
+    }
+
+    fn euclidean_to_riemannian_gradient_with_workspace(
+        &self,
+        point: &DVector<T>,
+        euclidean_grad: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // For Stiefel manifold, this is just projection to tangent space
+        self.project_tangent_with_workspace(point, euclidean_grad, result, workspace)
+    }
+
+    fn inverse_retract_with_workspace(
+        &self,
+        point: &DVector<T>,
+        other: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if point.len() != self.n * self.p || other.len() != self.n * self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                "Points must have correct dimensions",
+                format!("point: {}, other: {}", point.len(), other.len()),
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.n * self.p {
+            *result = DVector::zeros(self.n * self.p);
+        }
+
+        // Use temporary matrices from the pool
+        let mut x_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        let mut y_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        let mut v_vec = workspace.acquire_temp_vector(self.n * self.p);
+
+        // Fill matrices from vectors (column-major order)
+        for j in 0..self.p {
+            for i in 0..self.n {
+                let idx = j * self.n + i;
+                x_matrix[(i, j)] = point[idx];
+                y_matrix[(i, j)] = other[idx];
+            }
+        }
+
+        // Compute V = Y - X and store in v_vec (column-major order)
+        for j in 0..self.p {
+            for i in 0..self.n {
+                let idx = j * self.n + i;
+                v_vec[idx] = y_matrix[(i, j)] - x_matrix[(i, j)];
+            }
+        }
+
+        // Project to tangent space using workspace
+        self.project_tangent_with_workspace(point, &v_vec, result, workspace)?;
+
+        Ok(())
+    }
+
+    fn parallel_transport_with_workspace(
+        &self,
+        from: &DVector<T>,
+        to: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if from.len() != self.n * self.p || to.len() != self.n * self.p || vector.len() != self.n * self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                "All vectors must have correct dimensions",
+                format!("expected: {}", self.n * self.p),
+            ));
+        }
+
+        // For now, use vector transport by projection
+        // This is a simplified implementation - a full implementation would use
+        // the algorithm from Absil et al.
+        self.project_tangent_with_workspace(to, vector, result, workspace)
     }
 }
 
