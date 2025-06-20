@@ -294,7 +294,9 @@ where
     /// Creates a weighted metric with uniform weight.
     pub fn uniform(dim: D, weight: T) -> Result<Self> {
         if weight <= T::zero() {
-            return Err(ManifoldError::numerical_error("Weight must be positive"));
+            return Err(ManifoldError::invalid_parameter(
+                format!("Weight must be positive, got: {:.2e}", weight.to_f64())
+            ));
         }
         Ok(Self {
             weights: OVector::from_element_generic(dim, nalgebra::U1, weight),

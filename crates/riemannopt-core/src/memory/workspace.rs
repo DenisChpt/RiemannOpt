@@ -28,6 +28,12 @@ pub enum BufferId {
     Temp2,
     /// Temporary vector 3
     Temp3,
+    /// Unit vector for finite differences
+    UnitVector,
+    /// Point plus perturbation for finite differences
+    PointPlus,
+    /// Point minus perturbation for finite differences
+    PointMinus,
     /// Hessian approximation
     Hessian,
     /// Preconditioner
@@ -70,6 +76,9 @@ impl<T: Scalar> Workspace<T> {
         workspace.vectors.insert(BufferId::PreviousGradient, DVector::zeros(n));
         workspace.vectors.insert(BufferId::Temp1, DVector::zeros(n));
         workspace.vectors.insert(BufferId::Temp2, DVector::zeros(n));
+        workspace.vectors.insert(BufferId::UnitVector, DVector::zeros(n));
+        workspace.vectors.insert(BufferId::PointPlus, DVector::zeros(n));
+        workspace.vectors.insert(BufferId::PointMinus, DVector::zeros(n));
         
         workspace
     }
@@ -143,6 +152,40 @@ impl<T: Scalar> Workspace<T> {
             .map(|m| m.len() * std::mem::size_of::<T>())
             .sum();
         vector_bytes + matrix_bytes
+    }
+    
+    /// Get mutable references to multiple vector buffers for gradient computation.
+    ///
+    /// This method is specifically designed for finite difference gradient computation
+    /// to avoid multiple mutable borrows.
+    pub fn get_gradient_buffers_mut(&mut self) -> Option<(
+        &mut DVector<T>,  // gradient
+        &mut DVector<T>,  // unit vector
+        &mut DVector<T>,  // point plus
+        &mut DVector<T>,  // point minus
+    )> {
+        // Check if all required buffers exist
+        if !self.vectors.contains_key(&BufferId::Gradient) ||
+           !self.vectors.contains_key(&BufferId::UnitVector) ||
+           !self.vectors.contains_key(&BufferId::PointPlus) ||
+           !self.vectors.contains_key(&BufferId::PointMinus) {
+            return None;
+        }
+        
+        // Get raw pointers to avoid borrow checker issues
+        unsafe {
+            let gradient = self.vectors.get_mut(&BufferId::Gradient).unwrap() as *mut DVector<T>;
+            let unit = self.vectors.get_mut(&BufferId::UnitVector).unwrap() as *mut DVector<T>;
+            let plus = self.vectors.get_mut(&BufferId::PointPlus).unwrap() as *mut DVector<T>;
+            let minus = self.vectors.get_mut(&BufferId::PointMinus).unwrap() as *mut DVector<T>;
+            
+            Some((
+                &mut *gradient,
+                &mut *unit,
+                &mut *plus,
+                &mut *minus,
+            ))
+        }
     }
 }
 

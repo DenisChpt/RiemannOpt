@@ -1,8 +1,8 @@
 //! Optimizer operations using pre-allocated workspace.
 
 use crate::{
-    error::{Result, OptimizerResult, OptimizerError},
-    memory::Workspace,
+    error::{Result, OptimizerResult, OptimizerError, ManifoldError},
+    memory::{Workspace, workspace::BufferId},
     types::{Scalar, DVector},
 };
 use num_traits::Float;
@@ -30,33 +30,68 @@ where
     // Compute initial values
     let f0 = cost_fn(point).map_err(|e| OptimizerError::ManifoldError(e))?;
     
-    // For now, use a simple allocation for gradient
-    let mut grad0 = DVector::zeros(n);
-    gradient_fd_simple(cost_fn, point, workspace, &mut grad0).map_err(|e| OptimizerError::ManifoldError(e))?;
+    // Use workspace gradient buffer
+    gradient_fd_simple(cost_fn, point, workspace).map_err(|e| OptimizerError::ManifoldError(e))?;
+    let grad0 = workspace.get_vector(BufferId::Gradient)
+        .ok_or_else(|| OptimizerError::ManifoldError(
+            ManifoldError::invalid_parameter("Missing gradient buffer in workspace")
+        ))?;
     let dir_deriv0 = grad0.dot(direction);
     
     if dir_deriv0 >= T::zero() {
-        return Err(OptimizerError::InvalidSearchDirection);
+        // Add context via ManifoldError instead
+        return Err(OptimizerError::ManifoldError(
+            ManifoldError::invalid_parameter(
+                format!("Search direction is not a descent direction. Directional derivative: {:.2e}, gradient norm: {:.2e}",
+                    dir_deriv0.to_f64(),
+                    grad0.norm().to_f64())
+            )
+        ));
     }
     
-    // Armijo line search
-    let mut new_point = DVector::zeros(n);
+    // Armijo line search - verify workspace buffer
+    {
+        let new_point = workspace.get_vector_mut(BufferId::Temp1)
+            .ok_or_else(|| OptimizerError::ManifoldError(
+                ManifoldError::invalid_parameter("Missing Temp1 buffer in workspace")
+            ))?;
+        if new_point.len() != n {
+            return Err(OptimizerError::ManifoldError(
+                ManifoldError::invalid_parameter(format!("Temp1 buffer has wrong size: {} vs {}", new_point.len(), n))
+            ));
+        }
+    }
+    
     for _ in 0..max_iters {
-        // new_point = point + alpha * direction
-        new_point.copy_from(point);
-        new_point.axpy(alpha, direction, T::one());
+        // Update new_point = point + alpha * direction
+        {
+            let new_point = workspace.get_vector_mut(BufferId::Temp1).unwrap();
+            new_point.copy_from(point);
+            new_point.axpy(alpha, direction, T::one());
+        }
         
-        let f_new = cost_fn(&new_point).map_err(|e| OptimizerError::ManifoldError(e))?;
+        // Evaluate cost at new point
+        let f_new = {
+            let new_point = workspace.get_vector(BufferId::Temp1).unwrap();
+            cost_fn(new_point).map_err(|e| OptimizerError::ManifoldError(e))?
+        };
         
         // Check Armijo condition
         if f_new <= f0 + c1 * alpha * dir_deriv0 {
-            // Check strong Wolfe condition
-            let mut grad_new = DVector::zeros(n);
-            gradient_fd_simple(cost_fn, &new_point, workspace, &mut grad_new).map_err(|e| OptimizerError::ManifoldError(e))?;
+            // Check strong Wolfe condition by computing gradient at new point
+            // We need to clone the point to avoid borrow checker issues
+            let new_point_clone = workspace.get_vector(BufferId::Temp1).unwrap().clone();
+            gradient_fd_simple(cost_fn, &new_point_clone, workspace).map_err(|e| OptimizerError::ManifoldError(e))?;
+            
+            let grad_new = workspace.get_vector(BufferId::Gradient)
+                .ok_or_else(|| OptimizerError::ManifoldError(
+                    ManifoldError::invalid_parameter("Missing gradient buffer in workspace")
+                ))?;
             let dir_deriv_new = grad_new.dot(direction);
             
             if <T as num_traits::Float>::abs(dir_deriv_new) <= -c2 * dir_deriv0 {
-                result_point.copy_from(&new_point);
+                let new_point = workspace.get_vector(BufferId::Temp1).unwrap();
+                result_point.copy_from(new_point);
                 return Ok(alpha);
             }
         }
@@ -66,7 +101,8 @@ where
     }
     
     // Return best attempt
-    result_point.copy_from(&new_point);
+    let new_point = workspace.get_vector(BufferId::Temp1).unwrap();
+    result_point.copy_from(new_point);
     Ok(alpha)
 }
 
@@ -74,8 +110,7 @@ where
 fn gradient_fd_simple<T, F>(
     cost_fn: &F,
     point: &DVector<T>,
-    _workspace: &mut Workspace<T>,
-    gradient: &mut DVector<T>,
+    workspace: &mut Workspace<T>,
 ) -> Result<()>
 where
     T: Scalar,
@@ -84,12 +119,20 @@ where
     let n = point.len();
     let h = <T as Float>::sqrt(T::epsilon());
     
-    gradient.fill(T::zero());
+    // Get pre-allocated buffers from workspace
+    let (gradient, e_i, point_plus, point_minus) = workspace.get_gradient_buffers_mut()
+        .ok_or_else(|| ManifoldError::invalid_parameter(
+            "Workspace missing required gradient buffers".to_string()
+        ))?;
+        
+    // Verify dimensions
+    if gradient.len() != n || e_i.len() != n || point_plus.len() != n || point_minus.len() != n {
+        return Err(ManifoldError::invalid_parameter(
+            format!("Workspace buffers have incorrect dimensions for point of size {}", n),
+        ));
+    }
     
-    // For now, use simple allocations
-    let mut e_i = DVector::zeros(n);
-    let mut point_plus = DVector::zeros(n);
-    let mut point_minus = DVector::zeros(n);
+    gradient.fill(T::zero());
     
     for i in 0..n {
         e_i.fill(T::zero());
@@ -97,13 +140,13 @@ where
         
         // Use pre-allocated buffers
         point_plus.copy_from(point);
-        point_plus.axpy(h, &e_i, T::one());
+        point_plus.axpy(h, e_i, T::one());
         
         point_minus.copy_from(point);
-        point_minus.axpy(-h, &e_i, T::one());
+        point_minus.axpy(-h, e_i, T::one());
         
-        let f_plus = cost_fn(&point_plus)?;
-        let f_minus = cost_fn(&point_minus)?;
+        let f_plus = cost_fn(point_plus)?;
+        let f_minus = cost_fn(point_minus)?;
         
         gradient[i] = (f_plus - f_minus) / (h + h);
     }
