@@ -641,7 +641,7 @@ where
         )?;
         
         // Extract solution from workspace
-        let step = tr_state.cg_workspace.s.clone(); // TODO: eliminate this clone when possible
+        let step = &tr_state.cg_workspace.s;
         let _boundary_hit = tr_state.cg_workspace.temp[0] != T::zero();
         
         // Compute predicted reduction
