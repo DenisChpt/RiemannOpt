@@ -420,15 +420,18 @@ where
             // If not, fall back to standard gradient
             let direction = -&gradient;
             
+            // Compute directional derivative for efficient line search
+            let directional_deriv = manifold.inner_product(&state.point, &gradient, &direction)?;
+            
             // Update state and return
-            let line_search_result = self.line_search.search(
+            let line_search_result = self.line_search.search_with_deriv(
                 cost_fn,
                 manifold,
                 retraction,
                 &state.point,
                 cost,
-                &gradient,
                 &direction,
+                directional_deriv,
                 &self.config.line_search_params,
             )?;
             
@@ -460,15 +463,18 @@ where
             -natural_grad
         };
         
-        // Perform line search
-        let line_search_result = self.line_search.search(
+        // Compute directional derivative for efficient line search
+        let directional_deriv = manifold.inner_product(&state.point, &gradient, &direction)?;
+        
+        // Perform line search with pre-computed values
+        let line_search_result = self.line_search.search_with_deriv(
             cost_fn,
             manifold,
             retraction,
             &state.point,
             cost,
-            &gradient,
             &direction,
+            directional_deriv,
             &self.config.line_search_params,
         )?;
         
