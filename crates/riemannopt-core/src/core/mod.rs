@@ -7,6 +7,7 @@ pub mod cached_cost_function;
 pub mod cached_cost_function_dyn;
 pub mod error;
 pub mod manifold;
+pub mod matrix_manifold;
 pub mod traits;
 pub mod types;
 
@@ -18,4 +19,5 @@ pub use cached_cost_function::*;
 pub use cached_cost_function_dyn::*;
 pub use error::*;
 pub use manifold::*;
+pub use matrix_manifold::*;
 pub use types::*;
