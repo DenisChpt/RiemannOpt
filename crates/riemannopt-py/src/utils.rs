@@ -135,7 +135,7 @@ pub fn validate_point_shape(
     }
     
     // Check Stiefel
-    if let Ok(stiefel) = manifold.extract::<PyRef<crate::manifolds::PyStiefel>>() {
+    if let Ok(stiefel) = manifold.extract::<PyRef<crate::manifolds_optimized::PyStiefel>>() {
         if let Ok(array) = point.extract::<PyReadonlyArray2<'_, f64>>() {
             let shape = array.shape();
             if shape[0] != stiefel.n() || shape[1] != stiefel.p() {
