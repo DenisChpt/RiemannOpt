@@ -213,16 +213,19 @@ impl<T: Scalar> Newton<T> {
             &mut newton_state.cg_workspace
         )?;
         
-        // Perform line search using stored instance
+        // Compute directional derivative for efficient line search
+        let directional_deriv = manifold.inner_product(&state.point, grad, &newton_dir)?;
+        
+        // Perform line search using stored instance with pre-computed values
         let retraction = DefaultRetraction;
-        let ls_result = newton_state.line_search.search(
+        let ls_result = newton_state.line_search.search_with_deriv(
             cost_fn,
             manifold,
             &retraction,
             &state.point,
             state.value,
-            grad,
             &newton_dir,
+            directional_deriv,
             &self.config.line_search_params,
         )?;
         

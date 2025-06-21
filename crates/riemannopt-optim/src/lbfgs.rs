@@ -379,15 +379,18 @@ where
             T::one()
         };
         
-        // Perform line search
-        let line_search_result = self.line_search.search(
+        // Compute directional derivative for efficient line search
+        let directional_deriv = manifold.inner_product(&state.point, &riemannian_grad, &direction)?;
+        
+        // Perform line search with pre-computed values
+        let line_search_result = self.line_search.search_with_deriv(
             cost_fn,
             manifold,
             retraction,
             &state.point,
             cost,
-            &euclidean_grad,
             &direction,
+            directional_deriv,
             &params,
         )?;
         
