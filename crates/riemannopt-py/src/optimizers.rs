@@ -13,6 +13,7 @@ use riemannopt_core::{
     manifold::Manifold,
     optimizer_state::ConjugateGradientMethod,
     line_search::LineSearchParams,
+    optimizer::StoppingCriterion,
 };
 use riemannopt_optim::{
     SGDConfig, MomentumMethod,
@@ -27,7 +28,9 @@ use crate::manifolds::*;
 use crate::manifolds_oblique::PyOblique;
 use crate::manifolds_fixed_rank::PyFixedRank;
 use crate::manifolds_psd_cone::PyPSDCone;
+use crate::manifolds_optimized::PyStiefelOpt;
 use crate::cost_function::PyCostFunction;
+use crate::callbacks::RustCallbackAdapter;
 #[allow(unused_imports)]
 use crate::validation::*;
 
@@ -60,6 +63,62 @@ fn matrix_to_numpy_array<'py>(
     
     let flat_array = numpy::PyArray1::from_vec_bound(py, result);
     Ok(flat_array.reshape(shape.to_vec())?.into())
+}
+
+// Helper function to extract point from manifold
+fn extract_point_from_manifold(
+    manifold: &Bound<'_, PyAny>,
+    point: &Bound<'_, PyAny>,
+) -> PyResult<(DVector<f64>, Vec<usize>)> {
+    if let Ok(_sphere) = manifold.extract::<PyRef<PySphere>>() {
+        let point_array = point.extract::<PyReadonlyArray1<'_, f64>>()?;
+        let point_vec = DVector::from_column_slice(point_array.as_slice()?);
+        Ok((point_vec, vec![]))
+    } else if let Ok(_) = manifold.extract::<PyRef<PyStiefel>>() {
+        let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
+        let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+        let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+        let point_vec = DVector::from_vec(point_mat.as_slice().to_vec());
+        Ok((point_vec, shape))
+    } else if let Ok(_) = manifold.extract::<PyRef<PyGrassmann>>() {
+        let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
+        let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+        let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+        let point_vec = DVector::from_vec(point_mat.as_slice().to_vec());
+        Ok((point_vec, shape))
+    } else if let Ok(_) = manifold.extract::<PyRef<PySPD>>() {
+        let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
+        let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+        let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+        let point_vec = DVector::from_vec(point_mat.as_slice().to_vec());
+        Ok((point_vec, shape))
+    } else if let Ok(_) = manifold.extract::<PyRef<PyHyperbolic>>() {
+        let point_array = point.extract::<PyReadonlyArray1<'_, f64>>()?;
+        let point_vec = DVector::from_column_slice(point_array.as_slice()?);
+        Ok((point_vec, vec![]))
+    } else if let Ok(_) = manifold.extract::<PyRef<PyEuclidean>>() {
+        let point_array = point.extract::<PyReadonlyArray1<'_, f64>>()?;
+        let point_vec = DVector::from_column_slice(point_array.as_slice()?);
+        Ok((point_vec, vec![]))
+    } else {
+        Err(PyValueError::new_err("Unsupported manifold type"))
+    }
+}
+
+// Helper function to format result based on shape
+fn format_result_from_shape<'py>(
+    py: Python<'py>,
+    point: &DVector<f64>,
+    shape: &[usize],
+) -> PyResult<PyObject> {
+    if shape.is_empty() {
+        // 1D array
+        Ok(numpy::PyArray1::from_slice_bound(py, point.as_slice()).into())
+    } else {
+        // 2D array
+        let mat = DMatrix::from_vec(shape[0], shape[1], point.as_slice().to_vec());
+        matrix_to_numpy_array(py, &mat, shape)
+    }
 }
 
 // Note: PyOptimizer trait removed as it's not needed for the current implementation
@@ -137,6 +196,10 @@ impl PySGD {
 
     /// Perform one optimization step.
     ///
+    /// Warning: This method is primarily intended for debugging and educational purposes.
+    /// For production use, prefer the `optimize()` method which runs the entire optimization
+    /// loop in Rust, avoiding costly Python-Rust transitions at each iteration.
+    ///
     /// Args:
     ///     manifold: The manifold to optimize on
     ///     point: Current point on the manifold (1D array for sphere, 2D array for Stiefel/Grassmann)
@@ -181,6 +244,31 @@ impl PySGD {
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 
             Ok(numpy::PyArray1::from_slice_bound(py, new_point.as_slice()).into())
+        } else if let Ok(stiefel_opt) = manifold.extract::<PyRef<PyStiefelOpt>>() {
+            // Optimized Stiefel implementation - works directly with matrices
+            let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let gradient_array = gradient.extract::<PyReadonlyArray2<'_, f64>>()?;
+            
+            // Direct matrix operations without vector conversion
+            use crate::array_utils::{pyarray_to_dmatrix, dmatrix_to_pyarray};
+            let point_mat = pyarray_to_dmatrix(&point_array)?;
+            let gradient_mat = pyarray_to_dmatrix(&gradient_array)?;
+            
+            // Compute Riemannian gradient using matrix operations
+            // grad_riem = grad - X * (X^T * grad + grad^T * X) / 2
+            let xt_grad = point_mat.transpose() * &gradient_mat;
+            let sym = &xt_grad + xt_grad.transpose();
+            let grad_riem = &gradient_mat - &point_mat * (sym * 0.5);
+            
+            // Compute update and retraction
+            let update = -learning_rate * &grad_riem;
+            let new_point_mat = &point_mat + &update;
+            
+            // Project back to manifold using QR decomposition
+            let qr = new_point_mat.qr();
+            let result = qr.q().columns(0, stiefel_opt.p()).into_owned();
+            
+            Ok(dmatrix_to_pyarray(py, &result)?.into())
         } else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
             // Stiefel uses 2D arrays (matrices)
             let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
@@ -380,66 +468,113 @@ impl PySGD {
     ///
     /// Args:
     ///     cost_function: The cost function to minimize
-    ///     initial_point: Starting point on the manifold
+    ///     manifold: The manifold to optimize on
+    ///     initial_point: Starting point on the manifold (numpy array)
+    ///     callback: Optional callback function called at each iteration
     ///
     /// Returns:
     ///     dict: Optimization result with 'point', 'value', 'iterations', 'converged'
+    #[pyo3(signature = (cost_function, manifold, initial_point, callback=None))]
     pub fn optimize<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         cost_function: &PyCostFunction,
-        initial_point: PyReadonlyArray1<'_, f64>,
-    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-        let mut point = DVector::from_column_slice(initial_point.as_slice()?);
-        let mut value = f64::INFINITY;
-        let mut iterations = 0;
-        let mut converged = false;
+        manifold: &Bound<'_, PyAny>,
+        initial_point: &Bound<'_, PyAny>,
+        callback: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        use riemannopt_core::optimizer::StoppingCriterion;
         
-        for i in 0..self.max_iterations {
-            let (new_value, gradient) = cost_function.value_and_gradient(py, &point)?;
-            
-            // Check convergence
-            if gradient.norm() < self.tolerance {
-                converged = true;
-                value = new_value;
-                iterations = i;
-                break;
-            }
-            
-            // Update
-            let learning_rate = match &self.config.step_size {
-                StepSizeSchedule::Constant(lr) => *lr,
-                _ => 0.01,  // Default fallback
-            };
-            let update = -learning_rate * &gradient;
-            
-            // Retract to manifold
-            point = Python::with_gil(|py| -> PyResult<DVector<f64>> {
-                let manifold_ref = self.manifold.bind(py);
-                
-                if let Ok(sphere) = manifold_ref.extract::<PyRef<PySphere>>() {
-                    sphere.get_inner().retract(&point, &update)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))
-                } else if let Ok(stiefel) = manifold_ref.extract::<PyRef<PyStiefel>>() {
-                    stiefel.get_inner().retract(&point, &update)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))
-                } else {
-                    Err(PyValueError::new_err("Unsupported manifold type"))
-                }
-            })?;
-            
-            value = new_value;
-            iterations = i + 1;
+        // Extract initial point based on manifold type
+        let (x0, shape) = if let Ok(_sphere) = manifold.extract::<PyRef<PySphere>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
+            (x0, vec![])
+        } else if let Ok(_stiefel_opt) = manifold.extract::<PyRef<PyStiefelOpt>>() {
+            // StiefelOpt is the optimized version, but we still need to convert to vector for the generic optimizer
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_spd) = manifold.extract::<PyRef<PySPD>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
+            (x0, vec![])
+        } else if let Ok(_oblique) = manifold.extract::<PyRef<PyOblique>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_fixed_rank) = manifold.extract::<PyRef<PyFixedRank>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_psd_cone) = manifold.extract::<PyRef<PyPSDCone>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_product) = manifold.extract::<PyRef<PyProductManifoldStatic>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
+            (x0, vec![])
+        } else {
+            return Err(PyValueError::new_err(
+                "Unsupported manifold type for SGD optimizer"
+            ));
+        };
+        
+        let criterion = StoppingCriterion::new()
+            .with_max_iterations(self.max_iterations)
+            .with_gradient_tolerance(self.tolerance);
+        
+        // Check manifold type and perform optimization
+        if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>() {
+            self.optimize_on_manifold(py, cost_function, sphere.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
+            self.optimize_on_manifold(py, cost_function, stiefel.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
+            self.optimize_on_manifold(py, cost_function, grassmann.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>() {
+            self.optimize_on_manifold(py, cost_function, spd.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
+            self.optimize_on_manifold(py, cost_function, hyperbolic.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(oblique) = manifold.extract::<PyRef<PyOblique>>() {
+            self.optimize_on_manifold(py, cost_function, oblique.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(fixed_rank) = manifold.extract::<PyRef<PyFixedRank>>() {
+            self.optimize_on_manifold(py, cost_function, fixed_rank.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(psd_cone) = manifold.extract::<PyRef<PyPSDCone>>() {
+            self.optimize_on_manifold(py, cost_function, psd_cone.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(product) = manifold.extract::<PyRef<PyProductManifoldStatic>>() {
+            self.optimize_on_product_manifold(py, cost_function, &product, x0, criterion, callback)
+        } else {
+            Err(PyValueError::new_err(
+                "Unsupported manifold type for SGD optimizer"
+            ))
         }
-        
-        // Create result dictionary
-        let result = pyo3::types::PyDict::new_bound(py);
-        result.set_item("point", numpy::PyArray1::from_slice_bound(py, point.as_slice()))?;
-        result.set_item("value", value)?;
-        result.set_item("iterations", iterations)?;
-        result.set_item("converged", converged)?;
-        
-        Ok(result)
     }
 
     /// Get the current configuration.
@@ -480,11 +615,218 @@ impl PySGD {
     }
 }
 
+// Internal implementation methods
+impl PySGD {
+    // Internal optimization method
+    fn optimize_on_manifold<M: Manifold<f64, nalgebra::Dyn>>(
+        &mut self,
+        py: Python<'_>,
+        cost_fn: &PyCostFunction,
+        manifold: &M,
+        x0: DVector<f64>,
+        criterion: riemannopt_core::optimizer::StoppingCriterion<f64>,
+        shape: Vec<usize>,
+        callback: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        use riemannopt_optim::SGD;
+        
+        let mut optimizer = SGD::new(self.config.clone());
+        
+        let result = if let Some(cb) = callback {
+            // Create Rust callback adapter
+            let mut rust_callback = RustCallbackAdapter::<f64, nalgebra::Dyn>::new(cb);
+            optimizer.optimize_with_callback(cost_fn, manifold, &x0, &criterion, Some(&mut rust_callback))
+                .map_err(|e| PyValueError::new_err(format!("Optimization failed: {}", e)))?
+        } else {
+            optimizer.optimize(cost_fn, manifold, &x0, &criterion)
+                .map_err(|e| PyValueError::new_err(format!("Optimization failed: {}", e)))?
+        };
+        
+        // Convert result to Python dictionary
+        let dict = pyo3::types::PyDict::new_bound(py);
+        
+        // Convert point to numpy array with appropriate shape
+        if shape.is_empty() {
+            // 1D array
+            let point_array = numpy::PyArray1::from_vec_bound(py, result.point.data.as_vec().clone());
+            dict.set_item("point", point_array)?;
+        } else {
+            // 2D array - reshape the result
+            let data = result.point.data.as_vec().clone();
+            let n_rows = shape[0];
+            let n_cols = shape[1];
+            
+            // Convert to 2D array by creating a vector of vectors
+            let mut rows = Vec::with_capacity(n_rows);
+            for i in 0..n_rows {
+                let mut row = Vec::with_capacity(n_cols);
+                for j in 0..n_cols {
+                    row.push(data[j * n_rows + i]); // column-major to row-major
+                }
+                rows.push(row);
+            }
+            
+            let point_array = numpy::PyArray2::from_vec2_bound(py, &rows)?;
+            dict.set_item("point", point_array)?;
+        }
+        
+        dict.set_item("value", result.value)?;
+        dict.set_item("iterations", result.iterations)?;
+        dict.set_item("converged", result.converged)?;
+        dict.set_item("gradient_norm", result.gradient_norm)?;
+        dict.set_item("function_evaluations", result.function_evaluations)?;
+        dict.set_item("gradient_evaluations", result.gradient_evaluations)?;
+        dict.set_item("duration_seconds", result.duration.as_secs_f64())?;
+        dict.set_item("termination_reason", format!("{:?}", result.termination_reason))?;
+        
+        Ok(dict.into())
+    }
+
+    // Optimization method for product manifolds
+    fn optimize_on_product_manifold(
+        &mut self,
+        py: Python<'_>,
+        cost_fn: &PyCostFunction,
+        product: &PyProductManifoldStatic,
+        x0: DVector<f64>,
+        criterion: riemannopt_core::optimizer::StoppingCriterion<f64>,
+        callback: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        // For product manifolds, we need to use a custom optimization loop
+        // that calls the manifold operations through Python
+        use riemannopt_core::optimizer::OptimizationResult;
+        use std::time::Instant;
+        
+        let start_time = Instant::now();
+        let mut x = x0.clone();
+        let mut momentum = DVector::zeros(x.len());
+        let mut iterations = 0;
+        let mut function_evaluations = 0;
+        let mut gradient_evaluations = 0;
+        let mut converged = false;
+        let mut gradient_norm = 0.0;
+        
+        // Get initial value and gradient
+        let (mut fx, mut grad) = cost_fn.value_and_gradient(py, &x)?;
+        function_evaluations += 1;
+        gradient_evaluations += 1;
+        
+        // Convert gradient to Riemannian gradient
+        let x_arr = numpy::PyArray1::from_vec_bound(py, x.as_slice().to_vec());
+        let grad_arr = numpy::PyArray1::from_vec_bound(py, grad.as_slice().to_vec());
+        let riem_grad_arr = product.euclidean_to_riemannian_gradient(py, x_arr.readonly(), grad_arr.readonly())?;
+        let mut riem_grad = DVector::from_vec(riem_grad_arr.readonly().as_slice()?.to_vec());
+        gradient_norm = riem_grad.norm();
+        
+        // Check initial convergence
+        if let Some(tol) = criterion.gradient_tolerance {
+            if gradient_norm < tol {
+                converged = true;
+            }
+        }
+        
+        let max_iter = criterion.max_iterations.unwrap_or(self.max_iterations);
+        while iterations < max_iter && !converged {
+            // Apply momentum
+            let momentum_coeff = match &self.config.momentum {
+                MomentumMethod::Classical { coefficient } => *coefficient,
+                MomentumMethod::Nesterov { coefficient } => *coefficient,
+                MomentumMethod::None => 0.0,
+            };
+            
+            momentum = momentum_coeff * &momentum - self.config.step_size.get_step_size(iterations) * &riem_grad;
+            
+            // Retract along the momentum direction
+            let x_arr = numpy::PyArray1::from_vec_bound(py, x.as_slice().to_vec());
+            let momentum_arr = numpy::PyArray1::from_vec_bound(py, momentum.as_slice().to_vec());
+            let new_x_arr = product.retract(py, x_arr.readonly(), momentum_arr.readonly())?;
+            x = DVector::from_vec(new_x_arr.readonly().as_slice()?.to_vec());
+            
+            // Evaluate at new point
+            let (new_fx, new_grad) = cost_fn.value_and_gradient(py, &x)?;
+            function_evaluations += 1;
+            gradient_evaluations += 1;
+            
+            // Convert gradient to Riemannian gradient
+            let x_arr = numpy::PyArray1::from_vec_bound(py, x.as_slice().to_vec());
+            let grad_arr = numpy::PyArray1::from_vec_bound(py, new_grad.as_slice().to_vec());
+            let riem_grad_arr = product.euclidean_to_riemannian_gradient(py, x_arr.readonly(), grad_arr.readonly())?;
+            let new_riem_grad = DVector::from_vec(riem_grad_arr.readonly().as_slice()?.to_vec());
+            gradient_norm = new_riem_grad.norm();
+            
+            // Update for next iteration
+            fx = new_fx;
+            grad = new_grad;
+            riem_grad = new_riem_grad;
+            
+            // Check convergence
+            if let Some(tol) = criterion.gradient_tolerance {
+                if gradient_norm < tol {
+                    converged = true;
+                }
+            }
+            
+            // Call callback if provided
+            if let Some(ref cb) = callback {
+                let state_dict = pyo3::types::PyDict::new_bound(py);
+                state_dict.set_item("iteration", iterations)?;
+                state_dict.set_item("value", fx)?;
+                state_dict.set_item("gradient_norm", gradient_norm)?;
+                let x_array = numpy::PyArray1::from_vec_bound(py, x.as_slice().to_vec());
+                state_dict.set_item("point", x_array)?;
+                
+                cb.call1(py, (state_dict,))?;
+            }
+            
+            iterations += 1;
+        }
+        
+        // Create result
+        let termination_reason = if converged {
+            riemannopt_core::optimizer::TerminationReason::Converged
+        } else {
+            riemannopt_core::optimizer::TerminationReason::MaxIterations
+        };
+        
+        let result = OptimizationResult {
+            point: x,
+            value: fx,
+            gradient_norm: Some(gradient_norm),
+            iterations,
+            converged,
+            function_evaluations,
+            gradient_evaluations,
+            duration: start_time.elapsed(),
+            termination_reason,
+        };
+        
+        // Convert result to Python dictionary
+        let dict = pyo3::types::PyDict::new_bound(py);
+        
+        // For product manifolds, the point is always a 1D array
+        let point_array = numpy::PyArray1::from_vec_bound(py, result.point.data.as_vec().clone());
+        dict.set_item("point", point_array)?;
+        
+        dict.set_item("value", result.value)?;
+        dict.set_item("iterations", result.iterations)?;
+        dict.set_item("converged", result.converged)?;
+        dict.set_item("gradient_norm", result.gradient_norm)?;
+        dict.set_item("function_evaluations", result.function_evaluations)?;
+        dict.set_item("gradient_evaluations", result.gradient_evaluations)?;
+        dict.set_item("duration_seconds", result.duration.as_secs_f64())?;
+        dict.set_item("termination_reason", format!("{:?}", result.termination_reason))?;
+        
+        Ok(dict.into())
+    }
+}
+
 /// Riemannian Adam optimizer.
 #[pyclass(name = "Adam")]
 pub struct PyAdam {
     _manifold: PyObject,
     config: AdamConfig<f64>,
+    max_iterations: usize,
+    tolerance: f64,
 }
 
 #[pymethods]
@@ -496,14 +838,18 @@ impl PyAdam {
     ///     beta1: First moment decay (default: 0.9)
     ///     beta2: Second moment decay (default: 0.999)
     ///     epsilon: Numerical stability constant (default: 1e-8)
+    ///     max_iterations: Maximum iterations (default: 1000)
+    ///     tolerance: Convergence tolerance (default: 1e-6)
     #[new]
-    #[pyo3(signature = (learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8))]
+    #[pyo3(signature = (learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8, max_iterations=1000, tolerance=1e-6))]
     pub fn new(
         py: Python<'_>,
         learning_rate: f64,
         beta1: f64,
         beta2: f64,
         epsilon: f64,
+        max_iterations: i32,
+        tolerance: f64,
     ) -> PyResult<Self> {
         // Validate parameters
         if learning_rate <= 0.0 {
@@ -518,6 +864,12 @@ impl PyAdam {
         if epsilon <= 0.0 {
             return Err(PyValueError::new_err("epsilon must be positive"));
         }
+        if max_iterations <= 0 {
+            return Err(PyValueError::new_err("max_iterations must be positive"));
+        }
+        if tolerance <= 0.0 {
+            return Err(PyValueError::new_err("tolerance must be positive"));
+        }
         
         let config = AdamConfig::default()
             .with_learning_rate(learning_rate)
@@ -527,11 +879,18 @@ impl PyAdam {
         
         Ok(Self { 
             _manifold: PyObject::from(py.None()),
-            config 
+            config,
+            max_iterations: max_iterations as usize,
+            tolerance,
         })
     }
 
     /// Perform one optimization step.
+    ///
+    /// Warning: This method is primarily intended for debugging and educational purposes.
+    /// For production use, prefer the `optimize()` method which runs the entire optimization
+    /// loop in Rust, avoiding costly Python-Rust transitions at each iteration.
+    /// Additionally, this method cannot maintain momentum state between calls.
     ///
     /// Args:
     ///     manifold: The manifold to optimize on
@@ -672,6 +1031,182 @@ impl PyAdam {
             self.config.beta2,
             self.config.epsilon
         )
+    }
+    
+    /// Optimize a cost function.
+    ///
+    /// Args:
+    ///     cost_function: The cost function to minimize
+    ///     manifold: The manifold to optimize on
+    ///     initial_point: Starting point on the manifold (numpy array)
+    ///     callback: Optional callback function called at each iteration
+    ///
+    /// Returns:
+    ///     dict: Optimization result with 'point', 'value', 'iterations', 'converged'
+    #[pyo3(signature = (cost_function, manifold, initial_point, callback=None))]
+    pub fn optimize<'py>(
+        &mut self,
+        py: Python<'py>,
+        cost_function: &PyCostFunction,
+        manifold: &Bound<'_, PyAny>,
+        initial_point: &Bound<'_, PyAny>,
+        callback: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        use riemannopt_core::optimizer::StoppingCriterion;
+        
+        // Extract initial point based on manifold type
+        let (x0, shape) = if let Ok(_sphere) = manifold.extract::<PyRef<PySphere>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
+            (x0, vec![])
+        } else if let Ok(_stiefel_opt) = manifold.extract::<PyRef<PyStiefelOpt>>() {
+            // StiefelOpt is the optimized version, but we still need to convert to vector for the generic optimizer
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_spd) = manifold.extract::<PyRef<PySPD>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
+            let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
+            (x0, vec![])
+        } else if let Ok(_oblique) = manifold.extract::<PyRef<PyOblique>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_fixed_rank) = manifold.extract::<PyRef<PyFixedRank>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else if let Ok(_psd_cone) = manifold.extract::<PyRef<PyPSDCone>>() {
+            let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
+            let shape = vec![point_array.shape()[0], point_array.shape()[1]];
+            let point_mat = numpy_to_nalgebra_matrix(&point_array)?;
+            let x0 = DVector::from_vec(point_mat.as_slice().to_vec());
+            (x0, shape)
+        } else {
+            return Err(PyValueError::new_err(
+                "Unsupported manifold type for Adam optimizer"
+            ));
+        };
+        
+        // Use stored stopping criterion parameters
+        let criterion = StoppingCriterion::new()
+            .with_max_iterations(self.max_iterations)
+            .with_gradient_tolerance(self.tolerance);
+        
+        // Check manifold type and perform optimization
+        if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>() {
+            self.optimize_on_manifold(py, cost_function, sphere.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
+            self.optimize_on_manifold(py, cost_function, stiefel.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
+            self.optimize_on_manifold(py, cost_function, grassmann.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>() {
+            self.optimize_on_manifold(py, cost_function, spd.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
+            self.optimize_on_manifold(py, cost_function, hyperbolic.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(oblique) = manifold.extract::<PyRef<PyOblique>>() {
+            self.optimize_on_manifold(py, cost_function, oblique.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(fixed_rank) = manifold.extract::<PyRef<PyFixedRank>>() {
+            self.optimize_on_manifold(py, cost_function, fixed_rank.get_inner(), x0, criterion, shape, callback)
+        } else if let Ok(psd_cone) = manifold.extract::<PyRef<PyPSDCone>>() {
+            self.optimize_on_manifold(py, cost_function, psd_cone.get_inner(), x0, criterion, shape, callback)
+        } else {
+            Err(PyValueError::new_err(
+                "Unsupported manifold type for Adam optimizer"
+            ))
+        }
+    }
+}
+
+// Internal implementation methods for PyAdam
+impl PyAdam {
+    // Internal optimization method
+    fn optimize_on_manifold<M: Manifold<f64, nalgebra::Dyn>>(
+        &mut self,
+        py: Python<'_>,
+        cost_fn: &PyCostFunction,
+        manifold: &M,
+        x0: DVector<f64>,
+        criterion: riemannopt_core::optimizer::StoppingCriterion<f64>,
+        shape: Vec<usize>,
+        callback: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        use riemannopt_optim::Adam;
+        
+        let mut optimizer = Adam::new(self.config.clone());
+        
+        let result = if let Some(cb) = callback {
+            // Create Rust callback adapter
+            let mut rust_callback = RustCallbackAdapter::<f64, nalgebra::Dyn>::new(cb);
+            optimizer.optimize_with_callback(cost_fn, manifold, &x0, &criterion, Some(&mut rust_callback))
+                .map_err(|e| PyValueError::new_err(format!("Optimization failed: {}", e)))?
+        } else {
+            optimizer.optimize(cost_fn, manifold, &x0, &criterion)
+                .map_err(|e| PyValueError::new_err(format!("Optimization failed: {}", e)))?
+        };
+        
+        // Convert result to Python dictionary
+        let dict = pyo3::types::PyDict::new_bound(py);
+        
+        // Convert point to numpy array with appropriate shape
+        if shape.is_empty() {
+            // 1D array
+            let point_array = numpy::PyArray1::from_vec_bound(py, result.point.data.as_vec().clone());
+            dict.set_item("point", point_array)?;
+        } else {
+            // 2D array - reshape the result
+            let data = result.point.data.as_vec().clone();
+            let n_rows = shape[0];
+            let n_cols = shape[1];
+            
+            // Convert to 2D array by creating a vector of vectors
+            let mut rows = Vec::with_capacity(n_rows);
+            for i in 0..n_rows {
+                let mut row = Vec::with_capacity(n_cols);
+                for j in 0..n_cols {
+                    row.push(data[j * n_rows + i]); // column-major to row-major
+                }
+                rows.push(row);
+            }
+            
+            let point_array = numpy::PyArray2::from_vec2_bound(py, &rows)?;
+            dict.set_item("point", point_array)?;
+        }
+        
+        dict.set_item("value", result.value)?;
+        dict.set_item("iterations", result.iterations)?;
+        dict.set_item("converged", result.converged)?;
+        dict.set_item("gradient_norm", result.gradient_norm)?;
+        dict.set_item("function_evaluations", result.function_evaluations)?;
+        dict.set_item("gradient_evaluations", result.gradient_evaluations)?;
+        dict.set_item("duration_seconds", result.duration.as_secs_f64())?;
+        dict.set_item("termination_reason", format!("{:?}", result.termination_reason))?;
+        
+        Ok(dict.into())
     }
 }
 
@@ -1194,6 +1729,145 @@ impl PyLBFGS {
             "LBFGS(memory_size={})",
             self.config.memory_size
         )
+    }
+
+    /// Optimize a cost function on a manifold.
+    ///
+    /// This method runs the full L-BFGS optimization loop in Rust, which is much more
+    /// efficient than calling step() repeatedly from Python. 
+    ///
+    /// Args:
+    ///     cost_function: Cost function to minimize
+    ///     manifold: Manifold to optimize on  
+    ///     initial_point: Starting point on the manifold
+    ///     callback: Optional callback function for monitoring progress
+    ///
+    /// Returns:
+    ///     Optimal point on the manifold
+    ///
+    /// Example:
+    ///     >>> lbfgs = LBFGS(memory_size=10)
+    ///     >>> result = lbfgs.optimize(cost_fn, sphere, x0)
+    #[pyo3(signature = (cost_function, manifold, initial_point, callback=None))]
+    pub fn optimize<'py>(
+        &mut self,
+        py: Python<'py>,
+        cost_function: &PyCostFunction,
+        manifold: &Bound<'_, PyAny>,
+        initial_point: &Bound<'_, PyAny>,
+        callback: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        let (initial_vec, shape) = extract_point_from_manifold(manifold, initial_point)?;
+        
+        let stopping_criterion = StoppingCriterion::new()
+            .with_max_iterations(1000)
+            .with_gradient_tolerance(1e-6);
+        
+        let result = if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>() {
+            let mut lbfgs = riemannopt_optim::LBFGS::new(self.config.clone());
+            
+            if let Some(cb) = callback {
+                let mut rust_callback = RustCallbackAdapter::<f64, nalgebra::Dyn>::new(cb);
+                lbfgs.optimize_with_callback(
+                    cost_function,
+                    sphere.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                    Some(&mut rust_callback),
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            } else {
+                lbfgs.optimize(
+                    cost_function,
+                    sphere.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            }
+        } else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>() {
+            let mut lbfgs = riemannopt_optim::LBFGS::new(self.config.clone());
+            
+            if let Some(cb) = callback {
+                let mut rust_callback = RustCallbackAdapter::<f64, nalgebra::Dyn>::new(cb);
+                lbfgs.optimize_with_callback(
+                    cost_function,
+                    stiefel.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                    Some(&mut rust_callback),
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            } else {
+                lbfgs.optimize(
+                    cost_function,
+                    stiefel.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            }
+        } else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>() {
+            let mut lbfgs = riemannopt_optim::LBFGS::new(self.config.clone());
+            
+            if let Some(cb) = callback {
+                let mut rust_callback = RustCallbackAdapter::<f64, nalgebra::Dyn>::new(cb);
+                lbfgs.optimize_with_callback(
+                    cost_function,
+                    grassmann.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                    Some(&mut rust_callback),
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            } else {
+                lbfgs.optimize(
+                    cost_function,
+                    grassmann.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            }
+        } else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>() {
+            let mut lbfgs = riemannopt_optim::LBFGS::new(self.config.clone());
+            
+            if let Some(cb) = callback {
+                let mut rust_callback = RustCallbackAdapter::<f64, nalgebra::Dyn>::new(cb);
+                lbfgs.optimize_with_callback(
+                    cost_function,
+                    spd.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                    Some(&mut rust_callback),
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            } else {
+                lbfgs.optimize(
+                    cost_function,
+                    spd.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            }
+        } else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>() {
+            let mut lbfgs = riemannopt_optim::LBFGS::new(self.config.clone());
+            
+            if let Some(cb) = callback {
+                let mut rust_callback = RustCallbackAdapter::<f64, nalgebra::Dyn>::new(cb);
+                lbfgs.optimize_with_callback(
+                    cost_function,
+                    hyperbolic.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                    Some(&mut rust_callback),
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            } else {
+                lbfgs.optimize(
+                    cost_function,
+                    hyperbolic.get_inner(),
+                    &initial_vec,
+                    &stopping_criterion,
+                ).map_err(|e| PyValueError::new_err(e.to_string()))?
+            }
+        } else {
+            return Err(PyValueError::new_err("Unsupported manifold type"));
+        };
+        
+        format_result_from_shape(py, &result.point, &shape)
     }
 }
 

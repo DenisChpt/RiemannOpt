@@ -12,6 +12,12 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     from . import manifolds, optimizers
 
+# Import at module level to avoid circular imports and ensure proper type checking
+try:
+    from . import CostFunction
+except ImportError:
+    CostFunction = None
+
 
 def _finite_difference_gradient(
     cost_fn: Callable[[NDArray[np.float64]], float],
@@ -138,18 +144,22 @@ def optimize(
         callbacks, logging, and detailed convergence history, use the
         core API directly.
     """
-    from . import optimizers, CostFunction
+    from . import optimizers
+    
+    # Import CostFunction locally if not already imported
+    global CostFunction
+    if CostFunction is None:
+        from . import CostFunction
     
     # Convert cost function if needed
-    if not isinstance(cost_function, CostFunction):
-        if callable(cost_function):
-            # For callable functions without gradient, we'll need to handle finite differences
-            # in the optimization loop
-            cost_fn = CostFunction(cost_function, None)
-        else:
-            raise ValueError("cost_function must be callable or CostFunction instance")
-    else:
+    if isinstance(cost_function, CostFunction):
         cost_fn = cost_function
+    elif callable(cost_function):
+        # Check if the function has a gradient attribute
+        gradient_fn = getattr(cost_function, 'gradient', None)
+        cost_fn = CostFunction(cost_function, gradient_fn)
+    else:
+        raise ValueError("cost_function must be callable or CostFunction instance")
     
     # Create optimizer based on string
     optimizer_map = {
@@ -222,49 +232,8 @@ def optimize(
     
     # For SGD and Adam, we need to manually run the optimization loop
     # since they don't have the manifold set internally
-    if optimizer.lower() in ['sgd', 'adam']:
-        point = initial_point.copy()
-        value = float('inf')
-        iterations = 0
-        converged = False
-        
-        for i in range(max_iterations):
-            # Get value
-            val = cost_fn(point)
-            
-            # Get gradient - handle case where gradient is not provided
-            try:
-                grad = cost_fn.gradient(point)
-            except ValueError as e:
-                if "No gradient function provided" in str(e):
-                    # Use finite differences as fallback
-                    grad = _finite_difference_gradient(cost_fn, point)
-                else:
-                    raise
-            
-            # Check convergence
-            grad_norm = np.linalg.norm(grad)
-            if grad_norm < tolerance:
-                converged = True
-                value = val
-                iterations = i
-                break
-            
-            # Take optimization step
-            point = opt.step(manifold, point, grad)
-            value = val
-            iterations = i + 1
-        
-        # Return result dictionary
-        return {
-            'point': point,
-            'value': value,
-            'iterations': iterations,
-            'converged': converged
-        }
-    else:
-        # LBFGS and CG have manifold set, so use their optimize method
-        return opt.optimize(cost_fn, initial_point)
+    # All optimizers now use their optimize method
+    return opt.optimize(cost_fn, manifold, initial_point)
 
 
 def gradient_check(

@@ -17,6 +17,7 @@ mod cost_function;
 mod utils;
 mod validation;
 mod array_utils;
+mod callbacks;
 
 use manifolds::*;
 use manifolds_oblique::PyOblique;
@@ -27,6 +28,7 @@ use optimizers::*;
 use optimizers_newton::PyNewton;
 use cost_function::{PyCostFunction, quadratic_cost, rosenbrock_cost};
 use utils::{format_result, validate_point_shape, default_line_search};
+use callbacks::{PyOptimizationCallback, PyCallbackInfo};
 
 /// RiemannOpt: High-performance Riemannian optimization in Python.
 ///
@@ -46,6 +48,7 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
     m.add_class::<PyProductManifold>()?;
+    m.add_class::<PyProductManifoldStatic>()?;
     m.add_class::<PyOblique>()?;
     m.add_class::<PyFixedRank>()?;
     m.add_class::<PyPSDCone>()?;
@@ -60,6 +63,10 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     
     // Add cost function class
     m.add_class::<PyCostFunction>()?;
+    
+    // Add callback classes
+    m.add_class::<PyOptimizationCallback>()?;
+    m.add_class::<PyCallbackInfo>()?;
     
     // Add utility functions
     m.add_function(wrap_pyfunction!(check_point_on_manifold, m)?)?;
@@ -91,6 +98,7 @@ fn init_manifolds_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
     m.add_class::<PyProductManifold>()?;
+    m.add_class::<PyProductManifoldStatic>()?;
     m.add_class::<PyOblique>()?;
     m.add_class::<PyFixedRank>()?;
     m.add_class::<PyPSDCone>()?;

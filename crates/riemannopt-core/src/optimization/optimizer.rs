@@ -130,6 +130,8 @@ pub enum TerminationReason {
     NumericalError,
     /// User requested termination
     UserTerminated,
+    /// Callback requested early termination
+    CallbackRequest,
 }
 
 /// Stopping criteria for optimization algorithms.
@@ -224,6 +226,7 @@ where
 }
 
 /// State information for optimization algorithms.
+#[derive(Clone, Debug)]
 pub struct OptimizerStateLegacy<T, D>
 where
     T: Scalar,
