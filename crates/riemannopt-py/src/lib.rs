@@ -19,11 +19,11 @@ mod validation;
 mod array_utils;
 mod callbacks;
 
-use manifolds::*;
+use manifolds::{PySphere, PyEuclidean, PyHyperbolic, PyProductManifold, PyProductManifoldStatic, check_point_on_manifold, check_vector_in_tangent_space};
 use manifolds_oblique::PyOblique;
 use manifolds_fixed_rank::PyFixedRank;
 use manifolds_psd_cone::PyPSDCone;
-use manifolds_optimized::{PyStiefelOpt, PyGrassmannOpt, PySPDOpt};
+use manifolds_optimized::{PyStiefel, PyGrassmann, PySPD};
 use optimizers::*;
 use optimizers_newton::PyNewton;
 use cost_function::{PyCostFunction, quadratic_cost, rosenbrock_cost};
@@ -102,9 +102,6 @@ fn init_manifolds_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOblique>()?;
     m.add_class::<PyFixedRank>()?;
     m.add_class::<PyPSDCone>()?;
-    m.add_class::<PyStiefelOpt>()?;
-    m.add_class::<PyGrassmannOpt>()?;
-    m.add_class::<PySPDOpt>()?;
     Ok(())
 }
 

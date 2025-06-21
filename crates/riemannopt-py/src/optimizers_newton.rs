@@ -1,6 +1,7 @@
 //! Python bindings for Riemannian Newton optimizer.
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use crate::manifolds_optimized::{PyStiefel, PyGrassmann, PySPD};
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use nalgebra::{DVector, DMatrix};

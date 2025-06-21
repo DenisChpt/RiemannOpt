@@ -28,7 +28,7 @@ use crate::manifolds::*;
 use crate::manifolds_oblique::PyOblique;
 use crate::manifolds_fixed_rank::PyFixedRank;
 use crate::manifolds_psd_cone::PyPSDCone;
-use crate::manifolds_optimized::PyStiefelOpt;
+use crate::manifolds_optimized::{PyStiefel, PyGrassmann, PySPD};
 use crate::cost_function::PyCostFunction;
 use crate::callbacks::RustCallbackAdapter;
 #[allow(unused_imports)]
@@ -244,7 +244,7 @@ impl PySGD {
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 
             Ok(numpy::PyArray1::from_slice_bound(py, new_point.as_slice()).into())
-        } else if let Ok(stiefel_opt) = manifold.extract::<PyRef<PyStiefelOpt>>() {
+        } else if let Ok(stiefel_opt) = manifold.extract::<PyRef<PyStiefel>>() {
             // Optimized Stiefel implementation - works directly with matrices
             let point_array = point.extract::<PyReadonlyArray2<'_, f64>>()?;
             let gradient_array = gradient.extract::<PyReadonlyArray2<'_, f64>>()?;
@@ -490,7 +490,7 @@ impl PySGD {
             let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
             let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
             (x0, vec![])
-        } else if let Ok(_stiefel_opt) = manifold.extract::<PyRef<PyStiefelOpt>>() {
+        } else if let Ok(_stiefel_opt) = manifold.extract::<PyRef<PyStiefel>>() {
             // StiefelOpt is the optimized version, but we still need to convert to vector for the generic optimizer
             let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
             let shape = vec![point_array.shape()[0], point_array.shape()[1]];
@@ -1059,7 +1059,7 @@ impl PyAdam {
             let point_array = initial_point.extract::<PyReadonlyArray1<'_, f64>>()?;
             let x0 = DVector::from_vec(point_array.as_slice()?.to_vec());
             (x0, vec![])
-        } else if let Ok(_stiefel_opt) = manifold.extract::<PyRef<PyStiefelOpt>>() {
+        } else if let Ok(_stiefel_opt) = manifold.extract::<PyRef<PyStiefel>>() {
             // StiefelOpt is the optimized version, but we still need to convert to vector for the generic optimizer
             let point_array = initial_point.extract::<PyReadonlyArray2<'_, f64>>()?;
             let shape = vec![point_array.shape()[0], point_array.shape()[1]];

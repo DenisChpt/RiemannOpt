@@ -9,14 +9,14 @@ use riemannopt_manifolds::{Stiefel, Grassmann, SPD};
 use crate::array_utils::{pyarray_to_dmatrix, dmatrix_to_pyarray};
 
 /// Optimized Stiefel manifold implementation.
-#[pyclass(name = "StiefelOpt")]
+#[pyclass(name = "Stiefel")]
 #[derive(Clone)]
-pub struct PyStiefelOpt {
+pub struct PyStiefel {
     inner: Stiefel,
 }
 
 #[pymethods]
-impl PyStiefelOpt {
+impl PyStiefel {
     #[new]
     pub fn new(n: usize, p: usize) -> PyResult<Self> {
         if n < p {
@@ -127,19 +127,28 @@ impl PyStiefelOpt {
     }
 
     pub fn __repr__(&self) -> String {
-        format!("StiefelOpt(n={}, p={})", self.inner.n(), self.inner.p())
+        format!("Stiefel(n={}, p={})", self.inner.n(), self.inner.p())
+    }
+}
+
+// Non-Python methods for PyStiefel
+impl PyStiefel {
+    /// Get access to the inner Rust manifold (for compatibility with optimizer code).
+    /// This method is not exposed to Python.
+    pub fn get_inner(&self) -> &Stiefel {
+        &self.inner
     }
 }
 
 /// Optimized Grassmann manifold implementation.
-#[pyclass(name = "GrassmannOpt")]
+#[pyclass(name = "Grassmann")]
 #[derive(Clone)]
-pub struct PyGrassmannOpt {
+pub struct PyGrassmann {
     inner: Grassmann,
 }
 
 #[pymethods]
-impl PyGrassmannOpt {
+impl PyGrassmann {
     #[new]
     pub fn new(n: usize, p: usize) -> PyResult<Self> {
         if n <= p || p == 0 {
@@ -282,19 +291,28 @@ impl PyGrassmannOpt {
     }
 
     pub fn __repr__(&self) -> String {
-        format!("GrassmannOpt(n={}, p={})", self.inner.ambient_dimension(), self.inner.subspace_dimension())
+        format!("Grassmann(n={}, p={})", self.inner.ambient_dimension(), self.inner.subspace_dimension())
+    }
+}
+
+// Non-Python methods for PyGrassmann
+impl PyGrassmann {
+    /// Get access to the inner Rust manifold (for compatibility with optimizer code).
+    /// This method is not exposed to Python.
+    pub fn get_inner(&self) -> &Grassmann {
+        &self.inner
     }
 }
 
 /// Optimized SPD manifold implementation.
-#[pyclass(name = "SPDOpt")]
+#[pyclass(name = "SPD")]
 #[derive(Clone)]
-pub struct PySPDOpt {
+pub struct PySPD {
     inner: SPD,
 }
 
 #[pymethods]
-impl PySPDOpt {
+impl PySPD {
     #[new]
     pub fn new(n: usize) -> PyResult<Self> {
         if n == 0 {
@@ -416,7 +434,16 @@ impl PySPDOpt {
     }
 
     pub fn __repr__(&self) -> String {
-        format!("SPDOpt(n={})", self.inner.matrix_dimension())
+        format!("SPD(n={})", self.inner.matrix_dimension())
+    }
+}
+
+// Non-Python methods for PySPD
+impl PySPD {
+    /// Get access to the inner Rust manifold (for compatibility with optimizer code).
+    /// This method is not exposed to Python.
+    pub fn get_inner(&self) -> &SPD {
+        &self.inner
     }
 }
 
