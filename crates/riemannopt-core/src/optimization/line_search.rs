@@ -271,6 +271,42 @@ where
         direction: &TangentVector<T, D>,
         params: &LineSearchParams<T>,
     ) -> Result<LineSearchResult<T, D>>;
+    
+    /// Performs a line search along a direction with pre-computed directional derivative.
+    ///
+    /// This method is more efficient when the directional derivative has already been computed.
+    ///
+    /// # Arguments
+    ///
+    /// * `cost_fn` - The cost function to minimize
+    /// * `manifold` - The manifold on which we're optimizing
+    /// * `retraction` - The retraction to use for moving on the manifold
+    /// * `point` - Current point on the manifold
+    /// * `value` - Function value at the current point
+    /// * `direction` - Search direction (typically negative gradient or descent direction)
+    /// * `directional_deriv` - Pre-computed directional derivative ⟨∇f(x), d⟩
+    /// * `params` - Line search parameters
+    ///
+    /// # Returns
+    ///
+    /// A `LineSearchResult` containing the step size and new point.
+    #[allow(clippy::too_many_arguments)]
+    fn search_with_deriv(
+        &mut self,
+        cost_fn: &impl CostFunction<T, D>,
+        manifold: &impl Manifold<T, D>,
+        retraction: &impl Retraction<T, D>,
+        point: &Point<T, D>,
+        value: T,
+        direction: &TangentVector<T, D>,
+        _directional_deriv: T,
+        params: &LineSearchParams<T>,
+    ) -> Result<LineSearchResult<T, D>> {
+        // Default implementation: just call the regular search method
+        // This allows backward compatibility
+        let gradient = cost_fn.gradient(point)?;
+        self.search(cost_fn, manifold, retraction, point, value, &gradient, direction, params)
+    }
 
     /// Returns the name of this line search method.
     fn name(&self) -> &str;
@@ -360,6 +396,74 @@ where
         params.validate()?;
         // Compute initial directional derivative
         let directional_deriv = manifold.inner_product(point, gradient, direction)?;
+
+        if directional_deriv >= T::zero() {
+            return Err(ManifoldError::numerical_error(
+                "Search direction is not a descent direction",
+            ));
+        }
+
+        let mut step_size = params.initial_step_size;
+
+        // Backtracking loop
+        for (iteration, _) in (0..params.max_iterations).enumerate() {
+            // Compute new point using retraction
+            let scaled_direction = direction * step_size;
+            let new_point = retraction.retract(manifold, point, &scaled_direction)?;
+
+            // Evaluate function at new point
+            let new_value = cost_fn.cost(&new_point)?;
+            let function_evals = iteration + 1;
+
+            // Check Armijo condition
+            let expected_decrease = params.c1 * step_size * directional_deriv;
+            if new_value <= value + expected_decrease {
+                // Success!
+                return Ok(LineSearchResult {
+                    step_size,
+                    new_point,
+                    new_value,
+                    new_gradient: None,
+                    function_evals,
+                    gradient_evals: 0,
+                    success: true,
+                });
+            }
+
+            // Reduce step size
+            step_size *= params.rho;
+
+            // Check if step size is too small
+            if step_size < params.min_step_size {
+                break;
+            }
+        }
+
+        // Line search failed - provide context
+        Err(ManifoldError::numerical_error(
+            format!(
+                "Backtracking line search failed after {} iterations. Final step size: {:.2e}, min threshold: {:.2e}, directional derivative: {:.2e}",
+                params.max_iterations, 
+                step_size.to_f64(), 
+                params.min_step_size.to_f64(), 
+                directional_deriv.to_f64()
+            ),
+        ))
+    }
+    
+    fn search_with_deriv(
+        &mut self,
+        cost_fn: &impl CostFunction<T, D>,
+        manifold: &impl Manifold<T, D>,
+        retraction: &impl Retraction<T, D>,
+        point: &Point<T, D>,
+        value: T,
+        direction: &TangentVector<T, D>,
+        directional_deriv: T,
+        params: &LineSearchParams<T>,
+    ) -> Result<LineSearchResult<T, D>> {
+        // Validate parameters
+        params.validate()?;
 
         if directional_deriv >= T::zero() {
             return Err(ManifoldError::numerical_error(
@@ -553,6 +657,139 @@ where
                     gradient,
                     direction,
                     init_deriv,
+                    alpha,
+                    alpha_low,
+                    new_value,
+                    new_deriv,
+                    params,
+                    function_evals,
+                    gradient_evals,
+                );
+            }
+
+            // Update bounds
+            alpha_low = alpha;
+            value_low = new_value;
+            deriv_low = new_deriv;
+
+            // Increase alpha
+            alpha = <T as Float>::min(alpha * <T as Scalar>::from_f64(2.0), alpha_high);
+
+            if <T as Float>::abs(alpha - alpha_high) < <T as Scalar>::from_f64(self.tolerance) {
+                break;
+            }
+        }
+
+        Err(ManifoldError::numerical_error(
+            format!(
+                "Strong Wolfe line search failed to bracket after {} iterations. Current alpha: {:.2e}, tolerance: {:.2e}",
+                params.max_iterations,
+                alpha.to_f64(),
+                self.tolerance
+            ),
+        ))
+    }
+    
+    fn search_with_deriv(
+        &mut self,
+        cost_fn: &impl CostFunction<T, D>,
+        manifold: &impl Manifold<T, D>,
+        retraction: &impl Retraction<T, D>,
+        point: &Point<T, D>,
+        value: T,
+        direction: &TangentVector<T, D>,
+        directional_deriv: T,
+        params: &LineSearchParams<T>,
+    ) -> Result<LineSearchResult<T, D>> {
+        // Validate parameters
+        params.validate()?;
+
+        if directional_deriv >= T::zero() {
+            return Err(ManifoldError::numerical_error(
+                "Search direction is not a descent direction",
+            ));
+        }
+
+        let mut alpha_low = T::zero();
+        let alpha_high = params.max_step_size;
+        let mut alpha = params.initial_step_size;
+
+        let mut value_low = value;
+        let mut deriv_low = directional_deriv;
+
+        let mut function_evals = 0;
+        let mut gradient_evals = 0;
+
+        // Bracketing phase
+        for _ in 0..params.max_iterations {
+            // Evaluate at current alpha
+            let scaled_dir = direction * alpha;
+            let new_point = retraction.retract(manifold, point, &scaled_dir)?;
+            let new_value = cost_fn.cost(&new_point)?;
+            function_evals += 1;
+
+            // Check Armijo condition
+            let armijo_rhs = value + params.c1 * alpha * directional_deriv;
+
+            if new_value > armijo_rhs || (function_evals > 1 && new_value >= value_low) {
+                // We've gone too far, zoom between alpha_low and alpha
+                // For zoom, we need gradient so we can't avoid computing it
+                let gradient = cost_fn.gradient(point)?;
+                gradient_evals += 1;
+                return self.zoom(
+                    cost_fn,
+                    manifold,
+                    retraction,
+                    point,
+                    value,
+                    &gradient,
+                    direction,
+                    directional_deriv,
+                    alpha_low,
+                    alpha,
+                    value_low,
+                    deriv_low,
+                    params,
+                    function_evals,
+                    gradient_evals,
+                );
+            }
+
+            // Compute gradient at new point
+            let (_, new_gradient) = cost_fn.cost_and_gradient(&new_point)?;
+            gradient_evals += 1;
+
+            // Transport direction to new point and compute directional derivative
+            let transported_dir = manifold.parallel_transport(point, &new_point, direction)?;
+            let new_deriv = manifold.inner_product(&new_point, &new_gradient, &transported_dir)?;
+
+            // Check curvature condition
+            if <T as Float>::abs(new_deriv) <= params.c2 * <T as Float>::abs(directional_deriv) {
+                // Strong Wolfe conditions satisfied
+                return Ok(LineSearchResult {
+                    step_size: alpha,
+                    new_point,
+                    new_value,
+                    new_gradient: Some(new_gradient),
+                    function_evals,
+                    gradient_evals,
+                    success: true,
+                });
+            }
+
+            if new_deriv >= T::zero() {
+                // We've gone past the minimum, zoom between alpha and alpha_low
+                let gradient = cost_fn.gradient(point)?;
+                gradient_evals += 1;
+                return self.zoom(
+                    cost_fn,
+                    manifold,
+                    retraction,
+                    point,
+                    value,
+                    &gradient,
+                    direction,
+                    directional_deriv,
                     alpha,
                     alpha_low,
                     new_value,

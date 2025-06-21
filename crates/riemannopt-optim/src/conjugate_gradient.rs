@@ -230,7 +230,7 @@ where
         let mut direction = cg_state.compute_direction(&gradient, manifold, &state.point)?;
         
         // Check if it's a descent direction
-        let dir_grad_inner = manifold.inner_product(&state.point, &direction, &gradient)?;
+        let mut dir_grad_inner = manifold.inner_product(&state.point, &direction, &gradient)?;
         if dir_grad_inner >= T::zero() {
             // Not a descent direction, restart with steepest descent
             direction = -gradient.clone();
@@ -239,17 +239,19 @@ where
             cg_state.previous_gradient = None;
             cg_state.previous_point = None;
             cg_state.iterations_since_restart = 0;
+            // Recompute inner product for new direction
+            dir_grad_inner = manifold.inner_product(&state.point, &direction, &gradient)?;
         }
         
-        // Perform line search
-        let line_search_result = self.line_search.search(
+        // Perform line search using pre-computed directional derivative
+        let line_search_result = self.line_search.search_with_deriv(
             cost_fn,
             manifold,
             retraction,
             &state.point,
             cost,
-            &gradient,
             &direction,
+            dir_grad_inner,
             &self.config.line_search_params,
         )?;
         

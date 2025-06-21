@@ -3,7 +3,7 @@
 //! The Newton method uses second-order information (Hessian) to achieve
 //! faster convergence than first-order methods.
 
-use nalgebra::{DVector, Dyn, OVector, OMatrix, allocator::Allocator, DefaultAllocator, Dim};
+use nalgebra::{Dyn, OVector, OMatrix, allocator::Allocator, DefaultAllocator, Dim};
 use num_traits::Float;
 
 use riemannopt_core::{
@@ -376,6 +376,7 @@ mod tests {
     use super::*;
     use riemannopt_core::cost_function::QuadraticCost;
     use riemannopt_core::test_manifolds::TestEuclideanManifold;
+    use nalgebra::DVector;
 
     #[test]
     fn test_newton_creation() {
