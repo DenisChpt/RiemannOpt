@@ -30,6 +30,7 @@
 
 use riemannopt_core::{
     cost_function::CostFunction,
+    core::CachedCostFunction,
     error::Result,
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point},
@@ -112,8 +113,9 @@ where
     y_vectors: VecDeque<OVector<T, D>>,
     /// Inner products: rho_k = 1 / <s_k, y_k>_g (using Riemannian metric)
     rho_values: VecDeque<T>,
-    /// Reference point for storing vectors (all vectors are transported here)
-    reference_point: Option<OVector<T, D>>,
+    /// Points where each (s_k, y_k) pair was computed
+    /// This allows us to transport gradients backward instead of transporting history forward
+    points: VecDeque<OVector<T, D>>,
     /// Maximum number of pairs to store
     capacity: usize,
 }
@@ -130,40 +132,22 @@ where
             s_vectors: VecDeque::with_capacity(capacity),
             y_vectors: VecDeque::with_capacity(capacity),
             rho_values: VecDeque::with_capacity(capacity),
-            reference_point: None,
+            points: VecDeque::with_capacity(capacity),
             capacity,
         }
     }
 
     /// Adds a new vector pair to storage.
-    /// All vectors are transported to the reference point for consistent storage.
+    /// Vectors are stored at their original points without transport.
     fn push(
         &mut self, 
         s: OVector<T, D>, 
         y: OVector<T, D>, 
         manifold: &impl Manifold<T, D>, 
-        from_point: &OVector<T, D>,
-        to_point: &OVector<T, D>,
+        point: &OVector<T, D>,
     ) -> Result<()> {
-        // Transport all existing vectors to the new reference point if needed
-        if let Some(ref old_ref) = self.reference_point {
-            if self.s_vectors.len() > 0 {
-                for i in 0..self.s_vectors.len() {
-                    self.s_vectors[i] = manifold.parallel_transport(old_ref, to_point, &self.s_vectors[i])?;
-                    self.y_vectors[i] = manifold.parallel_transport(old_ref, to_point, &self.y_vectors[i])?;
-                }
-            }
-        }
-        
-        // Update reference point to the current point
-        self.reference_point = Some(to_point.clone());
-        
-        // Transport new vectors to reference point
-        let s_transported = manifold.parallel_transport(from_point, to_point, &s)?;
-        let y_transported = manifold.parallel_transport(from_point, to_point, &y)?;
-        
-        // Compute inner product at reference point
-        let sy_inner = manifold.inner_product(to_point, &s_transported, &y_transported)?;
+        // Compute inner product at the current point
+        let sy_inner = manifold.inner_product(point, &s, &y)?;
         
         // Check for positive definiteness (cautious update)
         if sy_inner <= T::zero() {
@@ -177,12 +161,14 @@ where
             self.s_vectors.pop_front();
             self.y_vectors.pop_front();
             self.rho_values.pop_front();
+            self.points.pop_front();
         }
         
-        // Add new vectors (already transported)
-        self.s_vectors.push_back(s_transported);
-        self.y_vectors.push_back(y_transported);
+        // Add new vectors and point (no transport needed)
+        self.s_vectors.push_back(s);
+        self.y_vectors.push_back(y);
         self.rho_values.push_back(rho);
+        self.points.push_back(point.clone());
         
         Ok(())
     }
@@ -193,7 +179,7 @@ where
         self.s_vectors.clear();
         self.y_vectors.clear();
         self.rho_values.clear();
-        self.reference_point = None;
+        self.points.clear();
     }
 
     /// Returns the number of stored pairs.
@@ -280,7 +266,7 @@ where
     }
 
     /// Computes the search direction using L-BFGS two-loop recursion.
-    /// All operations use the Riemannian metric at the current point.
+    /// Uses backward transport of gradient to avoid transporting history.
     fn compute_direction(
         &self,
         manifold: &impl Manifold<T, D>,
@@ -297,53 +283,59 @@ where
         let mut alpha = vec![T::zero(); m];
         let mut q = gradient.clone();
 
-        // First loop: compute alpha values and update q
+        // First loop: backward pass through history
+        // Transport q backward to each historical point for inner products
         for i in (0..m).rev() {
+            let hist_point = &storage.points[i];
             let s = &storage.s_vectors[i];
             let y = &storage.y_vectors[i];
             let rho = storage.rho_values[i];
             
-            // alpha[i] = rho * <s[i], q>_g (Riemannian inner product)
-            let sq_inner = manifold.inner_product(point, s, &q)?;
+            // Transport q from current point to historical point
+            let q_transported = manifold.parallel_transport(point, hist_point, &q)?;
+            
+            // alpha[i] = rho * <s[i], q>_g at historical point
+            let sq_inner = manifold.inner_product(hist_point, s, &q_transported)?;
             alpha[i] = rho * sq_inner;
             
-            // q = q - alpha[i] * y[i]
-            q = &q - &(y * alpha[i]);
+            // Update q (still at current point)
+            q = &q - &(manifold.parallel_transport(hist_point, point, &(y * alpha[i]))?);  
         }
 
         // Scale by initial Hessian approximation
-        // For Riemannian manifolds, we need to account for curvature
-        // H_0 = gamma * G^{-1}, where G is the metric tensor
-        // gamma = <s_{m-1}, y_{m-1}>_g / <y_{m-1}, y_{m-1}>_g
         if m > 0 {
-            let s_last = &storage.s_vectors[m - 1];
+            let last_point = &storage.points[m - 1];
+            let _s_last = &storage.s_vectors[m - 1];
             let y_last = &storage.y_vectors[m - 1];
             
-            let sy_inner = manifold.inner_product(point, s_last, y_last)?;
-            let yy_inner = manifold.inner_product(point, y_last, y_last)?;
+            // Use inner products at the historical point where s and y were computed
+            let sy_inner = T::one() / storage.rho_values[m - 1]; // We stored 1/sy_inner as rho
+            let yy_inner = manifold.inner_product(last_point, y_last, y_last)?;
             
             if yy_inner > T::zero() && sy_inner > T::zero() {
                 let gamma = sy_inner / yy_inner;
-                // For manifolds with non-trivial metric, this scaling approximates
-                // the inverse of the Riemannian Hessian
                 q = &q * gamma;
             }
         }
 
-        // Second loop: compute search direction
+        // Second loop: forward pass through history
         let mut r = q;
-        for (i, alpha_i) in alpha.iter().enumerate().take(m) {
+        for i in 0..m {
+            let hist_point = &storage.points[i];
             let s = &storage.s_vectors[i];
             let y = &storage.y_vectors[i];
             let rho = storage.rho_values[i];
             
-            // beta = rho * <y[i], r>_g
-            let yr_inner = manifold.inner_product(point, y, &r)?;
+            // Transport r from current point to historical point
+            let r_transported = manifold.parallel_transport(point, hist_point, &r)?;
+            
+            // beta = rho * <y[i], r>_g at historical point
+            let yr_inner = manifold.inner_product(hist_point, y, &r_transported)?;
             let beta = rho * yr_inner;
             
-            // r = r + (alpha[i] - beta) * s[i]
-            let coeff = *alpha_i - beta;
-            r = &r + &(s * coeff);
+            // Update r (still at current point)
+            let coeff = alpha[i] - beta;
+            r = &r + &(manifold.parallel_transport(hist_point, point, &(s * coeff))?);
         }
 
         // Project to tangent space to ensure feasibility
@@ -408,8 +400,8 @@ where
             // Compute y = g_{k+1} - P_{x_k→x_{k+1}}(g_k)
             let y = &riemannian_grad - &transported_prev_grad;
             
-            // Add to storage with transport to reference point
-            lbfgs_state.storage.push(s, y, manifold, prev_point, &state.point)?;
+            // Add to storage at the previous point (where s and y are computed)
+            lbfgs_state.storage.push(s, y, manifold, prev_point)?;
         }
         
         // Update L-BFGS state
@@ -426,17 +418,24 @@ where
     }
 
     /// Optimizes the given cost function.
-    pub fn optimize(
+    pub fn optimize<C>(
         &mut self,
-        cost_fn: &impl CostFunction<T, D>,
+        cost_fn: &C,
         manifold: &impl Manifold<T, D>,
         initial_point: &OVector<T, D>,
         stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, D>> {
+    ) -> Result<OptimizationResult<T, D>>
+    where
+        C: CostFunction<T, D>,
+        DefaultAllocator: Allocator<D, D>,
+    {
         let start_time = Instant::now();
         
+        // Wrap cost function with caching to avoid redundant computations
+        let cached_cost_fn = CachedCostFunction::new(cost_fn);
+        
         // Initialize optimizer state
-        let initial_cost = cost_fn.cost(initial_point)?;
+        let initial_cost = cached_cost_fn.cost(initial_point)?;
         let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         let mut lbfgs_state = LBFGSState::new(self.config.memory_size);
         
@@ -444,6 +443,9 @@ where
         loop {
             // Check stopping criteria
             if let Some(reason) = ConvergenceChecker::check(&state, manifold, stopping_criterion)? {
+                // Get cache statistics for diagnostics
+                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
+                
                 return Ok(OptimizationResult::new(
                     state.point,
                     state.value,
@@ -451,14 +453,14 @@ where
                     start_time.elapsed(),
                     reason,
                 )
-                .with_function_evaluations(state.function_evaluations)
-                .with_gradient_evaluations(state.gradient_evaluations)
+                .with_function_evaluations(cost_misses)  // Use cache misses as actual evaluations
+                .with_gradient_evaluations(grad_misses)  // Use cache misses as actual evaluations
                 .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
             }
             
             // Perform one optimization step
             let retraction = DefaultRetraction;
-            self.step_internal(cost_fn, manifold, &retraction, &mut state, &mut lbfgs_state)?;
+            self.step_internal(&cached_cost_fn, manifold, &retraction, &mut state, &mut lbfgs_state)?;
         }
     }
 }
@@ -468,7 +470,7 @@ impl<T, D> Optimizer<T, D> for LBFGS<T, D>
 where
     T: Scalar,
     D: Dim,
-    DefaultAllocator: Allocator<D>,
+    DefaultAllocator: Allocator<D> + Allocator<D, D>,
 {
     fn name(&self) -> &str {
         "Riemannian L-BFGS"
@@ -485,7 +487,7 @@ where
         C: CostFunction<T, D>,
         M: Manifold<T, D>,
     {
-        self.optimize(cost_fn, manifold, initial_point, stopping_criterion)
+        LBFGS::optimize(self, cost_fn, manifold, initial_point, stopping_criterion)
     }
 
     fn step<C, M>(
@@ -586,7 +588,7 @@ mod tests {
         let s1 = DVector::from_vec(vec![1.0, 0.0, 0.0]);
         let y1 = DVector::from_vec(vec![0.5, 0.0, 0.0]);
         let point2 = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        storage.push(s1, y1, &manifold, &point, &point2).unwrap();
+        storage.push(s1, y1, &manifold, &point).unwrap();
         
         assert_eq!(storage.len(), 1);
         assert!(!storage.is_empty());
@@ -595,12 +597,12 @@ mod tests {
         let s2 = DVector::from_vec(vec![0.0, 1.0, 0.0]);
         let y2 = DVector::from_vec(vec![0.0, 0.5, 0.0]);
         let point3 = DVector::from_vec(vec![1.0, 1.0, 0.0]);
-        storage.push(s2, y2, &manifold, &point2, &point3).unwrap();
+        storage.push(s2, y2, &manifold, &point2).unwrap();
         
         let s3 = DVector::from_vec(vec![0.0, 0.0, 1.0]);
         let y3 = DVector::from_vec(vec![0.0, 0.0, 0.5]);
         let point4 = DVector::from_vec(vec![1.0, 1.0, 1.0]);
-        storage.push(s3, y3, &manifold, &point3, &point4).unwrap();
+        storage.push(s3, y3, &manifold, &point3).unwrap();
         
         // Should still have 3 (at capacity)
         assert_eq!(storage.len(), 3);
@@ -608,8 +610,8 @@ mod tests {
         // Add one more - oldest should be removed
         let s4 = DVector::from_vec(vec![1.0, 1.0, 0.0]);
         let y4 = DVector::from_vec(vec![0.5, 0.5, 0.0]);
-        let point5 = DVector::from_vec(vec![2.0, 2.0, 1.0]);
-        storage.push(s4, y4, &manifold, &point4, &point5).unwrap();
+        let _point5 = DVector::from_vec(vec![2.0, 2.0, 1.0]);
+        storage.push(s4, y4, &manifold, &point4).unwrap();
         
         assert_eq!(storage.len(), 3);
     }
@@ -656,8 +658,8 @@ mod tests {
         let initial_len = storage.len();
         let s_clone = s.clone();
         let y_clone = y.clone();
-        let point2 = manifold.random_point();
-        storage.push(s, y, &manifold, &point, &point2).unwrap();
+        // let _point2 = manifold.random_point(); // Not needed anymore
+        storage.push(s, y, &manifold, &point).unwrap();
         
         // Check if it was skipped (negative inner product)
         let inner_prod = manifold.inner_product(&point, &s_clone, &y_clone).unwrap();
@@ -682,12 +684,12 @@ mod tests {
         let s1 = DVector::from_vec(vec![1.0, 0.0]);
         let y1 = DVector::from_vec(vec![0.5, 0.5]);
         let point2 = DVector::from_vec(vec![0.1, 0.1]);
-        storage.push(s1, y1, &manifold, &point, &point2).unwrap();
+        storage.push(s1, y1, &manifold, &point).unwrap();
         
         let s2 = DVector::from_vec(vec![0.0, 1.0]);
         let y2 = DVector::from_vec(vec![0.5, 0.5]);
-        let point3 = DVector::from_vec(vec![0.2, 0.2]);
-        storage.push(s2, y2, &manifold, &point2, &point3).unwrap();
+        let _point3 = DVector::from_vec(vec![0.2, 0.2]);
+        storage.push(s2, y2, &manifold, &point2).unwrap();
         
         // Compute direction for a gradient
         let gradient = DVector::from_vec(vec![1.0, 1.0]);

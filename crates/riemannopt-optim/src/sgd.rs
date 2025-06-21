@@ -177,6 +177,7 @@
 
 use riemannopt_core::{
     cost_function::CostFunction,
+    core::CachedCostFunction,
     error::Result,
     manifold::{Manifold, Point, TangentVector},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
@@ -739,14 +740,17 @@ where
     ) -> Result<OptimizationResult<T, D>>
     where
         D: Dim,
-        DefaultAllocator: Allocator<D>,
+        DefaultAllocator: Allocator<D> + Allocator<D, D>,
         C: CostFunction<T, D>,
         M: Manifold<T, D>,
     {
         let start_time = Instant::now();
         
+        // Wrap cost function with caching to avoid redundant computations
+        let cached_cost_fn = CachedCostFunction::new(cost_fn);
+        
         // Initialize optimization state
-        let initial_cost = cost_fn.cost(initial_point)?;
+        let initial_cost = cached_cost_fn.cost(initial_point)?;
         let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         
         // Initialize SGD-specific state
@@ -756,6 +760,9 @@ where
         loop {
             // Check stopping criteria
             if let Some(reason) = ConvergenceChecker::check(&state, manifold, stopping_criterion)? {
+                // Get cache statistics for diagnostics
+                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
+                
                 return Ok(OptimizationResult::new(
                     state.point,
                     state.value,
@@ -763,13 +770,13 @@ where
                     start_time.elapsed(),
                     reason,
                 )
-                .with_function_evaluations(state.function_evaluations)
-                .with_gradient_evaluations(state.gradient_evaluations)
+                .with_function_evaluations(cost_misses)  // Use cache misses as actual evaluations
+                .with_gradient_evaluations(grad_misses)  // Use cache misses as actual evaluations
                 .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
             }
             
             // Perform one optimization step
-            self.step_internal(cost_fn, manifold, &mut state, &mut sgd_state)?;
+            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut sgd_state)?;
         }
     }
 
@@ -1082,7 +1089,7 @@ impl<T, D> Optimizer<T, D> for SGD<T>
 where
     T: Scalar,
     D: Dim,
-    DefaultAllocator: Allocator<D>,
+    DefaultAllocator: Allocator<D> + Allocator<D, D>,
 {
     fn name(&self) -> &str {
         "Riemannian SGD"

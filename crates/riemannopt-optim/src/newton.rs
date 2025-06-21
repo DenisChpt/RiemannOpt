@@ -3,11 +3,12 @@
 //! The Newton method uses second-order information (Hessian) to achieve
 //! faster convergence than first-order methods.
 
-use nalgebra::{DVector, Dyn};
+use nalgebra::{DVector, Dyn, OVector, OMatrix, allocator::Allocator, DefaultAllocator, Dim};
 use num_traits::Float;
 
 use riemannopt_core::{
     cost_function::CostFunction,
+    core::CachedCostFunction,
     error::{Result, ManifoldError},
     line_search::{LineSearchParams, BacktrackingLineSearch, LineSearch},
     manifold::{Manifold, Point, TangentVector},
@@ -69,6 +70,76 @@ impl<T: Scalar> NewtonConfig<T> {
     }
 }
 
+/// State for the Newton optimizer.
+#[derive(Debug)]
+struct NewtonState<T, D>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D> + Allocator<D, D>,
+{
+    /// Line search instance (reused across iterations)
+    line_search: BacktrackingLineSearch,
+    /// Workspace for CG solver
+    cg_workspace: CGWorkspace<T, D>,
+    /// Cached Hessian (if using exact Hessian)
+    #[allow(dead_code)]
+    cached_hessian: Option<OMatrix<T, D, D>>,
+    /// Iteration counter
+    iteration: usize,
+}
+
+impl<T, D> NewtonState<T, D>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D> + Allocator<D, D>,
+{
+    /// Creates a new Newton state.
+    fn new(dim: D, max_cg_iterations: usize) -> Self {
+        Self {
+            line_search: BacktrackingLineSearch::new(),
+            cg_workspace: CGWorkspace::new(dim, max_cg_iterations),
+            cached_hessian: None,
+            iteration: 0,
+        }
+    }
+}
+
+/// Workspace for CG solver to avoid allocations
+#[derive(Debug)]
+struct CGWorkspace<T, D>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    /// Direction vector
+    d: OVector<T, D>,
+    /// Residual vector
+    r: OVector<T, D>,
+    /// Search direction
+    p: OVector<T, D>,
+    /// Hessian-vector product
+    hp: OVector<T, D>,
+}
+
+impl<T, D> CGWorkspace<T, D>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    fn new(dim: D, _max_iterations: usize) -> Self {
+        Self {
+            d: OVector::zeros_generic(dim, nalgebra::U1),
+            r: OVector::zeros_generic(dim, nalgebra::U1),
+            p: OVector::zeros_generic(dim, nalgebra::U1),
+            hp: OVector::zeros_generic(dim, nalgebra::U1),
+        }
+    }
+}
+
 /// Riemannian Newton method optimizer
 #[derive(Debug)]
 pub struct Newton<T: Scalar> {
@@ -82,104 +153,19 @@ impl<T: Scalar> Newton<T> {
             config,
         }
     }
-
-    /// Solve the Newton system H*d = -g using CG
-    fn solve_newton_system<M: Manifold<T, Dyn>>(
-        &self,
-        manifold: &M,
-        x: &Point<T, Dyn>,
-        grad: &TangentVector<T, Dyn>,
-        hessian_vector_product: impl Fn(&TangentVector<T, Dyn>) -> Result<TangentVector<T, Dyn>>,
-    ) -> Result<TangentVector<T, Dyn>> {
-        // Implement CG solver for the Newton system
-        let mut d = DVector::zeros(grad.len());
-        let mut r = -grad.clone();
-        let mut p = r.clone();
-        
-        for _ in 0..self.config.max_cg_iterations {
-            let hp = hessian_vector_product(&p)?;
-            
-            // Add regularization: Hp + reg*p
-            let hp_reg = &hp + &p * self.config.hessian_regularization;
-            
-            let alpha = manifold.inner_product(x, &r, &r)? / 
-                       manifold.inner_product(x, &p, &hp_reg)?;
-            
-            d = &d + &p * alpha;
-            let r_new = &r - &hp_reg * alpha;
-            
-            let r_new_norm = <T as Float>::sqrt(manifold.inner_product(x, &r_new, &r_new)?);
-            if r_new_norm < self.config.cg_tolerance {
-                break;
-            }
-            
-            let beta = manifold.inner_product(x, &r_new, &r_new)? / 
-                      manifold.inner_product(x, &r, &r)?;
-            
-            p = &r_new + &p * beta;
-            r = r_new;
-        }
-        
-        Ok(d)
-    }
-}
-
-impl<T: Scalar> Optimizer<T, Dyn> for Newton<T> {
-    fn name(&self) -> &str {
-        "Riemannian Newton"
-    }
-
-    fn optimize<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        initial_point: &Point<T, Dyn>,
-        stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, Dyn>>
-    where
-        C: CostFunction<T, Dyn>,
-        M: Manifold<T, Dyn>,
-    {
-        // Initialize state
-        let (initial_cost, initial_grad) = cost_fn.cost_and_gradient(initial_point)?;
-        let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
-        
-        let riem_grad = manifold.euclidean_to_riemannian_gradient(initial_point, &initial_grad)?;
-        let grad_norm = <T as Float>::sqrt(manifold.inner_product(initial_point, &riem_grad, &riem_grad)?);
-        state.set_gradient(riem_grad, grad_norm);
-        
-        // Main optimization loop
-        loop {
-            // Check stopping criteria
-            if let Some(reason) = ConvergenceChecker::check(&state, manifold, stopping_criterion)? {
-                let duration = state.start_time.elapsed();
-                return Ok(OptimizationResult {
-                    point: state.point.clone(),
-                    value: state.value,
-                    gradient_norm: state.gradient_norm,
-                    iterations: state.iteration,
-                    function_evaluations: state.function_evaluations,
-                    gradient_evaluations: state.gradient_evaluations,
-                    duration,
-                    termination_reason: reason,
-                    converged: matches!(reason, TerminationReason::Converged | TerminationReason::TargetReached),
-                });
-            }
-            
-            // Take optimization step
-            self.step(cost_fn, manifold, &mut state)?;
-        }
-    }
-
-    fn step<C, M>(
+    
+    /// Internal step method that has access to Newton-specific state
+    fn step_internal<C, M>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
         state: &mut OptimizerState<T, Dyn>,
+        newton_state: &mut NewtonState<T, Dyn>,
     ) -> Result<()>
     where
         C: CostFunction<T, Dyn>,
         M: Manifold<T, Dyn>,
+        nalgebra::DefaultAllocator: nalgebra::allocator::Allocator<Dyn, Dyn>,
     {
         // Get current gradient
         let grad = state.gradient.as_ref()
@@ -216,13 +202,18 @@ impl<T: Scalar> Optimizer<T, Dyn> for Newton<T> {
             }
         };
         
-        // Solve Newton system
-        let newton_dir = self.solve_newton_system(manifold, &state.point, grad, hessian_vec_prod)?;
+        // Solve Newton system using workspace
+        let newton_dir = self.solve_newton_system(
+            manifold, 
+            &state.point, 
+            grad, 
+            hessian_vec_prod,
+            &mut newton_state.cg_workspace
+        )?;
         
-        // Perform line search
-        let mut line_search = BacktrackingLineSearch::new();
+        // Perform line search using stored instance
         let retraction = DefaultRetraction;
-        let ls_result = line_search.search(
+        let ls_result = newton_state.line_search.search(
             cost_fn,
             manifold,
             &retraction,
@@ -245,7 +236,138 @@ impl<T: Scalar> Optimizer<T, Dyn> for Newton<T> {
         state.update(new_point, new_cost);
         state.set_gradient(new_riem_grad, new_grad_norm);
         
+        // Update Newton state
+        newton_state.iteration += 1;
+        
         Ok(())
+    }
+
+    /// Solve the Newton system H*d = -g using CG with workspace
+    fn solve_newton_system<M: Manifold<T, Dyn>>(
+        &self,
+        manifold: &M,
+        x: &Point<T, Dyn>,
+        grad: &TangentVector<T, Dyn>,
+        hessian_vector_product: impl Fn(&TangentVector<T, Dyn>) -> Result<TangentVector<T, Dyn>>,
+        workspace: &mut CGWorkspace<T, Dyn>,
+    ) -> Result<TangentVector<T, Dyn>> {
+        // Use workspace vectors to avoid allocations
+        workspace.d.fill(T::zero());
+        workspace.r.copy_from(&(-grad));
+        workspace.p.copy_from(&workspace.r);
+        
+        for _ in 0..self.config.max_cg_iterations {
+            workspace.hp = hessian_vector_product(&workspace.p)?;
+            
+            // Add regularization: Hp + reg*p
+            workspace.hp.axpy(self.config.hessian_regularization, &workspace.p, T::one());
+            
+            let rr_inner = manifold.inner_product(x, &workspace.r, &workspace.r)?;
+            let php_inner = manifold.inner_product(x, &workspace.p, &workspace.hp)?;
+            let alpha = rr_inner / php_inner;
+            
+            workspace.d.axpy(alpha, &workspace.p, T::one());
+            
+            // Store old r'r before updating r
+            let r_old_norm_sq = rr_inner;
+            workspace.r.axpy(-alpha, &workspace.hp, T::one());
+            
+            let r_new_norm_sq = manifold.inner_product(x, &workspace.r, &workspace.r)?;
+            let r_new_norm = <T as Float>::sqrt(r_new_norm_sq);
+            if r_new_norm < self.config.cg_tolerance {
+                break;
+            }
+            
+            let beta = r_new_norm_sq / r_old_norm_sq;
+            
+            // p = r + beta * p_old
+            // We need to store p_old before updating
+            workspace.p *= beta;
+            workspace.p += &workspace.r;
+        }
+        
+        Ok(workspace.d.clone())
+    }
+}
+
+impl<T: Scalar> Optimizer<T, Dyn> for Newton<T>
+where
+    nalgebra::DefaultAllocator: nalgebra::allocator::Allocator<Dyn> + nalgebra::allocator::Allocator<Dyn, Dyn>,
+{
+    fn name(&self) -> &str {
+        "Riemannian Newton"
+    }
+
+    fn optimize<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &Point<T, Dyn>,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, Dyn>>
+    where
+        C: CostFunction<T, Dyn>,
+        M: Manifold<T, Dyn>,
+    {
+        // Wrap cost function with caching to avoid redundant computations
+        let cached_cost_fn = CachedCostFunction::new(cost_fn);
+        
+        // Initialize state
+        let (initial_cost, initial_grad) = cached_cost_fn.cost_and_gradient(initial_point)?;
+        let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
+        
+        let riem_grad = manifold.euclidean_to_riemannian_gradient(initial_point, &initial_grad)?;
+        let grad_norm = <T as Float>::sqrt(manifold.inner_product(initial_point, &riem_grad, &riem_grad)?);
+        state.set_gradient(riem_grad, grad_norm);
+        
+        // Initialize Newton-specific state
+        let dim = initial_point.shape_generic().0;
+        let max_cg_iter = self.config.max_cg_iterations;
+        let mut newton_state = NewtonState::new(dim, max_cg_iter);
+        
+        // Main optimization loop
+        loop {
+            // Check stopping criteria
+            if let Some(reason) = ConvergenceChecker::check(&state, manifold, stopping_criterion)? {
+                let duration = state.start_time.elapsed();
+                
+                // Get cache statistics for diagnostics
+                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), (_hess_hits, _hess_misses)) = cached_cost_fn.cache_stats();
+                
+                return Ok(OptimizationResult {
+                    point: state.point.clone(),
+                    value: state.value,
+                    gradient_norm: state.gradient_norm,
+                    iterations: state.iteration,
+                    function_evaluations: cost_misses,  // Use cache misses as actual evaluations
+                    gradient_evaluations: grad_misses,  // Use cache misses as actual evaluations
+                    duration,
+                    termination_reason: reason,
+                    converged: matches!(reason, TerminationReason::Converged | TerminationReason::TargetReached),
+                });
+            }
+            
+            // Take optimization step
+            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut newton_state)?;
+        }
+    }
+
+    fn step<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, Dyn>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, Dyn>,
+        M: Manifold<T, Dyn>,
+    {
+        // Create temporary Newton state - this is a limitation of the public step interface
+        let dim = state.point.shape_generic().0;
+        let max_cg_iter = self.config.max_cg_iterations;
+        let mut newton_state = NewtonState::new(dim, max_cg_iter);
+        
+        self.step_internal(cost_fn, manifold, state, &mut newton_state)
     }
 }
 
