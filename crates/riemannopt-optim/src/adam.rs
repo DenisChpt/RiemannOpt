@@ -287,8 +287,16 @@ where
 
     /// Performs a single optimization step.
     ///
-    /// This is the public step method that creates temporary Adam state.
-    /// For full optimization runs, use `optimize` which maintains state across iterations.
+    /// **Note**: This method creates temporary Adam state and workspace on each call,
+    /// which impacts performance. It's intended for debugging or custom optimization loops.
+    /// For production use, prefer `optimize()` which maintains state across iterations
+    /// and reuses workspace for better performance.
+    ///
+    /// # Performance Impact
+    ///
+    /// - Creates new Adam state (first/second moments) on each call
+    /// - Allocates new workspace buffers
+    /// - Cannot maintain momentum information between calls
     pub fn step<D, C, M>(
         &mut self,
         cost_fn: &C,

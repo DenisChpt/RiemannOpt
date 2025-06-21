@@ -320,20 +320,17 @@ where
             }
         };
         
-        // Compute inverse
-        match fisher.clone().try_inverse() {
-            Some(inv) => Ok(inv),
-            None => {
-                // If not invertible, add more regularization
-                let n = fisher.nrows();
-                let mut regularized = fisher;
-                for i in 0..n {
-                    regularized[(i, i)] += self.config.min_eigenvalue;
-                }
-                regularized.try_inverse()
-                    .ok_or_else(|| ManifoldError::numerical_error("Fisher matrix is singular"))
-            }
+        // Try to invert without clone first
+        let n = fisher.nrows();
+        
+        // Add minimal regularization and try to invert
+        let mut regularized = fisher;
+        for i in 0..n {
+            regularized[(i, i)] += self.config.min_eigenvalue;
         }
+        
+        regularized.try_inverse()
+            .ok_or_else(|| ManifoldError::numerical_error("Fisher matrix is singular"))
     }
 
     /// Applies the natural gradient transformation.

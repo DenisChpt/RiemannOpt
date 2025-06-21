@@ -790,8 +790,16 @@ where
 
     /// Performs a single optimization step.
     ///
-    /// This method is useful for implementing custom optimization loops
-    /// or for debugging purposes.
+    /// **Note**: This method creates temporary SGD state and workspace on each call,
+    /// which impacts performance. It's intended for debugging or custom optimization loops.
+    /// For production use, prefer `optimize()` which maintains state across iterations
+    /// and reuses workspace for better performance.
+    ///
+    /// # Performance Impact
+    ///
+    /// - Creates new SGD state (momentum buffers) on each call
+    /// - Allocates new workspace
+    /// - Cannot maintain momentum between calls
     ///
     /// # Arguments
     ///
