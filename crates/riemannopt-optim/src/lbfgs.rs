@@ -35,7 +35,8 @@ use riemannopt_core::{
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point},
     memory::workspace::{Workspace, WorkspaceBuilder},
-    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
+    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker, TerminationReason},
+    optimization::callback::{OptimizationCallback, CallbackInfo},
     retraction::{Retraction, DefaultRetraction},
     types::Scalar,
 };
@@ -472,6 +473,117 @@ where
             // Perform one optimization step
             let retraction = DefaultRetraction;
             self.step_internal(&cached_cost_fn, manifold, &retraction, &mut state, &mut lbfgs_state, &mut workspace)?;
+        }
+    }
+
+    /// Optimizes a cost function on a manifold with an optional callback.
+    ///
+    /// This method extends `optimize` by allowing a callback function to be called
+    /// at each iteration, enabling monitoring, logging, or early stopping.
+    ///
+    /// # Arguments
+    ///
+    /// * `cost_fn` - The cost function to minimize
+    /// * `manifold` - The manifold constraint
+    /// * `initial_point` - Starting point on the manifold
+    /// * `stopping_criterion` - Conditions for terminating optimization
+    /// * `callback` - Optional callback called at each iteration
+    ///
+    /// # Returns
+    ///
+    /// An `OptimizationResult` containing the optimal point and metadata.
+    pub fn optimize_with_callback<C, CB>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &impl Manifold<T, D>,
+        initial_point: &OVector<T, D>,
+        stopping_criterion: &StoppingCriterion<T>,
+        mut callback: Option<&mut CB>,
+    ) -> Result<OptimizationResult<T, D>>
+    where
+        C: CostFunction<T, D>,
+        CB: OptimizationCallback<T, D>,
+        DefaultAllocator: Allocator<D, D>,
+    {
+        let start_time = Instant::now();
+        
+        // Call callback at start if provided
+        if let Some(cb) = callback.as_mut() {
+            cb.on_optimization_start()?;
+        }
+        
+        // Wrap cost function with caching to avoid redundant computations
+        let cached_cost_fn = CachedCostFunction::new(cost_fn);
+        
+        // Initialize optimizer state
+        let initial_cost = cached_cost_fn.cost(initial_point)?;
+        let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
+        let mut lbfgs_state = LBFGSState::new(self.config.memory_size);
+        
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
+        // Main optimization loop
+        loop {
+            // Check stopping criteria
+            if let Some(reason) = ConvergenceChecker::check(&state, manifold, stopping_criterion)? {
+                // Get cache statistics for diagnostics
+                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
+                
+                // Call final callback if provided
+                if let Some(cb) = callback {
+                    let info = CallbackInfo {
+                        state: state.clone(),
+                        elapsed: start_time.elapsed(),
+                        converged: true,
+                    };
+                    cb.on_optimization_end(&info)?;
+                }
+                
+                return Ok(OptimizationResult::new(
+                    state.point,
+                    state.value,
+                    state.iteration,
+                    start_time.elapsed(),
+                    reason,
+                )
+                .with_function_evaluations(cost_misses)
+                .with_gradient_evaluations(grad_misses)
+                .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
+            }
+            
+            // Perform one optimization step
+            let retraction = DefaultRetraction;
+            self.step_internal(&cached_cost_fn, manifold, &retraction, &mut state, &mut lbfgs_state, &mut workspace)?;
+            
+            // Call iteration callback if provided
+            if let Some(cb) = callback.as_mut() {
+                let info = CallbackInfo {
+                    state: state.clone(),
+                    elapsed: start_time.elapsed(),
+                    converged: false,
+                };
+                let should_continue = cb.on_iteration_end(&info)?;
+                
+                // Check if callback requested early stopping
+                if !should_continue {
+                    let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
+                    
+                    return Ok(OptimizationResult::new(
+                        state.point,
+                        state.value,
+                        state.iteration,
+                        start_time.elapsed(),
+                        TerminationReason::CallbackRequest,
+                    )
+                    .with_function_evaluations(cost_misses)
+                    .with_gradient_evaluations(grad_misses)
+                    .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
+                }
+            }
         }
     }
 }
