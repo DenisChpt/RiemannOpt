@@ -34,6 +34,7 @@ use riemannopt_core::{
     error::Result,
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point},
+    memory::workspace::{Workspace, WorkspaceBuilder},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     retraction::{Retraction, DefaultRetraction},
     types::Scalar,
@@ -351,6 +352,7 @@ where
         retraction: &impl Retraction<T, D>,
         state: &mut OptimizerState<T, D>,
         lbfgs_state: &mut LBFGSState<T, D>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Compute cost and gradient
         let (cost, euclidean_grad) = cost_fn.cost_and_gradient(&state.point)?;
@@ -439,6 +441,12 @@ where
         let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         let mut lbfgs_state = LBFGSState::new(self.config.memory_size);
         
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
         // Main optimization loop
         loop {
             // Check stopping criteria
@@ -460,7 +468,7 @@ where
             
             // Perform one optimization step
             let retraction = DefaultRetraction;
-            self.step_internal(&cached_cost_fn, manifold, &retraction, &mut state, &mut lbfgs_state)?;
+            self.step_internal(&cached_cost_fn, manifold, &retraction, &mut state, &mut lbfgs_state, &mut workspace)?;
         }
     }
 }
@@ -508,8 +516,14 @@ where
         // Create a temporary L-BFGS state if needed
         let mut lbfgs_state = LBFGSState::new(self.config.memory_size);
         
+        // Create a temporary workspace
+        let n = state.point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
         // Perform the step
-        self.step_internal(cost_fn, manifold, &retraction, state, &mut lbfgs_state)
+        self.step_internal(cost_fn, manifold, &retraction, state, &mut lbfgs_state, &mut workspace)
     }
 }
 

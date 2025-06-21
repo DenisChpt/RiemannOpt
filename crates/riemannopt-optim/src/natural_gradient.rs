@@ -34,6 +34,7 @@ use riemannopt_core::{
     fisher::FisherApproximation,
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::{Workspace, WorkspaceBuilder},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     retraction::Retraction,
     types::Scalar,
@@ -353,6 +354,7 @@ where
         retraction: &R,
         state: &mut OptimizerState<T, D>,
         ng_state: &mut NaturalGradientState<T, D>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         C: CostFunction<T, D>,
@@ -503,6 +505,12 @@ where
         let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         let mut ng_state = NaturalGradientState::new();
         
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
         // Main optimization loop
         loop {
             // Check stopping criteria
@@ -523,7 +531,7 @@ where
             }
             
             // Perform one optimization step
-            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut ng_state)?;
+            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut ng_state, &mut workspace)?;
         }
     }
 
@@ -542,7 +550,14 @@ where
     {
         // Create temporary NG state
         let mut ng_state = NaturalGradientState::new();
-        self.step_internal(cost_fn, manifold, retraction, state, &mut ng_state)
+        
+        // Create temporary workspace
+        let n = state.point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
+        self.step_internal(cost_fn, manifold, retraction, state, &mut ng_state, &mut workspace)
     }
 }
 

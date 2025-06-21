@@ -33,6 +33,7 @@ use riemannopt_core::{
     core::CachedCostFunction,
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::{Workspace, WorkspaceBuilder},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker, TerminationReason},
     retraction::Retraction,
     types::Scalar,
@@ -438,6 +439,7 @@ where
         retraction: &R,
         state: &mut OptimizerState<T, D>,
         tr_state: &mut TrustRegionState<T, D>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         C: CostFunction<T, D>,
@@ -538,6 +540,12 @@ where
         let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         let mut tr_state = TrustRegionState::new(self.config.initial_radius);
         
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
         // Main optimization loop
         loop {
             // Check stopping criteria
@@ -575,7 +583,7 @@ where
             }
             
             // Perform one optimization step
-            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut tr_state)?;
+            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut tr_state, &mut workspace)?;
         }
     }
 
@@ -594,7 +602,14 @@ where
     {
         // Create temporary trust region state
         let mut tr_state = TrustRegionState::new(self.config.initial_radius);
-        self.step_internal(cost_fn, manifold, retraction, state, &mut tr_state)
+        
+        // Create temporary workspace
+        let n = state.point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
+        self.step_internal(cost_fn, manifold, retraction, state, &mut tr_state, &mut workspace)
     }
 }
 

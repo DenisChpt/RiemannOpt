@@ -180,6 +180,7 @@ use riemannopt_core::{
     core::CachedCostFunction,
     error::Result,
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::{Workspace, WorkspaceBuilder},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     step_size::StepSizeSchedule,
     types::Scalar,
@@ -756,6 +757,13 @@ where
         // Initialize SGD-specific state
         let mut sgd_state = SGDState::new();
         
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .with_momentum_buffers(n)
+            .build();
+        
         // Main optimization loop
         loop {
             // Check stopping criteria
@@ -776,7 +784,7 @@ where
             }
             
             // Perform one optimization step
-            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut sgd_state)?;
+            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut sgd_state, &mut workspace)?;
         }
     }
 
@@ -809,7 +817,12 @@ where
         // For the public interface, we need to maintain internal SGD state
         // This is a limitation of the current design - ideally the state would be generic
         let mut sgd_state = SGDState::new();
-        self.step_internal(cost_fn, manifold, state, &mut sgd_state)
+        let n = state.point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .with_momentum_buffers(n)
+            .build();
+        self.step_internal(cost_fn, manifold, state, &mut sgd_state, &mut workspace)
     }
     
     /// Clips the gradient if gradient clipping is enabled.
@@ -898,7 +911,8 @@ where
                 let direction = if let Some(ref prev_momentum) = sgd_state.momentum {
                     // Transport previous momentum to current point using parallel transport
                     let transported_momentum = if let Some(ref prev_point) = sgd_state.previous_point {
-                        // Use proper parallel transport from previous point to current point
+                        // Use parallel transport (workspace when available)
+                        // TODO: Use workspace when manifold types are aligned
                         manifold.parallel_transport(prev_point, current_point, prev_momentum)?
                     } else {
                         // First iteration: no previous point, just use the momentum as-is
@@ -920,7 +934,8 @@ where
                 let direction = if let Some(ref prev_momentum) = sgd_state.momentum {
                     // Transport previous momentum to current point using parallel transport
                     let transported_momentum = if let Some(ref prev_point) = sgd_state.previous_point {
-                        // Use proper parallel transport from previous point to current point
+                        // Use parallel transport (workspace when available)
+                        // TODO: Use workspace when manifold types are aligned
                         manifold.parallel_transport(prev_point, current_point, prev_momentum)?
                     } else {
                         // First iteration: no previous point, just use the momentum as-is
@@ -951,6 +966,7 @@ where
         manifold: &M,
         state: &mut OptimizerState<T, D>,
         sgd_state: &mut SGDState<T, D>,
+_workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         D: Dim,
@@ -961,7 +977,8 @@ where
         // Compute cost and Euclidean gradient
         let (cost, euclidean_grad) = cost_fn.cost_and_gradient(&state.point)?;
         
-        // Convert to Riemannian gradient
+        // Convert to Riemannian gradient (using workspace when available)
+        // TODO: Use workspace when manifold types are aligned
         let mut riemannian_grad = manifold.euclidean_to_riemannian_gradient(&state.point, &euclidean_grad)?;
         
         // Apply gradient clipping if enabled
@@ -981,14 +998,15 @@ where
         // Determine step size
         let step_size = if self.config.use_line_search {
             // Use line search to find appropriate step size
-            self.line_search_step_size(cost_fn, manifold, &state.point, &search_direction, cost)?
+            self.line_search_step_size(cost_fn, manifold, &state.point, &search_direction, cost, _workspace)?
         } else {
             // Use scheduled step size
             self.config.step_size.get_step_size(state.iteration)
         };
         
-        // Take the step using retraction
+        // Take the step using retraction (workspace when available)
         let tangent_step = search_direction * step_size;
+        // TODO: Use workspace when manifold types are aligned
         let new_point = manifold.retract(&state.point, &tangent_step)?;
         
         // Evaluate cost at new point
@@ -1041,6 +1059,7 @@ where
         point: &Point<T, D>,
         direction: &TangentVector<T, D>,
         current_cost: T,
+_workspace: &mut Workspace<T>,
     ) -> Result<T>
     where
         D: Dim,
@@ -1062,6 +1081,7 @@ where
         
         for _ in 0..self.config.max_line_search_iterations {
             let tangent_step = direction * step_size;
+            // TODO: Use workspace when manifold types are aligned
             let new_point = manifold.retract(point, &tangent_step)?;
             let new_cost = cost_fn.cost(&new_point)?;
             

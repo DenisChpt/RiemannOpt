@@ -12,6 +12,7 @@ use riemannopt_core::{
     error::{Result, ManifoldError},
     line_search::{LineSearchParams, BacktrackingLineSearch, LineSearch},
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::{Workspace, WorkspaceBuilder},
     optimizer::{Optimizer, OptimizationResult, StoppingCriterion, OptimizerStateLegacy as OptimizerState, ConvergenceChecker, TerminationReason},
     retraction::DefaultRetraction,
     types::Scalar,
@@ -161,6 +162,7 @@ impl<T: Scalar> Newton<T> {
         manifold: &M,
         state: &mut OptimizerState<T, Dyn>,
         newton_state: &mut NewtonState<T, Dyn>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         C: CostFunction<T, Dyn>,
@@ -325,6 +327,12 @@ where
         let max_cg_iter = self.config.max_cg_iterations;
         let mut newton_state = NewtonState::new(dim, max_cg_iter);
         
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
         // Main optimization loop
         loop {
             // Check stopping criteria
@@ -348,7 +356,7 @@ where
             }
             
             // Take optimization step
-            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut newton_state)?;
+            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut newton_state, &mut workspace)?;
         }
     }
 
@@ -367,7 +375,13 @@ where
         let max_cg_iter = self.config.max_cg_iterations;
         let mut newton_state = NewtonState::new(dim, max_cg_iter);
         
-        self.step_internal(cost_fn, manifold, state, &mut newton_state)
+        // Create temporary workspace
+        let n = state.point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
+        self.step_internal(cost_fn, manifold, state, &mut newton_state, &mut workspace)
     }
 }
 
