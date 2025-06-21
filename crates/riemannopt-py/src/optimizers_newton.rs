@@ -13,9 +13,7 @@ use riemannopt_core::{
 use riemannopt_optim::{Newton, NewtonConfig};
 
 use crate::manifolds::*;
-use crate::manifolds_oblique::PyOblique;
-use crate::manifolds_fixed_rank::PyFixedRank;
-use crate::manifolds_psd_cone::PyPSDCone;
+use crate::manifolds_optimized::{PyOblique, PyFixedRank, PyPSDCone};
 use crate::cost_function::PyCostFunction;
 
 // Helper function to convert numpy array to nalgebra matrix
