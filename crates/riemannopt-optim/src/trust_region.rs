@@ -30,6 +30,7 @@
 
 use riemannopt_core::{
     cost_function::CostFunction,
+    core::CachedCostFunction,
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker, TerminationReason},
@@ -525,11 +526,15 @@ where
         C: CostFunction<T, D>,
         M: Manifold<T, D>,
         R: Retraction<T, D>,
+        DefaultAllocator: Allocator<D, D>,
     {
         let start_time = Instant::now();
         
+        // Wrap cost function with caching to avoid redundant computations
+        let cached_cost_fn = CachedCostFunction::new(cost_fn);
+        
         // Initialize optimizer state
-        let initial_cost = cost_fn.cost(initial_point)?;
+        let initial_cost = cached_cost_fn.cost(initial_point)?;
         let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         let mut tr_state = TrustRegionState::new(self.config.initial_radius);
         
@@ -537,6 +542,9 @@ where
         loop {
             // Check stopping criteria
             if let Some(reason) = ConvergenceChecker::check(&state, manifold, stopping_criterion)? {
+                // Get cache statistics for diagnostics
+                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
+                
                 return Ok(OptimizationResult::new(
                     state.point,
                     state.value,
@@ -544,13 +552,16 @@ where
                     start_time.elapsed(),
                     reason,
                 )
-                .with_function_evaluations(state.function_evaluations)
-                .with_gradient_evaluations(state.gradient_evaluations)
+                .with_function_evaluations(cost_misses)  // Use cache misses as actual evaluations
+                .with_gradient_evaluations(grad_misses)  // Use cache misses as actual evaluations
                 .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
             }
             
             // Check if trust region is too small
             if tr_state.radius < self.config.min_radius {
+                // Get cache statistics for diagnostics
+                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
+                
                 return Ok(OptimizationResult::new(
                     state.point,
                     state.value,
@@ -558,13 +569,13 @@ where
                     start_time.elapsed(),
                     TerminationReason::Converged,
                 )
-                .with_function_evaluations(state.function_evaluations)
-                .with_gradient_evaluations(state.gradient_evaluations)
+                .with_function_evaluations(cost_misses)  // Use cache misses as actual evaluations
+                .with_gradient_evaluations(grad_misses)  // Use cache misses as actual evaluations
                 .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
             }
             
             // Perform one optimization step
-            self.step_internal(cost_fn, manifold, retraction, &mut state, &mut tr_state)?;
+            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut tr_state)?;
         }
     }
 
@@ -592,7 +603,7 @@ impl<T, D> Optimizer<T, D> for TrustRegion<T, D>
 where
     T: Scalar,
     D: Dim,
-    DefaultAllocator: Allocator<D>,
+    DefaultAllocator: Allocator<D> + Allocator<D, D>,
 {
     fn name(&self) -> &str {
         "Riemannian Trust Region"
@@ -612,7 +623,7 @@ where
         // Use the default retraction
         use riemannopt_core::retraction::DefaultRetraction;
         let retraction = DefaultRetraction;
-        self.optimize(cost_fn, manifold, &retraction, initial_point, stopping_criterion)
+        TrustRegion::optimize(self, cost_fn, manifold, &retraction, initial_point, stopping_criterion)
     }
 
     fn step<C, M>(
