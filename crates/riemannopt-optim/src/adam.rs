@@ -35,6 +35,7 @@ use riemannopt_core::{
     core::CachedCostFunction,
     error::Result,
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::{Workspace, WorkspaceBuilder},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     types::Scalar,
 };
@@ -253,6 +254,13 @@ where
         // Initialize Adam-specific state
         let mut adam_state = AdamState::new(initial_point.shape_generic().0, self.config.use_amsgrad);
         
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .with_adam_buffers(n)
+            .build();
+        
         // Main optimization loop
         loop {
             // Check stopping criteria
@@ -273,7 +281,7 @@ where
             }
             
             // Perform one optimization step
-            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut adam_state)?;
+            self.step_internal(&cached_cost_fn, manifold, &mut state, &mut adam_state, &mut workspace)?;
         }
     }
 
@@ -296,7 +304,12 @@ where
         // Create temporary Adam state - this is a limitation of the public step interface
         let dim = state.point.shape_generic().0;
         let mut adam_state = AdamState::new(dim, self.config.use_amsgrad);
-        self.step_internal(cost_fn, manifold, state, &mut adam_state)
+        let n = state.point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .with_adam_buffers(n)
+            .build();
+        self.step_internal(cost_fn, manifold, state, &mut adam_state, &mut workspace)
     }
 
     /// Clips gradient if configured.
@@ -351,6 +364,7 @@ where
         manifold: &M,
         state: &mut OptimizerState<T, D>,
         adam_state: &mut AdamState<T, D>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         D: Dim,
@@ -708,7 +722,12 @@ mod tests {
         let mut adam_state = AdamState::new(Dyn(2), true);
         
         // Perform a step
-        optimizer.step_internal(&cost_fn, &manifold, &mut state, &mut adam_state).unwrap();
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .with_adam_buffers(n)
+            .build();
+        optimizer.step_internal(&cost_fn, &manifold, &mut state, &mut adam_state, &mut workspace).unwrap();
         
         // Check that max_second_moment is being tracked
         assert!(adam_state.max_second_moment.is_some());

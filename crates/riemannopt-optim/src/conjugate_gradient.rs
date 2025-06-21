@@ -39,6 +39,7 @@ use riemannopt_core::{
     error::Result,
     line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
     manifold::{Manifold, Point},
+    memory::workspace::{Workspace, WorkspaceBuilder},
     optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
     optimization::{ConjugateGradientMethod, ConjugateGradientState},
     preconditioner::{Preconditioner, IdentityPreconditioner},
@@ -201,6 +202,7 @@ where
         retraction: &R,
         state: &mut OptimizerState<T, D>,
         cg_state: &mut ConjugateGradientState<T, D>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         C: CostFunction<T, D>,
@@ -288,6 +290,12 @@ where
         let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
         let mut cg_state = ConjugateGradientState::new(self.config.method, self.config.restart_period);
         
+        // Create a single workspace for the entire optimization
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
         // Main optimization loop
         loop {
             // Check stopping criteria
@@ -308,7 +316,7 @@ where
             }
             
             // Perform one optimization step
-            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut cg_state)?;
+            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut cg_state, &mut workspace)?;
         }
     }
 
@@ -329,7 +337,14 @@ where
     {
         // Create temporary CG state - this means we're doing steepest descent
         let mut cg_state = ConjugateGradientState::new(self.config.method, self.config.restart_period);
-        self.step_internal(cost_fn, manifold, retraction, state, &mut cg_state)
+        
+        // Create temporary workspace
+        let n = state.point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        
+        self.step_internal(cost_fn, manifold, retraction, state, &mut cg_state, &mut workspace)
     }
 }
 
@@ -501,7 +516,11 @@ mod tests {
         println!("Point: {:?}", state.point);
         
         // First iteration
-        let result = cg.step_internal(&cost_fn, &manifold, &retraction, &mut state, &mut cg_state);
+        let n = initial_point.len();
+        let mut workspace = WorkspaceBuilder::new()
+            .with_standard_buffers(n)
+            .build();
+        let result = cg.step_internal(&cost_fn, &manifold, &retraction, &mut state, &mut cg_state, &mut workspace);
         assert!(result.is_ok(), "First iteration failed: {:?}", result);
         
         println!("\n=== Iteration 1 ===");
@@ -515,7 +534,7 @@ mod tests {
         println!("Actual gradient norm: {}", grad1.norm());
         
         // Second iteration
-        let result = cg.step_internal(&cost_fn, &manifold, &retraction, &mut state, &mut cg_state);
+        let result = cg.step_internal(&cost_fn, &manifold, &retraction, &mut state, &mut cg_state, &mut workspace);
         assert!(result.is_ok(), "Second iteration failed: {:?}", result);
         
         println!("\n=== Final ===");
