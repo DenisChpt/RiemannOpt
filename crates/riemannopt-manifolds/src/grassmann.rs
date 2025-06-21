@@ -14,6 +14,7 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     types::Scalar,
+    core::MatrixManifold,
 };
 use nalgebra::{DMatrix, DVector, Dyn};
 use num_traits::Float;
@@ -724,5 +725,221 @@ mod tests {
         let dist = grassmann.distance(&point1, &point2).unwrap();
         let expected_dist = std::f64::consts::PI * std::f64::consts::FRAC_1_SQRT_2;
         assert_relative_eq!(dist, expected_dist, epsilon = 1e-10);
+    }
+}
+
+// MatrixManifold implementation for efficient matrix operations
+impl<T: Scalar + Float> MatrixManifold<T> for Grassmann {
+    fn matrix_dims(&self) -> (usize, usize) {
+        (self.n, self.p)
+    }
+    
+    fn project_matrix(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if matrix.nrows() != self.n || matrix.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", matrix.nrows(), matrix.ncols()),
+            ));
+        }
+        
+        // Use QR decomposition to get orthonormal basis
+        Ok(self.canonical_representation(matrix))
+    }
+    
+    fn project_tangent_matrix(&self, point: &DMatrix<T>, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if point.nrows() != self.n || point.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        if matrix.nrows() != self.n || matrix.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", matrix.nrows(), matrix.ncols()),
+            ));
+        }
+        
+        // Project to horizontal space: V - XX^T V
+        let xv = point.transpose() * matrix;
+        Ok(matrix - point * xv)
+    }
+    
+    fn inner_product_matrix(&self, _point: &DMatrix<T>, u: &DMatrix<T>, v: &DMatrix<T>) -> Result<T> {
+        if u.nrows() != self.n || u.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", u.nrows(), u.ncols()),
+            ));
+        }
+        if v.nrows() != self.n || v.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", v.nrows(), v.ncols()),
+            ));
+        }
+        
+        // Frobenius inner product: trace(U^T V)
+        Ok((u.transpose() * v).trace())
+    }
+    
+    fn retract_matrix(&self, point: &DMatrix<T>, tangent: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if point.nrows() != self.n || point.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        if tangent.nrows() != self.n || tangent.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", tangent.nrows(), tangent.ncols()),
+            ));
+        }
+        
+        // QR retraction on Grassmann: R_X(V) = qf([X V])
+        let combined = DMatrix::from_columns(&[
+            point.column_iter().collect::<Vec<_>>().as_slice(),
+            tangent.column_iter().collect::<Vec<_>>().as_slice(),
+        ].concat());
+        
+        let qr = combined.qr();
+        let q = qr.q();
+        
+        // Extract first p columns and canonicalize
+        let result = q.columns(0, self.p).into_owned();
+        Ok(self.canonical_representation(&result))
+    }
+    
+    fn inverse_retract_matrix(&self, point: &DMatrix<T>, other: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if point.nrows() != self.n || point.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        if other.nrows() != self.n || other.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", other.nrows(), other.ncols()),
+            ));
+        }
+        
+        // For Grassmann, inverse retraction via projection
+        // This is an approximation
+        let diff = other - point;
+        self.project_tangent_matrix(point, &diff)
+    }
+    
+    fn euclidean_to_riemannian_gradient_matrix(
+        &self,
+        point: &DMatrix<T>,
+        euclidean_grad: &DMatrix<T>,
+    ) -> Result<DMatrix<T>> {
+        // Riemannian gradient is the projection to horizontal space
+        self.project_tangent_matrix(point, euclidean_grad)
+    }
+    
+    fn parallel_transport_matrix(
+        &self,
+        from: &DMatrix<T>,
+        to: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+    ) -> Result<DMatrix<T>> {
+        if from.nrows() != self.n || from.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", from.nrows(), from.ncols()),
+            ));
+        }
+        if to.nrows() != self.n || to.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", to.nrows(), to.ncols()),
+            ));
+        }
+        if tangent.nrows() != self.n || tangent.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", tangent.nrows(), tangent.ncols()),
+            ));
+        }
+        
+        // Simple parallel transport via projection
+        self.project_tangent_matrix(to, tangent)
+    }
+    
+    fn random_point_matrix(&self) -> DMatrix<T> {
+        let mut rng = rand::thread_rng();
+        let normal = StandardNormal;
+        
+        // Generate random Gaussian matrix
+        let mut a = DMatrix::<T>::zeros(self.n, self.p);
+        for i in 0..self.n {
+            for j in 0..self.p {
+                let sample: f64 = normal.sample(&mut rng);
+                a[(i, j)] = T::from(sample).unwrap();
+            }
+        }
+        
+        // Get canonical representation
+        self.canonical_representation(&a)
+    }
+    
+    fn random_tangent_matrix(&self, point: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if point.nrows() != self.n || point.ncols() != self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.p),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        
+        let mut rng = rand::thread_rng();
+        let normal = StandardNormal;
+        
+        // Generate random matrix
+        let mut v = DMatrix::<T>::zeros(self.n, self.p);
+        for i in 0..self.n {
+            for j in 0..self.p {
+                let sample: f64 = normal.sample(&mut rng);
+                v[(i, j)] = T::from(sample).unwrap();
+            }
+        }
+        
+        // Project to horizontal space
+        self.project_tangent_matrix(point, &v)
+    }
+    
+    fn is_point_on_manifold_matrix(&self, matrix: &DMatrix<T>, tolerance: T) -> bool {
+        if matrix.nrows() != self.n || matrix.ncols() != self.p {
+            return false;
+        }
+        
+        // Check X^T X = I (orthonormality)
+        let gram = matrix.transpose() * matrix;
+        let identity = DMatrix::<T>::identity(self.p, self.p);
+        let diff = &gram - &identity;
+        
+        diff.norm() <= tolerance
+    }
+    
+    fn is_vector_in_tangent_space_matrix(
+        &self,
+        point: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+        tolerance: T,
+    ) -> bool {
+        if point.nrows() != self.n || point.ncols() != self.p {
+            return false;
+        }
+        if tangent.nrows() != self.n || tangent.ncols() != self.p {
+            return false;
+        }
+        
+        // Check X^T V = 0 (horizontal condition)
+        let xtv = point.transpose() * tangent;
+        
+        // Check if xtv is approximately zero
+        xtv.norm() <= tolerance
     }
 }

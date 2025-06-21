@@ -23,7 +23,7 @@ use manifolds::*;
 use manifolds_oblique::PyOblique;
 use manifolds_fixed_rank::PyFixedRank;
 use manifolds_psd_cone::PyPSDCone;
-use manifolds_optimized::PyStiefelOpt;
+use manifolds_optimized::{PyStiefelOpt, PyGrassmannOpt, PySPDOpt};
 use optimizers::*;
 use optimizers_newton::PyNewton;
 use cost_function::{PyCostFunction, quadratic_cost, rosenbrock_cost};
@@ -103,6 +103,8 @@ fn init_manifolds_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFixedRank>()?;
     m.add_class::<PyPSDCone>()?;
     m.add_class::<PyStiefelOpt>()?;
+    m.add_class::<PyGrassmannOpt>()?;
+    m.add_class::<PySPDOpt>()?;
     Ok(())
 }
 

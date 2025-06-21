@@ -15,6 +15,7 @@ use riemannopt_core::{
     manifold::Manifold,
     types::Scalar,
     numerical_stability::{safe_epsilon, positive_definite_tolerance, regularize_spd, is_finite_matrix},
+    core::MatrixManifold,
 };
 use nalgebra::{DMatrix, DVector, Dyn};
 use num_traits::Float;
@@ -1161,5 +1162,245 @@ mod tests {
                 assert_relative_eq!(exp_matrix[(i, j)], random_spd[(i, j)], epsilon = 1e-8);
             }
         }
+    }
+}
+
+// MatrixManifold implementation for efficient matrix operations
+impl<T: Scalar + Float> MatrixManifold<T> for SPD {
+    fn matrix_dims(&self) -> (usize, usize) {
+        (self.n, self.n)
+    }
+    
+    fn project_matrix(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if matrix.nrows() != self.n || matrix.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", matrix.nrows(), matrix.ncols()),
+            ));
+        }
+        
+        // Symmetrize the matrix
+        let symmetric = (matrix + matrix.transpose()) * T::from(0.5).unwrap();
+        
+        // Eigendecomposition
+        let eigen = symmetric.symmetric_eigen();
+        let mut eigenvalues = eigen.eigenvalues.clone();
+        
+        // Clamp eigenvalues to be positive
+        let min_eig = T::from(self.min_eigenvalue).unwrap();
+        for i in 0..eigenvalues.len() {
+            if eigenvalues[i] < min_eig {
+                eigenvalues[i] = min_eig;
+            }
+        }
+        
+        // Reconstruct matrix
+        let diag = DMatrix::from_diagonal(&eigenvalues);
+        Ok(&eigen.eigenvectors * diag * eigen.eigenvectors.transpose())
+    }
+    
+    fn project_tangent_matrix(&self, _point: &DMatrix<T>, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if matrix.nrows() != self.n || matrix.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", matrix.nrows(), matrix.ncols()),
+            ));
+        }
+        
+        // Tangent space consists of symmetric matrices
+        Ok((matrix + matrix.transpose()) * T::from(0.5).unwrap())
+    }
+    
+    fn inner_product_matrix(&self, point: &DMatrix<T>, u: &DMatrix<T>, v: &DMatrix<T>) -> Result<T> {
+        if point.nrows() != self.n || point.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        if u.nrows() != self.n || u.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", u.nrows(), u.ncols()),
+            ));
+        }
+        if v.nrows() != self.n || v.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", v.nrows(), v.ncols()),
+            ));
+        }
+        
+        // Affine-invariant metric: <U,V>_P = tr(P^{-1}U P^{-1}V)
+        let chol = point.clone().cholesky()
+            .ok_or_else(|| ManifoldError::numerical_error("Matrix is not positive definite"))?;
+        let p_inv_u = chol.solve(&u);
+        let p_inv_v = chol.solve(&v);
+        
+        Ok((p_inv_u.transpose() * p_inv_v).trace())
+    }
+    
+    fn retract_matrix(&self, point: &DMatrix<T>, tangent: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if point.nrows() != self.n || point.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        if tangent.nrows() != self.n || tangent.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", tangent.nrows(), tangent.ncols()),
+            ));
+        }
+        
+        // Use first-order retraction: R_P(V) = P + V + 0.5 * V * P^{-1} * V
+        let chol = point.clone().cholesky()
+            .ok_or_else(|| ManifoldError::numerical_error("Matrix is not positive definite"))?;
+        let p_inv_v = chol.solve(&tangent);
+        let result = point + tangent + (tangent * p_inv_v) * T::from(0.5).unwrap();
+        
+        // Ensure positive definiteness
+        self.project_matrix(&result)
+    }
+    
+    fn inverse_retract_matrix(&self, point: &DMatrix<T>, other: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if point.nrows() != self.n || point.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        if other.nrows() != self.n || other.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", other.nrows(), other.ncols()),
+            ));
+        }
+        
+        // First-order approximation
+        let diff = other - point;
+        self.project_tangent_matrix(point, &diff)
+    }
+    
+    fn euclidean_to_riemannian_gradient_matrix(
+        &self,
+        point: &DMatrix<T>,
+        euclidean_grad: &DMatrix<T>,
+    ) -> Result<DMatrix<T>> {
+        if point.nrows() != self.n || point.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", point.nrows(), point.ncols()),
+            ));
+        }
+        if euclidean_grad.nrows() != self.n || euclidean_grad.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", euclidean_grad.nrows(), euclidean_grad.ncols()),
+            ));
+        }
+        
+        // Riemannian gradient: grad_R = P * grad_E * P
+        let sym_grad = self.project_tangent_matrix(point, euclidean_grad)?;
+        Ok(point * &sym_grad * point)
+    }
+    
+    fn parallel_transport_matrix(
+        &self,
+        _from: &DMatrix<T>,
+        to: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+    ) -> Result<DMatrix<T>> {
+        if to.nrows() != self.n || to.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", to.nrows(), to.ncols()),
+            ));
+        }
+        if tangent.nrows() != self.n || tangent.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("{}×{}", self.n, self.n),
+                format!("{}×{}", tangent.nrows(), tangent.ncols()),
+            ));
+        }
+        
+        // Simple approximation: project to new tangent space
+        self.project_tangent_matrix(to, tangent)
+    }
+    
+    fn random_point_matrix(&self) -> DMatrix<T> {
+        let mut rng = rand::thread_rng();
+        let normal = StandardNormal;
+        
+        // Generate random symmetric matrix
+        let mut a = DMatrix::<T>::zeros(self.n, self.n);
+        for i in 0..self.n {
+            for j in i..self.n {
+                let sample: f64 = normal.sample(&mut rng);
+                let value = T::from(sample).unwrap();
+                a[(i, j)] = value;
+                if i != j {
+                    a[(j, i)] = value;
+                }
+            }
+        }
+        
+        // Make it positive definite: P = A^T A + εI
+        let result = &a.transpose() * &a + DMatrix::<T>::identity(self.n, self.n) * T::from(self.min_eigenvalue).unwrap();
+        result
+    }
+    
+    fn random_tangent_matrix(&self, _point: &DMatrix<T>) -> Result<DMatrix<T>> {
+        let mut rng = rand::thread_rng();
+        let normal = StandardNormal;
+        
+        // Generate random symmetric matrix (tangent space)
+        let mut v = DMatrix::<T>::zeros(self.n, self.n);
+        for i in 0..self.n {
+            for j in i..self.n {
+                let sample: f64 = normal.sample(&mut rng);
+                let value = T::from(sample).unwrap();
+                v[(i, j)] = value;
+                if i != j {
+                    v[(j, i)] = value;
+                }
+            }
+        }
+        
+        Ok(v)
+    }
+    
+    fn is_point_on_manifold_matrix(&self, matrix: &DMatrix<T>, tolerance: T) -> bool {
+        if matrix.nrows() != self.n || matrix.ncols() != self.n {
+            return false;
+        }
+        
+        // Check symmetry
+        let diff_sym = matrix - matrix.transpose();
+        if diff_sym.norm() > tolerance {
+            return false;
+        }
+        
+        // Check positive definiteness via eigenvalues
+        let eigen = matrix.clone().symmetric_eigen();
+        let min_eig = T::from(self.min_eigenvalue).unwrap();
+        
+        eigen.eigenvalues.iter().all(|&eig| eig >= min_eig - tolerance)
+    }
+    
+    fn is_vector_in_tangent_space_matrix(
+        &self,
+        _point: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+        tolerance: T,
+    ) -> bool {
+        if tangent.nrows() != self.n || tangent.ncols() != self.n {
+            return false;
+        }
+        
+        // Check symmetry (tangent vectors must be symmetric)
+        let diff = tangent - tangent.transpose();
+        diff.norm() <= tolerance
     }
 }
