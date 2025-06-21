@@ -587,8 +587,13 @@ enum ProductManifoldInner {
     StiefelStiefel(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::Stiefel, riemannopt_manifolds::Stiefel>),
     SphereGrassmann(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::Sphere, riemannopt_manifolds::Grassmann>),
     GrassmannSphere(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::Grassmann, riemannopt_manifolds::Sphere>),
-    // Fallback to old implementation for unsupported combinations
-    Dynamic(PyObject, PyObject, usize, usize, usize, usize),
+    GrassmannGrassmann(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::Grassmann, riemannopt_manifolds::Grassmann>),
+    SphereSPD(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::Sphere, riemannopt_manifolds::SPD>),
+    SPDSphere(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::SPD, riemannopt_manifolds::Sphere>),
+    StiefelGrassmann(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::Stiefel, riemannopt_manifolds::Grassmann>),
+    GrassmannStiefel(riemannopt_manifolds::ProductManifoldStatic<f64, riemannopt_manifolds::Grassmann, riemannopt_manifolds::Stiefel>),
+    // Improved fallback with better error handling
+    Dynamic(PyObject, PyObject, usize, usize),
 }
 
 /// Product manifold M1 × M2 in Python (new static implementation).
@@ -636,30 +641,50 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::GrassmannSphere(
                 ProductManifoldStatic::new(grassmann.get_inner().clone(), sphere.get_inner().clone())
             )
+        } else if let (Ok(grassmann1), Ok(grassmann2)) = (manifold1.extract::<PyRef<crate::manifolds_optimized::PyGrassmann>>(), manifold2.extract::<PyRef<crate::manifolds_optimized::PyGrassmann>>()) {
+            ProductManifoldInner::GrassmannGrassmann(
+                ProductManifoldStatic::new(grassmann1.get_inner().clone(), grassmann2.get_inner().clone())
+            )
+        } else if let (Ok(sphere), Ok(spd)) = (manifold1.extract::<PyRef<PySphere>>(), manifold2.extract::<PyRef<crate::manifolds_optimized::PySPD>>()) {
+            ProductManifoldInner::SphereSPD(
+                ProductManifoldStatic::new(sphere.get_inner().clone(), spd.get_inner().clone())
+            )
+        } else if let (Ok(spd), Ok(sphere)) = (manifold1.extract::<PyRef<crate::manifolds_optimized::PySPD>>(), manifold2.extract::<PyRef<PySphere>>()) {
+            ProductManifoldInner::SPDSphere(
+                ProductManifoldStatic::new(spd.get_inner().clone(), sphere.get_inner().clone())
+            )
+        } else if let (Ok(stiefel), Ok(grassmann)) = (manifold1.extract::<PyRef<crate::manifolds_optimized::PyStiefel>>(), manifold2.extract::<PyRef<crate::manifolds_optimized::PyGrassmann>>()) {
+            ProductManifoldInner::StiefelGrassmann(
+                ProductManifoldStatic::new(stiefel.get_inner().clone(), grassmann.get_inner().clone())
+            )
+        } else if let (Ok(grassmann), Ok(stiefel)) = (manifold1.extract::<PyRef<crate::manifolds_optimized::PyGrassmann>>(), manifold2.extract::<PyRef<crate::manifolds_optimized::PyStiefel>>()) {
+            ProductManifoldInner::GrassmannStiefel(
+                ProductManifoldStatic::new(grassmann.get_inner().clone(), stiefel.get_inner().clone())
+            )
         } else {
-            // Fallback to dynamic implementation
+            // Improved fallback implementation
             let py = manifold1.py();
             let manifold1_py = manifold1.to_object(py);
             let manifold2_py = manifold2.to_object(py);
             
-            // Get dimensions from manifolds
-            let manifold_dim1 = manifold1.getattr("manifold_dim")?.extract::<usize>()?;
-            let manifold_dim2 = manifold2.getattr("manifold_dim")?.extract::<usize>()?;
-            
-            // Get ambient dimensions (for actual array sizes)
-            let ambient_dim1 = if let Ok(ambient) = manifold1.getattr("ambient_dim") {
-                ambient.extract::<usize>()?
+            // Get ambient dimensions for array sizes (simpler approach)
+            let dim1 = if let Ok(dim) = manifold1.getattr("dim") {
+                dim.extract::<usize>()?
+            } else if let Ok(dim) = manifold1.getattr("manifold_dim") {
+                dim.extract::<usize>()?
             } else {
-                manifold_dim1
+                return Err(PyValueError::new_err("Manifold 1 must have 'dim' or 'manifold_dim' attribute"));
             };
             
-            let ambient_dim2 = if let Ok(ambient) = manifold2.getattr("ambient_dim") {
-                ambient.extract::<usize>()?
+            let dim2 = if let Ok(dim) = manifold2.getattr("dim") {
+                dim.extract::<usize>()?
+            } else if let Ok(dim) = manifold2.getattr("manifold_dim") {
+                dim.extract::<usize>()?
             } else {
-                manifold_dim2
+                return Err(PyValueError::new_err("Manifold 2 must have 'dim' or 'manifold_dim' attribute"));
             };
             
-            ProductManifoldInner::Dynamic(manifold1_py, manifold2_py, manifold_dim1, manifold_dim2, ambient_dim1, ambient_dim2)
+            ProductManifoldInner::Dynamic(manifold1_py, manifold2_py, dim1, dim2)
         };
         
         Ok(Self { inner })
@@ -678,7 +703,12 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::StiefelStiefel(p) => p.dimension(),
             ProductManifoldInner::SphereGrassmann(p) => p.dimension(),
             ProductManifoldInner::GrassmannSphere(p) => p.dimension(),
-            ProductManifoldInner::Dynamic(_, _, _, _, ambient_dim1, ambient_dim2) => ambient_dim1 + ambient_dim2,
+            ProductManifoldInner::GrassmannGrassmann(p) => p.dimension(),
+            ProductManifoldInner::SphereSPD(p) => p.dimension(),
+            ProductManifoldInner::SPDSphere(p) => p.dimension(),
+            ProductManifoldInner::StiefelGrassmann(p) => p.dimension(),
+            ProductManifoldInner::GrassmannStiefel(p) => p.dimension(),
+            ProductManifoldInner::Dynamic(_, _, dim1, dim2) => dim1 + dim2,
         }
     }
     
@@ -705,21 +735,27 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::StiefelStiefel(p) => p.project_point(&point_vec),
             ProductManifoldInner::SphereGrassmann(p) => p.project_point(&point_vec),
             ProductManifoldInner::GrassmannSphere(p) => p.project_point(&point_vec),
-            ProductManifoldInner::Dynamic(manifold1, manifold2, _, _, ambient_dim1, ambient_dim2) => {
-                // Fallback to Python calls
+            ProductManifoldInner::GrassmannGrassmann(p) => p.project_point(&point_vec),
+            ProductManifoldInner::SphereSPD(p) => p.project_point(&point_vec),
+            ProductManifoldInner::SPDSphere(p) => p.project_point(&point_vec),
+            ProductManifoldInner::StiefelGrassmann(p) => p.project_point(&point_vec),
+            ProductManifoldInner::GrassmannStiefel(p) => p.project_point(&point_vec),
+            ProductManifoldInner::Dynamic(manifold1, manifold2, dim1, dim2) => {
+                // Improved fallback with better error handling
                 let point_slice = point.as_slice()?;
-                if point_slice.len() != ambient_dim1 + ambient_dim2 {
+                let total_dim = dim1 + dim2;
+                if point_slice.len() != total_dim {
                     return Err(PyValueError::new_err(format!(
                         "Expected point of dimension {}, got {}", 
-                        ambient_dim1 + ambient_dim2, point_slice.len()
+                        total_dim, point_slice.len()
                     )));
                 }
                 
                 // Split the point
-                let point1 = &point_slice[..*ambient_dim1];
-                let point2 = &point_slice[*ambient_dim1..];
+                let point1 = &point_slice[..*dim1];
+                let point2 = &point_slice[*dim1..];
                 
-                // Project each component
+                // Project each component using Python calls
                 let arr1 = numpy::PyArray1::from_slice_bound(py, point1);
                 let arr2 = numpy::PyArray1::from_slice_bound(py, point2);
                 
@@ -727,7 +763,7 @@ impl PyProductManifoldStatic {
                 let proj2 = manifold2.call_method1(py, "project", (arr2,))?;
                 
                 // Concatenate results
-                let mut result = Vec::with_capacity(ambient_dim1 + ambient_dim2);
+                let mut result = Vec::with_capacity(total_dim);
                 let proj1_arr: Bound<PyArray1<f64>> = proj1.extract(py)?;
                 let proj2_arr: Bound<PyArray1<f64>> = proj2.extract(py)?;
                 
@@ -765,16 +801,21 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::StiefelStiefel(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
             ProductManifoldInner::SphereGrassmann(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
             ProductManifoldInner::GrassmannSphere(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
-            ProductManifoldInner::Dynamic(manifold1, manifold2, _, _, ambient_dim1, ambient_dim2) => {
+            ProductManifoldInner::GrassmannGrassmann(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::SphereSPD(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::SPDSphere(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::StiefelGrassmann(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::GrassmannStiefel(p) => p.retract(&point_vec, &tangent_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::Dynamic(manifold1, manifold2, dim1, dim2) => {
                 // Fallback to Python calls
                 let point_slice = point.as_slice()?;
                 let tangent_slice = tangent.as_slice()?;
                 
                 // Split points and tangents
-                let point1 = &point_slice[..*ambient_dim1];
-                let point2 = &point_slice[*ambient_dim1..];
-                let tangent1 = &tangent_slice[..*ambient_dim1];
-                let tangent2 = &tangent_slice[*ambient_dim1..];
+                let point1 = &point_slice[..*dim1];
+                let point2 = &point_slice[*dim1..];
+                let tangent1 = &tangent_slice[..*dim1];
+                let tangent2 = &tangent_slice[*dim1..];
                 
                 // Create numpy arrays
                 let arr_p1 = numpy::PyArray1::from_slice_bound(py, point1);
@@ -787,7 +828,7 @@ impl PyProductManifoldStatic {
                 let ret2 = manifold2.call_method1(py, "retract", (arr_p2, arr_t2))?;
                 
                 // Concatenate results
-                let mut result = Vec::with_capacity(ambient_dim1 + ambient_dim2);
+                let mut result = Vec::with_capacity(dim1 + dim2);
                 let ret1_arr: Bound<PyArray1<f64>> = ret1.extract(py)?;
                 let ret2_arr: Bound<PyArray1<f64>> = ret2.extract(py)?;
                 
@@ -810,13 +851,18 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::StiefelStiefel(p) => p.random_point(),
             ProductManifoldInner::SphereGrassmann(p) => p.random_point(),
             ProductManifoldInner::GrassmannSphere(p) => p.random_point(),
-            ProductManifoldInner::Dynamic(manifold1, manifold2, _, _, ambient_dim1, ambient_dim2) => {
+            ProductManifoldInner::GrassmannGrassmann(p) => p.random_point(),
+            ProductManifoldInner::SphereSPD(p) => p.random_point(),
+            ProductManifoldInner::SPDSphere(p) => p.random_point(),
+            ProductManifoldInner::StiefelGrassmann(p) => p.random_point(),
+            ProductManifoldInner::GrassmannStiefel(p) => p.random_point(),
+            ProductManifoldInner::Dynamic(manifold1, manifold2, dim1, dim2) => {
                 // Fallback to Python calls
                 let rand1 = manifold1.call_method0(py, "random_point")?;
                 let rand2 = manifold2.call_method0(py, "random_point")?;
                 
                 // Concatenate results
-                let mut result = Vec::with_capacity(ambient_dim1 + ambient_dim2);
+                let mut result = Vec::with_capacity(dim1 + dim2);
                 let rand1_arr: Bound<PyArray1<f64>> = rand1.extract(py)?;
                 let rand2_arr: Bound<PyArray1<f64>> = rand2.extract(py)?;
                 
@@ -857,19 +903,24 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::StiefelStiefel(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
             ProductManifoldInner::SphereGrassmann(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
             ProductManifoldInner::GrassmannSphere(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
-            ProductManifoldInner::Dynamic(manifold1, manifold2, _, _, ambient_dim1, ambient_dim2) => {
+            ProductManifoldInner::GrassmannGrassmann(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
+            ProductManifoldInner::SphereSPD(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
+            ProductManifoldInner::SPDSphere(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
+            ProductManifoldInner::StiefelGrassmann(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
+            ProductManifoldInner::GrassmannStiefel(p) => p.inner_product(&point_vec, &u_vec, &v_vec).map_err(|e| PyValueError::new_err(e.to_string())),
+            ProductManifoldInner::Dynamic(manifold1, manifold2, dim1, dim2) => {
                 // Fallback to Python calls
                 let point_slice = point.as_slice()?;
                 let u_slice = u.as_slice()?;
                 let v_slice = v.as_slice()?;
                 
                 // Split
-                let point1 = &point_slice[..*ambient_dim1];
-                let point2 = &point_slice[*ambient_dim1..];
-                let u1 = &u_slice[..*ambient_dim1];
-                let u2 = &u_slice[*ambient_dim1..];
-                let v1 = &v_slice[..*ambient_dim1];
-                let v2 = &v_slice[*ambient_dim1..];
+                let point1 = &point_slice[..*dim1];
+                let point2 = &point_slice[*dim1..];
+                let u1 = &u_slice[..*dim1];
+                let u2 = &u_slice[*dim1..];
+                let v1 = &v_slice[..*dim1];
+                let v2 = &v_slice[*dim1..];
                 
                 // Create numpy arrays
                 let arr_p1 = numpy::PyArray1::from_slice_bound(py, point1);
@@ -913,13 +964,18 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::StiefelStiefel(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
             ProductManifoldInner::SphereGrassmann(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
             ProductManifoldInner::GrassmannSphere(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
-            ProductManifoldInner::Dynamic(manifold1, manifold2, _, _, ambient_dim1, ambient_dim2) => {
+            ProductManifoldInner::GrassmannGrassmann(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::SphereSPD(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::SPDSphere(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::StiefelGrassmann(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::GrassmannStiefel(p) => p.random_tangent(&point_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::Dynamic(manifold1, manifold2, dim1, dim2) => {
                 // Fallback to Python calls
                 let point_slice = point.as_slice()?;
                 
                 // Split the point
-                let point1 = &point_slice[..*ambient_dim1];
-                let point2 = &point_slice[*ambient_dim1..];
+                let point1 = &point_slice[..*dim1];
+                let point2 = &point_slice[*dim1..];
                 
                 // Create numpy arrays
                 let arr_p1 = numpy::PyArray1::from_slice_bound(py, point1);
@@ -930,7 +986,7 @@ impl PyProductManifoldStatic {
                 let tan2 = manifold2.call_method1(py, "random_tangent", (arr_p2,))?;
                 
                 // Concatenate results
-                let mut result = Vec::with_capacity(ambient_dim1 + ambient_dim2);
+                let mut result = Vec::with_capacity(dim1 + dim2);
                 let tan1_arr: Bound<PyArray1<f64>> = tan1.extract(py)?;
                 let tan2_arr: Bound<PyArray1<f64>> = tan2.extract(py)?;
                 
@@ -968,16 +1024,21 @@ impl PyProductManifoldStatic {
             ProductManifoldInner::StiefelStiefel(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
             ProductManifoldInner::SphereGrassmann(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
             ProductManifoldInner::GrassmannSphere(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
-            ProductManifoldInner::Dynamic(manifold1, manifold2, _, _, ambient_dim1, ambient_dim2) => {
+            ProductManifoldInner::GrassmannGrassmann(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::SphereSPD(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::SPDSphere(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::StiefelGrassmann(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::GrassmannStiefel(p) => p.euclidean_to_riemannian_gradient(&point_vec, &grad_vec).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            ProductManifoldInner::Dynamic(manifold1, manifold2, dim1, dim2) => {
                 // Fallback to Python calls
                 let point_slice = point.as_slice()?;
                 let grad_slice = euclidean_grad.as_slice()?;
                 
                 // Split
-                let point1 = &point_slice[..*ambient_dim1];
-                let point2 = &point_slice[*ambient_dim1..];
-                let grad1 = &grad_slice[..*ambient_dim1];
-                let grad2 = &grad_slice[*ambient_dim1..];
+                let point1 = &point_slice[..*dim1];
+                let point2 = &point_slice[*dim1..];
+                let grad1 = &grad_slice[..*dim1];
+                let grad2 = &grad_slice[*dim1..];
                 
                 // Create numpy arrays
                 let arr_p1 = numpy::PyArray1::from_slice_bound(py, point1);
@@ -990,7 +1051,7 @@ impl PyProductManifoldStatic {
                 let riem2 = manifold2.call_method1(py, "euclidean_to_riemannian_gradient", (arr_p2, arr_g2))?;
                 
                 // Concatenate results
-                let mut result = Vec::with_capacity(ambient_dim1 + ambient_dim2);
+                let mut result = Vec::with_capacity(dim1 + dim2);
                 let riem1_arr: Bound<PyArray1<f64>> = riem1.extract(py)?;
                 let riem2_arr: Bound<PyArray1<f64>> = riem2.extract(py)?;
                 

@@ -25,10 +25,7 @@ use riemannopt_optim::{
 use riemannopt_core::step_size::StepSizeSchedule;
 
 use crate::manifolds::*;
-use crate::manifolds_oblique::PyOblique;
-use crate::manifolds_fixed_rank::PyFixedRank;
-use crate::manifolds_psd_cone::PyPSDCone;
-use crate::manifolds_optimized::{PyStiefel, PyGrassmann, PySPD};
+use crate::manifolds_optimized::{PyStiefel, PyGrassmann, PySPD, PyOblique, PyFixedRank, PyPSDCone};
 use crate::cost_function::PyCostFunction;
 use crate::callbacks::RustCallbackAdapter;
 #[allow(unused_imports)]

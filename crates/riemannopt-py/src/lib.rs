@@ -20,10 +20,7 @@ mod array_utils;
 mod callbacks;
 
 use manifolds::{PySphere, PyEuclidean, PyHyperbolic, PyProductManifold, PyProductManifoldStatic, check_point_on_manifold, check_vector_in_tangent_space};
-use manifolds_oblique::PyOblique;
-use manifolds_fixed_rank::PyFixedRank;
-use manifolds_psd_cone::PyPSDCone;
-use manifolds_optimized::{PyStiefel, PyGrassmann, PySPD};
+use manifolds_optimized::{PyStiefel, PyGrassmann, PySPD, PyOblique, PyFixedRank, PyPSDCone};
 use optimizers::*;
 use optimizers_newton::PyNewton;
 use cost_function::{PyCostFunction, quadratic_cost, rosenbrock_cost};
