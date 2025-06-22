@@ -65,20 +65,20 @@ impl Manifold<f64, Dyn> for UnitSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
-            point / norm
+            *result = point / norm;
         } else {
-            let mut p = DVector::zeros(self.dim);
-            p[0] = 1.0;
-            p
+            result.fill(0.0);
+            result[0] = 1.0;
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>) -> Result<DVector<f64>> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let inner = point.dot(vector);
-        Ok(vector - point * inner)
+        *result = vector - point * inner;
+        Ok(())
     }
 
     fn inner_product(
@@ -90,34 +90,37 @@ impl Manifold<f64, Dyn> for UnitSphere {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>) -> Result<DVector<f64>> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let new_point = point + tangent;
-        Ok(self.project_point(&new_point))
+        self.project_point(&new_point, result);
+        Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>) -> Result<DVector<f64>> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
 
         if theta.abs() < f64::EPSILON {
-            Ok(DVector::zeros(self.dim))
+            result.fill(0.0);
         } else {
             let v = other - point * inner;
             let v_norm = v.norm();
             if v_norm > f64::EPSILON {
-                Ok(v * (theta / v_norm))
+                *result = v * (theta / v_norm);
             } else {
-                Ok(DVector::zeros(self.dim))
+                result.fill(0.0);
             }
         }
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
-        self.project_tangent(point, euclidean_grad)
+        result: &mut DVector<f64>,
+    ) -> Result<()> {
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -125,15 +128,17 @@ impl Manifold<f64, Dyn> for UnitSphere {
         for i in 0..self.dim {
             v[i] = rand::random::<f64>() * 2.0 - 1.0;
         }
-        self.project_point(&v)
+        let mut result = DVector::zeros(self.dim);
+        self.project_point(&v, &mut result);
+        result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rand::random::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v)
+        self.project_tangent(point, &v, result)
     }
 
     fn parallel_transport(
@@ -141,8 +146,9 @@ impl Manifold<f64, Dyn> for UnitSphere {
         _from: &DVector<f64>,
         to: &DVector<f64>,
         vector: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
-        self.project_tangent(to, vector)
+        result: &mut DVector<f64>,
+    ) -> Result<()> {
+        self.project_tangent(to, vector, result)
     }
 }
 
@@ -170,11 +176,14 @@ fn test_descent_property() {
     // Perform gradient descent steps
     for _ in 0..20 {
         let grad = cost_fn.gradient(&x).unwrap();
-        let riem_grad = sphere.euclidean_to_riemannian_gradient(&x, &grad).unwrap();
+        let mut riem_grad = DVector::zeros(x.len());
+        sphere.euclidean_to_riemannian_gradient(&x, &grad, &mut riem_grad).unwrap();
 
         // Take a step
         let step = riem_grad * (-step_size);
-        x = sphere.retract(&x, &step).unwrap();
+        let mut new_x = DVector::zeros(x.len());
+        sphere.retract(&x, &step, &mut new_x).unwrap();
+        x = new_x;
 
         costs.push(cost_fn.cost(&x).unwrap());
     }
@@ -210,7 +219,9 @@ fn test_convergence_simple_problem() {
     target[1] = 0.5;
     target[2] = 0.5;
     target[3] = 0.5;
-    let target = sphere.project_point(&target);
+    let mut projected_target = DVector::zeros(4);
+    sphere.project_point(&target, &mut projected_target);
+    let target = projected_target;
 
     let cost_fn = QuadraticCost::new(target.clone());
 
@@ -223,7 +234,8 @@ fn test_convergence_simple_problem() {
     let mut converged = false;
     for iter in 0..1000 {
         let grad = cost_fn.gradient(&x).unwrap();
-        let riem_grad = sphere.euclidean_to_riemannian_gradient(&x, &grad).unwrap();
+        let mut riem_grad = DVector::zeros(x.len());
+        sphere.euclidean_to_riemannian_gradient(&x, &grad, &mut riem_grad).unwrap();
 
         // Check convergence
         if riem_grad.norm() < tolerance {
@@ -234,15 +246,18 @@ fn test_convergence_simple_problem() {
 
         // Take a step
         let step = riem_grad * (-step_size);
-        x = sphere.retract(&x, &step).unwrap();
+        let mut new_x = DVector::zeros(x.len());
+        sphere.retract(&x, &step, &mut new_x).unwrap();
+        x = new_x;
     }
 
     assert!(converged, "Algorithm did not converge");
 
     // Check that we're close to a critical point
     let final_grad = cost_fn.gradient(&x).unwrap();
-    let final_riem_grad = sphere
-        .euclidean_to_riemannian_gradient(&x, &final_grad)
+    let mut final_riem_grad = DVector::zeros(x.len());
+    sphere
+        .euclidean_to_riemannian_gradient(&x, &final_grad, &mut final_riem_grad)
         .unwrap();
     assert!(
         final_riem_grad.norm() < tolerance,
@@ -288,11 +303,14 @@ fn test_invariance_reparametrization() {
 
     for _ in 0..num_steps {
         let grad = grad_fn(&x1);
-        let riem_grad = sphere1
-            .euclidean_to_riemannian_gradient(&x1, &grad)
+        let mut riem_grad = DVector::zeros(x1.len());
+        sphere1
+            .euclidean_to_riemannian_gradient(&x1, &grad, &mut riem_grad)
             .unwrap();
         let step = riem_grad * (-step_size);
-        x1 = sphere1.retract(&x1, &step).unwrap();
+        let mut new_x1 = DVector::zeros(x1.len());
+        sphere1.retract(&x1, &step, &mut new_x1).unwrap();
+        x1 = new_x1;
         path1.push(x1.clone());
     }
 
@@ -302,11 +320,14 @@ fn test_invariance_reparametrization() {
 
     for _ in 0..num_steps {
         let grad = grad_fn(&x2);
-        let riem_grad = sphere1
-            .euclidean_to_riemannian_gradient(&x2, &grad)
+        let mut riem_grad = DVector::zeros(x2.len());
+        sphere1
+            .euclidean_to_riemannian_gradient(&x2, &grad, &mut riem_grad)
             .unwrap();
         let step = riem_grad * (-step_size);
-        x2 = sphere1.retract(&x2, &step).unwrap();
+        let mut new_x2 = DVector::zeros(x2.len());
+        sphere1.retract(&x2, &step, &mut new_x2).unwrap();
+        x2 = new_x2;
         path2.push(x2.clone());
     }
 
@@ -356,17 +377,22 @@ fn test_momentum_conservation() {
         costs.push(cost_fn.cost(&x).unwrap());
 
         let grad = cost_fn.gradient(&x).unwrap();
-        let riem_grad = sphere.euclidean_to_riemannian_gradient(&x, &grad).unwrap();
+        let mut riem_grad = DVector::zeros(x.len());
+        sphere.euclidean_to_riemannian_gradient(&x, &grad, &mut riem_grad).unwrap();
         gradient_norms.push(riem_grad.norm());
 
         // Update momentum with decay and gradient
         momentum = momentum * momentum_coeff - &riem_grad * step_size;
 
         // Project momentum to tangent space at current point
-        momentum = sphere.project_tangent(&x, &momentum).unwrap();
+        let mut projected_momentum = DVector::zeros(x.len());
+        sphere.project_tangent(&x, &momentum, &mut projected_momentum).unwrap();
+        momentum = projected_momentum;
 
         // Take step using momentum
-        x = sphere.retract(&x, &momentum).unwrap();
+        let mut new_x = DVector::zeros(x.len());
+        sphere.retract(&x, &momentum, &mut new_x).unwrap();
+        x = new_x;
 
         // Debug print every 20 iterations
         if iter % 20 == 0 {
@@ -424,11 +450,14 @@ fn test_momentum_conservation() {
     for _ in 0..200 {
         costs_sgd.push(cost_fn.cost(&x_sgd).unwrap());
         let grad = cost_fn.gradient(&x_sgd).unwrap();
-        let riem_grad = sphere
-            .euclidean_to_riemannian_gradient(&x_sgd, &grad)
+        let mut riem_grad = DVector::zeros(x_sgd.len());
+        sphere
+            .euclidean_to_riemannian_gradient(&x_sgd, &grad, &mut riem_grad)
             .unwrap();
         let step = riem_grad * (-step_size);
-        x_sgd = sphere.retract(&x_sgd, &step).unwrap();
+        let mut new_x_sgd = DVector::zeros(x_sgd.len());
+        sphere.retract(&x_sgd, &step, &mut new_x_sgd).unwrap();
+        x_sgd = new_x_sgd;
     }
 
     // Momentum behavior: might oscillate early but converges well
@@ -530,18 +559,24 @@ fn test_isometry_covariance() {
     let mut x1 = x0.clone();
     for _ in 0..num_steps {
         let grad = grad_fn(&x1);
-        let riem_grad = sphere.euclidean_to_riemannian_gradient(&x1, &grad).unwrap();
+        let mut riem_grad = DVector::zeros(x1.len());
+        sphere.euclidean_to_riemannian_gradient(&x1, &grad, &mut riem_grad).unwrap();
         let step = riem_grad * (-step_size);
-        x1 = sphere.retract(&x1, &step).unwrap();
+        let mut new_x1 = DVector::zeros(x1.len());
+        sphere.retract(&x1, &step, &mut new_x1).unwrap();
+        x1 = new_x1;
     }
 
     // Path 2: Rotated
     let mut x2 = x0_rotated.clone();
     for _ in 0..num_steps {
         let grad = grad_fn(&x2);
-        let riem_grad = sphere.euclidean_to_riemannian_gradient(&x2, &grad).unwrap();
+        let mut riem_grad = DVector::zeros(x2.len());
+        sphere.euclidean_to_riemannian_gradient(&x2, &grad, &mut riem_grad).unwrap();
         let step = riem_grad * (-step_size);
-        x2 = sphere.retract(&x2, &step).unwrap();
+        let mut new_x2 = DVector::zeros(x2.len());
+        sphere.retract(&x2, &step, &mut new_x2).unwrap();
+        x2 = new_x2;
     }
 
     // Final points should be related by the same rotation

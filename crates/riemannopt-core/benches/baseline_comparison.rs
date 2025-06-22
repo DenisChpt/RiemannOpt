@@ -71,20 +71,20 @@ impl Manifold<f64, Dyn> for OptimizedSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
-            point / norm
+            result.copy_from(&(point / norm));
         } else {
-            let mut p = DVector::zeros(self.dim);
-            p[0] = 1.0;
-            p
+            result.fill(0.0);
+            result[0] = 1.0;
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>) -> Result<DVector<f64>> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let inner = point.dot(vector);
-        Ok(vector - point * inner)
+        result.copy_from(&(vector - point * inner));
+        Ok(())
     }
 
     fn inner_product(
@@ -96,41 +96,44 @@ impl Manifold<f64, Dyn> for OptimizedSphere {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>) -> Result<DVector<f64>> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         // Optimized exponential map
         let norm_v = tangent.norm();
         if norm_v < f64::EPSILON {
-            Ok(point.clone())
+            result.copy_from(point);
         } else {
             let cos_norm = norm_v.cos();
             let sin_norm = norm_v.sin();
-            Ok(point * cos_norm + tangent * (sin_norm / norm_v))
+            result.copy_from(&(point * cos_norm + tangent * (sin_norm / norm_v)));
         }
+        Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>) -> Result<DVector<f64>> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
 
         if theta.abs() < f64::EPSILON {
-            Ok(DVector::zeros(self.dim))
+            result.fill(0.0);
         } else {
             let v = other - point * inner;
             let v_norm = v.norm();
             if v_norm > f64::EPSILON {
-                Ok(v * (theta / v_norm))
+                result.copy_from(&(v * (theta / v_norm)));
             } else {
-                Ok(DVector::zeros(self.dim))
+                result.fill(0.0);
             }
         }
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
-        self.project_tangent(point, euclidean_grad)
+        result: &mut DVector<f64>,
+    ) -> Result<()> {
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -139,16 +142,18 @@ impl Manifold<f64, Dyn> for OptimizedSphere {
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_point(&v)
+        let mut result = DVector::zeros(self.dim);
+        self.project_point(&v, &mut result);
+        result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let mut rng = thread_rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v)
+        self.project_tangent(point, &v, result)
     }
 }
 
@@ -176,9 +181,10 @@ fn bench_projection_comparison(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("optimized", dim), &dim, |b, _| {
             let mut idx = 0;
             b.iter(|| {
-                let result = optimized.project_point(black_box(&points[idx % points.len()]));
+                let mut result = DVector::zeros(dim);
+                optimized.project_point(black_box(&points[idx % points.len()]), &mut result);
                 idx += 1;
-                result
+                black_box(result)
             });
         });
     }
@@ -215,12 +221,13 @@ fn bench_tangent_projection_comparison(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("optimized", dim), &dim, |b, _| {
             let mut idx = 0;
             b.iter(|| {
+                let mut result = DVector::zeros(dim);
                 let (point, vector) = &test_data[idx % test_data.len()];
-                let result = optimized
-                    .project_tangent(black_box(point), black_box(vector))
+                optimized
+                    .project_tangent(black_box(point), black_box(vector), &mut result)
                     .unwrap();
                 idx += 1;
-                result
+                black_box(result)
             });
         });
     }
@@ -239,7 +246,9 @@ fn bench_retraction_comparison(c: &mut Criterion) {
         let test_data: Vec<(DVector<f64>, DVector<f64>)> = (0..100)
             .map(|_| {
                 let point = optimized.random_point();
-                let tangent = optimized.random_tangent(&point).unwrap() * 0.1;
+                let mut tangent = DVector::zeros(dim);
+                optimized.random_tangent(&point, &mut tangent).unwrap();
+                tangent *= 0.1;
                 (point, tangent)
             })
             .collect();
@@ -257,12 +266,13 @@ fn bench_retraction_comparison(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("optimized", dim), &dim, |b, _| {
             let mut idx = 0;
             b.iter(|| {
+                let mut result = DVector::zeros(dim);
                 let (point, tangent) = &test_data[idx % test_data.len()];
-                let result = optimized
-                    .retract(black_box(point), black_box(tangent))
+                optimized
+                    .retract(black_box(point), black_box(tangent), &mut result)
                     .unwrap();
                 idx += 1;
-                result
+                black_box(result)
             });
         });
     }
@@ -295,10 +305,11 @@ fn bench_numerical_stability_comparison(c: &mut Criterion) {
     group.bench_function("optimized_small_vectors", |b| {
         let mut idx = 0;
         b.iter(|| {
+            let mut result = DVector::zeros(dim);
             let vector = &small_vectors[idx % small_vectors.len()];
-            let result = optimized.project_point(black_box(vector));
+            optimized.project_point(black_box(vector), &mut result);
             idx += 1;
-            result
+            black_box(result)
         });
     });
 
@@ -320,10 +331,11 @@ fn bench_numerical_stability_comparison(c: &mut Criterion) {
     group.bench_function("optimized_large_vectors", |b| {
         let mut idx = 0;
         b.iter(|| {
+            let mut result = DVector::zeros(dim);
             let vector = &large_vectors[idx % large_vectors.len()];
-            let result = optimized.project_point(black_box(vector));
+            optimized.project_point(black_box(vector), &mut result);
             idx += 1;
-            result
+            black_box(result)
         });
     });
 
@@ -344,17 +356,23 @@ fn bench_algorithm_comparison(c: &mut Criterion) {
         b.iter(|| {
             let mut x = optimized.random_point();
             let target = optimized.random_point();
+            
+            let mut riem_grad = DVector::zeros(dim);
+            let mut step = DVector::zeros(dim);
+            let mut new_x = DVector::zeros(dim);
 
             for _ in 0..num_iterations {
                 // Gradient: x - target (projected to tangent space)
                 let euclidean_grad = &x - &target;
-                let riem_grad = optimized
-                    .euclidean_to_riemannian_gradient(&x, &euclidean_grad)
+                optimized
+                    .euclidean_to_riemannian_gradient(&x, &euclidean_grad, &mut riem_grad)
                     .unwrap();
 
                 // Take step
-                let step = riem_grad * (-step_size);
-                x = optimized.retract(&x, &step).unwrap();
+                step.copy_from(&riem_grad);
+                step *= -step_size;
+                optimized.retract(&x, &step, &mut new_x).unwrap();
+                x.copy_from(&new_x);
             }
 
             black_box(x)

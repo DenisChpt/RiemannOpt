@@ -46,16 +46,18 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         true
     }
 
-    fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
-        point.clone()
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+        result.copy_from(point);
     }
 
     fn project_tangent(
         &self,
         _point: &DVector<f64>,
         vector: &DVector<f64>,
-    ) -> riemannopt_core::error::Result<DVector<f64>> {
-        Ok(vector.clone())
+        result: &mut DVector<f64>,
+    ) -> riemannopt_core::error::Result<()> {
+        result.copy_from(vector);
+        Ok(())
     }
 
     fn inner_product(
@@ -71,24 +73,30 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         &self,
         point: &DVector<f64>,
         tangent: &DVector<f64>,
-    ) -> riemannopt_core::error::Result<DVector<f64>> {
-        Ok(point + tangent)
+        result: &mut DVector<f64>,
+    ) -> riemannopt_core::error::Result<()> {
+        result.copy_from(&(point + tangent));
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
         point: &DVector<f64>,
         other: &DVector<f64>,
-    ) -> riemannopt_core::error::Result<DVector<f64>> {
-        Ok(other - point)
+        result: &mut DVector<f64>,
+    ) -> riemannopt_core::error::Result<()> {
+        result.copy_from(&(other - point));
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         _point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
-    ) -> riemannopt_core::error::Result<DVector<f64>> {
-        Ok(euclidean_grad.clone())
+        result: &mut DVector<f64>,
+    ) -> riemannopt_core::error::Result<()> {
+        result.copy_from(euclidean_grad);
+        Ok(())
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -99,11 +107,13 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
     fn random_tangent(
         &self,
         _point: &DVector<f64>,
-    ) -> riemannopt_core::error::Result<DVector<f64>> {
+        result: &mut DVector<f64>,
+    ) -> riemannopt_core::error::Result<()> {
         let mut rng = thread_rng();
-        Ok(DVector::from_fn(self.dim, |_, _| {
-            rng.gen::<f64>() * 2.0 - 1.0
-        }))
+        for i in 0..self.dim {
+            result[i] = rng.gen::<f64>() * 2.0 - 1.0;
+        }
+        Ok(())
     }
 }
 
@@ -196,8 +206,10 @@ fn bench_vector_operations(c: &mut Criterion) {
     // Generate test vectors
     let vectors: Vec<(DVector<f64>, DVector<f64>)> = (0..100)
         .map(|_| {
-            let u = manifold.random_tangent(&point).unwrap();
-            let v = manifold.random_tangent(&point).unwrap();
+            let mut u = DVector::zeros(dim);
+            let mut v = DVector::zeros(dim);
+            manifold.random_tangent(&point, &mut u).unwrap();
+            manifold.random_tangent(&point, &mut v).unwrap();
             (u, v)
         })
         .collect();
@@ -257,7 +269,11 @@ fn bench_orthogonalization_methods(c: &mut Criterion) {
     let vector_sets: Vec<Vec<DVector<f64>>> = (0..10)
         .map(|_| {
             (0..num_vectors)
-                .map(|_| manifold.random_tangent(&point).unwrap())
+                .map(|_| {
+                    let mut tangent = DVector::zeros(dim);
+                    manifold.random_tangent(&point, &mut tangent).unwrap();
+                    tangent
+                })
                 .collect()
         })
         .collect();

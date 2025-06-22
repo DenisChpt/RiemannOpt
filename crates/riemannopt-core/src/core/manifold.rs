@@ -16,7 +16,7 @@
 //! - **Riemannian gradient**: The unique vector in T_p M representing the derivative
 //! - **Parallel transport**: Moving vectors along curves while preserving angles
 
-use crate::{error::Result, types::Scalar, memory::workspace::Workspace};
+use crate::{error::Result, types::Scalar};
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OVector};
 use num_traits::Float;
 use std::fmt::Debug;
@@ -190,17 +190,14 @@ where
 
     /// Projects a point onto the manifold.
     ///
-    /// This method takes a point in the ambient space and returns the closest
-    /// point on the manifold (in the Euclidean sense).
+    /// This method takes a point in the ambient space and writes the closest
+    /// point on the manifold (in the Euclidean sense) to the output buffer.
     ///
     /// # Arguments
     ///
     /// * `point` - The point to project
-    ///
-    /// # Returns
-    ///
-    /// The projected point on the manifold.
-    fn project_point(&self, point: &Point<T, D>) -> Point<T, D>;
+    /// * `result` - Pre-allocated output buffer for the projected point
+    fn project_point(&self, point: &Point<T, D>, result: &mut Point<T, D>);
 
     /// Projects a vector onto the tangent space at a given point.
     ///
@@ -226,10 +223,7 @@ where
     ///
     /// * `point` - A point p ∈ ℳ on the manifold
     /// * `vector` - The ambient vector v ∈ ℝⁿ to project
-    ///
-    /// # Returns
-    ///
-    /// The projected tangent vector P_p(v) ∈ T_p ℳ.
+    /// * `result` - Pre-allocated output buffer for the projected tangent vector
     ///
     /// # Errors
     ///
@@ -238,7 +232,8 @@ where
         &self,
         point: &Point<T, D>,
         vector: &TangentVector<T, D>,
-    ) -> Result<TangentVector<T, D>>;
+        result: &mut TangentVector<T, D>,
+    ) -> Result<()>;
 
     /// Computes the Riemannian inner product between two tangent vectors.
     ///
@@ -329,10 +324,7 @@ where
     ///
     /// * `point` - A point p ∈ ℳ on the manifold
     /// * `tangent` - A tangent vector v ∈ T_p ℳ (direction and magnitude of step)
-    ///
-    /// # Returns
-    ///
-    /// A new point R_p(v) ∈ ℳ on the manifold.
+    /// * `result` - Pre-allocated output buffer for the retracted point
     ///
     /// # Errors
     ///
@@ -340,7 +332,7 @@ where
     /// - `point` is not on the manifold
     /// - `tangent` is not in the tangent space at `point`
     /// - Numerical issues prevent computation (e.g., singularities)
-    fn retract(&self, point: &Point<T, D>, tangent: &TangentVector<T, D>) -> Result<Point<T, D>>;
+    fn retract(&self, point: &Point<T, D>, tangent: &TangentVector<T, D>, result: &mut Point<T, D>) -> Result<()>;
 
     /// Computes the inverse retraction (logarithmic map).
     ///
@@ -351,10 +343,7 @@ where
     ///
     /// * `point` - A point on the manifold
     /// * `other` - Another point on the manifold
-    ///
-    /// # Returns
-    ///
-    /// A tangent vector v such that retract(point, v) ≈ other.
+    /// * `result` - Pre-allocated output buffer for the tangent vector
     ///
     /// # Errors
     ///
@@ -364,7 +353,8 @@ where
         &self,
         point: &Point<T, D>,
         other: &Point<T, D>,
-    ) -> Result<TangentVector<T, D>>;
+        result: &mut TangentVector<T, D>,
+    ) -> Result<()>;
 
     /// Converts the Euclidean gradient to the Riemannian gradient.
     ///
@@ -376,15 +366,13 @@ where
     ///
     /// * `point` - A point on the manifold
     /// * `euclidean_grad` - The Euclidean gradient at `point`
-    ///
-    /// # Returns
-    ///
-    /// The Riemannian gradient.
+    /// * `result` - Pre-allocated output buffer for the Riemannian gradient
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &Point<T, D>,
         euclidean_grad: &TangentVector<T, D>,
-    ) -> Result<TangentVector<T, D>>;
+        result: &mut TangentVector<T, D>,
+    ) -> Result<()>;
 
     /// Performs parallel transport of a vector along a retraction.
     ///
@@ -396,10 +384,7 @@ where
     /// * `from` - Starting point on the manifold
     /// * `to` - Ending point on the manifold
     /// * `vector` - Tangent vector at `from` to transport
-    ///
-    /// # Returns
-    ///
-    /// The transported vector in T_to M.
+    /// * `result` - Pre-allocated output buffer for the transported vector
     ///
     /// # Default Implementation
     ///
@@ -410,9 +395,10 @@ where
         _from: &Point<T, D>,
         to: &Point<T, D>,
         vector: &TangentVector<T, D>,
-    ) -> Result<TangentVector<T, D>> {
+        result: &mut TangentVector<T, D>,
+    ) -> Result<()> {
         // Default: vector transport by projection
-        self.project_tangent(to, vector)
+        self.project_tangent(to, vector, result)
     }
 
     /// Generates a random point on the manifold.
@@ -429,11 +415,12 @@ where
     /// # Arguments
     ///
     /// * `point` - A point on the manifold
+    /// * `result` - Pre-allocated output buffer for the random tangent vector
     ///
     /// # Returns
     ///
     /// A random tangent vector at `point` with unit norm.
-    fn random_tangent(&self, point: &Point<T, D>) -> Result<TangentVector<T, D>>;
+    fn random_tangent(&self, point: &Point<T, D>, result: &mut TangentVector<T, D>) -> Result<()>;
 
     /// Computes the geodesic distance between two points.
     ///
@@ -450,7 +437,8 @@ where
     ///
     /// Uses the norm of the logarithmic map.
     fn distance(&self, x: &Point<T, D>, y: &Point<T, D>) -> Result<T> {
-        let log = self.inverse_retract(x, y)?;
+        let mut log = TangentVector::<T, D>::zeros_generic(x.shape_generic().0, nalgebra::Const::<1>);
+        self.inverse_retract(x, y, &mut log)?;
         self.norm(x, &log)
     }
 
@@ -469,176 +457,6 @@ where
         false
     }
 
-    // ========================================================================
-    // Workspace-based methods for zero-allocation operations
-    // ========================================================================
-
-    /// Projects a vector onto the tangent space at a given point using a workspace.
-    ///
-    /// This method is identical to `project_tangent` but uses pre-allocated workspace
-    /// buffers to avoid allocations in performance-critical paths.
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - A point p ∈ ℳ on the manifold
-    /// * `vector` - The ambient vector v ∈ ℝⁿ to project
-    /// * `result` - Pre-allocated output buffer for the projected tangent vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
-    ///
-    /// # Returns
-    ///
-    /// Ok(()) on success, with the result written to the `result` buffer.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation calls the allocating version. Manifolds should
-    /// override this for better performance.
-    fn project_tangent_with_workspace(
-        &self,
-        point: &Point<T, D>,
-        vector: &TangentVector<T, D>,
-        result: &mut TangentVector<T, D>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Default implementation: call the allocating version
-        let projected = self.project_tangent(point, vector)?;
-        result.copy_from(&projected);
-        Ok(())
-    }
-
-    /// Performs a retraction from the tangent space to the manifold using a workspace.
-    ///
-    /// This method is identical to `retract` but uses pre-allocated workspace
-    /// buffers to avoid allocations in performance-critical paths.
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - A point p ∈ ℳ on the manifold
-    /// * `tangent` - A tangent vector v ∈ T_p ℳ (direction and magnitude of step)
-    /// * `result` - Pre-allocated output buffer for the retracted point
-    /// * `workspace` - Pre-allocated workspace for temporary computations
-    ///
-    /// # Returns
-    ///
-    /// Ok(()) on success, with the result written to the `result` buffer.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation calls the allocating version. Manifolds should
-    /// override this for better performance.
-    fn retract_with_workspace(
-        &self,
-        point: &Point<T, D>,
-        tangent: &TangentVector<T, D>,
-        result: &mut Point<T, D>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Default implementation: call the allocating version
-        let retracted = self.retract(point, tangent)?;
-        result.copy_from(&retracted);
-        Ok(())
-    }
-
-    /// Computes the inverse retraction using a workspace.
-    ///
-    /// This method is identical to `inverse_retract` but uses pre-allocated workspace
-    /// buffers to avoid allocations in performance-critical paths.
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - A point on the manifold
-    /// * `other` - Another point on the manifold
-    /// * `result` - Pre-allocated output buffer for the tangent vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
-    ///
-    /// # Returns
-    ///
-    /// Ok(()) on success, with the result written to the `result` buffer.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation calls the allocating version. Manifolds should
-    /// override this for better performance.
-    fn inverse_retract_with_workspace(
-        &self,
-        point: &Point<T, D>,
-        other: &Point<T, D>,
-        result: &mut TangentVector<T, D>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Default implementation: call the allocating version
-        let tangent = self.inverse_retract(point, other)?;
-        result.copy_from(&tangent);
-        Ok(())
-    }
-
-    /// Converts the Euclidean gradient to the Riemannian gradient using a workspace.
-    ///
-    /// This method is identical to `euclidean_to_riemannian_gradient` but uses
-    /// pre-allocated workspace buffers to avoid allocations in performance-critical paths.
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - A point on the manifold
-    /// * `euclidean_grad` - The Euclidean gradient at `point`
-    /// * `result` - Pre-allocated output buffer for the Riemannian gradient
-    /// * `workspace` - Pre-allocated workspace for temporary computations
-    ///
-    /// # Returns
-    ///
-    /// Ok(()) on success, with the result written to the `result` buffer.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation calls the allocating version. Manifolds should
-    /// override this for better performance.
-    fn euclidean_to_riemannian_gradient_with_workspace(
-        &self,
-        point: &Point<T, D>,
-        euclidean_grad: &TangentVector<T, D>,
-        result: &mut TangentVector<T, D>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Default implementation: call the allocating version
-        let riemannian_grad = self.euclidean_to_riemannian_gradient(point, euclidean_grad)?;
-        result.copy_from(&riemannian_grad);
-        Ok(())
-    }
-
-    /// Performs parallel transport of a vector along a retraction using a workspace.
-    ///
-    /// This method is identical to `parallel_transport` but uses pre-allocated workspace
-    /// buffers to avoid allocations in performance-critical paths.
-    ///
-    /// # Arguments
-    ///
-    /// * `from` - Starting point on the manifold
-    /// * `to` - Ending point on the manifold
-    /// * `vector` - Tangent vector at `from` to transport
-    /// * `result` - Pre-allocated output buffer for the transported vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
-    ///
-    /// # Returns
-    ///
-    /// Ok(()) on success, with the result written to the `result` buffer.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation calls the allocating version. Manifolds should
-    /// override this for better performance.
-    fn parallel_transport_with_workspace(
-        &self,
-        from: &Point<T, D>,
-        to: &Point<T, D>,
-        vector: &TangentVector<T, D>,
-        result: &mut TangentVector<T, D>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Default implementation: call the allocating version
-        let transported = self.parallel_transport(from, to, vector)?;
-        result.copy_from(&transported);
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -667,8 +485,9 @@ mod tests {
         assert_eq!(norm, 1.0);
 
         // Test parallel transport (uses project_tangent by default)
-        let transported = manifold
-            .parallel_transport(&point, &point, &vector)
+        let mut transported = DVector::zeros(3);
+        manifold
+            .parallel_transport(&point, &point, &vector, &mut transported)
             .unwrap();
         assert_eq!(transported, vector);
 

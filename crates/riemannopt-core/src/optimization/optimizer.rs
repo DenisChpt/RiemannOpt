@@ -638,11 +638,12 @@ mod tests {
             ) -> bool {
                 true
             }
-            fn project_point(&self, p: &DVector<f64>) -> DVector<f64> {
-                p.clone()
+            fn project_point(&self, p: &DVector<f64>, result: &mut DVector<f64>) {
+                result.copy_from(p);
             }
-            fn project_tangent(&self, _: &DVector<f64>, v: &DVector<f64>) -> Result<DVector<f64>> {
-                Ok(v.clone())
+            fn project_tangent(&self, _: &DVector<f64>, v: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+                result.copy_from(v);
+                Ok(())
             }
             fn inner_product(
                 &self,
@@ -652,24 +653,29 @@ mod tests {
             ) -> Result<f64> {
                 Ok(u.dot(v))
             }
-            fn retract(&self, p: &DVector<f64>, v: &DVector<f64>) -> Result<DVector<f64>> {
-                Ok(p + v)
+            fn retract(&self, p: &DVector<f64>, v: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+                result.copy_from(&(p + v));
+                Ok(())
             }
-            fn inverse_retract(&self, p: &DVector<f64>, q: &DVector<f64>) -> Result<DVector<f64>> {
-                Ok(q - p)
+            fn inverse_retract(&self, p: &DVector<f64>, q: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+                result.copy_from(&(q - p));
+                Ok(())
             }
             fn euclidean_to_riemannian_gradient(
                 &self,
                 _: &DVector<f64>,
                 g: &DVector<f64>,
-            ) -> Result<DVector<f64>> {
-                Ok(g.clone())
+                result: &mut DVector<f64>,
+            ) -> Result<()> {
+                result.copy_from(g);
+                Ok(())
             }
             fn random_point(&self) -> DVector<f64> {
                 DVector::zeros(3)
             }
-            fn random_tangent(&self, _: &DVector<f64>) -> Result<DVector<f64>> {
-                Ok(DVector::zeros(3))
+            fn random_tangent(&self, _: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+                *result = DVector::zeros(3);
+                Ok(())
             }
         }
 

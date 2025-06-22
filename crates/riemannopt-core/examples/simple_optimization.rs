@@ -9,10 +9,9 @@
 use nalgebra::{DVector, Dyn};
 use riemannopt_core::{
     prelude::*,
-    manifold::{Manifold, Point},
+    manifold::{Manifold, Point, TangentVector},
     cost_function::{CostFunction, CountingCostFunction},
-    line_search::{BacktrackingLineSearch, LineSearchParams},
-    retraction::ProjectionRetraction,
+    optimization::line_search::{BacktrackingLineSearch, LineSearchParams},
     error::{ManifoldError, Result},
 };
 use std::time::Instant;
@@ -45,29 +44,31 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
     fn is_vector_in_tangent_space(
         &self,
         _point: &Point<f64, Dyn>,
-        _vector: &Point<f64, Dyn>,
+        _vector: &TangentVector<f64, Dyn>,
         _tol: f64,
     ) -> bool {
         true
     }
 
-    fn project_point(&self, point: &Point<f64, Dyn>) -> Point<f64, Dyn> {
-        point.clone()
+    fn project_point(&self, point: &Point<f64, Dyn>, result: &mut Point<f64, Dyn>) {
+        result.copy_from(point);
     }
 
     fn project_tangent(
         &self,
         _point: &Point<f64, Dyn>,
-        vector: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(vector.clone())
+        vector: &TangentVector<f64, Dyn>,
+        result: &mut TangentVector<f64, Dyn>,
+    ) -> Result<()> {
+        result.copy_from(vector);
+        Ok(())
     }
 
     fn inner_product(
         &self,
         _point: &Point<f64, Dyn>,
-        v1: &Point<f64, Dyn>,
-        v2: &Point<f64, Dyn>,
+        v1: &TangentVector<f64, Dyn>,
+        v2: &TangentVector<f64, Dyn>,
     ) -> Result<f64> {
         Ok(v1.dot(v2))
     }
@@ -75,35 +76,42 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
     fn retract(
         &self,
         point: &Point<f64, Dyn>,
-        tangent: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(point + tangent)
+        tangent: &TangentVector<f64, Dyn>,
+        result: &mut Point<f64, Dyn>,
+    ) -> Result<()> {
+        *result = point + tangent;
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
         point: &Point<f64, Dyn>,
         other: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(other - point)
+        result: &mut TangentVector<f64, Dyn>,
+    ) -> Result<()> {
+        *result = other - point;
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         _point: &Point<f64, Dyn>,
-        grad: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(grad.clone())
+        euclidean_grad: &TangentVector<f64, Dyn>,
+        result: &mut TangentVector<f64, Dyn>,
+    ) -> Result<()> {
+        result.copy_from(euclidean_grad);
+        Ok(())
     }
 
     fn random_point(&self) -> Point<f64, Dyn> {
         DVector::from_fn(self.dim, |_, _| rand::random::<f64>() * 2.0 - 1.0)
     }
 
-    fn random_tangent(&self, _point: &Point<f64, Dyn>) -> Result<Point<f64, Dyn>> {
-        Ok(DVector::from_fn(self.dim, |_, _| {
+    fn random_tangent(&self, _point: &Point<f64, Dyn>, result: &mut TangentVector<f64, Dyn>) -> Result<()> {
+        *result = DVector::from_fn(self.dim, |_, _| {
             rand::random::<f64>() * 2.0 - 1.0
-        }))
+        });
+        Ok(())
     }
 }
 
@@ -121,7 +129,7 @@ impl CostFunction<f64, Dyn> for RosenbrockFunction {
         Ok((1.0 - x).powi(2) + 100.0 * (y - x * x).powi(2))
     }
 
-    fn gradient(&self, point: &Point<f64, Dyn>) -> Result<Point<f64, Dyn>> {
+    fn gradient(&self, point: &Point<f64, Dyn>) -> Result<TangentVector<f64, Dyn>> {
         if point.len() < 2 {
             return Err(ManifoldError::dimension_mismatch(2, point.len()));
         }
@@ -146,7 +154,6 @@ fn gradient_descent(
     let mut point = initial_point;
     let mut line_search = BacktrackingLineSearch::new();
     let ls_params = LineSearchParams::backtracking();
-    let retraction = ProjectionRetraction;
     
     println!("Starting optimization from point: [{:.3}, {:.3}]", point[0], point[1]);
     println!("Initial cost: {:.6}", cost_fn.cost(&point)?);
@@ -155,7 +162,8 @@ fn gradient_descent(
     for iter in 0..max_iterations {
         let value = cost_fn.cost(&point)?;
         let euclidean_grad = cost_fn.gradient(&point)?;
-        let gradient = manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad)?;
+        let mut gradient = DVector::zeros(point.len());
+        manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut gradient)?;
         let grad_norm = manifold.norm(&point, &gradient)?;
         
         if iter % 10 == 0 {
@@ -177,7 +185,6 @@ fn gradient_descent(
         let ls_result = line_search.search(
             cost_fn,
             manifold,
-            &retraction,
             &point,
             value,
             &gradient,

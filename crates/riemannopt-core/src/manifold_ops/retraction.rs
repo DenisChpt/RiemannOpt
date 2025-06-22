@@ -120,7 +120,9 @@ where
         point: &Point<T, D>,
         tangent: &TangentVectorType<T, D>,
     ) -> Result<Point<T, D>> {
-        manifold.retract(point, tangent)
+        let mut result = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.retract(point, tangent, &mut result)?;
+        Ok(result)
     }
 
     fn inverse_retract(
@@ -129,7 +131,9 @@ where
         point: &Point<T, D>,
         other: &Point<T, D>,
     ) -> Result<TangentVectorType<T, D>> {
-        manifold.inverse_retract(point, other)
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.inverse_retract(point, other, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -163,7 +167,9 @@ where
         // Move in the ambient space
         let ambient_point = point + tangent;
         // Project back onto the manifold
-        Ok(manifold.project_point(&ambient_point))
+        let mut result = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_point(&ambient_point, &mut result);
+        Ok(result)
     }
 
     fn inverse_retract(
@@ -174,7 +180,9 @@ where
     ) -> Result<TangentVectorType<T, D>> {
         // Simple approximation: project the difference onto the tangent space
         let diff = other - point;
-        manifold.project_tangent(point, &diff)
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_tangent(point, &diff, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -239,7 +247,9 @@ where
     ) -> Result<Point<T, D>> {
         // First check if manifold has exact exponential map
         if manifold.has_exact_exp_log() {
-            return manifold.retract(point, tangent);
+            let mut result = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(point, tangent, &mut result)?;
+            return Ok(result);
         }
         
         // Otherwise, use numerical integration of geodesic equation
@@ -259,7 +269,8 @@ where
         // Integrate along the geodesic
         for _ in 0..n_steps {
             // Take a small step
-            let next_point = manifold.retract(&current_point, &scaled_tangent)?;
+            let mut next_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(&current_point, &scaled_tangent, &mut next_point)?;
             
             // For a true geodesic, we would parallel transport the velocity
             // and update it according to the geodesic equation
@@ -279,14 +290,17 @@ where
     ) -> Result<TangentVectorType<T, D>> {
         // First check if manifold has exact logarithmic map
         if manifold.has_exact_exp_log() {
-            return manifold.inverse_retract(point, other);
+            let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.inverse_retract(point, other, &mut result)?;
+            return Ok(result);
         }
         
         // Otherwise, use iterative method to find v such that exp_p(v) = other
         // This is a simplified implementation using secant method
         
         // Initial guess using projection
-        let mut v = manifold.inverse_retract(point, other)?;
+        let mut v = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.inverse_retract(point, other, &mut v)?;
         let mut error = T::one();
         let max_iters = 10;
         let mut iter = 0;
@@ -306,7 +320,8 @@ where
             // Update v using gradient descent in tangent space
             // This is a simplified update - a full implementation would use
             // the differential of the exponential map
-            let grad = manifold.project_tangent(point, &error_vec)?;
+            let mut grad = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.project_tangent(point, &error_vec, &mut grad)?;
             v += &grad * <T as Scalar>::from_f64(0.5);
             
             iter += 1;
@@ -363,7 +378,9 @@ where
         // This should be overridden by specific matrix manifolds
         // For now, fall back to projection
         let ambient_point = point + tangent;
-        Ok(manifold.project_point(&ambient_point))
+        let mut result = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_point(&ambient_point, &mut result);
+        Ok(result)
     }
 
     fn inverse_retract(
@@ -375,7 +392,9 @@ where
         // Approximate inverse using projection
         // Specific manifolds should override this
         let diff = other - point;
-        manifold.project_tangent(point, &diff)
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_tangent(point, &diff, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -437,7 +456,9 @@ where
         // This should be overridden by specific matrix manifolds (SO(n), etc.)
         // For now, fall back to projection
         let ambient_point = point + tangent * self.scaling;
-        Ok(manifold.project_point(&ambient_point))
+        let mut result = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_point(&ambient_point, &mut result);
+        Ok(result)
     }
 
     fn inverse_retract(
@@ -449,7 +470,9 @@ where
         // Approximate inverse using projection
         // Specific manifolds should override this
         let diff = (other - point) / self.scaling;
-        manifold.project_tangent(point, &diff)
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_tangent(point, &diff, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -517,7 +540,9 @@ where
         // This should be overridden by specific matrix manifolds
         // For now, fall back to projection
         let ambient_point = point + tangent;
-        Ok(manifold.project_point(&ambient_point))
+        let mut result = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_point(&ambient_point, &mut result);
+        Ok(result)
     }
 
     fn inverse_retract(
@@ -529,7 +554,9 @@ where
         // Approximate inverse using projection
         // Specific manifolds should override this with proper implementation
         let diff = other - point;
-        manifold.project_tangent(point, &diff)
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_tangent(point, &diff, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -588,8 +615,11 @@ where
         direction: &TangentVectorType<T, D>,
         vector: &TangentVectorType<T, D>,
     ) -> Result<TangentVectorType<T, D>> {
-        let destination = manifold.retract(point, direction)?;
-        manifold.parallel_transport(point, &destination, vector)
+        let mut destination = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.retract(point, direction, &mut destination)?;
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.parallel_transport(point, &destination, vector, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -617,8 +647,11 @@ where
         direction: &TangentVectorType<T, D>,
         vector: &TangentVectorType<T, D>,
     ) -> Result<TangentVectorType<T, D>> {
-        let destination = manifold.retract(point, direction)?;
-        manifold.project_tangent(&destination, vector)
+        let mut destination = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.retract(point, direction, &mut destination)?;
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_tangent(&destination, vector, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -665,14 +698,18 @@ where
         
         // Compute R(x, tv + epsilon * w) and R(x, tv)
         let perturbed_direction = direction + vector * epsilon;
-        let destination = manifold.retract(point, direction)?;
-        let perturbed_destination = manifold.retract(point, &perturbed_direction)?;
+        let mut destination = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.retract(point, direction, &mut destination)?;
+        let mut perturbed_destination = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.retract(point, &perturbed_direction, &mut perturbed_destination)?;
         
         // Approximate transported vector as (R(x, tv + epsilon * w) - R(x, tv)) / epsilon
         let transported = (&perturbed_destination - &destination) / epsilon;
         
         // Project to ensure we're in the tangent space
-        manifold.project_tangent(&destination, &transported)
+        let mut result = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.project_tangent(&destination, &transported, &mut result)?;
+        Ok(result)
     }
 }
 
@@ -740,18 +777,24 @@ where
         // Apply Schild's ladder at each step
         for _ in 0..self.steps {
             // Move to midpoint
-            let next_point = manifold.retract(&current_point, &step_direction)?;
+            let mut next_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(&current_point, &step_direction, &mut next_point)?;
             let half_step = &step_direction * <T as Scalar>::from_f64(0.5);
-            let midpoint = manifold.retract(&current_point, &half_step)?;
+            let mut midpoint = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(&current_point, &half_step, &mut midpoint)?;
             
             // Construct parallelogram
-            let displaced_midpoint = manifold.retract(&midpoint, &current_vector)?;
+            let mut displaced_midpoint = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(&midpoint, &current_vector, &mut displaced_midpoint)?;
             
             // Complete the parallelogram to find transported vector
             // The transported vector should connect next_point to the fourth corner
             // of the parallelogram
-            let fourth_corner = manifold.retract(&displaced_midpoint, &half_step)?;
-            current_vector = manifold.inverse_retract(&next_point, &fourth_corner)?;
+            let mut fourth_corner = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(&displaced_midpoint, &half_step, &mut fourth_corner)?;
+            let mut new_vector = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.inverse_retract(&next_point, &fourth_corner, &mut new_vector)?;
+            current_vector = new_vector;
             
             current_point = next_point;
         }
