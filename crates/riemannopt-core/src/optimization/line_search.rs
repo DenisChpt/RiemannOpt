@@ -22,7 +22,6 @@ use crate::{
     cost_function::CostFunction,
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
-    retraction::Retraction,
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};
@@ -197,40 +196,35 @@ where
 /// This struct reduces the number of parameters passed to line search methods
 /// by grouping related references together.
 #[derive(Debug)]
-pub struct LineSearchContext<'a, T, D, C, M, R>
+pub struct LineSearchContext<'a, T, D, C, M>
 where
     T: Scalar,
     D: Dim,
     C: CostFunction<T, D>,
     M: Manifold<T, D>,
-    R: Retraction<T, D>,
     DefaultAllocator: Allocator<D>,
 {
     /// The cost function to minimize
     pub cost_fn: &'a C,
     /// The manifold on which we're optimizing
     pub manifold: &'a M,
-    /// The retraction to use for moving on the manifold
-    pub retraction: &'a R,
     /// Phantom data for type parameters
     _phantom: std::marker::PhantomData<(T, D)>,
 }
 
-impl<'a, T, D, C, M, R> LineSearchContext<'a, T, D, C, M, R>
+impl<'a, T, D, C, M> LineSearchContext<'a, T, D, C, M>
 where
     T: Scalar,
     D: Dim,
     C: CostFunction<T, D>,
     M: Manifold<T, D>,
-    R: Retraction<T, D>,
     DefaultAllocator: Allocator<D>,
 {
     /// Create a new line search context.
-    pub fn new(cost_fn: &'a C, manifold: &'a M, retraction: &'a R) -> Self {
+    pub fn new(cost_fn: &'a C, manifold: &'a M) -> Self {
         Self {
             cost_fn,
             manifold,
-            retraction,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -249,7 +243,6 @@ where
     ///
     /// * `cost_fn` - The cost function to minimize
     /// * `manifold` - The manifold on which we're optimizing
-    /// * `retraction` - The retraction to use for moving on the manifold
     /// * `point` - Current point on the manifold
     /// * `value` - Function value at the current point
     /// * `gradient` - Gradient at the current point
@@ -264,7 +257,6 @@ where
         &mut self,
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
-        retraction: &impl Retraction<T, D>,
         point: &Point<T, D>,
         value: T,
         gradient: &TangentVector<T, D>,
@@ -273,7 +265,7 @@ where
     ) -> Result<LineSearchResult<T, D>> {
         // Default implementation: compute directional derivative and use efficient method
         let directional_deriv = manifold.inner_product(point, gradient, direction)?;
-        self.search_with_deriv(cost_fn, manifold, retraction, point, value, direction, directional_deriv, params)
+        self.search_with_deriv(cost_fn, manifold, point, value, direction, directional_deriv, params)
     }
     
     /// Performs a line search along a direction with pre-computed directional derivative.
@@ -284,7 +276,6 @@ where
     ///
     /// * `cost_fn` - The cost function to minimize
     /// * `manifold` - The manifold on which we're optimizing
-    /// * `retraction` - The retraction to use for moving on the manifold
     /// * `point` - Current point on the manifold
     /// * `value` - Function value at the current point
     /// * `direction` - Search direction (typically negative gradient or descent direction)
@@ -299,7 +290,6 @@ where
         &mut self,
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
-        retraction: &impl Retraction<T, D>,
         point: &Point<T, D>,
         value: T,
         direction: &TangentVector<T, D>,
@@ -327,9 +317,9 @@ where
     /// # Returns
     ///
     /// A `LineSearchResult` containing the step size and new point.
-    fn search_with_context<C, M, R>(
+    fn search_with_context<C, M>(
         &mut self,
-        ctx: &LineSearchContext<T, D, C, M, R>,
+        ctx: &LineSearchContext<T, D, C, M>,
         point: &Point<T, D>,
         value: T,
         gradient: &TangentVector<T, D>,
@@ -339,13 +329,11 @@ where
     where
         C: CostFunction<T, D>,
         M: Manifold<T, D>,
-        R: Retraction<T, D>,
     {
         // Default implementation delegates to the old method
         self.search(
             ctx.cost_fn,
             ctx.manifold,
-            ctx.retraction,
             point,
             value,
             gradient,
@@ -385,7 +373,6 @@ where
         &mut self,
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
-        retraction: &impl Retraction<T, D>,
         point: &Point<T, D>,
         value: T,
         direction: &TangentVector<T, D>,
@@ -407,7 +394,8 @@ where
         for (iteration, _) in (0..params.max_iterations).enumerate() {
             // Compute new point using retraction
             let scaled_direction = direction * step_size;
-            let new_point = retraction.retract(manifold, point, &scaled_direction)?;
+            let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(point, &scaled_direction, &mut new_point)?;
 
             // Evaluate function at new point
             let new_value = cost_fn.cost(&new_point)?;
@@ -494,7 +482,6 @@ where
         &mut self,
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
-        retraction: &impl Retraction<T, D>,
         point: &Point<T, D>,
         value: T,
         direction: &TangentVector<T, D>,
@@ -524,7 +511,8 @@ where
         for _ in 0..params.max_iterations {
             // Evaluate at current alpha
             let scaled_dir = direction * alpha;
-            let new_point = retraction.retract(manifold, point, &scaled_dir)?;
+            let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(point, &scaled_dir, &mut new_point)?;
             let new_value = cost_fn.cost(&new_point)?;
             function_evals += 1;
 
@@ -539,7 +527,6 @@ where
                 return self.zoom(
                     cost_fn,
                     manifold,
-                    retraction,
                     point,
                     value,
                     &gradient,
@@ -560,7 +547,8 @@ where
             gradient_evals += 1;
 
             // Transport direction to new point and compute directional derivative
-            let transported_dir = manifold.parallel_transport(point, &new_point, direction)?;
+            let mut transported_dir = TangentVector::<T, D>::zeros_generic(direction.shape_generic().0, nalgebra::Const::<1>);
+            manifold.parallel_transport(point, &new_point, direction, &mut transported_dir)?;
             let new_deriv = manifold.inner_product(&new_point, &new_gradient, &transported_dir)?;
 
             // Check curvature condition
@@ -584,7 +572,6 @@ where
                 return self.zoom(
                     cost_fn,
                     manifold,
-                    retraction,
                     point,
                     value,
                     &gradient,
@@ -635,7 +622,6 @@ impl StrongWolfeLineSearch {
         &self,
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
-        retraction: &impl Retraction<T, D>,
         point: &Point<T, D>,
         value: T,
         _gradient: &TangentVector<T, D>,
@@ -660,7 +646,8 @@ impl StrongWolfeLineSearch {
 
             // Evaluate at alpha
             let scaled_dir = direction * alpha;
-            let new_point = retraction.retract(manifold, point, &scaled_dir)?;
+            let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.retract(point, &scaled_dir, &mut new_point)?;
             let new_value = cost_fn.cost(&new_point)?;
             function_evals += 1;
 
@@ -675,7 +662,8 @@ impl StrongWolfeLineSearch {
                 gradient_evals += 1;
 
                 // Transport direction and compute derivative
-                let transported_dir = manifold.parallel_transport(point, &new_point, direction)?;
+                let mut transported_dir = TangentVector::<T, D>::zeros_generic(direction.shape_generic().0, nalgebra::Const::<1>);
+                manifold.parallel_transport(point, &new_point, direction, &mut transported_dir)?;
                 let new_deriv =
                     manifold.inner_product(&new_point, &new_gradient, &transported_dir)?;
 
@@ -705,7 +693,8 @@ impl StrongWolfeLineSearch {
             if <T as Float>::abs(alpha_high - alpha_low) < <T as Scalar>::from_f64(self.tolerance) {
                 // Return the best point found
                 let scaled_dir = direction * alpha_low;
-                let final_point = retraction.retract(manifold, point, &scaled_dir)?;
+                let mut final_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+                manifold.retract(point, &scaled_dir, &mut final_point)?;
 
                 return Ok(LineSearchResult {
                     step_size: alpha_low,
@@ -754,7 +743,6 @@ where
         &mut self,
         cost_fn: &impl CostFunction<T, D>,
         manifold: &impl Manifold<T, D>,
-        retraction: &impl Retraction<T, D>,
         point: &Point<T, D>,
         _value: T,
         direction: &TangentVector<T, D>,
@@ -762,7 +750,8 @@ where
         _params: &LineSearchParams<T>,
     ) -> Result<LineSearchResult<T, D>> {
         let scaled_direction = direction * self.step_size;
-        let new_point = retraction.retract(manifold, point, &scaled_direction)?;
+        let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.retract(point, &scaled_direction, &mut new_point)?;
         let new_value = cost_fn.cost(&new_point)?;
 
         Ok(LineSearchResult {
@@ -784,7 +773,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cost_function::QuadraticCost, retraction::DefaultRetraction, types::DVector};
+    use crate::{cost_function::QuadraticCost, types::DVector};
     use approx::assert_relative_eq;
     use nalgebra::Dyn;
 
@@ -812,15 +801,17 @@ mod tests {
         ) -> bool {
             true
         }
-        fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
-            point.clone()
+        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+            result.copy_from(point);
         }
         fn project_tangent(
             &self,
             _point: &DVector<f64>,
             vector: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(vector.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(vector);
+            Ok(())
         }
         fn inner_product(
             &self,
@@ -830,28 +821,34 @@ mod tests {
         ) -> Result<f64> {
             Ok(u.dot(v))
         }
-        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>) -> Result<DVector<f64>> {
-            Ok(point + tangent)
+        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            result.copy_from(&(point + tangent));
+            Ok(())
         }
         fn inverse_retract(
             &self,
             point: &DVector<f64>,
             other: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(other - point)
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(&(other - point));
+            Ok(())
         }
         fn euclidean_to_riemannian_gradient(
             &self,
             _point: &DVector<f64>,
             euclidean_grad: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(euclidean_grad.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(euclidean_grad);
+            Ok(())
         }
         fn random_point(&self) -> DVector<f64> {
             DVector::zeros(self.dim)
         }
-        fn random_tangent(&self, _point: &DVector<f64>) -> Result<DVector<f64>> {
-            Ok(DVector::zeros(self.dim))
+        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            result.fill(0.0);
+            Ok(())
         }
     }
 
@@ -859,7 +856,6 @@ mod tests {
     fn test_backtracking_line_search() {
         let manifold = EuclideanManifold { dim: 2 };
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
-        let retraction = DefaultRetraction;
 
         let point = DVector::from_vec(vec![1.0, 1.0]);
         let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
@@ -872,7 +868,6 @@ mod tests {
             .search(
                 &cost,
                 &manifold,
-                &retraction,
                 &point,
                 value,
                 &gradient,
@@ -890,7 +885,6 @@ mod tests {
     fn test_backtracking_descent_check() {
         let manifold = EuclideanManifold { dim: 2 };
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
-        let retraction = DefaultRetraction;
 
         let point = DVector::from_vec(vec![1.0, 1.0]);
         let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
@@ -902,7 +896,6 @@ mod tests {
         let result = ls.search(
             &cost,
             &manifold,
-            &retraction,
             &point,
             value,
             &gradient,
@@ -917,7 +910,6 @@ mod tests {
     fn test_strong_wolfe_line_search() {
         let manifold = EuclideanManifold { dim: 2 };
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
-        let retraction = DefaultRetraction;
 
         let point = DVector::from_vec(vec![2.0, 3.0]);
         let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
@@ -930,7 +922,6 @@ mod tests {
             .search(
                 &cost,
                 &manifold,
-                &retraction,
                 &point,
                 value,
                 &gradient,
@@ -951,7 +942,6 @@ mod tests {
     fn test_fixed_step_size() {
         let manifold = EuclideanManifold { dim: 2 };
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
-        let retraction = DefaultRetraction;
 
         let point = DVector::from_vec(vec![1.0, 1.0]);
         let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
@@ -964,7 +954,6 @@ mod tests {
             .search(
                 &cost,
                 &manifold,
-                &retraction,
                 &point,
                 value,
                 &gradient,

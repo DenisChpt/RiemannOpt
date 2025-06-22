@@ -587,10 +587,12 @@ where
         if let (Some(prev_point), Some(prev_grad)) = (&self.previous_point, &self.previous_gradient)
         {
             // Compute s_k = transport(x_k, x_{k+1}) of (x_{k+1} - x_k)
-            let s = manifold.inverse_retract(prev_point, point)?;
+            let mut s = TangentVector::<T, D>::zeros_generic(gradient.shape_generic().0, nalgebra::U1);
+            manifold.inverse_retract(prev_point, point, &mut s)?;
 
             // Compute y_k = g_{k+1} - transport(g_k)
-            let transported_grad = manifold.parallel_transport(prev_point, point, prev_grad)?;
+            let mut transported_grad = TangentVector::<T, D>::zeros_generic(gradient.shape_generic().0, nalgebra::U1);
+            manifold.parallel_transport(prev_point, point, prev_grad, &mut transported_grad)?;
             let y = gradient - &transported_grad;
 
             // Compute rho_k = 1 / (y_k^T s_k)
@@ -795,15 +797,19 @@ where
         let prev_gradient = self.previous_gradient.as_ref()
             .ok_or_else(|| ManifoldError::invalid_parameter("Missing previous gradient in CG state"))?;
             
-        let transported_dir = manifold.parallel_transport(
+        let mut transported_dir = TangentVector::<T, D>::zeros_generic(gradient.shape_generic().0, nalgebra::U1);
+        manifold.parallel_transport(
             prev_point,
             point,
             prev_direction,
+            &mut transported_dir,
         )?;
-        let transported_grad = manifold.parallel_transport(
+        let mut transported_grad = TangentVector::<T, D>::zeros_generic(gradient.shape_generic().0, nalgebra::U1);
+        manifold.parallel_transport(
             prev_point,
             point,
             prev_gradient,
+            &mut transported_grad,
         )?;
 
         // Compute beta according to the chosen method

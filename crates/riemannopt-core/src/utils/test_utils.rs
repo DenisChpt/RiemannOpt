@@ -130,10 +130,11 @@ impl ManifoldPropertyTester {
             let point = manifold.random_point();
 
             for _ in 0..config.num_tangents {
-                match manifold.random_tangent(&point) {
-                    Ok(tangent) => {
+                let mut tangent = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                match manifold.random_tangent(&point, &mut tangent) {
+                    Ok(()) => {
                         // Scale the tangent vector
-                        let tangent = tangent * config.tangent_scale;
+                        tangent *= config.tangent_scale;
                         let tangent_norm = tangent.norm();
 
                         if tangent_norm > T::epsilon() {
@@ -198,15 +199,18 @@ impl ManifoldPropertyTester {
 
             for _ in 0..config.num_tangents {
                 // Generate a random vector (not necessarily in tangent space)
-                match manifold.random_tangent(&point) {
-                    Ok(random_vec) => {
+                let mut random_vec = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                match manifold.random_tangent(&point, &mut random_vec) {
+                    Ok(()) => {
                         // Add some component outside tangent space
                         let perturbed = random_vec * <T as Scalar>::from_f64(1.5);
 
-                        match manifold.project_tangent(&point, &perturbed) {
-                            Ok(projected_once) => {
-                                match manifold.project_tangent(&point, &projected_once) {
-                                    Ok(projected_twice) => {
+                        let mut projected_once = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                        match manifold.project_tangent(&point, &perturbed, &mut projected_once) {
+                            Ok(()) => {
+                                let mut projected_twice = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                                match manifold.project_tangent(&point, &projected_once, &mut projected_twice) {
+                                    Ok(()) => {
                                         let diff = &projected_twice - &projected_once;
                                         let error = diff.norm();
 
@@ -266,12 +270,14 @@ impl ManifoldPropertyTester {
             let point = manifold.random_point();
 
             // Test 1: Transport along zero curve should be identity
-            match manifold.random_tangent(&point) {
-                Ok(tangent) => {
-                    let tangent = tangent * config.tangent_scale;
+            let mut tangent = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+            match manifold.random_tangent(&point, &mut tangent) {
+                Ok(()) => {
+                    tangent *= config.tangent_scale;
 
-                    match manifold.parallel_transport(&point, &point, &tangent) {
-                        Ok(transported) => {
+                    let mut transported = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                    match manifold.parallel_transport(&point, &point, &tangent, &mut transported) {
+                        Ok(()) => {
                             let diff = &transported - &tangent;
                             let error = diff.norm();
 
@@ -297,25 +303,30 @@ impl ManifoldPropertyTester {
 
             // Test 2: Transport preserves inner products (isometry)
             for _ in 0..config.num_tangents.saturating_sub(1) {
+                let mut tangent1 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                let mut tangent2 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
                 match (
-                    manifold.random_tangent(&point),
-                    manifold.random_tangent(&point),
+                    manifold.random_tangent(&point, &mut tangent1),
+                    manifold.random_tangent(&point, &mut tangent2),
                 ) {
-                    (Ok(tangent1), Ok(tangent2)) => {
-                        let tangent1 = tangent1 * config.tangent_scale;
-                        let tangent2 = tangent2 * config.tangent_scale;
-                        let direction = manifold
-                            .random_tangent(&point)
-                            .unwrap_or_else(|_| tangent1.clone())
-                            * config.tangent_scale;
+                    (Ok(()), Ok(())) => {
+                        tangent1 *= config.tangent_scale;
+                        tangent2 *= config.tangent_scale;
+                        let mut direction = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                        let _ = manifold.random_tangent(&point, &mut direction).unwrap_or_else(|_| {
+                            direction.copy_from(&tangent1);
+                        });
+                        direction *= config.tangent_scale;
 
                         match retraction.retract(manifold, &point, &direction) {
                             Ok(new_point) => {
+                                let mut transported1 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                                let mut transported2 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
                                 match (
-                                    manifold.parallel_transport(&point, &new_point, &tangent1),
-                                    manifold.parallel_transport(&point, &new_point, &tangent2),
+                                    manifold.parallel_transport(&point, &new_point, &tangent1, &mut transported1),
+                                    manifold.parallel_transport(&point, &new_point, &tangent2, &mut transported2),
                                 ) {
-                                    (Ok(transported1), Ok(transported2)) => {
+                                    (Ok(()), Ok(())) => {
                                         match (
                                             manifold.inner_product(&point, &tangent1, &tangent2),
                                             manifold.inner_product(
@@ -493,15 +504,17 @@ mod tests {
         ) -> bool {
             true
         }
-        fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
-            point.clone()
+        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+            result.copy_from(point);
         }
         fn project_tangent(
             &self,
             _point: &DVector<f64>,
             vector: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(vector.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(vector);
+            Ok(())
         }
         fn inner_product(
             &self,
@@ -511,40 +524,47 @@ mod tests {
         ) -> Result<f64> {
             Ok(u.dot(v))
         }
-        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>) -> Result<DVector<f64>> {
-            Ok(point + tangent)
+        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            result.copy_from(&(point + tangent));
+            Ok(())
         }
         fn inverse_retract(
             &self,
             point: &DVector<f64>,
             other: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(other - point)
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(&(other - point));
+            Ok(())
         }
         fn euclidean_to_riemannian_gradient(
             &self,
             _point: &DVector<f64>,
             euclidean_grad: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(euclidean_grad.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(euclidean_grad);
+            Ok(())
         }
         fn random_point(&self) -> DVector<f64> {
             DVector::zeros(self.dim)
         }
-        fn random_tangent(&self, _point: &DVector<f64>) -> Result<DVector<f64>> {
-            let mut v = DVector::zeros(self.dim);
-            for elem in v.iter_mut() {
+        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            *result = DVector::zeros(self.dim);
+            for elem in result.iter_mut() {
                 *elem = rand::random::<f64>() * 2.0 - 1.0;
             }
-            Ok(v)
+            Ok(())
         }
         fn parallel_transport(
             &self,
             _from: &DVector<f64>,
             _to: &DVector<f64>,
             vector: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(vector.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(vector);
+            Ok(())
         }
     }
 

@@ -57,16 +57,18 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         true
     }
 
-    fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
-        point.clone()
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+        result.copy_from(point);
     }
 
     fn project_tangent(
         &self,
         _point: &DVector<f64>,
         vector: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
-        Ok(vector.clone())
+        result: &mut DVector<f64>,
+    ) -> Result<()> {
+        result.copy_from(vector);
+        Ok(())
     }
 
     fn inner_product(
@@ -80,34 +82,39 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         Ok(v.dot(&gu))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>) -> Result<DVector<f64>> {
-        Ok(point + tangent)
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        *result = point + tangent;
+        Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>) -> Result<DVector<f64>> {
-        Ok(other - point)
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        *result = other - point;
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         _point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
+        result: &mut DVector<f64>,
+    ) -> Result<()> {
         // Riemannian gradient = G^{-1} * Euclidean gradient
         let g_inv = self.metric_matrix.clone().try_inverse().ok_or_else(|| {
             riemannopt_core::error::ManifoldError::numerical_error("Metric not invertible")
         })?;
-        Ok(&g_inv * euclidean_grad)
+        *result = &g_inv * euclidean_grad;
+        Ok(())
     }
 
     fn random_point(&self) -> DVector<f64> {
         DVector::from_fn(self.dim, |_, _| rand::random::<f64>() * 2.0 - 1.0)
     }
 
-    fn random_tangent(&self, _point: &DVector<f64>) -> Result<DVector<f64>> {
-        Ok(DVector::from_fn(self.dim, |_, _| {
+    fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        *result = DVector::from_fn(self.dim, |_, _| {
             rand::random::<f64>() * 2.0 - 1.0
-        }))
+        });
+        Ok(())
     }
 }
 
@@ -118,7 +125,8 @@ fn test_euclidean_metric_positive_definite() {
 
     // Test with multiple random vectors
     for _ in 0..20 {
-        let v = manifold.random_tangent(&point).unwrap();
+        let mut v = DVector::zeros(3);
+        manifold.random_tangent(&point, &mut v).unwrap();
         let inner = manifold.inner_product(&point, &v, &v).unwrap();
 
         // For non-zero vectors, inner product should be positive
@@ -141,7 +149,8 @@ fn test_weighted_metric_positive_definite() {
     let point = manifold.random_point();
 
     for _ in 0..20 {
-        let v = manifold.random_tangent(&point).unwrap();
+        let mut v = DVector::zeros(4);
+        manifold.random_tangent(&point, &mut v).unwrap();
         let inner = manifold.inner_product(&point, &v, &v).unwrap();
 
         if v.norm() > 1e-10 {
@@ -161,8 +170,10 @@ fn test_metric_symmetry() {
 
     // Test that <u,v> = <v,u>
     for _ in 0..10 {
-        let u = manifold.random_tangent(&point).unwrap();
-        let v = manifold.random_tangent(&point).unwrap();
+        let mut u = DVector::zeros(3);
+        let mut v = DVector::zeros(3);
+        manifold.random_tangent(&point, &mut u).unwrap();
+        manifold.random_tangent(&point, &mut v).unwrap();
 
         let inner_uv = manifold.inner_product(&point, &u, &v).unwrap();
         let inner_vu = manifold.inner_product(&point, &v, &u).unwrap();
@@ -181,9 +192,12 @@ fn test_metric_bilinearity() {
     let manifold = ManifoldWithMetric::new_euclidean(3);
     let point = manifold.random_point();
 
-    let u = manifold.random_tangent(&point).unwrap();
-    let v = manifold.random_tangent(&point).unwrap();
-    let w = manifold.random_tangent(&point).unwrap();
+    let mut u = DVector::zeros(3);
+    let mut v = DVector::zeros(3);
+    let mut w = DVector::zeros(3);
+    manifold.random_tangent(&point, &mut u).unwrap();
+    manifold.random_tangent(&point, &mut v).unwrap();
+    manifold.random_tangent(&point, &mut w).unwrap();
 
     let alpha = 2.5;
     let beta = -1.3;
@@ -224,8 +238,10 @@ fn test_cauchy_schwarz_inequality() {
 
     // Test Cauchy-Schwarz: |<u,v>| ≤ ||u|| ||v||
     for _ in 0..20 {
-        let u = manifold.random_tangent(&point).unwrap();
-        let v = manifold.random_tangent(&point).unwrap();
+        let mut u = DVector::zeros(5);
+        let mut v = DVector::zeros(5);
+        manifold.random_tangent(&point, &mut u).unwrap();
+        manifold.random_tangent(&point, &mut v).unwrap();
 
         let inner_uv = manifold.inner_product(&point, &u, &v).unwrap();
         let norm_u = manifold.inner_product(&point, &u, &u).unwrap().sqrt();
@@ -247,8 +263,10 @@ fn test_triangle_inequality() {
 
     // Test triangle inequality: ||u + v|| ≤ ||u|| + ||v||
     for _ in 0..20 {
-        let u = manifold.random_tangent(&point).unwrap();
-        let v = manifold.random_tangent(&point).unwrap();
+        let mut u = DVector::zeros(3);
+        let mut v = DVector::zeros(3);
+        manifold.random_tangent(&point, &mut u).unwrap();
+        manifold.random_tangent(&point, &mut v).unwrap();
         let sum = &u + &v;
 
         let norm_sum = manifold.inner_product(&point, &sum, &sum).unwrap().sqrt();
@@ -285,7 +303,8 @@ fn test_metric_scaling() {
     // Test that scaling a vector scales the norm quadratically
     let manifold = ManifoldWithMetric::new_euclidean(3);
     let point = manifold.random_point();
-    let v = manifold.random_tangent(&point).unwrap();
+    let mut v = DVector::zeros(3);
+    manifold.random_tangent(&point, &mut v).unwrap();
 
     let norm_v = manifold.inner_product(&point, &v, &v).unwrap();
 
@@ -354,7 +373,8 @@ fn test_metric_eigenvalues() {
     let mut max_ratio: f64 = 0.0;
 
     for _ in 0..50 {
-        let v = manifold.random_tangent(&point).unwrap();
+        let mut v = DVector::zeros(5);
+        manifold.random_tangent(&point, &mut v).unwrap();
         let v_norm = v.norm();
         if v_norm > 1e-10 {
             let inner = manifold.inner_product(&point, &v, &v).unwrap();

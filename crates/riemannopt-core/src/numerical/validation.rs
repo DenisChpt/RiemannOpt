@@ -6,7 +6,7 @@
 
 use crate::{
     error::{ManifoldError, Result},
-    manifold::{Manifold, TangentVector},
+    manifold::{Manifold, Point, TangentVector},
     retraction::Retraction,
     types::Scalar,
 };
@@ -93,7 +93,9 @@ impl NumericalValidator {
         DefaultAllocator: Allocator<D>,
     {
         let analytical_grad = grad_f(point);
-        let analytical_grad = manifold.euclidean_to_riemannian_gradient(point, &analytical_grad)?;
+        let mut riemannian_grad = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.euclidean_to_riemannian_gradient(point, &analytical_grad, &mut riemannian_grad)?;
+        let analytical_grad = riemannian_grad;
 
         let mut component_errors = Vec::new();
         let mut sum_error = T::zero();
@@ -102,7 +104,8 @@ impl NumericalValidator {
         // Test gradient in random directions
         let num_tests = analytical_grad.len().min(20);
         for _ in 0..num_tests {
-            let direction = manifold.random_tangent(point)?;
+            let mut direction = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.random_tangent(point, &mut direction)?;
             let direction_norm = manifold.norm(point, &direction)?;
 
             if direction_norm > T::epsilon() {
@@ -115,9 +118,11 @@ impl NumericalValidator {
 
                 // Compute directional derivative numerically
                 let direction_h = &direction * h;
-                let retracted_plus = manifold.retract(point, &direction_h)?;
+                let mut retracted_plus = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+                manifold.retract(point, &direction_h, &mut retracted_plus)?;
                 let direction_neg_h = &direction * (-h);
-                let retracted_minus = manifold.retract(point, &direction_neg_h)?;
+                let mut retracted_minus = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+                manifold.retract(point, &direction_neg_h, &mut retracted_minus)?;
 
                 let f_plus = f(&retracted_plus);
                 let f_minus = f(&retracted_minus);
@@ -196,12 +201,16 @@ impl NumericalValidator {
             // For manifolds with exact exponential map, use it; otherwise use default retraction
             let exp_point = if manifold.has_exact_exp_log() {
                 // If manifold has exact exp, it should be implemented as default retraction
-                manifold.retract(point, &scaled_tangent)?
+                let mut exp_pt = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+                manifold.retract(point, &scaled_tangent, &mut exp_pt)?;
+                exp_pt
             } else {
                 // Otherwise, compare against a second-order approximation
                 // R(x, tv) = x + tv + O(||tv||^2)
                 let first_order = point + &scaled_tangent;
-                manifold.project_point(&first_order)
+                let mut projected = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+                manifold.project_point(&first_order, &mut projected);
+                projected
             };
 
             // Compute error in ambient space
@@ -245,8 +254,10 @@ impl NumericalValidator {
 
         // Test with random tangent vectors
         for _ in 0..10 {
-            let u = manifold.random_tangent(point)?;
-            let v = manifold.random_tangent(point)?;
+            let mut u = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.random_tangent(point, &mut u)?;
+            let mut v = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.random_tangent(point, &mut v)?;
 
             // Scale to small vectors
             let u = u * h;
@@ -259,7 +270,8 @@ impl NumericalValidator {
             let y = retraction.retract(manifold, point, &u)?;
 
             // Transport v to y (using differential of retraction)
-            let v_at_y = manifold.parallel_transport(point, &y, &v)?;
+            let mut v_at_y = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.parallel_transport(point, &y, &v, &mut v_at_y)?;
 
             // Compute metric at y
             let g_y = manifold.inner_product(&y, &v_at_y, &v_at_y)?;
@@ -296,7 +308,8 @@ impl NumericalValidator {
         let point = manifold.random_point();
         for scale in [T::epsilon(), T::one(), <T as Scalar>::from_f64(1e6)] {
             let perturbed = &point * (T::one() + scale * T::epsilon());
-            let projected = manifold.project_point(&perturbed);
+            let mut projected = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            manifold.project_point(&perturbed, &mut projected);
 
             if !manifold.is_point_on_manifold(&projected, <T as Scalar>::from_f64(1e-10)) {
                 issues.push(format!(
@@ -307,16 +320,19 @@ impl NumericalValidator {
         }
 
         // Test 2: Retraction near singularities
-        let tangent = manifold.random_tangent(&point)?;
+        let mut tangent = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.random_tangent(&point, &mut tangent)?;
         for scale in [
             T::epsilon(),
             <T as Scalar>::from_f64(1e-8),
             <T as Scalar>::from_f64(1e-4),
         ] {
             let tiny_tangent = tangent.clone() * scale;
-            match manifold.retract(&point, &tiny_tangent) {
-                Ok(retracted) => {
-                    let back = manifold.inverse_retract(&point, &retracted)?;
+            let mut retracted = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            match manifold.retract(&point, &tiny_tangent, &mut retracted) {
+                Ok(()) => {
+                    let mut back = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+                    manifold.inverse_retract(&point, &retracted, &mut back)?;
                     let diff_vec = &back - &tiny_tangent;
                     let norm_diff = manifold.norm(&point, &diff_vec)?;
                     let norm_tiny = manifold.norm(&point, &tiny_tangent)?;
@@ -340,8 +356,10 @@ impl NumericalValidator {
         }
 
         // Test 3: Orthogonality preservation
-        let u = manifold.random_tangent(&point)?;
-        let v = manifold.random_tangent(&point)?;
+        let mut u = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.random_tangent(&point, &mut u)?;
+        let mut v = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+        manifold.random_tangent(&point, &mut v)?;
 
         // Make v orthogonal to u
         let u_norm_sq = manifold.inner_product(&point, &u, &u)?;
@@ -454,15 +472,17 @@ mod tests {
         ) -> bool {
             true
         }
-        fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
-            point.clone()
+        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+            result.copy_from(point);
         }
         fn project_tangent(
             &self,
             _point: &DVector<f64>,
             vector: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(vector.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(vector);
+            Ok(())
         }
         fn inner_product(
             &self,
@@ -472,36 +492,44 @@ mod tests {
         ) -> Result<f64> {
             Ok(u.dot(v))
         }
-        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>) -> Result<DVector<f64>> {
-            Ok(point + tangent)
+        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            *result = point + tangent;
+            Ok(())
         }
         fn inverse_retract(
             &self,
             point: &DVector<f64>,
             other: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(other - point)
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            *result = other - point;
+            Ok(())
         }
         fn euclidean_to_riemannian_gradient(
             &self,
             _point: &DVector<f64>,
             grad: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(grad.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(grad);
+            Ok(())
         }
         fn random_point(&self) -> DVector<f64> {
             DVector::zeros(3)
         }
-        fn random_tangent(&self, _point: &DVector<f64>) -> Result<DVector<f64>> {
-            Ok(DVector::from_vec(vec![1.0, 0.0, 0.0]))
+        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            *result = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+            Ok(())
         }
         fn parallel_transport(
             &self,
             _from: &DVector<f64>,
             _to: &DVector<f64>,
             vector: &DVector<f64>,
-        ) -> Result<DVector<f64>> {
-            Ok(vector.clone())
+            result: &mut DVector<f64>,
+        ) -> Result<()> {
+            result.copy_from(vector);
+            Ok(())
         }
     }
 

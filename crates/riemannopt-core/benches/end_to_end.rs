@@ -49,20 +49,20 @@ impl Manifold<f64, Dyn> for TestSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>) -> DVector<f64> {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
-            point / norm
+            *result = point / norm;
         } else {
-            let mut p = DVector::zeros(self.dim);
-            p[0] = 1.0;
-            p
+            result.fill(0.0);
+            result[0] = 1.0;
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>) -> Result<DVector<f64>> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let inner = point.dot(vector);
-        Ok(vector - point * inner)
+        *result = vector - point * inner;
+        Ok(())
     }
 
     fn inner_product(
@@ -74,41 +74,44 @@ impl Manifold<f64, Dyn> for TestSphere {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>) -> Result<DVector<f64>> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         // Exponential map on sphere
         let norm_v = tangent.norm();
         if norm_v < f64::EPSILON {
-            Ok(point.clone())
+            *result = point.clone();
         } else {
             let cos_norm = norm_v.cos();
             let sin_norm = norm_v.sin();
-            Ok(point * cos_norm + tangent * (sin_norm / norm_v))
+            *result = point * cos_norm + tangent * (sin_norm / norm_v);
         }
+        Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>) -> Result<DVector<f64>> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
 
         if theta.abs() < f64::EPSILON {
-            Ok(DVector::zeros(self.dim))
+            result.fill(0.0);
         } else {
             let v = other - point * inner;
             let v_norm = v.norm();
             if v_norm > f64::EPSILON {
-                Ok(v * (theta / v_norm))
+                *result = v * (theta / v_norm);
             } else {
-                Ok(DVector::zeros(self.dim))
+                result.fill(0.0);
             }
         }
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
-        self.project_tangent(point, euclidean_grad)
+        result: &mut DVector<f64>,
+    ) -> Result<()> {
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -117,16 +120,18 @@ impl Manifold<f64, Dyn> for TestSphere {
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_point(&v)
+        let mut result = DVector::zeros(self.dim);
+        self.project_point(&v, &mut result);
+        result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
         let mut rng = thread_rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v)
+        self.project_tangent(point, &v, result)
     }
 
     fn parallel_transport(
@@ -134,8 +139,9 @@ impl Manifold<f64, Dyn> for TestSphere {
         _from: &DVector<f64>,
         to: &DVector<f64>,
         vector: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
-        self.project_tangent(to, vector)
+        result: &mut DVector<f64>,
+    ) -> Result<()> {
+        self.project_tangent(to, vector, result)
     }
 }
 
@@ -230,7 +236,8 @@ where
     let (cost, euclidean_grad) = cost_fn.cost_and_gradient(point)?;
 
     // Convert to Riemannian gradient
-    let riemannian_grad = manifold.euclidean_to_riemannian_gradient(point, &euclidean_grad)?;
+    let mut riemannian_grad = DVector::zeros(point.len());
+    manifold.euclidean_to_riemannian_gradient(point, &euclidean_grad, &mut riemannian_grad)?;
     let gradient_norm = manifold
         .inner_product(point, &riemannian_grad, &riemannian_grad)?
         .sqrt();
@@ -508,15 +515,16 @@ fn bench_hot_paths(c: &mut Criterion) {
     group.bench_function("gradient_conversion", |b| {
         let (_, euclidean_grad) = cost_fn.cost_and_gradient(&point).unwrap();
         b.iter(|| {
-            let riemannian_grad = manifold
-                .euclidean_to_riemannian_gradient(&point, &euclidean_grad)
-                .unwrap();
+            let mut riemannian_grad = DVector::zeros(point.len());
+            manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad).unwrap();
             black_box(riemannian_grad)
         });
     });
 
     group.bench_function("retraction", |b| {
-        let tangent = manifold.random_tangent(&point).unwrap() * 0.01;
+        let mut tangent = DVector::zeros(point.len());
+        manifold.random_tangent(&point, &mut tangent).unwrap();
+        tangent *= 0.01;
         b.iter(|| {
             let new_point = retraction.retract(&manifold, &point, &tangent).unwrap();
             black_box(new_point)
@@ -524,8 +532,10 @@ fn bench_hot_paths(c: &mut Criterion) {
     });
 
     group.bench_function("inner_product", |b| {
-        let u = manifold.random_tangent(&point).unwrap();
-        let v = manifold.random_tangent(&point).unwrap();
+        let mut u = DVector::zeros(point.len());
+        let mut v = DVector::zeros(point.len());
+        manifold.random_tangent(&point, &mut u).unwrap();
+        manifold.random_tangent(&point, &mut v).unwrap();
         b.iter(|| {
             let result = manifold.inner_product(&point, &u, &v).unwrap();
             black_box(result)

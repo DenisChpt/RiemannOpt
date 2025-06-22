@@ -38,16 +38,18 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         true // All vectors are valid
     }
 
-    fn project_point(&self, point: &Point<f64, Dyn>) -> Point<f64, Dyn> {
-        point.clone() // No projection needed
+    fn project_point(&self, point: &Point<f64, Dyn>, result: &mut Point<f64, Dyn>) {
+        result.copy_from(point); // No projection needed
     }
 
     fn project_tangent(
         &self,
         _point: &Point<f64, Dyn>,
         vector: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(vector.clone()) // No projection needed
+        result: &mut Point<f64, Dyn>,
+    ) -> Result<()> {
+        result.copy_from(vector); // No projection needed
+        Ok(())
     }
 
     fn inner_product(
@@ -63,24 +65,30 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         &self,
         point: &Point<f64, Dyn>,
         tangent: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(point + tangent)
+        result: &mut Point<f64, Dyn>,
+    ) -> Result<()> {
+        result.copy_from(&(point + tangent));
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
         point: &Point<f64, Dyn>,
         other: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(other - point)
+        result: &mut Point<f64, Dyn>,
+    ) -> Result<()> {
+        result.copy_from(&(other - point));
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         _point: &Point<f64, Dyn>,
         euclidean_grad: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
-        Ok(euclidean_grad.clone())
+        result: &mut Point<f64, Dyn>,
+    ) -> Result<()> {
+        result.copy_from(euclidean_grad);
+        Ok(())
     }
 
     fn random_point(&self) -> Point<f64, Dyn> {
@@ -96,14 +104,18 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
     fn random_tangent(
         &self,
         _point: &Point<f64, Dyn>,
-    ) -> Result<Point<f64, Dyn>> {
+        result: &mut Point<f64, Dyn>,
+    ) -> Result<()> {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        let mut tangent = DVector::zeros(self.dim);
-        for i in 0..self.dim {
-            tangent[i] = rng.gen::<f64>() * 2.0 - 1.0;
+        // Ensure result has the correct size
+        if result.nrows() != self.dim {
+            *result = DVector::zeros(self.dim);
         }
-        Ok(tangent)
+        for i in 0..self.dim {
+            result[i] = rng.gen::<f64>() * 2.0 - 1.0;
+        }
+        Ok(())
     }
 }
 
@@ -145,12 +157,10 @@ fn test_line_search_with_real_manifold() {
     // Test backtracking line search
     let mut ls = BacktrackingLineSearch::new();
     let params = LineSearchParams::backtracking();
-    let retraction = ProjectionRetraction;
     
     let result = ls.search(
         &cost_fn,
         &manifold,
-        &retraction,
         &point,
         value,
         &gradient,
@@ -175,12 +185,10 @@ fn test_strong_wolfe_line_search() {
     
     let mut ls = StrongWolfeLineSearch::new();
     let params = LineSearchParams::strong_wolfe();
-    let retraction = ProjectionRetraction;
     
     let result = ls.search(
         &cost_fn,
         &manifold,
-        &retraction,
         &point,
         value,
         &gradient,
@@ -228,20 +236,22 @@ fn test_cost_function_counting() {
 #[test]
 fn test_retraction_properties() {
     let manifold = EuclideanSpace::new(3);
-    let retraction = ProjectionRetraction;
     
     let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
     let tangent = DVector::from_vec(vec![0.0, 1.0, 0.0]);
     
     // Test retraction at zero
     let zero_tangent = DVector::zeros(3);
-    let result = retraction.retract(&manifold, &point, &zero_tangent).unwrap();
+    let mut result = DVector::zeros(3);
+    manifold.retract(&point, &zero_tangent, &mut result).unwrap();
     assert!((result - &point).norm() < 1e-10);
     
     // Test retraction is smooth
-    let _result1 = retraction.retract(&manifold, &point, &tangent).unwrap();
+    let mut result1 = DVector::zeros(3);
+    manifold.retract(&point, &tangent, &mut result1).unwrap();
     let small_tangent = &tangent * 0.001;
-    let result2 = retraction.retract(&manifold, &point, &small_tangent).unwrap();
+    let mut result2 = DVector::zeros(3);
+    manifold.retract(&point, &small_tangent, &mut result2).unwrap();
     
     // Small retractions should be approximately linear
     let expected = &point + &small_tangent;
