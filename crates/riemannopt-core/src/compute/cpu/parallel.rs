@@ -113,19 +113,23 @@ impl ParallelBatch {
         let n_points = points.ncols();
         let dim = points.nrows();
         
-        let gradients: Vec<_> = (0..n_points)
-            .into_par_iter()
-            .map(|i| {
-                let point = points.column(i);
-                grad_func(&point.clone_owned())
-            })
-            .collect();
-        
-        // Combine into batch
+        // Pre-allocate result matrix
         let mut result = TangentBatch::<T>::zeros(dim, n_points);
-        for (i, grad) in gradients.into_iter().enumerate() {
-            result.set_column(i, &grad);
-        }
+        
+        // Use rayon's parallel chunks
+        let chunk_size = ((n_points + rayon::current_num_threads() - 1) / rayon::current_num_threads()).max(1);
+        
+        result.column_iter_mut()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .par_chunks_mut(chunk_size)
+            .for_each(|chunk| {
+                for (i, col) in chunk {
+                    let point = points.column(*i).clone_owned();
+                    let grad = grad_func(&point);
+                    col.copy_from(&grad);
+                }
+            });
         
         result
     }
@@ -149,19 +153,23 @@ impl ParallelBatch {
         let n_points = points.ncols();
         let dim = points.nrows();
         
-        let results: Vec<_> = (0..n_points)
-            .into_par_iter()
-            .map(|i| {
-                let point = points.column(i);
-                op(&point.clone_owned())
-            })
-            .collect();
-        
-        // Combine results
+        // Pre-allocate result matrix
         let mut result = PointBatch::<T>::zeros(dim, n_points);
-        for (i, vec) in results.into_iter().enumerate() {
-            result.set_column(i, &vec);
-        }
+        
+        // Use rayon's parallel chunks
+        let chunk_size = ((n_points + rayon::current_num_threads() - 1) / rayon::current_num_threads()).max(1);
+        
+        result.column_iter_mut()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .par_chunks_mut(chunk_size)
+            .for_each(|chunk| {
+                for (i, col) in chunk {
+                    let point = points.column(*i).clone_owned();
+                    let res = op(&point);
+                    col.copy_from(&res);
+                }
+            });
         
         result
     }
@@ -193,20 +201,24 @@ impl ParallelBatch {
         let n_points = points.ncols();
         let dim = points.nrows();
         
-        let results: Vec<_> = (0..n_points)
-            .into_par_iter()
-            .map(|i| {
-                let point = points.column(i);
-                let tangent = tangents.column(i);
-                op(&point.clone_owned(), &tangent.clone_owned())
-            })
-            .collect();
-        
-        // Combine results
+        // Pre-allocate result matrix
         let mut result = PointBatch::<T>::zeros(dim, n_points);
-        for (i, vec) in results.into_iter().enumerate() {
-            result.set_column(i, &vec);
-        }
+        
+        // Use rayon's parallel chunks
+        let chunk_size = ((n_points + rayon::current_num_threads() - 1) / rayon::current_num_threads()).max(1);
+        
+        result.column_iter_mut()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .par_chunks_mut(chunk_size)
+            .for_each(|chunk| {
+                for (i, col) in chunk {
+                    let point = points.column(*i).clone_owned();
+                    let tangent = tangents.column(*i).clone_owned();
+                    let res = op(&point, &tangent);
+                    col.copy_from(&res);
+                }
+            });
         
         result
     }
@@ -418,6 +430,8 @@ impl SimdParallelOps {
         T: Scalar + SimdOps,
     {
         let n_points = points.ncols();
+        
+        // First, compute all norms in parallel
         let norms: Vec<T> = (0..n_points)
             .into_par_iter()
             .map(|i| {
@@ -426,12 +440,11 @@ impl SimdParallelOps {
             })
             .collect();
         
-        // Normalize columns sequentially (can't mutate in parallel)
+        // Then normalize columns sequentially (we can't mutate in parallel without unsafe)
         for (i, &norm) in norms.iter().enumerate() {
             if norm > T::zero() {
-                let mut col = points.column(i).clone_owned();
-                SimdVectorOps::scale(&mut col, T::one() / norm);
-                points.set_column(i, &col);
+                let inv_norm = T::one() / norm;
+                points.column_mut(i).scale_mut(inv_norm);
             }
         }
         
