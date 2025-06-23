@@ -7,116 +7,93 @@
 use crate::{
     core::cost_function::CostFunction,
     error::Result,
-    memory::cache::{MultiLevelCache, CacheKey, Cacheable},
-    types::Scalar,
+    types::{Scalar, constants},
 };
 use nalgebra::{DVector, DMatrix, Dyn};
 use std::fmt::Debug;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Duration;
 
-/// A hash-based cache key for dynamic vectors.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DynamicPointKey {
-    /// Hash of the point coordinates
-    hash: u64,
-    /// Dimension for verification
-    dim: usize,
+/// Simple last-point cache entry
+#[derive(Clone, Debug)]
+struct LastPointCache<T: Scalar> {
+    /// The cached point
+    point: DVector<T>,
+    /// Function value
+    value: Option<T>,
+    /// Gradient vector
+    gradient: Option<DVector<T>>,
 }
 
-impl CacheKey for DynamicPointKey {}
-
-impl<T: Scalar> From<&DVector<T>> for DynamicPointKey {
-    fn from(point: &DVector<T>) -> Self {
-        use std::collections::hash_map::DefaultHasher;
-        
-        let mut hasher = DefaultHasher::new();
-        
-        // Hash dimension
-        point.len().hash(&mut hasher);
-        
-        // Hash each component
-        for i in 0..point.len() {
-            let val = point[i].to_f64();
-            val.to_bits().hash(&mut hasher);
-        }
-        
+impl<T: Scalar> LastPointCache<T> {
+    fn new(point: DVector<T>) -> Self {
         Self {
-            hash: hasher.finish(),
-            dim: point.len(),
+            point,
+            value: None,
+            gradient: None,
         }
     }
-}
-
-/// Cached results for dynamic vectors.
-#[derive(Clone, Debug)]
-pub struct CachedDynamicResult<T: Scalar> {
-    /// Function value
-    pub value: Option<T>,
-    /// Gradient vector
-    pub gradient: Option<DVector<T>>,
-    /// Combined cost and gradient
-    pub cost_and_gradient: Option<(T, DVector<T>)>,
-}
-
-impl<T: Scalar> Cacheable for CachedDynamicResult<T> {
-    fn size_bytes(&self) -> usize {
-        let base = std::mem::size_of::<Self>();
-        let grad_size = self.gradient.as_ref()
-            .map(|g| g.len() * std::mem::size_of::<T>())
-            .unwrap_or(0);
-        let cg_size = self.cost_and_gradient.as_ref()
-            .map(|(_, g)| g.len() * std::mem::size_of::<T>() + std::mem::size_of::<T>())
-            .unwrap_or(0);
-        base + grad_size + cg_size
+    
+    /// Check if this cache entry matches the given point within tolerance
+    fn matches_with_tolerance(&self, point: &DVector<T>, tolerance: T) -> bool {
+        // First check dimensions for fast rejection
+        if self.point.len() != point.len() {
+            return false;
+        }
+        
+        // Check if the difference between points is within tolerance
+        // Using L∞ norm (max absolute difference) for efficiency
+        for i in 0..self.point.len() {
+            let diff = self.point[i] - point[i];
+            if num_traits::Signed::abs(&diff) > tolerance {
+                return false;
+            }
+        }
+        
+        true
     }
 }
 
 /// A cached cost function for dynamic vectors.
+/// 
+/// This implementation uses a simple last-point cache which is optimal for
+/// the common pattern of calling cost() and gradient() on the same point
+/// in sequence, without the overhead of hashing large vectors.
+/// 
+/// Points are compared using a tolerance-based approach to handle
+/// floating-point precision issues.
 pub struct CachedDynamicCostFunction<F>
 where
     F: CostFunction<f64, Dyn>,
 {
     /// The underlying cost function
     inner: F,
-    /// Multi-level cache
-    cache: Arc<MultiLevelCache<DynamicPointKey, CachedDynamicResult<f64>>>,
+    /// Simple last-point cache
+    cache: Arc<parking_lot::RwLock<Option<LastPointCache<f64>>>>,
     /// Cache configuration
     config: CacheConfig,
     /// Statistics
     stats: Arc<parking_lot::Mutex<CacheStatistics>>,
+    /// Comparison tolerance
+    tolerance: f64,
 }
 
 /// Configuration for cached cost function.
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
-    /// Maximum entries in L1 cache
-    pub l1_max_entries: usize,
-    /// Maximum bytes in L1 cache
-    pub l1_max_bytes: usize,
-    /// Maximum entries in L2 cache
-    pub l2_max_entries: usize,
-    /// Maximum bytes in L2 cache
-    pub l2_max_bytes: usize,
-    /// Time-to-live for L2 cache entries
-    pub l2_ttl: Duration,
+    /// Whether to cache values
+    pub cache_values: bool,
     /// Whether to cache gradients
     pub cache_gradients: bool,
-    /// Whether to cache combined cost and gradient
-    pub cache_combined: bool,
+    /// Tolerance for point comparison (None uses default_tolerance)
+    pub comparison_tolerance: Option<f64>,
 }
 
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            l1_max_entries: 100,
-            l1_max_bytes: 10 * 1024 * 1024, // 10 MB
-            l2_max_entries: 1000,
-            l2_max_bytes: 100 * 1024 * 1024, // 100 MB
-            l2_ttl: Duration::from_secs(300), // 5 minutes
+            cache_values: true,
             cache_gradients: true,
-            cache_combined: true,
+            comparison_tolerance: None,
         }
     }
 }
@@ -144,19 +121,15 @@ where
 
     /// Creates a new cached cost function with custom configuration.
     pub fn with_config(inner: F, config: CacheConfig) -> Self {
-        let cache = Arc::new(MultiLevelCache::new(
-            config.l1_max_entries,
-            config.l1_max_bytes,
-            config.l2_max_entries,
-            config.l2_max_bytes,
-            config.l2_ttl,
-        ));
+        let tolerance = config.comparison_tolerance
+            .unwrap_or_else(|| constants::default_tolerance::<f64>());
         
         Self {
             inner,
-            cache,
+            cache: Arc::new(parking_lot::RwLock::new(None)),
             config,
             stats: Arc::new(parking_lot::Mutex::new(CacheStatistics::default())),
+            tolerance,
         }
     }
 
@@ -167,13 +140,8 @@ where
 
     /// Clears the cache.
     pub fn clear_cache(&self) {
-        self.cache.clear();
+        *self.cache.write() = None;
         self.stats.lock().reset();
-    }
-
-    /// Performs cache maintenance.
-    pub fn maintain_cache(&self) {
-        self.cache.maintain();
     }
 }
 
@@ -182,63 +150,73 @@ where
     F: CostFunction<f64, Dyn>,
 {
     fn cost(&self, point: &DVector<f64>) -> Result<f64> {
-        let key = DynamicPointKey::from(point);
-        let mut stats = self.stats.lock();
+        if !self.config.cache_values {
+            return self.inner.cost(point);
+        }
         
-        // Check cache
-        if let Some(cached) = self.cache.get(&key) {
-            if let Some(value) = cached.value {
-                stats.cost_hits += 1;
-                return Ok(value);
+        // Try to read from cache first
+        {
+            let cache_read = self.cache.read();
+            if let Some(ref cache_entry) = *cache_read {
+                if cache_entry.matches_with_tolerance(point, self.tolerance) {
+                    if let Some(value) = cache_entry.value {
+                        self.stats.lock().cost_hits += 1;
+                        return Ok(value);
+                    }
+                }
             }
         }
-        stats.cost_misses += 1;
-        drop(stats);
         
-        // Compute and cache
+        // Cache miss - compute value
+        self.stats.lock().cost_misses += 1;
         let value = self.inner.cost(point)?;
         
-        let mut cached = self.cache.get(&key).unwrap_or(CachedDynamicResult {
-            value: None,
-            gradient: None,
-            cost_and_gradient: None,
-        });
-        cached.value = Some(value);
-        self.cache.insert(key, cached);
+        // Update cache
+        let mut cache_write = self.cache.write();
+        match cache_write.as_mut() {
+            Some(cache_entry) if cache_entry.matches_with_tolerance(point, self.tolerance) => {
+                // Same point, just update value
+                cache_entry.value = Some(value);
+            }
+            _ => {
+                // Different point or no cache, create new entry
+                let mut new_cache = LastPointCache::new(point.clone());
+                new_cache.value = Some(value);
+                *cache_write = Some(new_cache);
+            }
+        }
         
         Ok(value)
     }
 
     fn cost_and_gradient(&self, point: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
-        if !self.config.cache_combined {
+        if !self.config.cache_values && !self.config.cache_gradients {
             return self.inner.cost_and_gradient(point);
         }
         
-        let key = DynamicPointKey::from(point);
-        let mut stats = self.stats.lock();
-        
-        // Check cache
-        if let Some(cached) = self.cache.get(&key) {
-            if let Some((cost, grad)) = &cached.cost_and_gradient {
-                stats.combined_hits += 1;
-                return Ok((*cost, grad.clone()));
+        // Try to read from cache first
+        {
+            let cache_read = self.cache.read();
+            if let Some(ref cache_entry) = *cache_read {
+                if cache_entry.matches_with_tolerance(point, self.tolerance) {
+                    if let (Some(value), Some(ref gradient)) = (cache_entry.value, &cache_entry.gradient) {
+                        self.stats.lock().combined_hits += 1;
+                        return Ok((value, gradient.clone()));
+                    }
+                }
             }
         }
-        stats.combined_misses += 1;
-        drop(stats);
         
-        // Compute and cache
+        // Cache miss - compute both
+        self.stats.lock().combined_misses += 1;
         let (cost, gradient) = self.inner.cost_and_gradient(point)?;
         
-        let mut cached = self.cache.get(&key).unwrap_or(CachedDynamicResult {
-            value: None,
-            gradient: None,
-            cost_and_gradient: None,
-        });
-        cached.value = Some(cost);
-        cached.gradient = Some(gradient.clone());
-        cached.cost_and_gradient = Some((cost, gradient.clone()));
-        self.cache.insert(key, cached);
+        // Update cache
+        let mut cache_write = self.cache.write();
+        let mut new_cache = LastPointCache::new(point.clone());
+        new_cache.value = Some(cost);
+        new_cache.gradient = Some(gradient.clone());
+        *cache_write = Some(new_cache);
         
         Ok((cost, gradient))
     }
@@ -248,44 +226,47 @@ where
             return self.inner.gradient(point);
         }
         
-        let key = DynamicPointKey::from(point);
-        let mut stats = self.stats.lock();
-        
-        // Check cache
-        if let Some(cached) = self.cache.get(&key) {
-            if let Some(gradient) = &cached.gradient {
-                stats.gradient_hits += 1;
-                return Ok(gradient.clone());
+        // Try to read from cache first
+        {
+            let cache_read = self.cache.read();
+            if let Some(ref cache_entry) = *cache_read {
+                if cache_entry.matches_with_tolerance(point, self.tolerance) {
+                    if let Some(ref gradient) = cache_entry.gradient {
+                        self.stats.lock().gradient_hits += 1;
+                        return Ok(gradient.clone());
+                    }
+                }
             }
         }
-        stats.gradient_misses += 1;
-        drop(stats);
         
-        // Try to use cost_and_gradient if available
-        let gradient = if let Ok((cost, grad)) = self.inner.cost_and_gradient(point) {
-            // Cache both results
-            let mut cached = self.cache.get(&key).unwrap_or(CachedDynamicResult {
-                value: None,
-                gradient: None,
-                cost_and_gradient: None,
-            });
-            cached.value = Some(cost);
-            cached.gradient = Some(grad.clone());
-            cached.cost_and_gradient = Some((cost, grad.clone()));
-            self.cache.insert(key, cached);
-            grad
+        // Cache miss
+        self.stats.lock().gradient_misses += 1;
+        
+        // Try to use cost_and_gradient if it's more efficient
+        let (gradient, cost_opt) = if let Ok((cost, grad)) = self.inner.cost_and_gradient(point) {
+            (grad, Some(cost))
         } else {
-            // Fall back to gradient only
-            let grad = self.inner.gradient(point)?;
-            let mut cached = self.cache.get(&key).unwrap_or(CachedDynamicResult {
-                value: None,
-                gradient: None,
-                cost_and_gradient: None,
-            });
-            cached.gradient = Some(grad.clone());
-            self.cache.insert(key, cached);
-            grad
+            (self.inner.gradient(point)?, None)
         };
+        
+        // Update cache
+        let mut cache_write = self.cache.write();
+        match cache_write.as_mut() {
+            Some(cache_entry) if cache_entry.matches_with_tolerance(point, self.tolerance) => {
+                // Same point, update gradient and possibly cost
+                cache_entry.gradient = Some(gradient.clone());
+                if let Some(cost) = cost_opt {
+                    cache_entry.value = Some(cost);
+                }
+            }
+            _ => {
+                // Different point or no cache, create new entry
+                let mut new_cache = LastPointCache::new(point.clone());
+                new_cache.gradient = Some(gradient.clone());
+                new_cache.value = cost_opt;
+                *cache_write = Some(new_cache);
+            }
+        }
         
         Ok(gradient)
     }
@@ -396,5 +377,49 @@ mod tests {
         // Total accesses = 5 + 1 + 2 = 8
         // Hit rate = 5 / 8 = 0.625
         assert_eq!(stats.hit_rate(), 0.625);
+    }
+    
+    #[test]
+    fn test_cache_tolerance_comparison() {
+        let n = 3;
+        let a = DMatrix::<f64>::identity(n, n);
+        let b = DVector::zeros(n);
+        let inner = QuadraticCost::new(a, b, 0.0);
+        
+        // Configure cache with a specific tolerance
+        let config = CacheConfig {
+            cache_values: true,
+            cache_gradients: true,
+            comparison_tolerance: Some(1e-8),
+        };
+        
+        let cached = CachedDynamicCostFunction::with_config(inner, config);
+        
+        // Original point
+        let x = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+        
+        // First evaluation - cache miss
+        let cost1 = cached.cost(&x).unwrap();
+        assert_eq!(cached.cache_stats().cost_misses, 1);
+        assert_eq!(cached.cache_stats().cost_hits, 0);
+        
+        // Point with tiny perturbation within tolerance
+        let x_perturbed = DVector::from_vec(vec![1.0 + 1e-9, 2.0 - 1e-9, 3.0 + 1e-9]);
+        
+        // Should be a cache hit because difference is within tolerance
+        let cost2 = cached.cost(&x_perturbed).unwrap();
+        assert_eq!(cached.cache_stats().cost_hits, 1);
+        assert_eq!(cached.cache_stats().cost_misses, 1);
+        
+        // Due to tolerance, we get the cached value
+        assert_eq!(cost1, cost2);
+        
+        // Point with larger perturbation outside tolerance
+        let x_different = DVector::from_vec(vec![1.0 + 1e-7, 2.0, 3.0]);
+        
+        // Should be a cache miss because difference exceeds tolerance
+        let _ = cached.cost(&x_different).unwrap();
+        assert_eq!(cached.cache_stats().cost_misses, 2);
+        assert_eq!(cached.cache_stats().cost_hits, 1);
     }
 }
