@@ -227,28 +227,33 @@ fn gradient_descent_step<M, F>(
     retraction: &impl Retraction<f64, Dyn>,
     point: &DVector<f64>,
     step_size: f64,
-) -> Result<(DVector<f64>, f64, f64)>
+    workspace: &mut riemannopt_core::memory::workspace::Workspace<f64>,
+    euclidean_grad: &mut DVector<f64>,
+    riemannian_grad: &mut DVector<f64>,
+    search_dir: &mut DVector<f64>,
+    new_point: &mut DVector<f64>,
+) -> Result<(f64, f64)>
 where
     M: Manifold<f64, Dyn>,
     F: CostFunction<f64, Dyn>,
 {
-    // Compute cost and gradient
-    let (cost, euclidean_grad) = cost_fn.cost_and_gradient(point)?;
+    // Compute cost and gradient using workspace
+    let cost = cost_fn.cost_and_gradient_with_workspace(point, workspace, euclidean_grad)?;
 
     // Convert to Riemannian gradient
-    let mut riemannian_grad = DVector::zeros(point.len());
-    manifold.euclidean_to_riemannian_gradient(point, &euclidean_grad, &mut riemannian_grad)?;
+    manifold.euclidean_to_riemannian_gradient(point, euclidean_grad, riemannian_grad)?;
     let gradient_norm = manifold
-        .inner_product(point, &riemannian_grad, &riemannian_grad)?
+        .inner_product(point, riemannian_grad, riemannian_grad)?
         .sqrt();
 
     // Compute search direction (negative gradient)
-    let search_dir = -&riemannian_grad * step_size;
+    search_dir.copy_from(riemannian_grad);
+    search_dir.scale_mut(-step_size);
 
     // Take step using retraction
-    let new_point = retraction.retract(manifold, point, &search_dir)?;
+    retraction.retract(manifold, point, search_dir, new_point)?;
 
-    Ok((new_point, cost, gradient_norm))
+    Ok((cost, gradient_norm))
 }
 
 /// Run simple gradient descent
@@ -265,15 +270,34 @@ where
     M: Manifold<f64, Dyn>,
     F: CostFunction<f64, Dyn>,
 {
+    let n = initial_point.len();
     let mut point = initial_point.clone();
     let mut iterations = 0;
     let mut final_cost = 0.0;
+    
+    // Pre-allocate workspace and buffers
+    let mut workspace = riemannopt_core::memory::workspace::Workspace::with_size(n);
+    let mut euclidean_grad = DVector::zeros(n);
+    let mut riemannian_grad = DVector::zeros(n);
+    let mut search_dir = DVector::zeros(n);
+    let mut new_point = DVector::zeros(n);
 
     for i in 0..max_iterations {
-        let (new_point, cost, grad_norm) =
-            gradient_descent_step(manifold, cost_fn, retraction, &point, step_size)?;
+        let (cost, grad_norm) = gradient_descent_step(
+            manifold,
+            cost_fn,
+            retraction,
+            &point,
+            step_size,
+            &mut workspace,
+            &mut euclidean_grad,
+            &mut riemannian_grad,
+            &mut search_dir,
+            &mut new_point,
+        )?;
 
-        point = new_point;
+        // Swap buffers to avoid copying
+        std::mem::swap(&mut point, &mut new_point);
         final_cost = cost;
         iterations = i + 1;
 
@@ -526,7 +550,8 @@ fn bench_hot_paths(c: &mut Criterion) {
         manifold.random_tangent(&point, &mut tangent).unwrap();
         tangent *= 0.01;
         b.iter(|| {
-            let new_point = retraction.retract(&manifold, &point, &tangent).unwrap();
+            let mut new_point = DVector::zeros(point.len());
+            retraction.retract(&manifold, &point, &tangent, &mut new_point).unwrap();
             black_box(new_point)
         });
     });
@@ -544,10 +569,27 @@ fn bench_hot_paths(c: &mut Criterion) {
 
     // Benchmark a full optimization step
     group.bench_function("full_step", |b| {
+        let n = point.len();
+        let mut workspace = riemannopt_core::memory::workspace::Workspace::with_size(n);
+        let mut euclidean_grad = DVector::zeros(n);
+        let mut riemannian_grad = DVector::zeros(n);
+        let mut search_dir = DVector::zeros(n);
+        let mut new_point = DVector::zeros(n);
+        
         b.iter(|| {
-            let (new_point, _, _) =
-                gradient_descent_step(&manifold, &cost_fn, &retraction, &point, 0.01).unwrap();
-            black_box(new_point)
+            let (cost, grad_norm) = gradient_descent_step(
+                &manifold,
+                &cost_fn,
+                &retraction,
+                &point,
+                0.01,
+                &mut workspace,
+                &mut euclidean_grad,
+                &mut riemannian_grad,
+                &mut search_dir,
+                &mut new_point,
+            ).unwrap();
+            black_box((cost, grad_norm))
         });
     });
 

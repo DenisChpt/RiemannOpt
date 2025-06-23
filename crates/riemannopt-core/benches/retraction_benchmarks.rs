@@ -160,8 +160,9 @@ fn bench_retraction_methods(c: &mut Criterion) {
             let mut idx = 0;
             b.iter(|| {
                 let (point, tangent) = &test_data[idx % test_data.len()];
-                let result = retraction
-                    .retract(&manifold, black_box(point), black_box(tangent))
+                let mut result = DVector::zeros(manifold.dim);
+                retraction
+                    .retract(&manifold, black_box(point), black_box(tangent), &mut result)
                     .unwrap();
                 idx += 1;
                 black_box(result)
@@ -174,8 +175,9 @@ fn bench_retraction_methods(c: &mut Criterion) {
             let mut idx = 0;
             b.iter(|| {
                 let (point, tangent) = &test_data[idx % test_data.len()];
-                let result = retraction
-                    .retract(&manifold, black_box(point), black_box(tangent))
+                let mut result = DVector::zeros(manifold.dim);
+                retraction
+                    .retract(&manifold, black_box(point), black_box(tangent), &mut result)
                     .unwrap();
                 idx += 1;
                 black_box(result)
@@ -188,8 +190,9 @@ fn bench_retraction_methods(c: &mut Criterion) {
             let mut idx = 0;
             b.iter(|| {
                 let (point, tangent) = &test_data[idx % test_data.len()];
-                let result = retraction
-                    .retract(&manifold, black_box(point), black_box(tangent))
+                let mut result = DVector::zeros(manifold.dim);
+                retraction
+                    .retract(&manifold, black_box(point), black_box(tangent), &mut result)
                     .unwrap();
                 idx += 1;
                 black_box(result)
@@ -260,8 +263,9 @@ fn bench_retraction_small_steps(c: &mut Criterion) {
             let mut idx = 0;
             b.iter(|| {
                 let (point, tangent) = &test_data[idx % test_data.len()];
-                let result = retraction
-                    .retract(&manifold, black_box(point), black_box(tangent))
+                let mut result = DVector::zeros(manifold.dim);
+                retraction
+                    .retract(&manifold, black_box(point), black_box(tangent), &mut result)
                     .unwrap();
                 idx += 1;
                 black_box(result)
@@ -273,8 +277,9 @@ fn bench_retraction_small_steps(c: &mut Criterion) {
             let mut idx = 0;
             b.iter(|| {
                 let (point, tangent) = &test_data[idx % test_data.len()];
-                let result = retraction
-                    .retract(&manifold, black_box(point), black_box(tangent))
+                let mut result = DVector::zeros(manifold.dim);
+                retraction
+                    .retract(&manifold, black_box(point), black_box(tangent), &mut result)
                     .unwrap();
                 idx += 1;
                 black_box(result)
@@ -311,7 +316,8 @@ fn bench_retraction_accuracy(c: &mut Criterion) {
             let mut max_error: f64 = 0.0;
             let mut exact = DVector::zeros(dim);
             for (point, tangent) in &test_data {
-                let result = retraction.retract(&manifold, point, tangent).unwrap();
+                let mut result = DVector::zeros(dim);
+                retraction.retract(&manifold, point, tangent, &mut result).unwrap();
                 manifold.retract(point, tangent, &mut exact).unwrap();
                 let error = (&result - &exact).norm();
                 max_error = max_error.max(error);

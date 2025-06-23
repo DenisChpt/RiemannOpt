@@ -185,8 +185,9 @@ fn test_retraction_at_zero_property<R: Retraction<f64, Dyn>>(
         let point = manifold.random_point();
         let zero_tangent = DVector::zeros(manifold.dim);
 
-        match retraction.retract(manifold, &point, &zero_tangent) {
-            Ok(retracted) => {
+        let mut retracted = DVector::zeros(manifold.dim);
+        match retraction.retract(manifold, &point, &zero_tangent, &mut retracted) {
+            Ok(()) => {
                 let diff = &retracted - &point;
                 let error = diff.norm();
 
@@ -259,8 +260,9 @@ fn test_exponential_retraction_at_zero() {
     // Skip test if exponential map is not implemented
     let test_point = sphere.random_point();
     let test_tangent = DVector::zeros(3);
-    match retraction.retract(&sphere, &test_point, &test_tangent) {
-        Ok(_) => {
+    let mut test_result = DVector::zeros(3);
+    match retraction.retract(&sphere, &test_point, &test_tangent, &mut test_result) {
+        Ok(()) => {
             let (passed, max_error) =
                 test_retraction_at_zero_property(&sphere, &retraction, &config);
             assert!(passed, "Exponential retraction at zero test failed");
@@ -281,8 +283,9 @@ fn test_retraction_consistency() {
     let zero_tangent = DVector::zeros(3);
 
     // Test default retraction
-    let result = DefaultRetraction
-        .retract(&sphere, &point, &zero_tangent)
+    let mut result = DVector::zeros(3);
+    DefaultRetraction
+        .retract(&sphere, &point, &zero_tangent, &mut result)
         .unwrap();
     let error = (&result - &point).norm();
     println!("Default retraction: error = {:.2e}", error);
@@ -293,8 +296,9 @@ fn test_retraction_consistency() {
     );
 
     // Test projection retraction
-    let result = ProjectionRetraction
-        .retract(&sphere, &point, &zero_tangent)
+    let mut result = DVector::zeros(3);
+    ProjectionRetraction
+        .retract(&sphere, &point, &zero_tangent, &mut result)
         .unwrap();
     let error = (&result - &point).norm();
     println!("Projection retraction: error = {:.2e}", error);
@@ -306,9 +310,10 @@ fn test_retraction_consistency() {
 
     // Test exponential retraction (may not be implemented for all manifolds)
     let exp_retraction = ExponentialRetraction::<f64>::new();
-    match exp_retraction.retract(&sphere, &point, &zero_tangent) {
-        Ok(result) => {
-            let error = (&result - &point).norm();
+    let mut exp_result = DVector::zeros(3);
+    match exp_retraction.retract(&sphere, &point, &zero_tangent, &mut exp_result) {
+        Ok(()) => {
+            let error = (&exp_result - &point).norm();
             println!("Exponential retraction: error = {:.2e}", error);
             assert!(
                 error < 1e-14,
@@ -337,8 +342,9 @@ fn test_retraction_produces_valid_points() {
             sphere.random_tangent(&point, &mut tangent).unwrap();
             let scaled_tangent = tangent * config.tangent_scale;
 
-            let new_point = retraction
-                .retract(&sphere, &point, &scaled_tangent)
+            let mut new_point = DVector::zeros(sphere.dim);
+            retraction
+                .retract(&sphere, &point, &scaled_tangent, &mut new_point)
                 .unwrap();
 
             assert!(
@@ -364,8 +370,9 @@ fn test_retraction_local_rigidity() {
         sphere.random_tangent(&point, &mut tangent).unwrap();
         let scaled_tangent = tangent * scale;
 
-        let new_point = retraction
-            .retract(&sphere, &point, &scaled_tangent)
+        let mut new_point = DVector::zeros(sphere.dim);
+        retraction
+            .retract(&sphere, &point, &scaled_tangent, &mut new_point)
             .unwrap();
 
         // Distance on manifold should approximately equal norm of tangent vector
@@ -432,9 +439,10 @@ fn test_multiple_retractions_at_zero() {
         // Test exponential retraction (skip if not implemented)
         let test_point = sphere.random_point();
         let test_tangent = DVector::zeros(dim);
+        let mut test_result = DVector::zeros(dim);
         let exp_retraction = ExponentialRetraction::<f64>::new();
         if exp_retraction
-            .retract(&sphere, &test_point, &test_tangent)
+            .retract(&sphere, &test_point, &test_tangent, &mut test_result)
             .is_ok()
         {
             let (passed, _) =

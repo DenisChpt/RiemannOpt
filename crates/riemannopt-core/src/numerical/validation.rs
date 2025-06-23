@@ -196,7 +196,8 @@ impl NumericalValidator {
             let scaled_tangent = tangent * h;
 
             // Compute retraction
-            let retracted = retraction.retract(manifold, point, &scaled_tangent)?;
+            let mut retracted = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            retraction.retract(manifold, point, &scaled_tangent, &mut retracted)?;
 
             // For manifolds with exact exponential map, use it; otherwise use default retraction
             let exp_point = if manifold.has_exact_exp_log() {
@@ -267,7 +268,8 @@ impl NumericalValidator {
             let g_base = manifold.inner_product(point, &u, &v)?;
 
             // Compute metric via pullback
-            let y = retraction.retract(manifold, point, &u)?;
+            let mut y = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            retraction.retract(manifold, point, &u, &mut y)?;
 
             // Transport v to y (using differential of retraction)
             let mut v_at_y = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);

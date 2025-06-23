@@ -13,22 +13,31 @@ use num_traits::Float;
 pub fn gradient_fd_with_workspace<T, F>(
     cost_fn: &F,
     point: &nalgebra::DVector<T>,
-    _workspace: &mut Workspace<T>,
+    workspace: &mut Workspace<T>,
     gradient: &mut nalgebra::DVector<T>,
 ) -> Result<()>
 where
     T: Scalar,
     F: Fn(&nalgebra::DVector<T>) -> Result<T>,
 {
+    
     let n = point.len();
     let h = <T as Float>::sqrt(T::epsilon());
     
     gradient.fill(T::zero());
     
-    // For now, use simple allocations to avoid borrow checker issues
-    let mut e_i = nalgebra::DVector::zeros(n);
-    let mut point_plus = nalgebra::DVector::zeros(n);
-    let mut point_minus = nalgebra::DVector::zeros(n);
+    // Use the special method to get multiple buffers at once
+    let (_, e_i, point_plus, point_minus) = workspace.get_gradient_buffers_mut()
+        .ok_or_else(|| crate::error::ManifoldError::invalid_parameter(
+            "Workspace missing required gradient buffers".to_string()
+        ))?;
+    
+    // Verify dimensions
+    if e_i.len() != n || point_plus.len() != n || point_minus.len() != n {
+        return Err(crate::error::ManifoldError::invalid_parameter(
+            format!("Workspace buffers have incorrect dimensions for point of size {}", n),
+        ));
+    }
     
     for i in 0..n {
         // Create unit vector in direction i
@@ -37,13 +46,13 @@ where
         
         // Central difference
         point_plus.copy_from(point);
-        point_plus.axpy(h, &e_i, T::one());
+        point_plus.axpy(h, e_i, T::one());
         
         point_minus.copy_from(point);
-        point_minus.axpy(-h, &e_i, T::one());
+        point_minus.axpy(-h, e_i, T::one());
         
-        let f_plus = cost_fn(&point_plus)?;
-        let f_minus = cost_fn(&point_minus)?;
+        let f_plus = cost_fn(point_plus)?;
+        let f_minus = cost_fn(point_minus)?;
         
         gradient[i] = (f_plus - f_minus) / (h + h);
     }
@@ -58,13 +67,15 @@ pub fn hessian_vector_product_with_workspace<T, F>(
     gradient_fn: &F,
     point: &nalgebra::DVector<T>,
     vector: &nalgebra::DVector<T>,
-    _workspace: &mut Workspace<T>,
+    workspace: &mut Workspace<T>,
     result: &mut nalgebra::DVector<T>,
 ) -> Result<()>
 where
     T: Scalar,
     F: Fn(&nalgebra::DVector<T>) -> Result<nalgebra::DVector<T>>,
 {
+    use crate::memory::BufferId;
+    
     let eps = <T as Float>::sqrt(T::epsilon());
     let norm = vector.norm();
     
@@ -77,8 +88,8 @@ where
     
     let t = eps / norm;
     
-    // For now, use simple allocations
-    let mut perturbed = nalgebra::DVector::zeros(n);
+    // Use workspace buffers
+    let perturbed = workspace.get_or_create_vector(BufferId::Temp1, n);
     
     // Compute perturbed point
     perturbed.copy_from(point);

@@ -224,8 +224,9 @@ fn test_retraction_convergence_projection() {
         let scaled_tangent = &tangent * h;
 
         // Projection retraction
-        let proj_result = projection
-            .retract(&sphere, &point, &scaled_tangent)
+        let mut proj_result = DVector::zeros(point.len());
+        projection
+            .retract(&sphere, &point, &scaled_tangent, &mut proj_result)
             .unwrap();
 
         // Exact exponential map on sphere
