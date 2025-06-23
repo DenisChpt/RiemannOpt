@@ -172,6 +172,8 @@ where
             let mut local_results = Vec::with_capacity(chunk.len());
             
             for &i in chunk {
+                // Pre-allocate buffers outside the inner loop if possible
+                // For now, we allocate per iteration but could optimize further
                 let mut e_i = DVector::zeros(n);
                 e_i[i] = T::one();
                 

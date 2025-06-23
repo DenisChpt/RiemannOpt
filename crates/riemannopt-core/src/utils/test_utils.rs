@@ -7,7 +7,7 @@
 #[allow(unused_imports)]
 use crate::{
     error::Result,
-    manifold::{Manifold, TangentVector as TangentVectorType},
+    manifold::{Manifold, Point, TangentVector as TangentVectorType},
     retraction::Retraction,
     types::Scalar,
 };
@@ -82,8 +82,9 @@ impl ManifoldPropertyTester {
             let zero_tangent =
                 TangentVectorType::zeros_generic(point.shape_generic().0, nalgebra::U1);
 
-            match retraction.retract(manifold, &point, &zero_tangent) {
-                Ok(retracted) => {
+            let mut retracted = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+            match retraction.retract(manifold, &point, &zero_tangent, &mut retracted) {
+                Ok(()) => {
                     let diff = &retracted - &point;
                     let error = diff.norm();
 
@@ -318,8 +319,9 @@ impl ManifoldPropertyTester {
                         });
                         direction *= config.tangent_scale;
 
-                        match retraction.retract(manifold, &point, &direction) {
-                            Ok(new_point) => {
+                        let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
+                        match retraction.retract(manifold, &point, &direction, &mut new_point) {
+                            Ok(()) => {
                                 let mut transported1 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
                                 let mut transported2 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
                                 match (

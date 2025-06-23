@@ -16,7 +16,7 @@ use crate::{
     error::{ManifoldError, Result},
     manifold::{Point, TangentVector},
     types::Scalar,
-    memory::workspace::{Workspace, BufferId},
+    memory::workspace::Workspace,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OMatrix, OVector};
 use num_traits::Float;
@@ -66,6 +66,32 @@ where
         let cost = self.cost(point)?;
         let gradient = self.gradient_fd(point)?;
         Ok((cost, gradient))
+    }
+    
+    /// Evaluates the cost and Euclidean gradient using workspace.
+    ///
+    /// This is the primary method that avoids allocations.
+    /// Implementations should override this method for optimal performance.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point on the manifold
+    /// * `workspace` - Pre-allocated workspace
+    /// * `gradient` - Output buffer for the gradient
+    ///
+    /// # Returns
+    ///
+    /// The cost value. The gradient is written to the output buffer.
+    fn cost_and_gradient_with_workspace(
+        &self,
+        point: &Point<T, D>,
+        workspace: &mut Workspace<T>,
+        gradient: &mut TangentVector<T, D>,
+    ) -> Result<T> {
+        // Default implementation: compute gradient using finite differences
+        let cost = self.cost(point)?;
+        self.gradient_fd_with_workspace(point, workspace, gradient)?;
+        Ok(cost)
     }
 
     /// Computes only the Euclidean gradient at a point.
@@ -156,9 +182,8 @@ where
 
     /// Computes the gradient using finite differences.
     ///
-    /// This is a utility method for the default implementation of
-    /// `cost_and_gradient`. It uses central differences when possible
-    /// for better accuracy.
+    /// This is a convenience method that allocates memory.
+    /// For performance-critical code, use `gradient_fd_with_workspace` instead.
     ///
     /// # Arguments
     ///
@@ -213,42 +238,21 @@ where
     ///
     /// * `point` - A point on the manifold
     /// * `workspace` - Pre-allocated workspace containing necessary buffers
-    ///
-    /// # Returns
-    ///
-    /// An approximation of the gradient, stored in the workspace's gradient buffer.
+    /// * `gradient` - Output buffer for the gradient
     ///
     /// # Errors
     ///
-    /// Returns an error if the workspace doesn't contain the required buffers
-    /// or if they have incorrect dimensions.
+    /// Returns an error if the computation fails.
     fn gradient_fd_with_workspace(
         &self,
         point: &Point<T, D>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
+        gradient: &mut TangentVector<T, D>,
     ) -> Result<()> {
-        // Default implementation: not optimized for workspace usage
-        // Implementations should override this for better performance
-        let gradient = self.gradient_fd(point)?;
-        
-        // Store result in workspace
-        let workspace_gradient = workspace.get_vector_mut(BufferId::Gradient)
-            .ok_or_else(|| ManifoldError::invalid_parameter(
-                "Workspace missing gradient buffer".to_string()
-            ))?;
-            
-        if workspace_gradient.len() != gradient.len() {
-            return Err(ManifoldError::invalid_parameter(
-                format!("Workspace gradient buffer has incorrect dimension: expected {}, got {}", 
-                    gradient.len(), workspace_gradient.len()),
-            ));
-        }
-        
-        // Copy gradient to workspace
-        for i in 0..gradient.len() {
-            workspace_gradient[i] = gradient[i];
-        }
-        
+        // Default implementation: For now, just compute gradient normally
+        // Specific implementations can override this to use workspace effectively
+        let grad = self.gradient_fd(point)?;
+        gradient.copy_from(&grad);
         Ok(())
     }
     
@@ -338,6 +342,21 @@ where
         let cost = point.dot(&ax) * <T as Scalar>::from_f64(0.5) + self.b.dot(point) + self.c;
         let gradient = ax + &self.b;
         Ok((cost, gradient))
+    }
+    
+    fn cost_and_gradient_with_workspace(
+        &self,
+        point: &Point<T, D>,
+        _workspace: &mut Workspace<T>,
+        gradient: &mut TangentVector<T, D>,
+    ) -> Result<T> {
+        // For QuadraticCost, we don't need workspace buffers
+        // Compute Ax directly into gradient
+        gradient.copy_from(&self.b);
+        gradient.gemv(T::one(), &self.a, point, T::one());
+        
+        let cost = point.dot(gradient) * <T as Scalar>::from_f64(0.5) + self.c;
+        Ok(cost)
     }
 
     fn gradient(&self, point: &Point<T, D>) -> Result<TangentVector<T, D>> {

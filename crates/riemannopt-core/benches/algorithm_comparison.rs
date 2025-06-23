@@ -213,7 +213,9 @@ where
         }
 
         let search_dir = -&riemannian_grad * step_size;
-        point = retraction.retract(manifold, &point, &search_dir)?;
+        let mut next_point = DVector::zeros(point.len());
+        retraction.retract(manifold, &point, &search_dir, &mut next_point)?;
+        point = next_point;
     }
 
     Ok((point, final_cost, iterations))
@@ -263,7 +265,8 @@ where
         velocity = projected_velocity;
 
         // Take step
-        let new_point = retraction.retract(manifold, &point, &velocity)?;
+        let mut new_point = DVector::zeros(point.len());
+        retraction.retract(manifold, &point, &velocity, &mut new_point)?;
 
         // Transport velocity to new point
         let mut transported_velocity = DVector::zeros(point.len());
@@ -300,8 +303,9 @@ where
         // Look ahead
         let mut look_ahead_velocity = DVector::zeros(point.len());
         manifold.project_tangent(&point, &velocity, &mut look_ahead_velocity)?;
-        let look_ahead_point =
-            retraction.retract(manifold, &point, &(&look_ahead_velocity * momentum))?;
+        let mut look_ahead_point = DVector::zeros(point.len());
+        let scaled_velocity = &look_ahead_velocity * momentum;
+        retraction.retract(manifold, &point, &scaled_velocity, &mut look_ahead_point)?;
 
         // Compute gradient at look-ahead point
         let (cost, euclidean_grad) = cost_fn.cost_and_gradient(&look_ahead_point)?;
@@ -329,7 +333,8 @@ where
         velocity = projected_velocity;
 
         // Take step
-        let new_point = retraction.retract(manifold, &point, &velocity)?;
+        let mut new_point = DVector::zeros(point.len());
+        retraction.retract(manifold, &point, &velocity, &mut new_point)?;
 
         // Transport velocity to new point
         let mut transported_velocity = DVector::zeros(point.len());
