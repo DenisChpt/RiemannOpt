@@ -111,7 +111,7 @@ impl SimdVector for f32x8 {
     }
     
     fn recip(self) -> Self {
-        f32x8::from(self.to_array().map(|x| 1.0 / x))
+        f32x8::splat(1.0) / self
     }
 }
 
@@ -154,7 +154,7 @@ impl SimdVector for f64x4 {
     }
     
     fn recip(self) -> Self {
-        f64x4::from(self.to_array().map(|x| 1.0 / x))
+        f64x4::splat(1.0) / self
     }
 }
 
@@ -293,6 +293,9 @@ pub struct SimdMatrixOps;
 
 impl SimdMatrixOps {
     /// Matrix-vector multiplication using SIMD
+    /// 
+    /// For best performance with large matrices, use nalgebra's built-in gemv
+    /// which is already optimized. This method is kept for API compatibility.
     pub fn gemv<T: SimdOps>(
         a: &DMatrix<T>,
         x: &DVector<T>,
@@ -303,25 +306,9 @@ impl SimdMatrixOps {
         assert_eq!(a.ncols(), x.len(), "Dimension mismatch");
         assert_eq!(a.nrows(), y.len(), "Dimension mismatch");
         
-        let m = a.nrows();
-        let n = a.ncols();
-        // Scale y by beta
-        if beta != T::one() {
-            SimdVectorOps::scale(y, beta);
-        }
-        
-        // Compute alpha * A * x
-        for i in 0..m {
-            let row = a.row(i);
-            let mut sum = T::zero();
-            
-            // Simple dot product without SIMD for row views
-            for j in 0..n {
-                sum = sum + row[j] * x[j];
-            }
-            
-            y[i] = y[i] + alpha * sum;
-        }
+        // Use nalgebra's optimized gemv implementation
+        // y = alpha * A * x + beta * y
+        y.gemv(alpha, a, x, beta);
     }
     
     /// Frobenius norm using SIMD
@@ -358,30 +345,38 @@ pub mod simd_manifolds {
         let _norm = SimdVectorOps::normalize(point);
     }
     
-    /// SIMD orthogonalization for Stiefel
+    /// SIMD orthogonalization for Stiefel using Modified Gram-Schmidt
     pub fn orthogonalize_simd<T: SimdOps>(matrix: &mut DMatrix<T>) {
-        // Modified Gram-Schmidt with SIMD
-        let n = matrix.nrows();
         let p = matrix.ncols();
         
         for j in 0..p {
-            // Normalize column j
-            let mut col_j = matrix.column_mut(j).clone_owned();
-            SimdVectorOps::normalize(&mut col_j);
-            matrix.set_column(j, &col_j);
+            // Get a mutable view of column j
+            let col_j_norm = {
+                let col_j = matrix.column(j);
+                let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
+                SimdVectorOps::norm(&col_j_vec)
+            };
             
-            // Orthogonalize remaining columns
+            // Normalize column j in-place
+            if col_j_norm > T::zero() {
+                let inv_norm = T::one() / col_j_norm;
+                matrix.column_mut(j).scale_mut(inv_norm);
+            }
+            
+            // Orthogonalize remaining columns against column j
             for k in (j + 1)..p {
-                let col_j = matrix.column(j).clone_owned();
-                let col_k = matrix.column(k).clone_owned();
-                let dot = SimdVectorOps::dot_product(&col_j, &col_k);
+                // Compute dot product between columns j and k
+                let dot = {
+                    let col_j = matrix.column(j);
+                    let col_k = matrix.column(k);
+                    let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
+                    let col_k_vec = DVector::from_iterator(col_k.len(), col_k.iter().cloned());
+                    SimdVectorOps::dot_product(&col_j_vec, &col_k_vec)
+                };
                 
-                // col_k -= dot * col_j using SIMD
-                let mut new_col_k = col_k.clone();
-                for i in 0..n {
-                    new_col_k[i] = new_col_k[i] - dot * col_j[i];
-                }
-                matrix.set_column(k, &new_col_k);
+                // Update column k: col_k -= dot * col_j
+                let col_j_clone = matrix.column(j).clone_owned();
+                matrix.column_mut(k).axpy(-dot, &col_j_clone, T::one());
             }
         }
     }
