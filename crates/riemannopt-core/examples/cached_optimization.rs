@@ -59,13 +59,9 @@ fn main() {
     
     // Configure cache
     let cache_config = CacheConfig {
-        l1_max_entries: 50,
-        l1_max_bytes: 1024 * 1024, // 1 MB
-        l2_max_entries: 200,
-        l2_max_bytes: 10 * 1024 * 1024, // 10 MB
-        l2_ttl: Duration::from_secs(60),
+        cache_values: true,
         cache_gradients: true,
-        cache_combined: true,
+        comparison_tolerance: None, // Use default tolerance
     };
     
     // Wrap with cache
