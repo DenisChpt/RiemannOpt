@@ -171,7 +171,19 @@ impl CostFunction<f64, Dyn> for RayleighQuotient {
         Ok(x.dot(&ax))
     }
 
-    fn cost_and_gradient(&self, x: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
+    fn cost_and_gradient(
+        &self, 
+        x: &DVector<f64>, 
+        _workspace: &mut riemannopt_core::memory::Workspace<f64>,
+        gradient: &mut DVector<f64>,
+    ) -> Result<f64> {
+        let ax = &self.matrix * x;
+        let cost = x.dot(&ax);
+        gradient.copy_from(&(2.0 * ax));
+        Ok(cost)
+    }
+
+    fn cost_and_gradient_alloc(&self, x: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
         let ax = &self.matrix * x;
         let cost = x.dot(&ax);
         let gradient = 2.0 * ax;
@@ -198,7 +210,7 @@ where
     let mut final_cost = 0.0;
 
     for i in 0..max_iterations {
-        let (cost, euclidean_grad) = cost_fn.cost_and_gradient(&point)?;
+        let (cost, euclidean_grad) = cost_fn.cost_and_gradient_alloc(&point)?;
         let mut riemannian_grad = DVector::zeros(point.len());
         manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad)?;
         let gradient_norm = manifold
@@ -242,7 +254,7 @@ where
     let mut final_cost = 0.0;
 
     for i in 0..max_iterations {
-        let (cost, euclidean_grad) = cost_fn.cost_and_gradient(&point)?;
+        let (cost, euclidean_grad) = cost_fn.cost_and_gradient_alloc(&point)?;
         let mut riemannian_grad = DVector::zeros(point.len());
         manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad)?;
         let gradient_norm = manifold
@@ -308,7 +320,7 @@ where
         retraction.retract(manifold, &point, &scaled_velocity, &mut look_ahead_point)?;
 
         // Compute gradient at look-ahead point
-        let (cost, euclidean_grad) = cost_fn.cost_and_gradient(&look_ahead_point)?;
+        let (cost, euclidean_grad) = cost_fn.cost_and_gradient_alloc(&look_ahead_point)?;
         let mut riemannian_grad = DVector::zeros(point.len());
         manifold.euclidean_to_riemannian_gradient(&look_ahead_point, &euclidean_grad, &mut riemannian_grad)?;
 

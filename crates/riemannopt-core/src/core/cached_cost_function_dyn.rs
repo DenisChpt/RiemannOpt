@@ -7,7 +7,9 @@
 use crate::{
     core::cost_function::CostFunction,
     error::Result,
+    memory::Workspace,
     types::{Scalar, constants},
+    compute::cpu::{get_dispatcher, SimdBackend},
 };
 use nalgebra::{DVector, DMatrix, Dyn};
 use std::fmt::Debug;
@@ -40,8 +42,21 @@ impl<T: Scalar> LastPointCache<T> {
             return false;
         }
         
-        // Check if the difference between points is within tolerance
-        // Using L∞ norm (max absolute difference) for efficiency
+        // For f64, we can use the dispatcher directly
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
+            // SAFETY: We've verified T is f64
+            unsafe {
+                let self_point_f64 = &*(&self.point as *const DVector<T> as *const DVector<f64>);
+                let point_f64 = &*(point as *const DVector<T> as *const DVector<f64>);
+                let tolerance_f64 = *(&tolerance as *const T as *const f64);
+                
+                let dispatcher = get_dispatcher::<f64>();
+                let max_diff = dispatcher.max_abs_diff(self_point_f64, point_f64);
+                return max_diff <= tolerance_f64;
+            }
+        }
+        
+        // Fallback for other types (shouldn't happen in practice since this is used with f64)
         for i in 0..self.point.len() {
             let diff = self.point[i] - point[i];
             if num_traits::Signed::abs(&diff) > tolerance {
@@ -122,7 +137,7 @@ where
     /// Creates a new cached cost function with custom configuration.
     pub fn with_config(inner: F, config: CacheConfig) -> Self {
         let tolerance = config.comparison_tolerance
-            .unwrap_or_else(|| constants::default_tolerance::<f64>());
+            .unwrap_or_else(constants::default_tolerance::<f64>);
         
         Self {
             inner,
@@ -189,9 +204,47 @@ where
         Ok(value)
     }
 
-    fn cost_and_gradient(&self, point: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
+    fn cost_and_gradient(
+        &self,
+        point: &DVector<f64>,
+        workspace: &mut Workspace<f64>,
+        gradient: &mut DVector<f64>,
+    ) -> Result<f64> {
         if !self.config.cache_values && !self.config.cache_gradients {
-            return self.inner.cost_and_gradient(point);
+            return self.inner.cost_and_gradient(point, workspace, gradient);
+        }
+        
+        // Try to read from cache first
+        {
+            let cache_read = self.cache.read();
+            if let Some(ref cache_entry) = *cache_read {
+                if cache_entry.matches_with_tolerance(point, self.tolerance) {
+                    if let (Some(value), Some(ref cached_grad)) = (cache_entry.value, &cache_entry.gradient) {
+                        self.stats.lock().combined_hits += 1;
+                        gradient.copy_from(cached_grad);
+                        return Ok(value);
+                    }
+                }
+            }
+        }
+        
+        // Cache miss - compute both
+        self.stats.lock().combined_misses += 1;
+        let cost = self.inner.cost_and_gradient(point, workspace, gradient)?;
+        
+        // Update cache
+        let mut cache_write = self.cache.write();
+        let mut new_cache = LastPointCache::new(point.clone());
+        new_cache.value = Some(cost);
+        new_cache.gradient = Some(gradient.clone());
+        *cache_write = Some(new_cache);
+        
+        Ok(cost)
+    }
+
+    fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
+        if !self.config.cache_values && !self.config.cache_gradients {
+            return self.inner.cost_and_gradient_alloc(point);
         }
         
         // Try to read from cache first
@@ -209,7 +262,7 @@ where
         
         // Cache miss - compute both
         self.stats.lock().combined_misses += 1;
-        let (cost, gradient) = self.inner.cost_and_gradient(point)?;
+        let (cost, gradient) = self.inner.cost_and_gradient_alloc(point)?;
         
         // Update cache
         let mut cache_write = self.cache.write();
@@ -242,8 +295,8 @@ where
         // Cache miss
         self.stats.lock().gradient_misses += 1;
         
-        // Try to use cost_and_gradient if it's more efficient
-        let (gradient, cost_opt) = if let Ok((cost, grad)) = self.inner.cost_and_gradient(point) {
+        // Try to use cost_and_gradient_alloc if it's more efficient
+        let (gradient, cost_opt) = if let Ok((cost, grad)) = self.inner.cost_and_gradient_alloc(point) {
             (grad, Some(cost))
         } else {
             (self.inner.gradient(point)?, None)

@@ -543,7 +543,7 @@ where
             }
 
             // Compute gradient at new point
-            let (_, new_gradient) = cost_fn.cost_and_gradient(&new_point)?;
+            let new_gradient = cost_fn.gradient(&new_point)?;
             gradient_evals += 1;
 
             // Transport direction to new point and compute directional derivative
@@ -658,7 +658,7 @@ impl StrongWolfeLineSearch {
                 alpha_high = alpha;
             } else {
                 // Compute gradient
-                let (_, new_gradient) = cost_fn.cost_and_gradient(&new_point)?;
+                let new_gradient = cost_fn.gradient(&new_point)?;
                 gradient_evals += 1;
 
                 // Transport direction and compute derivative
@@ -858,7 +858,7 @@ mod tests {
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
         let point = DVector::from_vec(vec![1.0, 1.0]);
-        let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
+        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
         let direction = -&gradient; // Steepest descent direction
 
         let mut ls = BacktrackingLineSearch::new();
@@ -887,7 +887,7 @@ mod tests {
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
         let point = DVector::from_vec(vec![1.0, 1.0]);
-        let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
+        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
         let bad_direction = gradient.clone(); // Ascent direction
 
         let mut ls = BacktrackingLineSearch::new();
@@ -912,7 +912,7 @@ mod tests {
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
         let point = DVector::from_vec(vec![2.0, 3.0]);
-        let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
+        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
         let direction = -&gradient;
 
         let mut ls = StrongWolfeLineSearch::new();
@@ -944,7 +944,7 @@ mod tests {
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
         let point = DVector::from_vec(vec![1.0, 1.0]);
-        let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
+        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
         let direction = -&gradient;
 
         let mut ls = FixedStepSize::new(0.1);
