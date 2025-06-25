@@ -140,6 +140,46 @@ impl<T: SimdOps> SimdBackend<T> for WideBackend<T> {
         // Wide backend is efficient for vectors larger than SIMD width
         size >= T::SIMD_WIDTH * 2
     }
+    
+    fn max_abs_diff(&self, a: &DVector<T>, b: &DVector<T>) -> T {
+        assert_eq!(a.len(), b.len(), "Vectors must have same length");
+        
+        let n = a.len();
+        let simd_width = T::SIMD_WIDTH;
+        let simd_end = n - (n % simd_width);
+        
+        let a_slice = a.as_slice();
+        let b_slice = b.as_slice();
+        
+        // SIMD part - compute absolute differences and track maximum
+        let mut max_vec = T::SimdVector::splat(T::zero());
+        for i in (0..simd_end).step_by(simd_width) {
+            let va = T::SimdVector::from_slice(&a_slice[i..]);
+            let vb = T::SimdVector::from_slice(&b_slice[i..]);
+            let diff = va.add(vb.mul(T::SimdVector::splat(-T::one()))); // va - vb
+            
+            // Compute absolute value by selecting max of diff and -diff
+            let neg_diff = diff.mul(T::SimdVector::splat(-T::one()));
+            let abs_diff = diff.max(neg_diff);
+            
+            // Update maximum
+            max_vec = max_vec.max(abs_diff);
+        }
+        
+        // Get the maximum from the SIMD vector
+        let mut max_diff = max_vec.horizontal_max();
+        
+        // Scalar remainder
+        for i in simd_end..n {
+            let diff = a_slice[i] - b_slice[i];
+            let abs_diff = <T as num_traits::Signed>::abs(&diff);
+            if abs_diff > max_diff {
+                max_diff = abs_diff;
+            }
+        }
+        
+        max_diff
+    }
 }
 
 #[cfg(test)]
