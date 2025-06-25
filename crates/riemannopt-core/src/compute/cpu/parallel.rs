@@ -4,8 +4,8 @@
 //! and batch processing capabilities using Rayon.
 
 use crate::types::Scalar;
-use crate::simd::{SimdOps, SimdVectorOps, SimdMatrixOps};
-use crate::compute::cpu::batch_ops::{BatchError, CacheFriendlyBatch};
+use crate::simd::SimdOps;
+use crate::compute::cpu::{batch_ops::{BatchError, CacheFriendlyBatch}, get_dispatcher, SimdBackend};
 use nalgebra::{DMatrix, DVector, DVectorView, DVectorViewMut};
 use rayon::prelude::*;
 
@@ -345,9 +345,11 @@ impl SimdParallelOps {
         b_batch: &PointBatch<T>,
     ) -> Vec<T>
     where
-        T: Scalar + SimdOps,
+        T: Scalar + SimdOps + 'static,
     {
         assert_eq!(a_batch.ncols(), b_batch.ncols());
+        
+        let dispatcher = get_dispatcher::<T>();
         
         // Use parallel index iteration to avoid allocations
         (0..a_batch.ncols())
@@ -355,7 +357,10 @@ impl SimdParallelOps {
             .map(|i| {
                 let a_col = a_batch.column(i);
                 let b_col = b_batch.column(i);
-                SimdVectorOps::dot_product(a_col, b_col)
+                // Convert column views to DVector for dispatcher
+                let a_vec = DVector::from_iterator(a_col.len(), a_col.iter().cloned());
+                let b_vec = DVector::from_iterator(b_col.len(), b_col.iter().cloned());
+                dispatcher.dot_product(&a_vec, &b_vec)
             })
             .collect()
     }
@@ -365,16 +370,18 @@ impl SimdParallelOps {
         points: &mut PointBatch<T>,
     ) -> Vec<T>
     where
-        T: Scalar + SimdOps,
+        T: Scalar + SimdOps + 'static,
     {
         let n_points = points.ncols();
+        let dispatcher = get_dispatcher::<T>();
         
         // Pass 1: Compute all norms in parallel (read-only)
         let norms: Vec<T> = (0..n_points)
             .into_par_iter()
             .map(|i| {
                 let col = points.column(i);
-                SimdVectorOps::norm(col)
+                let col_vec = DVector::from_iterator(col.len(), col.iter().cloned());
+                dispatcher.norm(&col_vec)
             })
             .collect();
         
@@ -410,16 +417,18 @@ impl SimdParallelOps {
         beta: T,
     ) -> Vec<DVector<T>>
     where
-        T: Scalar + SimdOps,
+        T: Scalar + SimdOps + 'static,
     {
         assert_eq!(matrices.len(), vectors.len());
+        
+        let dispatcher = get_dispatcher::<T>();
         
         matrices
             .par_iter()
             .zip(vectors.par_iter())
             .map(|(matrix, vector)| {
                 let mut result = DVector::zeros(matrix.nrows());
-                SimdMatrixOps::gemv(matrix, vector, &mut result, alpha, beta);
+                dispatcher.gemv(matrix, vector, &mut result, alpha, beta);
                 result
             })
             .collect()
@@ -430,11 +439,13 @@ impl SimdParallelOps {
         matrices: &[DMatrix<T>],
     ) -> Vec<T>
     where
-        T: Scalar + SimdOps,
+        T: Scalar + SimdOps + 'static,
     {
+        let dispatcher = get_dispatcher::<T>();
+        
         matrices
             .par_iter()
-            .map(|matrix| SimdMatrixOps::frobenius_norm(matrix))
+            .map(|matrix| dispatcher.frobenius_norm(matrix))
             .collect()
     }
 }

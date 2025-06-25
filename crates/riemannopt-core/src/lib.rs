@@ -119,7 +119,9 @@ pub mod prelude {
         ParallelBatch, ParallelLineSearch, ParallelSGD, ParallelAverage,
         PointBatch, TangentBatch, SimdParallelOps,
         // From simd
-        SimdOps, SimdVector, SimdVectorOps, SimdMatrixOps,
+        SimdOps, SimdVector,
+        // From simd_dispatch
+        SimdBackend, SimdDispatcher, get_dispatcher,
     };
     
     // Utils
