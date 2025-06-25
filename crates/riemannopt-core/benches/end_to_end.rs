@@ -167,7 +167,19 @@ impl CostFunction<f64, Dyn> for RayleighQuotient {
         Ok(x.dot(&ax))
     }
 
-    fn cost_and_gradient(&self, x: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
+    fn cost_and_gradient(
+        &self, 
+        x: &DVector<f64>, 
+        _workspace: &mut riemannopt_core::memory::Workspace<f64>,
+        gradient: &mut DVector<f64>,
+    ) -> Result<f64> {
+        let ax = &self.matrix * x;
+        let cost = x.dot(&ax);
+        gradient.copy_from(&(2.0 * ax));
+        Ok(cost)
+    }
+
+    fn cost_and_gradient_alloc(&self, x: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
         let ax = &self.matrix * x;
         let cost = x.dot(&ax);
         let gradient = 2.0 * ax;
@@ -198,7 +210,33 @@ impl CostFunction<f64, Dyn> for SphericalRosenbrock {
         Ok(cost)
     }
 
-    fn cost_and_gradient(&self, x: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
+    fn cost_and_gradient(
+        &self, 
+        x: &DVector<f64>, 
+        _workspace: &mut riemannopt_core::memory::Workspace<f64>,
+        gradient: &mut DVector<f64>,
+    ) -> Result<f64> {
+        let mut cost = 0.0;
+        gradient.fill(0.0);
+
+        for i in 0..self.dim - 1 {
+            let a = 1.0 - x[i];
+            let b = x[i + 1] - x[i] * x[i];
+            cost += a * a + 100.0 * b * b;
+
+            gradient[i] += -2.0 * a - 400.0 * x[i] * b;
+            if i > 0 {
+                gradient[i] += 200.0 * (x[i] - x[i - 1] * x[i - 1]);
+            }
+        }
+        if self.dim > 1 {
+            gradient[self.dim - 1] += 200.0 * (x[self.dim - 1] - x[self.dim - 2] * x[self.dim - 2]);
+        }
+
+        Ok(cost)
+    }
+
+    fn cost_and_gradient_alloc(&self, x: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
         let mut cost = 0.0;
         let mut gradient = DVector::zeros(self.dim);
 
@@ -238,7 +276,7 @@ where
     F: CostFunction<f64, Dyn>,
 {
     // Compute cost and gradient using workspace
-    let cost = cost_fn.cost_and_gradient_with_workspace(point, workspace, euclidean_grad)?;
+    let cost = cost_fn.cost_and_gradient(point, workspace, euclidean_grad)?;
 
     // Convert to Riemannian gradient
     manifold.euclidean_to_riemannian_gradient(point, euclidean_grad, riemannian_grad)?;
@@ -276,7 +314,7 @@ where
     let mut final_cost = 0.0;
     
     // Pre-allocate workspace and buffers
-    let mut workspace = riemannopt_core::memory::workspace::Workspace::with_size(n);
+    let mut workspace = riemannopt_core::memory::Workspace::with_size(n);
     let mut euclidean_grad = DVector::zeros(n);
     let mut riemannian_grad = DVector::zeros(n);
     let mut search_dir = DVector::zeros(n);
@@ -531,13 +569,13 @@ fn bench_hot_paths(c: &mut Criterion) {
     // Benchmark individual operations that are called frequently
     group.bench_function("gradient_computation", |b| {
         b.iter(|| {
-            let (_, grad) = cost_fn.cost_and_gradient(&point).unwrap();
+            let (_, grad) = cost_fn.cost_and_gradient_alloc(&point).unwrap();
             black_box(grad)
         });
     });
 
     group.bench_function("gradient_conversion", |b| {
-        let (_, euclidean_grad) = cost_fn.cost_and_gradient(&point).unwrap();
+        let (_, euclidean_grad) = cost_fn.cost_and_gradient_alloc(&point).unwrap();
         b.iter(|| {
             let mut riemannian_grad = DVector::zeros(point.len());
             manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad).unwrap();
@@ -570,7 +608,7 @@ fn bench_hot_paths(c: &mut Criterion) {
     // Benchmark a full optimization step
     group.bench_function("full_step", |b| {
         let n = point.len();
-        let mut workspace = riemannopt_core::memory::workspace::Workspace::with_size(n);
+        let mut workspace = riemannopt_core::memory::Workspace::with_size(n);
         let mut euclidean_grad = DVector::zeros(n);
         let mut riemannian_grad = DVector::zeros(n);
         let mut search_dir = DVector::zeros(n);

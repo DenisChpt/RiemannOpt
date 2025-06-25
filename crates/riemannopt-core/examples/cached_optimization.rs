@@ -34,10 +34,21 @@ impl CostFunction<f64, nalgebra::Dyn> for SlowQuadraticCost {
         self.inner.cost(point)
     }
 
-    fn cost_and_gradient(&self, point: &DVector<f64>) -> riemannopt_core::error::Result<(f64, DVector<f64>)> {
+    fn cost_and_gradient(
+        &self, 
+        point: &DVector<f64>, 
+        workspace: &mut riemannopt_core::memory::Workspace<f64>,
+        gradient: &mut DVector<f64>,
+    ) -> riemannopt_core::error::Result<f64> {
         // Simulate expensive computation
         std::thread::sleep(Duration::from_millis(self.delay_ms));
-        self.inner.cost_and_gradient(point)
+        self.inner.cost_and_gradient(point, workspace, gradient)
+    }
+
+    fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> riemannopt_core::error::Result<(f64, DVector<f64>)> {
+        // Simulate expensive computation
+        std::thread::sleep(Duration::from_millis(self.delay_ms));
+        self.inner.cost_and_gradient_alloc(point)
     }
 
     fn gradient(&self, point: &DVector<f64>) -> riemannopt_core::error::Result<DVector<f64>> {
@@ -130,7 +141,7 @@ fn main() {
     let point = DVector::from_element(n, 4.0);
     
     let start = Instant::now();
-    let (cost, grad) = cached_cost.cost_and_gradient(&point).unwrap();
+    let (cost, grad) = cached_cost.cost_and_gradient_alloc(&point).unwrap();
     let elapsed1 = start.elapsed();
     
     let start = Instant::now();

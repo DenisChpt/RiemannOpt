@@ -44,7 +44,7 @@ where
     /// The cost function value at the point.
     fn cost(&self, point: &Point<T, D>) -> Result<T>;
 
-    /// Evaluates the cost and Euclidean gradient at a point.
+    /// Evaluates the cost and Euclidean gradient at a point (allocating version).
     ///
     /// The gradient returned is in the ambient space (Euclidean gradient).
     /// To get the Riemannian gradient, use the manifold's
@@ -61,10 +61,10 @@ where
     /// # Default Implementation
     ///
     /// Uses finite differences to approximate the gradient if not overridden.
-    fn cost_and_gradient(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
+    fn cost_and_gradient_alloc(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
         // Default: use finite differences
         let cost = self.cost(point)?;
-        let gradient = self.gradient_fd(point)?;
+        let gradient = self.gradient_fd_alloc(point)?;
         Ok((cost, gradient))
     }
     
@@ -82,7 +82,7 @@ where
     /// # Returns
     ///
     /// The cost value. The gradient is written to the output buffer.
-    fn cost_and_gradient_with_workspace(
+    fn cost_and_gradient(
         &self,
         point: &Point<T, D>,
         workspace: &mut Workspace<T>,
@@ -90,7 +90,7 @@ where
     ) -> Result<T> {
         // Default implementation: compute gradient using finite differences
         let cost = self.cost(point)?;
-        self.gradient_fd_with_workspace(point, workspace, gradient)?;
+        self.gradient_fd(point, workspace, gradient)?;
         Ok(cost)
     }
 
@@ -106,9 +106,9 @@ where
     ///
     /// # Default Implementation
     ///
-    /// Calls `cost_and_gradient` and discards the cost value.
+    /// Calls `cost_and_gradient_alloc` and discards the cost value.
     fn gradient(&self, point: &Point<T, D>) -> Result<TangentVector<T, D>> {
-        self.cost_and_gradient(point).map(|(_, grad)| grad)
+        self.cost_and_gradient_alloc(point).map(|(_, grad)| grad)
     }
 
     /// Evaluates the Hessian matrix at a point.
@@ -180,10 +180,10 @@ where
         Ok((grad2 - grad1) / t)
     }
 
-    /// Computes the gradient using finite differences.
+    /// Computes the gradient using finite differences (allocating version).
     ///
     /// This is a convenience method that allocates memory.
-    /// For performance-critical code, use `gradient_fd_with_workspace` instead.
+    /// For performance-critical code, use `gradient_fd` instead.
     ///
     /// # Arguments
     ///
@@ -192,7 +192,7 @@ where
     /// # Returns
     ///
     /// An approximation of the gradient.
-    fn gradient_fd(&self, point: &Point<T, D>) -> Result<TangentVector<T, D>> {
+    fn gradient_fd_alloc(&self, point: &Point<T, D>) -> Result<TangentVector<T, D>> {
         let n = point.len();
         let mut gradient = TangentVector::zeros_generic(point.shape_generic().0, nalgebra::U1);
         let h = <T as Float>::sqrt(T::epsilon());
@@ -243,15 +243,15 @@ where
     /// # Errors
     ///
     /// Returns an error if the computation fails.
-    fn gradient_fd_with_workspace(
+    fn gradient_fd(
         &self,
         point: &Point<T, D>,
         _workspace: &mut Workspace<T>,
         gradient: &mut TangentVector<T, D>,
     ) -> Result<()> {
-        // Default implementation: For now, just compute gradient normally
-        // Specific implementations can override this to use workspace effectively
-        let grad = self.gradient_fd(point)?;
+        // For generic dimensions, we can't easily use workspace DVector buffers
+        // Default implementation: compute gradient using allocations
+        let grad = self.gradient_fd_alloc(point)?;
         gradient.copy_from(&grad);
         Ok(())
     }
@@ -281,7 +281,7 @@ where
         // Default implementation: use sequential version
         // For parallel execution with dynamic vectors, implementations should use
         // the gradient_fd_parallel_dvec function from cost_function_simd module
-        self.gradient_fd(point)
+        self.gradient_fd_alloc(point)
     }
 }
 
@@ -337,14 +337,14 @@ where
         Ok(quad_term + linear_term + self.c)
     }
 
-    fn cost_and_gradient(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
+    fn cost_and_gradient_alloc(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
         let ax = &self.a * point;
         let cost = point.dot(&ax) * <T as Scalar>::from_f64(0.5) + self.b.dot(point) + self.c;
         let gradient = ax + &self.b;
         Ok((cost, gradient))
     }
     
-    fn cost_and_gradient_with_workspace(
+    fn cost_and_gradient(
         &self,
         point: &Point<T, D>,
         _workspace: &mut Workspace<T>,
@@ -446,10 +446,10 @@ where
         self.inner.cost(point)
     }
 
-    fn cost_and_gradient(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
+    fn cost_and_gradient_alloc(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
         self.cost_count.fetch_add(1, Ordering::Relaxed);
         self.gradient_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.cost_and_gradient(point)
+        self.inner.cost_and_gradient_alloc(point)
     }
 
     fn gradient(&self, point: &Point<T, D>) -> Result<TangentVector<T, D>> {
@@ -500,7 +500,7 @@ pub trait CostFunctionParallel<T: Scalar>: CostFunction<T, nalgebra::Dyn> {
 ///
 /// This function provides an efficient implementation for dynamic-dimensional problems
 /// by reusing pre-allocated buffers from the workspace.
-pub fn gradient_fd_dvec_with_workspace<T, F>(
+pub fn gradient_fd_dvec<T, F>(
     cost_fn: &F,
     point: &nalgebra::DVector<T>,
     workspace: &mut Workspace<T>,
@@ -581,7 +581,7 @@ impl DerivativeChecker {
         DefaultAllocator: Allocator<D>,
     {
         let analytical_grad = cost_fn.gradient(point)?;
-        let fd_grad = cost_fn.gradient_fd(point)?;
+        let fd_grad = cost_fn.gradient_fd_alloc(point)?;
 
         let diff = &analytical_grad - &fd_grad;
         let max_error = diff
@@ -730,11 +730,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cost_and_gradient() {
+    fn test_cost_and_gradient_alloc() {
         let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(3));
         let point = DVector::from_vec(vec![1.0, 2.0, 3.0]);
 
-        let (value, gradient) = cost.cost_and_gradient(&point).unwrap();
+        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
         assert_relative_eq!(value, 7.0);
         assert_relative_eq!(gradient, point);
     }
@@ -770,7 +770,7 @@ mod tests {
         let cost = SimpleCost;
         let point = DVector::from_vec(vec![1.0, 2.0]);
 
-        let fd_grad = cost.gradient_fd(&point).unwrap();
+        let fd_grad = cost.gradient_fd_alloc(&point).unwrap();
         // Analytical gradient: [2*x1, 4*x2] = [2, 8]
         assert_relative_eq!(fd_grad[0], 2.0, epsilon = 1e-6);
         assert_relative_eq!(fd_grad[1], 8.0, epsilon = 1e-6);
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(cost.counts(), (1, 1, 0));
 
         // Evaluate cost and gradient
-        let _ = cost.cost_and_gradient(&point).unwrap();
+        let _ = cost.cost_and_gradient_alloc(&point).unwrap();
         assert_eq!(cost.counts(), (2, 2, 0));
 
         // Evaluate Hessian
@@ -899,7 +899,7 @@ mod tests {
         
         let config = ParallelConfig::default();
         let grad_par = quadratic.gradient_fd_parallel_dvec(&x, &config).unwrap();
-        let grad_seq = quadratic.gradient_fd(&x).unwrap();
+        let grad_seq = quadratic.gradient_fd_alloc(&x).unwrap();
         
         // Should be identical since it falls back to sequential
         for i in 0..n {
