@@ -6,7 +6,7 @@
 use crate::Sphere;
 use riemannopt_core::{
     manifold::Manifold,
-    simd::SimdVectorOps,
+    compute::cpu::{get_dispatcher, SimdBackend},
     types::DVector,
 };
 
@@ -30,7 +30,8 @@ impl SphereSimdExt for Sphere {
         if point.len() >= 4 {
             // Use SIMD for larger vectors
             let mut result = point.clone();
-            let norm = SimdVectorOps::normalize(&mut result);
+            let dispatcher = get_dispatcher::<f64>();
+            let norm = dispatcher.normalize(&mut result);
             if norm < f64::EPSILON {
                 // Handle zero vector
                 result = DVector::zeros(self.ambient_dimension());
@@ -47,7 +48,8 @@ impl SphereSimdExt for Sphere {
         if point.len() >= 8 {
             // Use SIMD for larger vectors
             let mut result = point.clone();
-            let norm = SimdVectorOps::normalize(&mut result);
+            let dispatcher = get_dispatcher::<f32>();
+            let norm = dispatcher.normalize(&mut result);
             if norm < f32::EPSILON {
                 // Handle zero vector
                 result = DVector::zeros(self.ambient_dimension());
@@ -62,7 +64,8 @@ impl SphereSimdExt for Sphere {
     
     fn tangent_dot_simd_f64(&self, v1: &DVector<f64>, v2: &DVector<f64>) -> f64 {
         if v1.len() >= 4 && v1.len() == v2.len() {
-            SimdVectorOps::dot_product(v1, v2)
+            let dispatcher = get_dispatcher::<f64>();
+            dispatcher.dot_product(v1, v2)
         } else {
             v1.dot(v2)
         }
@@ -70,7 +73,8 @@ impl SphereSimdExt for Sphere {
     
     fn tangent_dot_simd_f32(&self, v1: &DVector<f32>, v2: &DVector<f32>) -> f32 {
         if v1.len() >= 8 && v1.len() == v2.len() {
-            SimdVectorOps::dot_product(v1, v2)
+            let dispatcher = get_dispatcher::<f32>();
+            dispatcher.dot_product(v1, v2)
         } else {
             v1.dot(v2)
         }

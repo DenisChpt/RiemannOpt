@@ -11,5 +11,6 @@ pub mod wide_backend;
 pub use batch_ops::*;
 pub use parallel::*;
 pub use parallel_strategy::*;
-pub use simd::*;
+// Only export necessary SIMD types, not internal implementations
+pub use simd::{SimdOps, SimdVector};
 pub use simd_dispatch::{SimdBackend, SimdDispatcher, get_dispatcher};

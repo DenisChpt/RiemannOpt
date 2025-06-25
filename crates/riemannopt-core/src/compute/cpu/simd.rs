@@ -13,14 +13,15 @@
 //! # Example
 //!
 //! ```rust
-//! use riemannopt_core::simd::{SimdVectorOps, SimdOps};
+//! use riemannopt_core::compute::cpu::{SimdDispatcher, get_dispatcher, SimdBackend};
 //! use nalgebra::DVector;
 //!
 //! let a = DVector::from_vec(vec![1.0_f32; 100]);
 //! let b = DVector::from_vec(vec![2.0_f32; 100]);
 //!
-//! // SIMD-accelerated dot product
-//! let dot = SimdVectorOps::dot_product(a.as_view(), b.as_view());
+//! // SIMD-accelerated dot product using dispatcher
+//! let dispatcher = get_dispatcher::<f32>();
+//! let dot = dispatcher.dot_product(&a, &b);
 //! assert_eq!(dot, 200.0);
 //! ```
 
@@ -168,8 +169,8 @@ impl SimdOps for f64 {
     const SIMD_WIDTH: usize = 4;
 }
 
-/// SIMD-accelerated vector operations
-pub struct SimdVectorOps;
+/// SIMD-accelerated vector operations (internal use only)
+pub(crate) struct SimdVectorOps;
 
 impl SimdVectorOps {
     /// Compute dot product using SIMD
@@ -229,7 +230,7 @@ impl SimdVectorOps {
     }
     
     /// Element-wise vector addition using SIMD
-    pub fn add<T: SimdOps>(a: &DVector<T>, b: &DVector<T>, result: &mut DVector<T>) {
+    pub(crate) fn add<T: SimdOps>(a: &DVector<T>, b: &DVector<T>, result: &mut DVector<T>) {
         assert_eq!(a.len(), b.len(), "Vectors must have same length");
         assert_eq!(a.len(), result.len(), "Result must have same length");
         
@@ -256,7 +257,7 @@ impl SimdVectorOps {
     }
     
     /// Scale vector using SIMD
-    pub fn scale<T: SimdOps>(v: &mut DVector<T>, scalar: T) {
+    pub(crate) fn scale<T: SimdOps>(v: &mut DVector<T>, scalar: T) {
         let n = v.len();
         let simd_width = T::SIMD_WIDTH;
         let simd_end = n - (n % simd_width);
@@ -288,8 +289,8 @@ impl SimdVectorOps {
     }
 }
 
-/// SIMD-accelerated matrix operations
-pub struct SimdMatrixOps;
+/// SIMD-accelerated matrix operations (internal use only)
+pub(crate) struct SimdMatrixOps;
 
 impl SimdMatrixOps {
     /// Matrix-vector multiplication using SIMD
@@ -336,25 +337,30 @@ impl SimdMatrixOps {
     }
 }
 
-/// SIMD-accelerated manifold operations
-pub mod simd_manifolds {
+/// SIMD-accelerated manifold operations (internal use only)
+pub(crate) mod simd_manifolds {
     use super::*;
+    use crate::compute::cpu::{get_dispatcher, SimdBackend};
     
     /// SIMD sphere projection
-    pub fn project_sphere_simd<T: SimdOps>(point: &mut DVector<T>) {
-        let _norm = SimdVectorOps::normalize(point);
+    #[allow(dead_code)]
+    pub fn project_sphere_simd<T: SimdOps + 'static>(point: &mut DVector<T>) {
+        let dispatcher = get_dispatcher::<T>();
+        let _norm = dispatcher.normalize(point);
     }
     
     /// SIMD orthogonalization for Stiefel using Modified Gram-Schmidt
-    pub fn orthogonalize_simd<T: SimdOps>(matrix: &mut DMatrix<T>) {
+    #[allow(dead_code)]
+    pub fn orthogonalize_simd<T: SimdOps + 'static>(matrix: &mut DMatrix<T>) {
         let p = matrix.ncols();
+        let dispatcher = get_dispatcher::<T>();
         
         for j in 0..p {
             // Get a mutable view of column j
             let col_j_norm = {
                 let col_j = matrix.column(j);
                 let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
-                SimdVectorOps::norm(col_j_vec.as_view())
+                dispatcher.norm(&col_j_vec)
             };
             
             // Normalize column j in-place
@@ -371,7 +377,7 @@ pub mod simd_manifolds {
                     let col_k = matrix.column(k);
                     let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
                     let col_k_vec = DVector::from_iterator(col_k.len(), col_k.iter().cloned());
-                    SimdVectorOps::dot_product(col_j_vec.as_view(), col_k_vec.as_view())
+                    dispatcher.dot_product(&col_j_vec, &col_k_vec)
                 };
                 
                 // Update column k: col_k -= dot * col_j
@@ -386,20 +392,23 @@ pub mod simd_manifolds {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use crate::compute::cpu::{get_dispatcher, SimdBackend};
     
     #[test]
     fn test_simd_dot_product() {
         let a = DVector::from_vec(vec![1.0_f32; 100]);
         let b = DVector::from_vec(vec![2.0_f32; 100]);
         
-        let result = SimdVectorOps::dot_product(a.as_view(), b.as_view());
+        let dispatcher = get_dispatcher::<f32>();
+        let result = dispatcher.dot_product(&a, &b);
         assert_relative_eq!(result, 200.0, epsilon = 1e-6);
     }
     
     #[test]
     fn test_simd_norm() {
         let v = DVector::from_vec(vec![3.0_f64, 4.0, 0.0, 0.0]);
-        let norm = SimdVectorOps::norm(v.as_view());
+        let dispatcher = get_dispatcher::<f64>();
+        let norm = dispatcher.norm(&v);
         assert_relative_eq!(norm, 5.0, epsilon = 1e-10);
     }
     
@@ -409,7 +418,8 @@ mod tests {
         let b = DVector::from_vec(vec![2.0_f32; 17]);
         let mut result = DVector::zeros(17);
         
-        SimdVectorOps::add(&a, &b, &mut result);
+        let dispatcher = get_dispatcher::<f32>();
+        dispatcher.add(&a, &b, &mut result);
         
         for i in 0..17 {
             assert_relative_eq!(result[i], 3.0, epsilon = 1e-6);
@@ -419,7 +429,8 @@ mod tests {
     #[test]
     fn test_simd_normalize() {
         let mut v = DVector::from_vec(vec![3.0_f64, 4.0]);
-        let norm = SimdVectorOps::normalize(&mut v);
+        let dispatcher = get_dispatcher::<f64>();
+        let norm = dispatcher.normalize(&mut v);
         
         assert_relative_eq!(norm, 5.0, epsilon = 1e-10);
         assert_relative_eq!(v[0], 0.6, epsilon = 1e-10);
