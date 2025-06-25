@@ -20,12 +20,12 @@
 //! let b = DVector::from_vec(vec![2.0_f32; 100]);
 //!
 //! // SIMD-accelerated dot product
-//! let dot = SimdVectorOps::dot_product(&a, &b);
+//! let dot = SimdVectorOps::dot_product(a.as_view(), b.as_view());
 //! assert_eq!(dot, 200.0);
 //! ```
 
 use crate::types::Scalar;
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, DVectorView};
 use wide::{f32x8, f64x4};
 
 /// SIMD operations for different scalar types
@@ -173,7 +173,7 @@ pub struct SimdVectorOps;
 
 impl SimdVectorOps {
     /// Compute dot product using SIMD
-    pub fn dot_product<T: SimdOps>(a: &DVector<T>, b: &DVector<T>) -> T {
+    pub fn dot_product<T: SimdOps>(a: DVectorView<T>, b: DVectorView<T>) -> T {
         assert_eq!(a.len(), b.len(), "Vectors must have same length");
         
         let n = a.len();
@@ -203,7 +203,7 @@ impl SimdVectorOps {
     }
     
     /// Compute vector norm using SIMD
-    pub fn norm<T: SimdOps>(v: &DVector<T>) -> T {
+    pub fn norm<T: SimdOps>(v: DVectorView<T>) -> T {
         let n = v.len();
         let simd_width = T::SIMD_WIDTH;
         let simd_end = n - (n % simd_width);
@@ -279,7 +279,7 @@ impl SimdVectorOps {
     
     /// Normalize vector in-place using SIMD
     pub fn normalize<T: SimdOps>(v: &mut DVector<T>) -> T {
-        let norm = Self::norm(v);
+        let norm = Self::norm(v.as_view());
         if norm > T::zero() {
             let inv_norm = T::one() / norm;
             Self::scale(v, inv_norm);
@@ -354,7 +354,7 @@ pub mod simd_manifolds {
             let col_j_norm = {
                 let col_j = matrix.column(j);
                 let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
-                SimdVectorOps::norm(&col_j_vec)
+                SimdVectorOps::norm(col_j_vec.as_view())
             };
             
             // Normalize column j in-place
@@ -371,7 +371,7 @@ pub mod simd_manifolds {
                     let col_k = matrix.column(k);
                     let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
                     let col_k_vec = DVector::from_iterator(col_k.len(), col_k.iter().cloned());
-                    SimdVectorOps::dot_product(&col_j_vec, &col_k_vec)
+                    SimdVectorOps::dot_product(col_j_vec.as_view(), col_k_vec.as_view())
                 };
                 
                 // Update column k: col_k -= dot * col_j
@@ -392,14 +392,14 @@ mod tests {
         let a = DVector::from_vec(vec![1.0_f32; 100]);
         let b = DVector::from_vec(vec![2.0_f32; 100]);
         
-        let result = SimdVectorOps::dot_product(&a, &b);
+        let result = SimdVectorOps::dot_product(a.as_view(), b.as_view());
         assert_relative_eq!(result, 200.0, epsilon = 1e-6);
     }
     
     #[test]
     fn test_simd_norm() {
         let v = DVector::from_vec(vec![3.0_f64, 4.0, 0.0, 0.0]);
-        let norm = SimdVectorOps::norm(&v);
+        let norm = SimdVectorOps::norm(v.as_view());
         assert_relative_eq!(norm, 5.0, epsilon = 1e-10);
     }
     

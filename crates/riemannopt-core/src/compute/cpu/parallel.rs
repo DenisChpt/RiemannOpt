@@ -5,7 +5,8 @@
 
 use crate::types::Scalar;
 use crate::simd::{SimdOps, SimdVectorOps, SimdMatrixOps};
-use nalgebra::{DMatrix, DVector};
+use crate::compute::cpu::batch_ops::{BatchError, CacheFriendlyBatch};
+use nalgebra::{DMatrix, DVector, DVectorView, DVectorViewMut};
 use rayon::prelude::*;
 
 /// Type alias for batch of points (each column is a point).
@@ -83,144 +84,80 @@ impl ParallelBatch {
     ) -> Vec<T>
     where
         T: Scalar,
-        F: Fn(&DVector<T>) -> T + Sync,
+        F: Fn(DVectorView<T>) -> T + Sync,
     {
         (0..points.ncols())
             .into_par_iter()
             .map(|i| {
                 let point = points.column(i);
-                func(&point.clone_owned())
+                func(point)
             })
             .collect()
     }
     
-    /// Computes gradients at multiple points in parallel.
+    /// Computes gradients at multiple points in parallel with zero allocations.
     ///
     /// # Arguments
     /// * `points` - Matrix where each column is a point
-    /// * `grad_func` - Function that computes gradient at a point
+    /// * `output` - Pre-allocated output matrix to store gradients
+    /// * `grad_func` - Function that computes gradient in-place
     ///
     /// # Returns
-    /// Matrix where each column is a gradient
+    /// Result indicating success or dimension mismatch error
     pub fn gradient<T, F>(
         points: &PointBatch<T>,
+        output: &mut TangentBatch<T>,
         grad_func: F,
-    ) -> TangentBatch<T>
+    ) -> Result<(), BatchError>
     where
         T: Scalar,
-        F: Fn(&DVector<T>) -> DVector<T> + Sync,
+        F: Fn(DVectorView<T>, DVectorViewMut<T>) + Sync + Send,
     {
-        let n_points = points.ncols();
-        let dim = points.nrows();
-        
-        // Pre-allocate result matrix
-        let mut result = TangentBatch::<T>::zeros(dim, n_points);
-        
-        // Use rayon's parallel chunks
-        let chunk_size = ((n_points + rayon::current_num_threads() - 1) / rayon::current_num_threads()).max(1);
-        
-        result.column_iter_mut()
-            .enumerate()
-            .collect::<Vec<_>>()
-            .par_chunks_mut(chunk_size)
-            .for_each(|chunk| {
-                for (i, col) in chunk {
-                    let point = points.column(*i).clone_owned();
-                    let grad = grad_func(&point);
-                    col.copy_from(&grad);
-                }
-            });
-        
-        result
+        CacheFriendlyBatch::gradient(points, output, grad_func)
     }
     
-    /// Applies an operation to each point in parallel.
+    /// Applies an operation to each point in parallel with zero allocations.
     ///
     /// # Arguments
     /// * `points` - Matrix where each column is a point
-    /// * `op` - Operation to apply to each point
+    /// * `output` - Pre-allocated output matrix to store results
+    /// * `op` - Operation to apply in-place
     ///
     /// # Returns
-    /// Matrix where each column is the result
+    /// Result indicating success or dimension mismatch error
     pub fn map<T, F>(
         points: &PointBatch<T>,
+        output: &mut PointBatch<T>,
         op: F,
-    ) -> PointBatch<T>
+    ) -> Result<(), BatchError>
     where
         T: Scalar,
-        F: Fn(&DVector<T>) -> DVector<T> + Sync,
+        F: Fn(DVectorView<T>, DVectorViewMut<T>) + Sync + Send,
     {
-        let n_points = points.ncols();
-        let dim = points.nrows();
-        
-        // Pre-allocate result matrix
-        let mut result = PointBatch::<T>::zeros(dim, n_points);
-        
-        // Use rayon's parallel chunks
-        let chunk_size = ((n_points + rayon::current_num_threads() - 1) / rayon::current_num_threads()).max(1);
-        
-        result.column_iter_mut()
-            .enumerate()
-            .collect::<Vec<_>>()
-            .par_chunks_mut(chunk_size)
-            .for_each(|chunk| {
-                for (i, col) in chunk {
-                    let point = points.column(*i).clone_owned();
-                    let res = op(&point);
-                    col.copy_from(&res);
-                }
-            });
-        
-        result
+        CacheFriendlyBatch::map(points, output, op)
     }
     
-    /// Applies an operation to pairs of points and tangent vectors.
+    /// Applies an operation to pairs of points and tangent vectors with zero allocations.
     ///
     /// # Arguments
     /// * `points` - Matrix where each column is a point
     /// * `tangents` - Matrix where each column is a tangent vector
-    /// * `op` - Operation to apply to each pair
+    /// * `output` - Pre-allocated output matrix to store results
+    /// * `op` - Operation to apply in-place
     ///
     /// # Returns
-    /// Matrix where each column is the result
+    /// Result indicating success or dimension mismatch error
     pub fn map_pairs<T, F>(
         points: &PointBatch<T>,
         tangents: &TangentBatch<T>,
+        output: &mut PointBatch<T>,
         op: F,
-    ) -> PointBatch<T>
+    ) -> Result<(), BatchError>
     where
         T: Scalar,
-        F: Fn(&DVector<T>, &DVector<T>) -> DVector<T> + Sync,
+        F: Fn(DVectorView<T>, DVectorView<T>, DVectorViewMut<T>) + Sync + Send,
     {
-        assert_eq!(
-            points.ncols(),
-            tangents.ncols(),
-            "Points and tangents must have same number of columns"
-        );
-        
-        let n_points = points.ncols();
-        let dim = points.nrows();
-        
-        // Pre-allocate result matrix
-        let mut result = PointBatch::<T>::zeros(dim, n_points);
-        
-        // Use rayon's parallel chunks
-        let chunk_size = ((n_points + rayon::current_num_threads() - 1) / rayon::current_num_threads()).max(1);
-        
-        result.column_iter_mut()
-            .enumerate()
-            .collect::<Vec<_>>()
-            .par_chunks_mut(chunk_size)
-            .for_each(|chunk| {
-                for (i, col) in chunk {
-                    let point = points.column(*i).clone_owned();
-                    let tangent = tangents.column(*i).clone_owned();
-                    let res = op(&point, &tangent);
-                    col.copy_from(&res);
-                }
-            });
-        
-        result
+        CacheFriendlyBatch::map_pairs(points, tangents, output, op)
     }
 }
 
@@ -412,12 +349,13 @@ impl SimdParallelOps {
     {
         assert_eq!(a_batch.ncols(), b_batch.ncols());
         
+        // Use parallel index iteration to avoid allocations
         (0..a_batch.ncols())
             .into_par_iter()
             .map(|i| {
-                let a_col = a_batch.column(i).clone_owned();
-                let b_col = b_batch.column(i).clone_owned();
-                SimdVectorOps::dot_product(&a_col, &b_col)
+                let a_col = a_batch.column(i);
+                let b_col = b_batch.column(i);
+                SimdVectorOps::dot_product(a_col, b_col)
             })
             .collect()
     }
@@ -431,22 +369,35 @@ impl SimdParallelOps {
     {
         let n_points = points.ncols();
         
-        // First, compute all norms in parallel
+        // Pass 1: Compute all norms in parallel (read-only)
         let norms: Vec<T> = (0..n_points)
             .into_par_iter()
             .map(|i| {
-                let col = points.column(i).clone_owned();
-                SimdVectorOps::norm(&col)
+                let col = points.column(i);
+                SimdVectorOps::norm(col)
             })
             .collect();
         
-        // Then normalize columns sequentially (we can't mutate in parallel without unsafe)
-        for (i, &norm) in norms.iter().enumerate() {
+        // Pass 2: Normalize in parallel (write-only)
+        // We need to collect indices to iterate in parallel
+        let indices: Vec<_> = (0..n_points).collect();
+        indices.par_iter().zip(norms.par_iter()).for_each(|(&i, &norm)| {
             if norm > T::zero() {
-                let inv_norm = T::one() / norm;
-                points.column_mut(i).scale_mut(inv_norm);
+                // SAFETY: We're accessing different columns in parallel, which is safe
+                // because columns are non-overlapping memory regions
+                unsafe {
+                    let points_ptr = points.as_ptr() as *mut T;
+                    let col_start = i * points.nrows();
+                    let col_ptr = points_ptr.add(col_start);
+                    let col_slice = std::slice::from_raw_parts_mut(col_ptr, points.nrows());
+                    
+                    let inv_norm = T::one() / norm;
+                    for elem in col_slice.iter_mut() {
+                        *elem *= inv_norm;
+                    }
+                }
             }
-        }
+        });
         
         norms
     }
@@ -502,7 +453,7 @@ mod tests {
         ]);
         
         // Simple quadratic function
-        let func = |x: &DVector<f64>| x.dot(x);
+        let func = |x: DVectorView<f64>| x.dot(&x);
         
         let values = ParallelBatch::evaluate(&points, func);
         
@@ -519,10 +470,15 @@ mod tests {
             DVector::from_vec(vec![0.0, 1.0]),
         ]);
         
-        // Gradient of f(x) = x^T x is 2x
-        let grad_func = |x: &DVector<f64>| x * 2.0;
+        let mut gradients = TangentBatch::<f64>::zeros(2, 2);
         
-        let gradients = ParallelBatch::gradient(&points, grad_func);
+        // Gradient of f(x) = x^T x is 2x
+        let grad_func = |x: DVectorView<f64>, mut out: DVectorViewMut<f64>| {
+            let result = x * 2.0;
+            out.copy_from(&result);
+        };
+        
+        ParallelBatch::gradient(&points, &mut gradients, grad_func).unwrap();
         
         assert_eq!(gradients.ncols(), 2);
         assert_relative_eq!(gradients[(0, 0)], 2.0, epsilon = 1e-10);
@@ -531,6 +487,7 @@ mod tests {
         assert_relative_eq!(gradients[(1, 1)], 2.0, epsilon = 1e-10);
     }
     
+    
     #[test]
     fn test_parallel_map() {
         let points = PointBatch::from_columns(&[
@@ -538,10 +495,15 @@ mod tests {
             DVector::from_vec(vec![3.0, 4.0]),
         ]);
         
-        // Simple scaling operation
-        let op = |x: &DVector<f64>| x * 2.0;
+        let mut results = PointBatch::<f64>::zeros(2, 2);
         
-        let results = ParallelBatch::map(&points, op);
+        // Simple scaling operation
+        let op = |x: DVectorView<f64>, mut out: DVectorViewMut<f64>| {
+            let result = x * 2.0;
+            out.copy_from(&result);
+        };
+        
+        ParallelBatch::map(&points, &mut results, op).unwrap();
         
         assert_eq!(results.ncols(), 2);
         assert_relative_eq!(results[(0, 0)], 2.0, epsilon = 1e-10);
@@ -549,6 +511,7 @@ mod tests {
         assert_relative_eq!(results[(0, 1)], 6.0, epsilon = 1e-10);
         assert_relative_eq!(results[(1, 1)], 8.0, epsilon = 1e-10);
     }
+    
     
     #[test]
     fn test_average_gradients() {
