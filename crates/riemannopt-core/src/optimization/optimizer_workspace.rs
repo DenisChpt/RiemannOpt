@@ -8,7 +8,7 @@ use crate::{
 use num_traits::Float;
 
 /// Perform a line search step using workspace.
-pub fn line_search_step_with_workspace<T, F>(
+pub fn line_search_step<T, F>(
     cost_fn: &F,
     point: &DVector<T>,
     direction: &DVector<T>,
@@ -155,7 +155,7 @@ where
 }
 
 /// Update momentum buffer in-place using workspace.
-pub fn update_momentum_with_workspace<T>(
+pub fn update_momentum<T>(
     momentum: &mut DVector<T>,
     gradient: &DVector<T>,
     beta: T,
@@ -172,7 +172,7 @@ where
 }
 
 /// Update Adam optimizer state using workspace.
-pub fn update_adam_state_with_workspace<T>(
+pub fn update_adam_state<T>(
     momentum: &mut DVector<T>,
     second_moment: &mut DVector<T>,
     gradient: &DVector<T>,
@@ -184,7 +184,7 @@ where
     T: Scalar,
 {
     // Update first moment estimate
-    update_momentum_with_workspace(momentum, gradient, beta1, _workspace)?;
+    update_momentum(momentum, gradient, beta1, _workspace)?;
     
     // Update second moment estimate
     // second_moment = beta2 * second_moment + (1 - beta2) * gradient^2
@@ -197,7 +197,7 @@ where
 }
 
 /// Compute the search direction for quasi-Newton methods using workspace.
-pub fn compute_quasi_newton_direction_with_workspace<T>(
+pub fn compute_quasi_newton_direction<T>(
     _hessian_approx: &crate::types::DMatrix<T>,
     gradient: &DVector<T>,
     _workspace: &mut Workspace<T>,
@@ -214,6 +214,71 @@ where
     // This is a placeholder - in practice, we'd solve the linear system
     // For now, just return -gradient (gradient descent direction)
     Ok(())
+}
+
+/// Perform a line search step (allocating version).
+pub fn line_search_step_alloc<T, F>(
+    cost_fn: &F,
+    point: &DVector<T>,
+    direction: &DVector<T>,
+    initial_step: T,
+) -> OptimizerResult<(T, DVector<T>)>
+where
+    T: Scalar,
+    F: Fn(&DVector<T>) -> Result<T>,
+{
+    let n = point.len();
+    let mut workspace = Workspace::with_size(n);
+    let mut result_point = DVector::zeros(n);
+    let alpha = line_search_step(cost_fn, point, direction, initial_step, &mut workspace, &mut result_point)?;
+    Ok((alpha, result_point))
+}
+
+/// Update momentum buffer (allocating version).
+pub fn update_momentum_alloc<T>(
+    momentum: &DVector<T>,
+    gradient: &DVector<T>,
+    beta: T,
+) -> Result<DVector<T>>
+where
+    T: Scalar,
+{
+    let mut workspace = Workspace::new();
+    let mut result = momentum.clone();
+    update_momentum(&mut result, gradient, beta, &mut workspace)?;
+    Ok(result)
+}
+
+/// Update Adam optimizer state (allocating version).
+pub fn update_adam_state_alloc<T>(
+    momentum: &DVector<T>,
+    second_moment: &DVector<T>,
+    gradient: &DVector<T>,
+    beta1: T,
+    beta2: T,
+) -> Result<(DVector<T>, DVector<T>)>
+where
+    T: Scalar,
+{
+    let mut workspace = Workspace::new();
+    let mut new_momentum = momentum.clone();
+    let mut new_second_moment = second_moment.clone();
+    update_adam_state(&mut new_momentum, &mut new_second_moment, gradient, beta1, beta2, &mut workspace)?;
+    Ok((new_momentum, new_second_moment))
+}
+
+/// Compute the search direction for quasi-Newton methods (allocating version).
+pub fn compute_quasi_newton_direction_alloc<T>(
+    hessian_approx: &crate::types::DMatrix<T>,
+    gradient: &DVector<T>,
+) -> Result<DVector<T>>
+where
+    T: Scalar,
+{
+    let mut workspace = Workspace::new();
+    let mut direction = DVector::zeros(gradient.len());
+    compute_quasi_newton_direction(hessian_approx, gradient, &mut workspace, &mut direction)?;
+    Ok(direction)
 }
 
 #[cfg(test)]
@@ -235,7 +300,7 @@ mod tests {
         let direction = DVector::from_vec(vec![-1.0, -1.0, -1.0]); // Descent direction
         
         let mut new_point = DVector::<f64>::zeros(n);
-        let alpha = line_search_step_with_workspace(
+        let alpha = line_search_step(
             &cost_fn,
             &point,
             &direction,
@@ -258,7 +323,7 @@ mod tests {
         let gradient = DVector::from_element(n, 1.0);
         let beta = 0.9;
         
-        update_momentum_with_workspace(&mut momentum, &gradient, beta, &mut workspace).unwrap();
+        update_momentum(&mut momentum, &gradient, beta, &mut workspace).unwrap();
         
         // First update: momentum = 0.1 * gradient
         for i in 0..n {
@@ -266,7 +331,7 @@ mod tests {
         }
         
         // Second update
-        update_momentum_with_workspace(&mut momentum, &gradient, beta, &mut workspace).unwrap();
+        update_momentum(&mut momentum, &gradient, beta, &mut workspace).unwrap();
         
         // momentum = 0.9 * 0.1 + 0.1 * 1.0 = 0.19
         for i in 0..n {
@@ -285,7 +350,7 @@ mod tests {
         let beta1 = 0.9;
         let beta2 = 0.999;
         
-        update_adam_state_with_workspace(
+        update_adam_state(
             &mut momentum,
             &mut second_moment,
             &gradient,

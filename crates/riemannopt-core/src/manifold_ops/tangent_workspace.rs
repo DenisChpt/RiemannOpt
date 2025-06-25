@@ -9,7 +9,7 @@ use crate::{
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, DVector};
 
 /// Project a vector onto the tangent space using workspace.
-pub fn project_with_workspace<T, D>(
+pub fn project<T, D>(
     _point: &Point<T, D>,
     vector: &TangentVector<T, D>,
     _workspace: &mut Workspace<T>,
@@ -27,7 +27,7 @@ where
 }
 
 /// Project a vector onto the tangent space in-place using workspace.
-pub fn project_in_place_with_workspace<T, D>(
+pub fn project_in_place<T, D>(
     _point: &Point<T, D>,
     _vector: &mut TangentVector<T, D>,
     _workspace: &mut Workspace<T>,
@@ -43,7 +43,7 @@ where
 }
 
 /// Compute the orthogonal projection matrix for the tangent space using workspace.
-pub fn projection_matrix_with_workspace<T>(
+pub fn projection_matrix<T>(
     point: &DVector<T>,
     _workspace: &mut Workspace<T>,
     proj: &mut crate::types::DMatrix<T>,
@@ -63,7 +63,7 @@ where
 }
 
 /// Orthogonalize a set of tangent vectors using workspace (Gram-Schmidt).
-pub fn orthogonalize_with_workspace<T>(
+pub fn orthogonalize<T>(
     point: &DVector<T>,
     vectors: &mut [DVector<T>],
     workspace: &mut Workspace<T>,
@@ -103,7 +103,7 @@ where
 }
 
 /// Compute the parallel transport of a vector along a curve using workspace.
-pub fn parallel_transport_with_workspace<T, D>(
+pub fn parallel_transport<T, D>(
     _from_point: &Point<T, D>,
     _to_point: &Point<T, D>,
     vector: &TangentVector<T, D>,
@@ -119,6 +119,67 @@ where
     // More complex manifolds would use workspace for computation
     result.copy_from(vector);
     Ok(())
+}
+
+/// Project a vector onto the tangent space (allocating version).
+pub fn project_alloc<T, D>(
+    point: &Point<T, D>,
+    vector: &TangentVector<T, D>,
+) -> Result<TangentVector<T, D>>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    let mut workspace = Workspace::new();
+    let mut result = vector.clone();
+    project(point, vector, &mut workspace, &mut result)?;
+    Ok(result)
+}
+
+/// Compute the orthogonal projection matrix (allocating version).
+pub fn projection_matrix_alloc<T>(
+    point: &DVector<T>,
+) -> Result<crate::types::DMatrix<T>>
+where
+    T: Scalar,
+{
+    let n = point.len();
+    let mut workspace = Workspace::new();
+    let mut proj = crate::types::DMatrix::zeros(n, n);
+    projection_matrix(point, &mut workspace, &mut proj)?;
+    Ok(proj)
+}
+
+/// Orthogonalize a set of tangent vectors (allocating version).
+pub fn orthogonalize_alloc<T>(
+    point: &DVector<T>,
+    vectors: Vec<DVector<T>>,
+) -> Result<Vec<DVector<T>>>
+where
+    T: Scalar,
+{
+    let mut workspace = Workspace::with_size(point.len());
+    let mut result = vectors;
+    orthogonalize(point, &mut result, &mut workspace)?;
+    Ok(result)
+}
+
+/// Compute the parallel transport (allocating version).
+pub fn parallel_transport_alloc<T, D>(
+    from_point: &Point<T, D>,
+    to_point: &Point<T, D>,
+    vector: &TangentVector<T, D>,
+) -> Result<TangentVector<T, D>>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    let mut workspace = Workspace::new();
+    let mut result = vector.clone();
+    parallel_transport(from_point, to_point, vector, &mut workspace, &mut result)?;
+    Ok(result)
 }
 
 /// Extension trait for tangent space operations with workspace.
@@ -161,7 +222,7 @@ mod tests {
         let mut workspace = Workspace::with_size(n);
         
         let mut projected = DVector::<f64>::zeros(n);
-        project_with_workspace(&point, &vector, &mut workspace, &mut projected).unwrap();
+        project(&point, &vector, &mut workspace, &mut projected).unwrap();
         
         // For Euclidean space, projection is identity
         for i in 0..n {
@@ -179,7 +240,7 @@ mod tests {
         ];
         let mut workspace = Workspace::with_size(3);
         
-        orthogonalize_with_workspace(&point, &mut vectors, &mut workspace).unwrap();
+        orthogonalize(&point, &mut vectors, &mut workspace).unwrap();
         
         // Check orthogonality
         for i in 0..3 {
@@ -199,7 +260,7 @@ mod tests {
         let mut workspace = Workspace::with_size(n);
         
         let mut transported = DVector::<f64>::zeros(n);
-        parallel_transport_with_workspace(
+        parallel_transport(
             &from_point,
             &to_point,
             &vector,

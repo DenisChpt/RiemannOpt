@@ -50,6 +50,10 @@ pub trait SimdBackend<T: Scalar>: Send + Sync {
     
     /// Check if this backend supports the given vector size efficiently.
     fn is_efficient_for_size(&self, size: usize) -> bool;
+    
+    /// Compute the maximum absolute difference between two vectors.
+    /// Returns the L∞ norm of (a - b).
+    fn max_abs_diff(&self, a: &DVector<T>, b: &DVector<T>) -> T;
 }
 
 /// Scalar (non-SIMD) backend implementation.
@@ -170,6 +174,20 @@ impl<T: Scalar> SimdBackend<T> for ScalarBackend<T> {
     
     fn is_efficient_for_size(&self, _size: usize) -> bool {
         true // Scalar backend works for any size
+    }
+    
+    fn max_abs_diff(&self, a: &DVector<T>, b: &DVector<T>) -> T {
+        assert_eq!(a.len(), b.len(), "Vectors must have same length");
+        
+        let mut max_diff = T::zero();
+        for i in 0..a.len() {
+            let diff = a[i] - b[i];
+            let abs_diff = <T as num_traits::Signed>::abs(&diff);
+            if abs_diff > max_diff {
+                max_diff = abs_diff;
+            }
+        }
+        max_diff
     }
 }
 
@@ -302,6 +320,11 @@ impl<T: Scalar> SimdBackend<T> for SimdDispatcher<T> {
     fn is_efficient_for_size(&self, size: usize) -> bool {
         self.backend.is_efficient_for_size(size)
     }
+    
+    #[inline]
+    fn max_abs_diff(&self, a: &DVector<T>, b: &DVector<T>) -> T {
+        self.backend.max_abs_diff(a, b)
+    }
 }
 
 /// Global SIMD dispatcher for f32.
@@ -372,5 +395,30 @@ mod tests {
         let v = DVector::from_vec(vec![3.0, 4.0]);
         let norm = dispatcher.norm(&v);
         assert_relative_eq!(norm, 5.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_max_abs_diff() {
+        let backend = ScalarBackend::<f64>::new();
+        
+        let a = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let b = DVector::from_vec(vec![1.1, 1.9, 3.3, 3.7]);
+        
+        // Max abs diff should be |3.3 - 3.0| = 0.3
+        let max_diff = backend.max_abs_diff(&a, &b);
+        assert_relative_eq!(max_diff, 0.3, epsilon = 1e-10);
+        
+        // Test with dispatcher
+        let dispatcher = get_dispatcher::<f64>();
+        let max_diff2 = dispatcher.max_abs_diff(&a, &b);
+        assert_relative_eq!(max_diff2, 0.3, epsilon = 1e-10);
+        
+        // Test with f32 and SIMD backend
+        let a_f32 = DVector::from_vec(vec![1.0_f32; 100]);
+        let b_f32 = DVector::from_vec(vec![1.5_f32; 100]);
+        
+        let dispatcher_f32 = get_dispatcher::<f32>();
+        let max_diff_f32 = dispatcher_f32.max_abs_diff(&a_f32, &b_f32);
+        assert_relative_eq!(max_diff_f32, 0.5, epsilon = 1e-6);
     }
 }

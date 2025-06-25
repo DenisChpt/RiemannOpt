@@ -9,7 +9,7 @@ use crate::{
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, DVector};
 
 /// Perform exponential map using workspace.
-pub fn exponential_map_with_workspace<T, D>(
+pub fn exponential_map<T, D>(
     point: &Point<T, D>,
     direction: &TangentVector<T, D>,
     _workspace: &mut Workspace<T>,
@@ -25,7 +25,7 @@ where
 }
 
 /// Perform retraction using workspace.
-pub fn retract_with_workspace<T, D>(
+pub fn retract<T, D>(
     point: &Point<T, D>,
     direction: &TangentVector<T, D>,
     t: T,
@@ -42,7 +42,7 @@ where
 }
 
 /// Compute inverse retraction (logarithm map) using workspace.
-pub fn inverse_retract_with_workspace<T, D>(
+pub fn inverse_retract<T, D>(
     base_point: &Point<T, D>,
     target_point: &Point<T, D>,
     _workspace: &mut Workspace<T>,
@@ -58,7 +58,7 @@ where
 }
 
 /// Compute geodesic distance using workspace.
-pub fn geodesic_distance_with_workspace<T, D>(
+pub fn geodesic_distance<T, D>(
     point1: &Point<T, D>,
     point2: &Point<T, D>,
     workspace: &mut Workspace<T>,
@@ -68,13 +68,13 @@ where
     D: Dim,
     DefaultAllocator: Allocator<D>,
 {
-    let diff = inverse_retract_with_workspace(point1, point2, workspace)?;
+    let diff = inverse_retract(point1, point2, workspace)?;
     Ok(diff.norm())
 }
 
 /// Compute multiple retractions efficiently using workspace.
 /// The results vector must be pre-allocated with the correct number of elements.
-pub fn batch_retract_with_workspace<T>(
+pub fn batch_retract<T>(
     point: &DVector<T>,
     directions: &[DVector<T>],
     t: T,
@@ -97,6 +97,63 @@ where
     }
     
     Ok(())
+}
+
+/// Perform exponential map (allocating version).
+pub fn exponential_map_alloc<T, D>(
+    point: &Point<T, D>,
+    direction: &TangentVector<T, D>,
+) -> Result<Point<T, D>>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    let mut workspace = Workspace::new();
+    exponential_map(point, direction, &mut workspace)
+}
+
+/// Perform retraction (allocating version).
+pub fn retract_alloc<T, D>(
+    point: &Point<T, D>,
+    direction: &TangentVector<T, D>,
+    t: T,
+) -> Result<Point<T, D>>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    let mut workspace = Workspace::new();
+    retract(point, direction, t, &mut workspace)
+}
+
+/// Compute inverse retraction (allocating version).
+pub fn inverse_retract_alloc<T, D>(
+    base_point: &Point<T, D>,
+    target_point: &Point<T, D>,
+) -> Result<TangentVector<T, D>>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    let mut workspace = Workspace::new();
+    inverse_retract(base_point, target_point, &mut workspace)
+}
+
+/// Compute geodesic distance (allocating version).
+pub fn geodesic_distance_alloc<T, D>(
+    point1: &Point<T, D>,
+    point2: &Point<T, D>,
+) -> Result<T>
+where
+    T: Scalar,
+    D: Dim,
+    DefaultAllocator: Allocator<D>,
+{
+    let mut workspace = Workspace::new();
+    geodesic_distance(point1, point2, &mut workspace)
 }
 
 /// Extension trait for retraction operations with workspace.
@@ -145,7 +202,7 @@ mod tests {
         let t = 0.5;
         let mut workspace = Workspace::with_size(n);
         
-        let result = retract_with_workspace(&point, &direction, t, &mut workspace).unwrap();
+        let result = retract(&point, &direction, t, &mut workspace).unwrap();
         
         // For Euclidean space: result = point + t * direction
         for i in 0..n {
@@ -160,7 +217,7 @@ mod tests {
         let point2 = DVector::from_vec(vec![3.0, 4.0, 0.0]);
         let mut workspace = Workspace::with_size(n);
         
-        let dist = geodesic_distance_with_workspace(&point1, &point2, &mut workspace).unwrap();
+        let dist = geodesic_distance(&point1, &point2, &mut workspace).unwrap();
         
         // Euclidean distance: sqrt(3^2 + 4^2) = 5
         assert_relative_eq!(dist, 5.0, epsilon = 1e-10);
@@ -179,7 +236,7 @@ mod tests {
         let mut workspace = Workspace::with_size(n);
         
         let mut results = vec![DVector::<f64>::zeros(n); 3];
-        batch_retract_with_workspace(&point, &directions, t, &mut workspace, &mut results).unwrap();
+        batch_retract(&point, &directions, t, &mut workspace, &mut results).unwrap();
         
         assert_eq!(results.len(), 3);
         for (i, result) in results.iter().enumerate() {

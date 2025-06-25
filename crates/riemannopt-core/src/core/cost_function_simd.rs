@@ -12,8 +12,8 @@ use rayon::prelude::*;
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, DVector};
 use num_traits::Float;
 
-/// SIMD-accelerated gradient computation using finite differences for dynamic vectors.
-pub fn gradient_fd_simd_dvec<T, F>(
+/// SIMD-accelerated gradient computation using finite differences for dynamic vectors (allocating version).
+pub fn gradient_fd_simd_dvec_alloc<T, F>(
     cost_fn: &F,
     point: &DVector<T>,
 ) -> Result<DVector<T>>
@@ -146,7 +146,7 @@ where
     
     // Check if we should use parallel execution
     if !config.should_parallelize(n) {
-        return gradient_fd_simd_dvec(cost_fn, point);
+        return gradient_fd_simd_dvec_alloc(cost_fn, point);
     }
     
     // Get adaptive strategy for chunk size if not provided
@@ -211,10 +211,11 @@ where
 /// SIMD-accelerated gradient computation using finite differences with workspace.
 ///
 /// This version avoids allocations by using pre-allocated buffers from the workspace.
-pub fn gradient_fd_simd_dvec_with_workspace<T, F>(
+pub fn gradient_fd_simd_dvec<T, F>(
     cost_fn: &F,
     point: &DVector<T>,
     workspace: &mut Workspace<T>,
+    gradient: &mut DVector<T>,
 ) -> Result<()>
 where
     T: Scalar + Float + 'static,
@@ -225,17 +226,13 @@ where
     let dispatcher = get_dispatcher::<T>();
     
     // Get pre-allocated buffers from workspace
-    let (gradient, e_i, point_plus, point_minus) = workspace.get_gradient_buffers_mut()
+    let (e_i, point_plus, point_minus) = workspace.get_gradient_fd_buffers_mut(n)
         .ok_or_else(|| ManifoldError::invalid_parameter(
             "Workspace missing required gradient buffers".to_string()
         ))?;
         
-    // Verify dimensions
-    if gradient.len() != n || e_i.len() != n || point_plus.len() != n || point_minus.len() != n {
-        return Err(ManifoldError::invalid_parameter(
-            format!("Workspace buffers have incorrect dimensions for point of size {}", n),
-        ));
-    }
+    // Clear gradient
+    gradient.fill(T::zero());
     
     // Process in chunks for better cache utilization
     let chunk_size = 64;
@@ -288,7 +285,7 @@ mod tests {
             Ok(0.5 * p.dot(&(&a * p)) - b.dot(p))
         };
         
-        let grad_simd = gradient_fd_simd_dvec(&cost_fn, &x)?;
+        let grad_simd = gradient_fd_simd_dvec_alloc(&cost_fn, &x)?;
         let grad_analytical = &a * &x - &b;
         
         // Check that they are close (finite differences have some error)
@@ -344,7 +341,7 @@ mod tests {
         };
         
         // Sequential SIMD gradient
-        let grad_simd_seq = gradient_fd_simd_dvec(&cost_fn, &x)?;
+        let grad_simd_seq = gradient_fd_simd_dvec_alloc(&cost_fn, &x)?;
         
         // Parallel SIMD gradient
         let config = ParallelConfig::default();
