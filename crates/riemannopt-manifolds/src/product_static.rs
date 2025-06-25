@@ -7,7 +7,6 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     types::{Scalar, DVector},
-    memory::workspace::Workspace,
 };
 use nalgebra::Dyn;
 use std::marker::PhantomData;
@@ -175,6 +174,7 @@ where
     }
 
     /// Splits a product space vector into components using workspace buffers.
+    #[allow(dead_code)]
     fn split_vector_with_workspace(
         &self, 
         vector: &DVector<T>,
@@ -274,33 +274,34 @@ where
         }
     }
 
-    fn project_point(&self, point: &DVector<T>) -> DVector<T> {
-        let (p1, p2) = match self.split_vector(point) {
-            Ok(split) => split,
-            Err(_) => {
-                // Handle dimension mismatch by creating zero vectors
-                (DVector::zeros(self.dim1), DVector::zeros(self.dim2))
-            }
-        };
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+        let (p1, p2) = self.split_vector(point).expect("Invalid point dimension");
 
-        let proj1 = self.manifold1.project_point(&p1);
-        let proj2 = self.manifold2.project_point(&p2);
+        let mut proj1 = DVector::zeros(self.dim1);
+        let mut proj2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.project_point(&p1, &mut proj1);
+        self.manifold2.project_point(&p2, &mut proj2);
 
-        self.combine_vectors(&proj1, &proj2).unwrap()
+        self.combine_vectors_with_workspace(&proj1, &proj2, result).expect("Invalid result dimension");
     }
 
     fn project_tangent(
         &self,
         point: &DVector<T>,
         vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (v1, v2) = self.split_vector(vector)?;
 
-        let proj1 = self.manifold1.project_tangent(&p1, &v1)?;
-        let proj2 = self.manifold2.project_tangent(&p2, &v2)?;
+        let mut proj1 = DVector::zeros(self.dim1);
+        let mut proj2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.project_tangent(&p1, &v1, &mut proj1)?;
+        self.manifold2.project_tangent(&p2, &v2, &mut proj2)?;
 
-        self.combine_vectors(&proj1, &proj2)
+        self.combine_vectors_with_workspace(&proj1, &proj2, result)
     }
 
     fn inner_product(
@@ -319,42 +320,53 @@ where
         Ok(inner1 + inner2)
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
+    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (t1, t2) = self.split_vector(tangent)?;
 
-        let ret1 = self.manifold1.retract(&p1, &t1)?;
-        let ret2 = self.manifold2.retract(&p2, &t2)?;
+        let mut ret1 = DVector::zeros(self.dim1);
+        let mut ret2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.retract(&p1, &t1, &mut ret1)?;
+        self.manifold2.retract(&p2, &t2, &mut ret2)?;
 
-        self.combine_vectors(&ret1, &ret2)
+        self.combine_vectors_with_workspace(&ret1, &ret2, result)
     }
 
     fn inverse_retract(
         &self,
         point: &DVector<T>,
         other: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (o1, o2) = self.split_vector(other)?;
 
-        let inv1 = self.manifold1.inverse_retract(&p1, &o1)?;
-        let inv2 = self.manifold2.inverse_retract(&p2, &o2)?;
+        let mut inv1 = DVector::zeros(self.dim1);
+        let mut inv2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.inverse_retract(&p1, &o1, &mut inv1)?;
+        self.manifold2.inverse_retract(&p2, &o2, &mut inv2)?;
 
-        self.combine_vectors(&inv1, &inv2)
+        self.combine_vectors_with_workspace(&inv1, &inv2, result)
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &DVector<T>,
         grad: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (g1, g2) = self.split_vector(grad)?;
 
-        let riem1 = self.manifold1.euclidean_to_riemannian_gradient(&p1, &g1)?;
-        let riem2 = self.manifold2.euclidean_to_riemannian_gradient(&p2, &g2)?;
+        let mut riem1 = DVector::zeros(self.dim1);
+        let mut riem2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.euclidean_to_riemannian_gradient(&p1, &g1, &mut riem1)?;
+        self.manifold2.euclidean_to_riemannian_gradient(&p2, &g2, &mut riem2)?;
 
-        self.combine_vectors(&riem1, &riem2)
+        self.combine_vectors_with_workspace(&riem1, &riem2, result)
     }
 
     fn parallel_transport(
@@ -362,15 +374,19 @@ where
         from: &DVector<T>,
         to: &DVector<T>,
         vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
         let (from1, from2) = self.split_vector(from)?;
         let (to1, to2) = self.split_vector(to)?;
         let (v1, v2) = self.split_vector(vector)?;
 
-        let trans1 = self.manifold1.parallel_transport(&from1, &to1, &v1)?;
-        let trans2 = self.manifold2.parallel_transport(&from2, &to2, &v2)?;
+        let mut trans1 = DVector::zeros(self.dim1);
+        let mut trans2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.parallel_transport(&from1, &to1, &v1, &mut trans1)?;
+        self.manifold2.parallel_transport(&from2, &to2, &v2, &mut trans2)?;
 
-        self.combine_vectors(&trans1, &trans2)
+        self.combine_vectors_with_workspace(&trans1, &trans2, result)
     }
 
     fn random_point(&self) -> DVector<T> {
@@ -379,13 +395,16 @@ where
         self.combine_vectors(&p1, &p2).unwrap()
     }
 
-    fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
+    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
 
-        let t1 = self.manifold1.random_tangent(&p1)?;
-        let t2 = self.manifold2.random_tangent(&p2)?;
+        let mut t1 = DVector::zeros(self.dim1);
+        let mut t2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.random_tangent(&p1, &mut t1)?;
+        self.manifold2.random_tangent(&p2, &mut t2)?;
 
-        self.combine_vectors(&t1, &t2)
+        self.combine_vectors_with_workspace(&t1, &t2, result)
     }
 
     fn distance(&self, x: &DVector<T>, y: &DVector<T>) -> Result<T> {
@@ -399,158 +418,6 @@ where
         Ok(num_traits::Float::sqrt(d1 * d1 + d2 * d2))
     }
 
-    // ========================================================================
-    // Workspace-based methods for zero-allocation operations
-    // ========================================================================
-
-    fn project_tangent_with_workspace(
-        &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Get temporary buffers
-        let mut p1 = workspace.acquire_temp_vector(self.dim1);
-        let mut p2 = workspace.acquire_temp_vector(self.dim2);
-        let mut v1 = workspace.acquire_temp_vector(self.dim1);
-        let mut v2 = workspace.acquire_temp_vector(self.dim2);
-        let mut r1 = workspace.acquire_temp_vector(self.dim1);
-        let mut r2 = workspace.acquire_temp_vector(self.dim2);
-
-        // Split inputs
-        self.split_vector_with_workspace(point, &mut p1, &mut p2)?;
-        self.split_vector_with_workspace(vector, &mut v1, &mut v2)?;
-
-        // Project on each manifold
-        self.manifold1.project_tangent_with_workspace(&p1, &v1, &mut r1, workspace)?;
-        self.manifold2.project_tangent_with_workspace(&p2, &v2, &mut r2, workspace)?;
-
-        // Combine results
-        self.combine_vectors_with_workspace(&r1, &r2, result)?;
-
-        Ok(())
-    }
-
-    fn retract_with_workspace(
-        &self,
-        point: &DVector<T>,
-        tangent: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Get temporary buffers
-        let mut p1 = workspace.acquire_temp_vector(self.dim1);
-        let mut p2 = workspace.acquire_temp_vector(self.dim2);
-        let mut t1 = workspace.acquire_temp_vector(self.dim1);
-        let mut t2 = workspace.acquire_temp_vector(self.dim2);
-        let mut r1 = workspace.acquire_temp_vector(self.dim1);
-        let mut r2 = workspace.acquire_temp_vector(self.dim2);
-
-        // Split inputs
-        self.split_vector_with_workspace(point, &mut p1, &mut p2)?;
-        self.split_vector_with_workspace(tangent, &mut t1, &mut t2)?;
-
-        // Retract on each manifold
-        self.manifold1.retract_with_workspace(&p1, &t1, &mut r1, workspace)?;
-        self.manifold2.retract_with_workspace(&p2, &t2, &mut r2, workspace)?;
-
-        // Combine results
-        self.combine_vectors_with_workspace(&r1, &r2, result)?;
-
-        Ok(())
-    }
-
-    fn inverse_retract_with_workspace(
-        &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Get temporary buffers
-        let mut p1 = workspace.acquire_temp_vector(self.dim1);
-        let mut p2 = workspace.acquire_temp_vector(self.dim2);
-        let mut o1 = workspace.acquire_temp_vector(self.dim1);
-        let mut o2 = workspace.acquire_temp_vector(self.dim2);
-        let mut r1 = workspace.acquire_temp_vector(self.dim1);
-        let mut r2 = workspace.acquire_temp_vector(self.dim2);
-
-        // Split inputs
-        self.split_vector_with_workspace(point, &mut p1, &mut p2)?;
-        self.split_vector_with_workspace(other, &mut o1, &mut o2)?;
-
-        // Inverse retract on each manifold
-        self.manifold1.inverse_retract_with_workspace(&p1, &o1, &mut r1, workspace)?;
-        self.manifold2.inverse_retract_with_workspace(&p2, &o2, &mut r2, workspace)?;
-
-        // Combine results
-        self.combine_vectors_with_workspace(&r1, &r2, result)?;
-
-        Ok(())
-    }
-
-    fn euclidean_to_riemannian_gradient_with_workspace(
-        &self,
-        point: &DVector<T>,
-        euclidean_grad: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Get temporary buffers
-        let mut p1 = workspace.acquire_temp_vector(self.dim1);
-        let mut p2 = workspace.acquire_temp_vector(self.dim2);
-        let mut g1 = workspace.acquire_temp_vector(self.dim1);
-        let mut g2 = workspace.acquire_temp_vector(self.dim2);
-        let mut r1 = workspace.acquire_temp_vector(self.dim1);
-        let mut r2 = workspace.acquire_temp_vector(self.dim2);
-
-        // Split inputs
-        self.split_vector_with_workspace(point, &mut p1, &mut p2)?;
-        self.split_vector_with_workspace(euclidean_grad, &mut g1, &mut g2)?;
-
-        // Convert gradients on each manifold
-        self.manifold1.euclidean_to_riemannian_gradient_with_workspace(&p1, &g1, &mut r1, workspace)?;
-        self.manifold2.euclidean_to_riemannian_gradient_with_workspace(&p2, &g2, &mut r2, workspace)?;
-
-        // Combine results
-        self.combine_vectors_with_workspace(&r1, &r2, result)?;
-
-        Ok(())
-    }
-
-    fn parallel_transport_with_workspace(
-        &self,
-        from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Get temporary buffers
-        let mut f1 = workspace.acquire_temp_vector(self.dim1);
-        let mut f2 = workspace.acquire_temp_vector(self.dim2);
-        let mut t1 = workspace.acquire_temp_vector(self.dim1);
-        let mut t2 = workspace.acquire_temp_vector(self.dim2);
-        let mut v1 = workspace.acquire_temp_vector(self.dim1);
-        let mut v2 = workspace.acquire_temp_vector(self.dim2);
-        let mut r1 = workspace.acquire_temp_vector(self.dim1);
-        let mut r2 = workspace.acquire_temp_vector(self.dim2);
-
-        // Split inputs
-        self.split_vector_with_workspace(from, &mut f1, &mut f2)?;
-        self.split_vector_with_workspace(to, &mut t1, &mut t2)?;
-        self.split_vector_with_workspace(vector, &mut v1, &mut v2)?;
-
-        // Transport on each manifold
-        self.manifold1.parallel_transport_with_workspace(&f1, &t1, &v1, &mut r1, workspace)?;
-        self.manifold2.parallel_transport_with_workspace(&f2, &t2, &v2, &mut r2, workspace)?;
-
-        // Combine results
-        self.combine_vectors_with_workspace(&r1, &r2, result)?;
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -579,13 +446,15 @@ mod tests {
         assert!(product.is_point_on_manifold(&point, 1e-10));
         
         // Test tangent projection
-        let tangent = product.random_tangent(&point).unwrap();
-        let projected = product.project_tangent(&point, &tangent).unwrap();
+        let mut tangent = DVector::zeros(point.len());
+        product.random_tangent(&point, &mut tangent).unwrap();
+        let mut projected = DVector::zeros(point.len());
+        product.project_tangent(&point, &tangent, &mut projected).unwrap();
         assert!(product.is_vector_in_tangent_space(&point, &projected, 1e-10));
     }
 
     #[test]
-    fn test_product_static_workspace() {
+    fn test_product_static_retraction() {
         // Test with Sphere and Stiefel manifolds
         let sphere = Sphere::new(3).unwrap();
         let stiefel = Stiefel::new(4, 2).unwrap();
@@ -595,20 +464,20 @@ mod tests {
         assert!(product.is_point_on_manifold(&point, 1e-10), "Initial point not on manifold");
         
         // Scale down tangent vector to avoid numerical issues
-        let mut tangent = product.random_tangent(&point).unwrap();
+        let mut tangent = DVector::zeros(point.len());
+        product.random_tangent(&point, &mut tangent).unwrap();
         tangent *= 0.01; // Small step
         assert!(product.is_vector_in_tangent_space(&point, &tangent, 1e-10), "Tangent not in tangent space");
         
-        let mut workspace = Workspace::<f64>::new();
         let mut result = DVector::zeros(point.len());
         
-        // Test workspace-based retraction
-        product.retract_with_workspace(&point, &tangent, &mut result, &mut workspace).unwrap();
+        // Test retraction
+        product.retract(&point, &tangent, &mut result).unwrap();
         assert!(product.is_point_on_manifold(&result, 1e-9), "Result not on manifold");
         
-        // Test other workspace methods
+        // Test tangent projection
         let mut proj_result = DVector::zeros(tangent.len());
-        product.project_tangent_with_workspace(&point, &tangent, &mut proj_result, &mut workspace).unwrap();
+        product.project_tangent(&point, &tangent, &mut proj_result).unwrap();
         assert!(product.is_vector_in_tangent_space(&point, &proj_result, 1e-9));
     }
 

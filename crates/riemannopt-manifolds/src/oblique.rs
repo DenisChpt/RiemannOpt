@@ -3,14 +3,14 @@
 //! The oblique manifold consists of matrices with unit-norm columns.
 //! It can be viewed as a product of spheres, one for each column.
 
-use nalgebra::{DMatrix, DVector, Dyn, OVector};
+use nalgebra::{DMatrix, Dyn};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
-    manifold::{Manifold, Point, TangentVector},
-    types::Scalar,
+    manifold::Manifold,
+    types::{Scalar, DVector},
 };
 
 /// The oblique manifold OB(n,p) of n×p matrices with unit-norm columns.
@@ -108,7 +108,7 @@ impl<T: Scalar> Manifold<T, Dyn> for Oblique {
         self.n * self.p
     }
 
-    fn is_point_on_manifold(&self, point: &Point<T, Dyn>, tol: T) -> bool {
+    fn is_point_on_manifold(&self, point: &DVector<T>, tol: T) -> bool {
         if point.len() != self.n * self.p {
             return false;
         }
@@ -128,8 +128,8 @@ impl<T: Scalar> Manifold<T, Dyn> for Oblique {
 
     fn is_vector_in_tangent_space(
         &self,
-        point: &Point<T, Dyn>,
-        vector: &TangentVector<T, Dyn>,
+        point: &DVector<T>,
+        vector: &DVector<T>,
         tol: T,
     ) -> bool {
         if !self.is_point_on_manifold(point, tol) {
@@ -154,49 +154,87 @@ impl<T: Scalar> Manifold<T, Dyn> for Oblique {
         true
     }
 
-    fn project_point(&self, point: &Point<T, Dyn>) -> Point<T, Dyn> {
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+        let ambient_dim = self.n * self.p;
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let mat = self.vec_to_mat(point);
         let normalized = self.normalize_columns(&mat);
-        self.mat_to_vec(&normalized)
+        let vec = self.mat_to_vec(&normalized);
+        result.copy_from(&vec);
     }
 
     fn project_tangent(
         &self,
-        point: &Point<T, Dyn>,
-        vector: &TangentVector<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        point: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = self.n * self.p;
+        if point.len() != ambient_dim || vector.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point and vector must have correct dimensions",
+                format!("expected: {}, got point: {}, vector: {}", ambient_dim, point.len(), vector.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let x_mat = self.vec_to_mat(point);
         let v_mat = self.vec_to_mat(vector);
-        let mut result = v_mat.clone();
+        let mut proj_mat = v_mat.clone();
         
         // For each column, project to tangent space of corresponding sphere
         for j in 0..self.p {
             let x_col = x_mat.column(j);
             let v_col = v_mat.column(j);
             let inner_prod = x_col.dot(&v_col);
-            result.column_mut(j).axpy(-inner_prod, &x_col, T::one());
+            proj_mat.column_mut(j).axpy(-inner_prod, &x_col, T::one());
         }
         
-        Ok(self.mat_to_vec(&result))
+        let vec = self.mat_to_vec(&proj_mat);
+        result.copy_from(&vec);
+        Ok(())
     }
 
     fn inner_product(
         &self,
-        _point: &Point<T, Dyn>,
-        u: &TangentVector<T, Dyn>,
-        v: &TangentVector<T, Dyn>,
+        _point: &DVector<T>,
+        u: &DVector<T>,
+        v: &DVector<T>,
     ) -> Result<T> {
         Ok(u.dot(v))
     }
 
     fn retract(
         &self,
-        point: &Point<T, Dyn>,
-        tangent: &TangentVector<T, Dyn>,
-    ) -> Result<Point<T, Dyn>> {
+        point: &DVector<T>,
+        tangent: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = self.n * self.p;
+        if point.len() != ambient_dim || tangent.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point and tangent must have correct dimensions",
+                format!("expected: {}, got point: {}, tangent: {}", ambient_dim, point.len(), tangent.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let x_mat = self.vec_to_mat(point);
         let v_mat = self.vec_to_mat(tangent);
-        let mut result = DMatrix::zeros(self.n, self.p);
+        let mut retract_mat = DMatrix::zeros(self.n, self.p);
         
         // Retract each column independently using sphere retraction
         for j in 0..self.p {
@@ -207,37 +245,54 @@ impl<T: Scalar> Manifold<T, Dyn> for Oblique {
             let new_col = &x_col + &v_col;
             let norm = new_col.norm();
             
-            if norm > T::default_epsilon() {
-                result.set_column(j, &(new_col / norm));
+            if norm > T::epsilon() {
+                retract_mat.set_column(j, &(new_col / norm));
             } else {
                 // If too close to zero, keep original point
-                result.set_column(j, &x_col);
+                retract_mat.set_column(j, &x_col);
             }
         }
         
-        Ok(self.mat_to_vec(&result))
+        let vec = self.mat_to_vec(&retract_mat);
+        result.copy_from(&vec);
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
-        point: &Point<T, Dyn>,
-        other: &Point<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        point: &DVector<T>,
+        other: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = self.n * self.p;
+        if point.len() != ambient_dim || other.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Points must have correct dimensions",
+                format!("expected: {}, got point: {}, other: {}", ambient_dim, point.len(), other.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         // Approximate inverse retraction
         let diff = other - point;
-        self.project_tangent(point, &diff)
+        self.project_tangent(point, &diff, result)
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &Point<T, Dyn>,
-        euclidean_grad: &TangentVector<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        point: &DVector<T>,
+        euclidean_grad: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
         // Simply project to tangent space
-        self.project_tangent(point, euclidean_grad)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> Point<T, Dyn> {
+    fn random_point(&self) -> DVector<T> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         let mut mat = DMatrix::zeros(self.n, self.p);
@@ -253,19 +308,32 @@ impl<T: Scalar> Manifold<T, Dyn> for Oblique {
         self.mat_to_vec(&normalized)
     }
 
-    fn random_tangent(&self, point: &Point<T, Dyn>) -> Result<TangentVector<T, Dyn>> {
+    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+        let ambient_dim = self.n * self.p;
+        if point.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point must have correct dimension",
+                format!("expected: {}, got: {}", ambient_dim, point.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
-        let mut tangent = OVector::<T, Dyn>::zeros_generic(Dyn(self.n * self.p), nalgebra::Const::<1>);
+        let mut tangent = DVector::<T>::zeros(self.n * self.p);
         
         for i in 0..(self.n * self.p) {
             tangent[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
         }
         
-        self.project_tangent(point, &tangent)
+        self.project_tangent(point, &tangent, result)
     }
 
-    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
+    fn distance(&self, x: &DVector<T>, y: &DVector<T>) -> Result<T> {
         let x_mat = self.vec_to_mat(x);
         let y_mat = self.vec_to_mat(y);
         let mut dist_squared = T::zero();
@@ -294,14 +362,28 @@ impl<T: Scalar> Manifold<T, Dyn> for Oblique {
 
     fn parallel_transport(
         &self,
-        from_point: &Point<T, Dyn>,
-        to_point: &Point<T, Dyn>,
-        vector: &TangentVector<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        from_point: &DVector<T>,
+        to_point: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = self.n * self.p;
+        if from_point.len() != ambient_dim || to_point.len() != ambient_dim || vector.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "All vectors must have correct dimensions",
+                format!("expected: {}", ambient_dim),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let x_mat = self.vec_to_mat(from_point);
         let y_mat = self.vec_to_mat(to_point);
         let v_mat = self.vec_to_mat(vector);
-        let mut result = DMatrix::zeros(self.n, self.p);
+        let mut transport_mat = DMatrix::zeros(self.n, self.p);
         
         // Transport each column independently
         for j in 0..self.p {
@@ -312,33 +394,37 @@ impl<T: Scalar> Manifold<T, Dyn> for Oblique {
             // Parallel transport on sphere
             let inner_xy = x_col.dot(&y_col);
             
-            if Float::abs(inner_xy - T::one()) < T::default_epsilon() {
+            if Float::abs(inner_xy - T::one()) < T::epsilon() {
                 // Points are the same
-                result.set_column(j, &v_col);
-            } else if Float::abs(inner_xy + T::one()) < T::default_epsilon() {
+                transport_mat.set_column(j, &v_col);
+            } else if Float::abs(inner_xy + T::one()) < T::epsilon() {
                 // Antipodal points - transport is not unique
-                result.set_column(j, &v_col);
+                transport_mat.set_column(j, &v_col);
             } else {
                 // General case: use parallel transport formula for sphere
                 let clamped = Float::min(Float::max(inner_xy, -T::one()), T::one());
                 let angle = Float::acos(clamped);
                 let sin_angle = Float::sin(angle);
                 
-                if sin_angle > T::default_epsilon() {
+                if sin_angle > T::epsilon() {
                     let w = (y_col - x_col * inner_xy) / sin_angle;
                     let v_x_dot = v_col.dot(&x_col);
                     let v_w_dot = v_col.dot(&w);
                     let transported = v_col - (x_col * (v_x_dot * inner_xy) - y_col * (v_x_dot * Float::cos(angle)) + w * (v_w_dot * Float::sin(angle))) / sin_angle;
-                    result.set_column(j, &transported);
+                    transport_mat.set_column(j, &transported);
                 } else {
-                    result.set_column(j, &v_col);
+                    transport_mat.set_column(j, &v_col);
                 }
             }
         }
         
-        Ok(self.mat_to_vec(&result))
+        let vec = self.mat_to_vec(&transport_mat);
+        result.copy_from(&vec);
+        Ok(())
     }
 }
+
+// MatrixManifold implementation for efficient matrix operations
 
 #[cfg(test)]
 mod tests {
@@ -363,12 +449,13 @@ mod tests {
         let manifold = create_test_manifold();
         
         // Random matrix
-        let point = OVector::<f64, Dyn>::from_vec(vec![
+        let point = DVector::<f64>::from_vec(vec![
             1.0, 2.0, 3.0, 4.0, 5.0,
             6.0, 7.0, 8.0, 9.0, 10.0,
             11.0, 12.0, 13.0, 14.0, 15.0,
         ]);
-        let projected = <Oblique as Manifold<f64, Dyn>>::project_point(&manifold, &point);
+        let mut projected = DVector::zeros(15);
+        <Oblique as Manifold<f64, Dyn>>::project_point(&manifold, &point, &mut projected);
         
         // Check that columns have unit norm
         let mat = manifold.vec_to_mat(&projected);
@@ -383,12 +470,13 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = <Oblique as Manifold<f64, Dyn>>::random_point(&manifold);
-        let vector = OVector::<f64, Dyn>::from_vec(vec![
+        let vector = DVector::<f64>::from_vec(vec![
             0.1, 0.2, 0.3, 0.4, 0.5,
             0.6, 0.7, 0.8, 0.9, 1.0,
             1.1, 1.2, 1.3, 1.4, 1.5,
         ]);
-        let tangent = <Oblique as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vector).unwrap();
+        let mut tangent = DVector::zeros(15);
+        <Oblique as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vector, &mut tangent).unwrap();
         
         // Check orthogonality
         let x_mat = manifold.vec_to_mat(&point);
@@ -405,8 +493,11 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = <Oblique as Manifold<f64, Dyn>>::random_point(&manifold);
-        let tangent = <Oblique as Manifold<f64, Dyn>>::random_tangent(&manifold, &point).unwrap();
-        let retracted = <Oblique as Manifold<f64, Dyn>>::retract(&manifold, &point, &(0.1 * &tangent)).unwrap();
+        let mut tangent = DVector::zeros(15);
+        <Oblique as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut tangent).unwrap();
+        let scaled_tangent = 0.1 * &tangent;
+        let mut retracted = DVector::zeros(15);
+        <Oblique as Manifold<f64, Dyn>>::retract(&manifold, &point, &scaled_tangent, &mut retracted).unwrap();
         
         // Check that result is on manifold
         assert!(<Oblique as Manifold<f64, Dyn>>::is_point_on_manifold(&manifold, &retracted, 1e-6));

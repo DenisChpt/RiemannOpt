@@ -228,7 +228,13 @@ where
         }
     }
 
-    fn project_point(&self, point: &DVector<T>) -> DVector<T> {
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+        // Ensure result has correct size
+        let expected_size = self.dim1 + self.dim2;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let point_f64 = Self::to_f64_vector(point);
 
         let (comp1, comp2) = if point.len() != self.dim1 + self.dim2 {
@@ -245,32 +251,45 @@ where
             self.split_vector(&point_f64).expect("Vector should have correct dimensions")
         };
 
-        let proj1 = self.manifold1.project_point(&comp1);
-        let proj2 = self.manifold2.project_point(&comp2);
+        let mut proj1 = DVector::zeros(self.dim1);
+        let mut proj2 = DVector::zeros(self.dim2);
+        self.manifold1.project_point(&comp1, &mut proj1);
+        self.manifold2.project_point(&comp2, &mut proj2);
 
         let combined_f64 = self.combine_vectors(&proj1, &proj2)
             .expect("Projected components should have correct dimensions");
         
-        Self::from_f64_vector(&combined_f64)
+        let converted = Self::from_f64_vector(&combined_f64);
+        result.copy_from(&converted);
     }
 
     fn project_tangent(
         &self,
         point: &DVector<T>,
         vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.dim1 + self.dim2;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let point_f64 = Self::to_f64_vector(point);
         let vector_f64 = Self::to_f64_vector(vector);
 
         let (point1, point2) = self.split_vector(&point_f64)?;
         let (vec1, vec2) = self.split_vector(&vector_f64)?;
 
-        let proj1 = self.manifold1.project_tangent(&point1, &vec1)?;
-        let proj2 = self.manifold2.project_tangent(&point2, &vec2)?;
+        let mut proj1 = DVector::zeros(self.dim1);
+        let mut proj2 = DVector::zeros(self.dim2);
+        self.manifold1.project_tangent(&point1, &vec1, &mut proj1)?;
+        self.manifold2.project_tangent(&point2, &vec2, &mut proj2)?;
 
         let combined_f64 = self.combine_vectors(&proj1, &proj2)?;
-        
-        Ok(Self::from_f64_vector(&combined_f64))
+        let converted = Self::from_f64_vector(&combined_f64);
+        result.copy_from(&converted);
+        Ok(())
     }
 
     fn inner_product(
@@ -293,57 +312,86 @@ where
         Ok(<T as Scalar>::from_f64(inner1 + inner2))
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
+    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.dim1 + self.dim2;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let point_f64 = Self::to_f64_vector(point);
         let tangent_f64 = Self::to_f64_vector(tangent);
 
         let (point1, point2) = self.split_vector(&point_f64)?;
         let (tangent1, tangent2) = self.split_vector(&tangent_f64)?;
 
-        let retract1 = self.manifold1.retract(&point1, &tangent1)?;
-        let retract2 = self.manifold2.retract(&point2, &tangent2)?;
+        let mut retract1 = DVector::zeros(self.dim1);
+        let mut retract2 = DVector::zeros(self.dim2);
+        self.manifold1.retract(&point1, &tangent1, &mut retract1)?;
+        self.manifold2.retract(&point2, &tangent2, &mut retract2)?;
 
         let combined_f64 = self.combine_vectors(&retract1, &retract2)?;
-        
-        Ok(Self::from_f64_vector(&combined_f64))
+        let converted = Self::from_f64_vector(&combined_f64);
+        result.copy_from(&converted);
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
         point: &DVector<T>,
         other: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.dim1 + self.dim2;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let point_f64 = Self::to_f64_vector(point);
         let other_f64 = Self::to_f64_vector(other);
 
         let (point1, point2) = self.split_vector(&point_f64)?;
         let (other1, other2) = self.split_vector(&other_f64)?;
 
-        let inv_retract1 = self.manifold1.inverse_retract(&point1, &other1)?;
-        let inv_retract2 = self.manifold2.inverse_retract(&point2, &other2)?;
+        let mut inv_retract1 = DVector::zeros(self.dim1);
+        let mut inv_retract2 = DVector::zeros(self.dim2);
+        self.manifold1.inverse_retract(&point1, &other1, &mut inv_retract1)?;
+        self.manifold2.inverse_retract(&point2, &other2, &mut inv_retract2)?;
 
         let combined_f64 = self.combine_vectors(&inv_retract1, &inv_retract2)?;
-        
-        Ok(Self::from_f64_vector(&combined_f64))
+        let converted = Self::from_f64_vector(&combined_f64);
+        result.copy_from(&converted);
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &DVector<T>,
         grad: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.dim1 + self.dim2;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let point_f64 = Self::to_f64_vector(point);
         let grad_f64 = Self::to_f64_vector(grad);
 
         let (point1, point2) = self.split_vector(&point_f64)?;
         let (grad1, grad2) = self.split_vector(&grad_f64)?;
 
-        let riem_grad1 = self.manifold1.euclidean_to_riemannian_gradient(&point1, &grad1)?;
-        let riem_grad2 = self.manifold2.euclidean_to_riemannian_gradient(&point2, &grad2)?;
+        let mut riem_grad1 = DVector::zeros(self.dim1);
+        let mut riem_grad2 = DVector::zeros(self.dim2);
+        self.manifold1.euclidean_to_riemannian_gradient(&point1, &grad1, &mut riem_grad1)?;
+        self.manifold2.euclidean_to_riemannian_gradient(&point2, &grad2, &mut riem_grad2)?;
 
         let combined_f64 = self.combine_vectors(&riem_grad1, &riem_grad2)?;
-        
-        Ok(Self::from_f64_vector(&combined_f64))
+        let converted = Self::from_f64_vector(&combined_f64);
+        result.copy_from(&converted);
+        Ok(())
     }
 
     fn random_point(&self) -> DVector<T> {
@@ -356,17 +404,26 @@ where
         Self::from_f64_vector(&combined_f64)
     }
 
-    fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
+    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.dim1 + self.dim2;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let point_f64 = Self::to_f64_vector(point);
 
         let (point1, point2) = self.split_vector(&point_f64)?;
 
-        let tangent1 = self.manifold1.random_tangent(&point1)?;
-        let tangent2 = self.manifold2.random_tangent(&point2)?;
+        let mut tangent1 = DVector::zeros(self.dim1);
+        let mut tangent2 = DVector::zeros(self.dim2);
+        self.manifold1.random_tangent(&point1, &mut tangent1)?;
+        self.manifold2.random_tangent(&point2, &mut tangent2)?;
 
         let combined_f64 = self.combine_vectors(&tangent1, &tangent2)?;
-        
-        Ok(Self::from_f64_vector(&combined_f64))
+        let converted = Self::from_f64_vector(&combined_f64);
+        result.copy_from(&converted);
+        Ok(())
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -379,7 +436,14 @@ where
         from: &DVector<T>,
         to: &DVector<T>,
         vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.dim1 + self.dim2;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let from_f64 = Self::to_f64_vector(from);
         let to_f64 = Self::to_f64_vector(to);
         let vector_f64 = Self::to_f64_vector(vector);
@@ -388,12 +452,15 @@ where
         let (to1, to2) = self.split_vector(&to_f64)?;
         let (vector1, vector2) = self.split_vector(&vector_f64)?;
 
-        let transport1 = self.manifold1.parallel_transport(&from1, &to1, &vector1)?;
-        let transport2 = self.manifold2.parallel_transport(&from2, &to2, &vector2)?;
+        let mut transport1 = DVector::zeros(self.dim1);
+        let mut transport2 = DVector::zeros(self.dim2);
+        self.manifold1.parallel_transport(&from1, &to1, &vector1, &mut transport1)?;
+        self.manifold2.parallel_transport(&from2, &to2, &vector2, &mut transport2)?;
 
         let combined_f64 = self.combine_vectors(&transport1, &transport2)?;
-        
-        Ok(Self::from_f64_vector(&combined_f64))
+        let converted = Self::from_f64_vector(&combined_f64);
+        result.copy_from(&converted);
+        Ok(())
     }
 
     fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
@@ -471,7 +538,9 @@ mod tests {
         let product = ProductManifold::new(Box::new(sphere), Box::new(spd));
 
         let point = <ProductManifold as Manifold<f64, Dyn>>::random_point(&product);
-        let tangent = <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point).unwrap();
+        let ambient_dim = <ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product);
+        let mut tangent = DVector::zeros(ambient_dim);
+        <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point, &mut tangent).unwrap();
         
         assert!(<ProductManifold as Manifold<f64, Dyn>>::is_vector_in_tangent_space(&product, &point, &tangent, 1e-12));
     }
@@ -484,13 +553,16 @@ mod tests {
 
         // Test point projection
         let bad_point = DVector::from_vec(vec![5.0, 5.0, 1.0, 2.0, -1.0, 3.0]); // Invalid for both manifolds
-        let projected_point = <ProductManifold as Manifold<f64, Dyn>>::project_point(&product, &bad_point);
+        let ambient_dim = <ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product);
+        let mut projected_point = DVector::zeros(ambient_dim);
+        <ProductManifold as Manifold<f64, Dyn>>::project_point(&product, &bad_point, &mut projected_point);
         assert!(<ProductManifold as Manifold<f64, Dyn>>::is_point_on_manifold(&product, &projected_point, 1e-12));
 
         // Test tangent projection
         let point = <ProductManifold as Manifold<f64, Dyn>>::random_point(&product);
         let bad_tangent = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let projected_tangent = <ProductManifold as Manifold<f64, Dyn>>::project_tangent(&product, &point, &bad_tangent).unwrap();
+        let mut projected_tangent = DVector::zeros(<ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product));
+        <ProductManifold as Manifold<f64, Dyn>>::project_tangent(&product, &point, &bad_tangent, &mut projected_tangent).unwrap();
         
         assert!(<ProductManifold as Manifold<f64, Dyn>>::is_vector_in_tangent_space(&product, &point, &projected_tangent, 1e-12));
     }
@@ -502,8 +574,10 @@ mod tests {
         let product = ProductManifold::new(Box::new(sphere), Box::new(spd));
 
         let point = <ProductManifold as Manifold<f64, Dyn>>::random_point(&product);
-        let u = <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point).unwrap();
-        let v = <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point).unwrap();
+        let mut u = DVector::zeros(<ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product));
+        let mut v = DVector::zeros(<ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product));
+        <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point, &mut u).unwrap();
+        <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point, &mut v).unwrap();
 
         // Inner product should work
         let inner = <ProductManifold as Manifold<f64, Dyn>>::inner_product(&product, &point, &u, &v).unwrap();
@@ -521,15 +595,18 @@ mod tests {
         let product = ProductManifold::new(Box::new(sphere), Box::new(spd));
 
         let point = <ProductManifold as Manifold<f64, Dyn>>::random_point(&product);
-        let tangent = <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point).unwrap();
+        let mut tangent = DVector::zeros(<ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product));
+        <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &point, &mut tangent).unwrap();
 
-        let retracted = <ProductManifold as Manifold<f64, Dyn>>::retract(&product, &point, &tangent).unwrap();
+        let mut retracted = DVector::zeros(<ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product));
+        <ProductManifold as Manifold<f64, Dyn>>::retract(&product, &point, &tangent, &mut retracted).unwrap();
         assert!(<ProductManifold as Manifold<f64, Dyn>>::is_point_on_manifold(&product, &retracted, 1e-12));
 
         // Test centering property: R(x, 0) = x
         let zero_tangent = DVector::zeros(6);
-        let centered = <ProductManifold as Manifold<f64, Dyn>>::retract(&product, &point, &zero_tangent).unwrap();
-        assert_relative_eq!(centered, point, epsilon = 1e-12);
+        let mut centered = DVector::zeros(<ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product));
+        <ProductManifold as Manifold<f64, Dyn>>::retract(&product, &point, &zero_tangent, &mut centered).unwrap();
+        assert_relative_eq!(&centered, &point, epsilon = 1e-12);
     }
 
     #[test]
@@ -572,9 +649,12 @@ mod tests {
 
         let from = <ProductManifold as Manifold<f64, Dyn>>::random_point(&product);
         let to = <ProductManifold as Manifold<f64, Dyn>>::random_point(&product);
-        let vector = <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &from).unwrap();
+        let ambient_dim = <ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product);
+        let mut vector = DVector::zeros(ambient_dim);
+        <ProductManifold as Manifold<f64, Dyn>>::random_tangent(&product, &from, &mut vector).unwrap();
 
-        let transported = <ProductManifold as Manifold<f64, Dyn>>::parallel_transport(&product, &from, &to, &vector).unwrap();
+        let mut transported = DVector::zeros(ambient_dim);
+        <ProductManifold as Manifold<f64, Dyn>>::parallel_transport(&product, &from, &to, &vector, &mut transported).unwrap();
         
         // Transported vector should be in tangent space at destination
         assert!(<ProductManifold as Manifold<f64, Dyn>>::is_vector_in_tangent_space(&product, &to, &transported, 1e-12));
@@ -589,7 +669,9 @@ mod tests {
         let point = <ProductManifold as Manifold<f64, Dyn>>::random_point(&product);
         let euclidean_grad = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
-        let riemannian_grad = <ProductManifold as Manifold<f64, Dyn>>::euclidean_to_riemannian_gradient(&product, &point, &euclidean_grad).unwrap();
+        let ambient_dim = <ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product);
+        let mut riemannian_grad = DVector::zeros(ambient_dim);
+        <ProductManifold as Manifold<f64, Dyn>>::euclidean_to_riemannian_gradient(&product, &point, &euclidean_grad, &mut riemannian_grad).unwrap();
 
         assert!(<ProductManifold as Manifold<f64, Dyn>>::is_vector_in_tangent_space(&product, &point, &riemannian_grad, 1e-12));
     }
@@ -619,7 +701,9 @@ mod tests {
         assert!(result.is_err());
 
         // Test projection with wrong dimension
-        let projected = <ProductManifold as Manifold<f64, Dyn>>::project_point(&product, &wrong_dim_vector);
+        let ambient_dim = <ProductManifold as Manifold<f64, Dyn>>::ambient_dimension(&product);
+        let mut projected = DVector::zeros(ambient_dim);
+        <ProductManifold as Manifold<f64, Dyn>>::project_point(&product, &wrong_dim_vector, &mut projected);
         assert_eq!(projected.len(), 6); // Should be corrected to proper dimension
         assert!(<ProductManifold as Manifold<f64, Dyn>>::is_point_on_manifold(&product, &projected, 1e-12));
     }

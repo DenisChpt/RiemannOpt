@@ -18,17 +18,18 @@ fn time_operation<F: FnOnce()>(f: F) -> std::time::Duration {
 fn test_sphere_projection_performance() {
     let sphere = Sphere::new(1000).unwrap();
     let point: nalgebra::DVector<f64> = sphere.random_point();
+    let mut result = nalgebra::DVector::zeros(1000);
     
     // Warm up
     for _ in 0..10 {
-        sphere.project_point(&point);
+        sphere.project_point(&point, &mut result);
     }
     
     // Measure
     let iterations = 1000;
     let duration = time_operation(|| {
         for _ in 0..iterations {
-            sphere.project_point(&point);
+            sphere.project_point(&point, &mut result);
         }
     });
     
@@ -43,18 +44,20 @@ fn test_sphere_projection_performance() {
 fn test_stiefel_retraction_performance() {
     let stiefel = Stiefel::new(50, 10).unwrap();
     let point: nalgebra::DVector<f64> = stiefel.random_point();
-    let tangent = stiefel.random_tangent(&point).unwrap();
+    let mut tangent = nalgebra::DVector::zeros(50 * 10);
+    stiefel.random_tangent(&point, &mut tangent).unwrap();
+    let mut result = nalgebra::DVector::zeros(50 * 10);
     
     // Warm up
     for _ in 0..10 {
-        let _ = stiefel.retract(&point, &tangent);
+        let _ = stiefel.retract(&point, &tangent, &mut result);
     }
     
     // Measure
     let iterations = 100;
     let duration = time_operation(|| {
         for _ in 0..iterations {
-            let _ = stiefel.retract(&point, &tangent);
+            let _ = stiefel.retract(&point, &tangent, &mut result);
         }
     });
     
