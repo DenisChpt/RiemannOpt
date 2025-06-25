@@ -8,6 +8,7 @@
 use crate::{
     error::Result,
     manifold::{Point, TangentVector},
+    memory::Workspace,
     types::Scalar,
     core::cost_function::CostFunction,
 };
@@ -209,7 +210,48 @@ where
         }
     }
 
-    fn cost_and_gradient(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
+    fn cost_and_gradient(
+        &self,
+        point: &Point<T, D>,
+        workspace: &mut Workspace<T>,
+        gradient: &mut TangentVector<T, D>,
+    ) -> Result<T> {
+        self.check_and_invalidate(point);
+        
+        let mut cache = self.cache.borrow_mut();
+        
+        // Check if both are cached
+        let cost_cached = cache.cost_cache;
+        let grad_cached = cache.grad_cache.clone();
+        
+        match (cost_cached, grad_cached) {
+            (Some(cost), Some(grad)) => {
+                cache.cost_hits += 1;
+                cache.grad_hits += 1;
+                gradient.copy_from(&grad);
+                Ok(cost)
+            }
+            _ => {
+                // Need to compute at least one
+                cache.cost_misses += 1;
+                cache.grad_misses += 1;
+                
+                // Drop the borrow before calling inner function
+                drop(cache);
+                
+                let cost = self.inner.cost_and_gradient(point, workspace, gradient)?;
+                
+                // Re-borrow to update cache
+                let mut cache = self.cache.borrow_mut();
+                cache.cost_cache = Some(cost);
+                cache.grad_cache = Some(gradient.clone());
+                
+                Ok(cost)
+            }
+        }
+    }
+
+    fn cost_and_gradient_alloc(&self, point: &Point<T, D>) -> Result<(T, TangentVector<T, D>)> {
         self.check_and_invalidate(point);
         
         let mut cache = self.cache.borrow_mut();
@@ -232,7 +274,7 @@ where
                 // Drop the borrow before calling inner function
                 drop(cache);
                 
-                let (cost, grad) = self.inner.cost_and_gradient(point)?;
+                let (cost, grad) = self.inner.cost_and_gradient_alloc(point)?;
                 
                 // Re-borrow to update cache
                 let mut cache = self.cache.borrow_mut();
@@ -263,7 +305,7 @@ where
             // Try to get both cost and gradient if the inner function provides an efficient implementation
             let grad = if !cost_is_cached {
                 // Cost is not cached, might as well get both
-                let (cost, grad) = self.inner.cost_and_gradient(point)?;
+                let (cost, grad) = self.inner.cost_and_gradient_alloc(point)?;
                 let mut cache = self.cache.borrow_mut();
                 cache.cost_cache = Some(cost);
                 cache.grad_cache = Some(grad.clone());
@@ -405,7 +447,7 @@ mod tests {
         let point = DVector::from_vec(vec![1.0, 2.0]);
         
         // Get both cost and gradient
-        let (cost1, grad1) = cached.cost_and_gradient(&point).unwrap();
+        let (cost1, grad1) = cached.cost_and_gradient_alloc(&point).unwrap();
         
         // Get them separately - should use cache
         let cost2 = cached.cost(&point).unwrap();

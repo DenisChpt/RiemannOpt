@@ -10,7 +10,7 @@ use num_traits::Float;
 /// Compute gradient using finite differences with a workspace.
 ///
 /// This version avoids allocations by using pre-allocated buffers from the workspace.
-pub fn gradient_fd_with_workspace<T, F>(
+pub fn gradient_fd<T, F>(
     cost_fn: &F,
     point: &nalgebra::DVector<T>,
     workspace: &mut Workspace<T>,
@@ -63,7 +63,7 @@ where
 /// Compute a Hessian-vector product using a workspace.
 ///
 /// This version avoids allocations by using pre-allocated buffers.
-pub fn hessian_vector_product_with_workspace<T, F>(
+pub fn hessian_vector_product<T, F>(
     gradient_fn: &F,
     point: &nalgebra::DVector<T>,
     vector: &nalgebra::DVector<T>,
@@ -96,7 +96,7 @@ where
     perturbed.axpy(t, vector, T::one());
     
     let grad1 = gradient_fn(point)?;
-    let grad2 = gradient_fn(&perturbed)?;
+    let grad2 = gradient_fn(perturbed)?;
     
     // Compute difference and scale
     result.copy_from(&grad2);
@@ -104,6 +104,43 @@ where
     result.scale_mut(T::one() / t);
     
     Ok(())
+}
+
+/// Compute gradient using finite differences (allocating version).
+///
+/// This is a convenience function that allocates memory.
+pub fn gradient_fd_alloc<T, F>(
+    cost_fn: &F,
+    point: &nalgebra::DVector<T>,
+) -> Result<nalgebra::DVector<T>>
+where
+    T: Scalar,
+    F: Fn(&nalgebra::DVector<T>) -> Result<T>,
+{
+    let n = point.len();
+    let mut workspace = Workspace::with_size(n);
+    let mut gradient = nalgebra::DVector::zeros(n);
+    gradient_fd(cost_fn, point, &mut workspace, &mut gradient)?;
+    Ok(gradient)
+}
+
+/// Compute a Hessian-vector product (allocating version).
+///
+/// This is a convenience function that allocates memory.
+pub fn hessian_vector_product_alloc<T, F>(
+    gradient_fn: &F,
+    point: &nalgebra::DVector<T>,
+    vector: &nalgebra::DVector<T>,
+) -> Result<nalgebra::DVector<T>>
+where
+    T: Scalar,
+    F: Fn(&nalgebra::DVector<T>) -> Result<nalgebra::DVector<T>>,
+{
+    let n = point.len();
+    let mut workspace = Workspace::with_size(n);
+    let mut result = nalgebra::DVector::zeros(n);
+    hessian_vector_product(gradient_fn, point, vector, &mut workspace, &mut result)?;
+    Ok(result)
 }
 
 /// Extension trait for CostFunction to add workspace methods.
@@ -152,7 +189,7 @@ mod tests {
         
         // Compute gradient with workspace
         let mut grad_workspace = DVector::<f64>::zeros(n);
-        gradient_fd_with_workspace(&cost_fn, &x, &mut workspace, &mut grad_workspace).unwrap();
+        gradient_fd(&cost_fn, &x, &mut workspace, &mut grad_workspace).unwrap();
         
         // Compare with analytical gradient: Ax + b
         let grad_analytical = &a * &x + &b;
@@ -179,7 +216,7 @@ mod tests {
         
         // Compute Hessian-vector product with workspace
         let mut hvp_workspace = DVector::<f64>::zeros(n);
-        hessian_vector_product_with_workspace(
+        hessian_vector_product(
             &gradient_fn,
             &x,
             &v,
@@ -214,7 +251,7 @@ mod tests {
                 Ok((0.5 * x.transpose() * &a * x)[(0, 0)] + b.dot(x))
             };
             let mut grad = DVector::<f64>::zeros(n);
-            gradient_fd_with_workspace(&cost_fn, &x, &mut workspace, &mut grad).unwrap();
+            gradient_fd(&cost_fn, &x, &mut workspace, &mut grad).unwrap();
         }
         
         // Workspace buffers should still exist and have correct size

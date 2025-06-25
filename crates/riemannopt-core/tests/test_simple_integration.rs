@@ -227,7 +227,7 @@ fn test_cost_function_counting() {
     assert_eq!(grad_count, 1);
     
     // Evaluate both
-    let _ = cost_fn.cost_and_gradient(&point).unwrap();
+    let _ = cost_fn.cost_and_gradient_alloc(&point).unwrap();
     let (cost_count, grad_count, _) = cost_fn.counts();
     assert_eq!(cost_count, 2);
     assert_eq!(grad_count, 2);

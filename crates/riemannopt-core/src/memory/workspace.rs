@@ -42,6 +42,21 @@ pub enum BufferId {
     Custom(u32),
 }
 
+/// Type alias for gradient computation buffers
+type GradientBuffers<'a, T> = (
+    &'a mut DVector<T>,  // gradient
+    &'a mut DVector<T>,  // unit vector
+    &'a mut DVector<T>,  // point plus
+    &'a mut DVector<T>,  // point minus
+);
+
+/// Type alias for gradient FD buffers
+type GradientFDBuffers<'a, T> = (
+    &'a mut DVector<T>,  // unit vector
+    &'a mut DVector<T>,  // point plus  
+    &'a mut DVector<T>,  // point minus
+);
+
 /// Pre-allocated workspace for optimization algorithms.
 #[derive(Debug, Clone)]
 pub struct Workspace<T: Scalar> {
@@ -158,12 +173,7 @@ impl<T: Scalar> Workspace<T> {
     ///
     /// This method is specifically designed for finite difference gradient computation
     /// to avoid multiple mutable borrows.
-    pub fn get_gradient_buffers_mut(&mut self) -> Option<(
-        &mut DVector<T>,  // gradient
-        &mut DVector<T>,  // unit vector
-        &mut DVector<T>,  // point plus
-        &mut DVector<T>,  // point minus
-    )> {
+    pub fn get_gradient_buffers_mut(&mut self) -> Option<GradientBuffers<T>> {
         // Check if all required buffers exist
         if !self.vectors.contains_key(&BufferId::Gradient) ||
            !self.vectors.contains_key(&BufferId::UnitVector) ||
@@ -184,6 +194,37 @@ impl<T: Scalar> Workspace<T> {
                 &mut *unit,
                 &mut *plus,
                 &mut *minus,
+            ))
+        }
+    }
+    
+    /// Get mutable references to buffers needed for finite difference gradient computation.
+    ///
+    /// Returns (unit_vector, point_plus, point_minus) if all buffers exist and have the correct size.
+    pub fn get_gradient_fd_buffers_mut(&mut self, size: usize) -> Option<GradientFDBuffers<T>> {
+        // Ensure buffers exist with correct size
+        if self.get_vector(BufferId::UnitVector).is_none_or(|v| v.len() != size) {
+            self.preallocate_vector(BufferId::UnitVector, size);
+        }
+        
+        if self.get_vector(BufferId::PointPlus).is_none_or(|v| v.len() != size) {
+            self.preallocate_vector(BufferId::PointPlus, size);
+        }
+        
+        if self.get_vector(BufferId::PointMinus).is_none_or(|v| v.len() != size) {
+            self.preallocate_vector(BufferId::PointMinus, size);
+        }
+        
+        // Get raw pointers to avoid borrow checker issues
+        unsafe {
+            let unit_ptr = self.vectors.get_mut(&BufferId::UnitVector).unwrap() as *mut DVector<T>;
+            let plus_ptr = self.vectors.get_mut(&BufferId::PointPlus).unwrap() as *mut DVector<T>;
+            let minus_ptr = self.vectors.get_mut(&BufferId::PointMinus).unwrap() as *mut DVector<T>;
+            
+            Some((
+                &mut *unit_ptr,
+                &mut *plus_ptr,
+                &mut *minus_ptr,
             ))
         }
     }

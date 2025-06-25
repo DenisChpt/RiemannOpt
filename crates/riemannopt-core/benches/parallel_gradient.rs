@@ -25,7 +25,7 @@ fn bench_gradient_computation(c: &mut Criterion) {
             &dim,
             |b, _| {
                 b.iter(|| {
-                    let grad = cost.gradient_fd(&x).unwrap();
+                    let grad = cost.gradient_fd_alloc(&x).unwrap();
                     black_box(grad)
                 });
             },
