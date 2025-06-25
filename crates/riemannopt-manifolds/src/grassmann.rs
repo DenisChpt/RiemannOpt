@@ -12,11 +12,12 @@
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
-    manifold::Manifold,
-    types::Scalar,
-    core::MatrixManifold,
+    manifold::{Manifold, Point, TangentVector},
+    types::{Scalar, DVector},
+    compute::{get_dispatcher, SimdBackend},
+    memory::Workspace,
 };
-use nalgebra::{DMatrix, DVector, Dyn};
+use nalgebra::{DMatrix, Dyn};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
@@ -78,12 +79,12 @@ impl Grassmann {
     pub fn new(n: usize, p: usize) -> Result<Self> {
         if n == 0 {
             return Err(ManifoldError::invalid_point(
-                "Grassmann manifold requires ambient dimension n > 0",
+                format!("Grassmann manifold Gr(n,p) requires ambient dimension n > 0, got n={}", n),
             ));
         }
         if p == 0 || p >= n {
             return Err(ManifoldError::invalid_point(
-                "Grassmann manifold requires 0 < p < n",
+                format!("Grassmann manifold Gr(n,p) requires 0 < p < n, got n={}, p={}", n, p),
             ));
         }
         Ok(Self { n, p })
@@ -118,7 +119,7 @@ impl Grassmann {
         
         // Ensure positive diagonal elements in R for canonical form
         let r = qr.r();
-        for i in 0..self.p.min(r.nrows()) {
+        for i in 0..std::cmp::min(self.p, r.nrows()) {
             if r[(i, i)] < T::zero() {
                 // Flip sign of column if diagonal element is negative
                 for j in 0..self.n {
@@ -253,6 +254,178 @@ impl Grassmann {
         
         true
     }
+
+    /// Projects a vector to the horizontal tangent space at a point using a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    ///
+    /// # Arguments
+    /// * `point` - Point on the manifold (as vector)
+    /// * `vector` - Vector to project
+    /// * `result` - Output buffer for the projected vector
+    /// * `workspace` - Pre-allocated workspace for temporary buffers
+    pub fn project_tangent_with_workspace<T>(
+        &self,
+        point: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        if point.len() != self.n * self.p || vector.len() != self.n * self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("n*p={} elements for Gr({},{})", self.n * self.p, self.n, self.p),
+                format!("point has {} elements, vector has {} elements", point.len(), vector.len()),
+            ));
+        }
+        
+        // Use workspace buffer for X^T V
+        let mut xtv = workspace.acquire_temp_matrix(self.p, self.p);
+        
+        // Convert to matrices
+        let x_matrix = DMatrix::from_vec(self.n, self.p, point.as_slice().to_vec());
+        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.as_slice().to_vec());
+        
+        // Compute X^T V
+        xtv.copy_from(&(x_matrix.transpose() * &v_matrix));
+        
+        // Project to horizontal space: V - X(X^T V)
+        let projected = v_matrix - &x_matrix * &*xtv;
+        result.copy_from(&DVector::from_vec(projected.as_slice().to_vec()));
+        
+        Ok(())
+    }
+
+    /// Retracts a tangent vector at a point using a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    /// Uses QR decomposition for the retraction.
+    ///
+    /// # Arguments
+    /// * `point` - Point on the manifold (as vector)
+    /// * `tangent` - Tangent vector
+    /// * `result` - Output buffer for the retracted point
+    /// * `workspace` - Pre-allocated workspace for temporary buffers
+    pub fn retract_with_workspace<T>(
+        &self,
+        point: &DVector<T>,
+        tangent: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        if point.len() != self.n * self.p || tangent.len() != self.n * self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("n*p={} elements for Gr({},{})", self.n * self.p, self.n, self.p),
+                format!("point has {} elements, tangent has {} elements", point.len(), tangent.len()),
+            ));
+        }
+        
+        // Use workspace buffer for the candidate matrix
+        let mut candidate = workspace.acquire_temp_matrix(self.n, self.p);
+        
+        // Convert to matrices
+        let x_matrix = DMatrix::from_vec(self.n, self.p, point.as_slice().to_vec());
+        let v_matrix = DMatrix::from_vec(self.n, self.p, tangent.as_slice().to_vec());
+        
+        // QR retraction: R(X, V) = qr(X + V).Q
+        candidate.copy_from(&(x_matrix + v_matrix));
+        
+        // Compute canonical representation
+        // Clone the candidate matrix to perform QR decomposition
+        let qr = (*candidate).clone().qr();
+        let q_full = qr.q();
+        let mut q = q_full.columns(0, self.p).into_owned();
+        
+        // Ensure positive diagonal elements in R for canonical form
+        let r = qr.r();
+        for i in 0..std::cmp::min(self.p, r.nrows()) {
+            if r[(i, i)] < T::zero() {
+                for j in 0..self.n {
+                    q[(j, i)] = -q[(j, i)];
+                }
+            }
+        }
+        
+        result.copy_from(&DVector::from_vec(q.as_slice().to_vec()));
+        Ok(())
+    }
+
+    /// Computes principal angles between two subspaces using a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn principal_angles_cosines_with_workspace<T>(
+        &self,
+        x1: &DMatrix<T>,
+        x2: &DMatrix<T>,
+        workspace: &mut Workspace<T>,
+    ) -> DVector<T>
+    where
+        T: Scalar,
+    {
+        // Use workspace buffer for X1^T X2
+        let mut inner = workspace.acquire_temp_matrix(self.p, self.p);
+        inner.copy_from(&(x1.transpose() * x2));
+        
+        // Compute SVD (clone the inner matrix to perform SVD)
+        let svd = (*inner).clone().svd(true, true);
+        
+        // Singular values are cosines of principal angles
+        // Clamp to [0,1] to avoid numerical issues
+        let mut cosines = svd.singular_values.clone();
+        for i in 0..cosines.len() {
+            cosines[i] = <T as Float>::max(
+                <T as Float>::min(cosines[i], T::one()),
+                T::zero(),
+            );
+        }
+        
+        cosines
+    }
+
+    /// Computes distance between two points using a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn distance_with_workspace<T>(
+        &self,
+        x: &Point<T, Dyn>,
+        y: &Point<T, Dyn>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<T>
+    where
+        T: Scalar,
+    {
+        if x.len() != self.n * self.p || y.len() != self.n * self.p {
+            return Err(ManifoldError::dimension_mismatch(
+                format!("n*p={} elements for Gr({},{})", self.n * self.p, self.n, self.p),
+                format!("x has {} elements, y has {} elements", x.len(), y.len()),
+            ));
+        }
+        
+        let x1_matrix = DMatrix::from_vec(self.n, self.p, x.as_slice().to_vec());
+        let x2_matrix = DMatrix::from_vec(self.n, self.p, y.as_slice().to_vec());
+        
+        // Compute geodesic distance using principal angles
+        let cosines = self.principal_angles_cosines_with_workspace(&x1_matrix, &x2_matrix, workspace);
+        
+        let mut distance_squared = T::zero();
+        for i in 0..cosines.len() {
+            let cos_theta = cosines[i];
+            // Compute arccos, handling numerical issues
+            let cos_clamped = <T as Float>::max(
+                <T as Float>::min(cos_theta, T::one()),
+                T::zero(),
+            );
+            let angle = <T as Float>::acos(cos_clamped);
+            distance_squared = distance_squared + angle * angle;
+        }
+        
+        Ok(<T as Float>::sqrt(distance_squared))
+    }
 }
 
 impl<T> Manifold<T, Dyn> for Grassmann
@@ -266,28 +439,32 @@ where
     fn dimension(&self) -> usize {
         self.p * (self.n - self.p)
     }
+    
+    fn ambient_dimension(&self) -> usize {
+        self.n * self.p
+    }
 
-    fn is_point_on_manifold(&self, point: &DVector<T>, tolerance: T) -> bool {
+    fn is_point_on_manifold(&self, point: &Point<T, Dyn>, tolerance: T) -> bool {
         if point.len() != self.n * self.p {
             return false;
         }
         
-        let matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
+        let matrix = DMatrix::from_vec(self.n, self.p, point.as_slice().to_vec());
         self.is_valid_subspace_representative(&matrix, tolerance)
     }
 
     fn is_vector_in_tangent_space(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
+        point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
         tolerance: T,
     ) -> bool {
         if point.len() != self.n * self.p || vector.len() != self.n * self.p {
             return false;
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.data.as_vec().clone());
+        let x_matrix = DMatrix::from_vec(self.n, self.p, point.as_slice().to_vec());
+        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.as_slice().to_vec());
         
         // Check if V is in horizontal tangent space: X^T V = 0
         let xtv = x_matrix.transpose() * &v_matrix;
@@ -303,9 +480,15 @@ where
         true
     }
 
-    fn project_point(&self, point: &DVector<T>) -> DVector<T> {
+    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>) {
+        // Ensure result has correct size
+        let expected_size = self.n * self.p;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+
         let matrix = if point.len() == self.n * self.p {
-            DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone())
+            DMatrix::from_vec(self.n, self.p, point.as_slice().to_vec())
         } else {
             // Handle wrong dimensions
             let mut matrix = DMatrix::<T>::zeros(self.n, self.p);
@@ -319,90 +502,98 @@ where
         };
         
         let projected = self.project_to_manifold(&matrix);
-        DVector::from_vec(projected.data.as_vec().clone())
+        result.copy_from(&DVector::from_vec(projected.as_slice().to_vec()))
     }
 
     fn project_tangent(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
-        if point.len() != self.n * self.p || vector.len() != self.n * self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                "Point and vector must have correct dimensions for Grassmann manifold",
-                format!("point: {}, vector: {}", point.len(), vector.len()),
-            ));
+        point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.n * self.p;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.data.as_vec().clone());
-        
-        // Project to horizontal tangent space
-        let projected = self.project_to_horizontal_tangent(&x_matrix, &v_matrix);
-        Ok(DVector::from_vec(projected.data.as_vec().clone()))
+        // Use the workspace variant with a temporary workspace
+        let mut workspace = Workspace::new();
+        self.project_tangent_with_workspace(point, vector, result, &mut workspace)
     }
 
     fn inner_product(
         &self,
-        _point: &DVector<T>,
-        u: &DVector<T>,
-        v: &DVector<T>,
+        _point: &Point<T, Dyn>,
+        u: &TangentVector<T, Dyn>,
+        v: &TangentVector<T, Dyn>,
     ) -> Result<T> {
         // Use Euclidean inner product (canonical metric)
-        Ok(u.dot(v))
+        let dispatcher = get_dispatcher::<T>();
+        Ok(dispatcher.dot_product(u, v))
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
-        if point.len() != self.n * self.p || tangent.len() != self.n * self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                "Point and tangent must have correct dimensions",
-                format!("point: {}, tangent: {}", point.len(), tangent.len()),
-            ));
+    fn retract(&self, point: &Point<T, Dyn>, tangent: &TangentVector<T, Dyn>, result: &mut Point<T, Dyn>) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.n * self.p;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, tangent.data.as_vec().clone());
-        
-        // QR retraction: R(X, V) = qr(X + V).Q
-        let candidate = x_matrix + v_matrix;
-        let retracted = self.project_to_manifold(&candidate);
-        
-        Ok(DVector::from_vec(retracted.data.as_vec().clone()))
+        // Use the workspace variant with a temporary workspace
+        let mut workspace = Workspace::new();
+        self.retract_with_workspace(point, tangent, result, &mut workspace)
     }
 
     fn inverse_retract(
         &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        other: &Point<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.n * self.p;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         if point.len() != self.n * self.p || other.len() != self.n * self.p {
             return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("point: {}, other: {}", point.len(), other.len()),
+                format!("n*p={} elements for Gr({},{})", self.n * self.p, self.n, self.p),
+                format!("point has {} elements, other has {} elements", point.len(), other.len()),
             ));
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let y_matrix = DMatrix::from_vec(self.n, self.p, other.data.as_vec().clone());
+        
+        let x_matrix = DMatrix::from_vec(self.n, self.p, point.as_slice().to_vec());
+        let y_matrix = DMatrix::from_vec(self.n, self.p, other.as_slice().to_vec());
         
         // Approximate inverse retraction for Grassmann manifold
         // This is more complex than for Stiefel due to the quotient structure
         let v_matrix = y_matrix - &x_matrix;
         let projected = self.project_to_horizontal_tangent(&x_matrix, &v_matrix);
         
-        Ok(DVector::from_vec(projected.data.as_vec().clone()))
+        result.copy_from(&DVector::from_vec(projected.as_slice().to_vec()));
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &DVector<T>,
-        grad: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        euclidean_grad: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.n * self.p;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         // Project Euclidean gradient to horizontal tangent space
-        self.project_tangent(point, grad)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> DVector<T> {
+    fn random_point(&self) -> Point<T, Dyn> {
         let mut rng = rand::thread_rng();
         let mut matrix = DMatrix::<T>::zeros(self.n, self.p);
         
@@ -416,20 +607,28 @@ where
         
         // Project to manifold to get canonical representation
         let projected = self.project_to_manifold(&matrix);
-        DVector::from_vec(projected.data.as_vec().clone())
+        DVector::from_vec(projected.as_slice().to_vec())
     }
 
-    fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.n * self.p;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         if point.len() != self.n * self.p {
             return Err(ManifoldError::dimension_mismatch(
-                "Point must have correct dimensions",
-                format!("expected: {}, actual: {}", self.n * self.p, point.len()),
+                format!("n*p={} elements for Gr({},{})", self.n * self.p, self.n, self.p),
+                format!("point has {} elements", point.len()),
             ));
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
+        
+        let x_matrix = DMatrix::from_vec(self.n, self.p, point.as_slice().to_vec());
         let tangent = self.random_horizontal_tangent(&x_matrix)?;
-        Ok(DVector::from_vec(tangent.data.as_vec().clone()))
+        result.copy_from(&DVector::from_vec(tangent.as_slice().to_vec()));
+        Ok(())
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -438,43 +637,27 @@ where
 
     fn parallel_transport(
         &self,
-        _from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        _from: &Point<T, Dyn>,
+        to: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = self.n * self.p;
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         // Use projection-based parallel transport for simplicity
         // More sophisticated parallel transport could be implemented using
         // the geodesic connection, but projection works well in practice
-        self.project_tangent(to, vector)
+        self.project_tangent(to, vector, result)
     }
 
-    fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
-        if point1.len() != self.n * self.p || point2.len() != self.n * self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("point1: {}, point2: {}", point1.len(), point2.len()),
-            ));
-        }
-        
-        let x1_matrix = DMatrix::from_vec(self.n, self.p, point1.data.as_vec().clone());
-        let x2_matrix = DMatrix::from_vec(self.n, self.p, point2.data.as_vec().clone());
-        
-        // Compute geodesic distance using principal angles
-        let cosines = self.principal_angles_cosines(&x1_matrix, &x2_matrix);
-        
-        let mut distance_squared = T::zero();
-        for i in 0..cosines.len() {
-            let cos_theta = cosines[i];
-            // Compute arccos, handling numerical issues
-            let cos_clamped = <T as Float>::max(
-                <T as Float>::min(cos_theta, T::one()),
-                T::zero(),
-            );
-            let angle = <T as Float>::acos(cos_clamped);
-            distance_squared = distance_squared + angle * angle;
-        }
-        
-        Ok(<T as Float>::sqrt(distance_squared))
+    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
+        // Use the workspace variant with a temporary workspace
+        let mut workspace = Workspace::new();
+        self.distance_with_workspace(x, y, &mut workspace)
     }
 }
 
@@ -540,7 +723,7 @@ mod tests {
             1.0, 0.0, 0.0, 0.0,  // First column
             0.0, 1.0, 0.0, 0.0   // Second column
         ]);
-        let point = DVector::from_vec(matrix.data.as_vec().clone());
+        let point = DVector::from_vec(matrix.as_slice().to_vec());
         
         assert!(grassmann.is_point_on_manifold(&point, 1e-10));
         
@@ -549,7 +732,7 @@ mod tests {
             2.0, 0.0, 0.0, 0.0,  // First column (not unit)
             0.0, 1.0, 0.0, 0.0   // Second column
         ]);
-        let bad_point = DVector::from_vec(bad_matrix.data.as_vec().clone());
+        let bad_point = DVector::from_vec(bad_matrix.as_slice().to_vec());
         
         assert!(!grassmann.is_point_on_manifold(&bad_point, 1e-10));
     }
@@ -563,14 +746,14 @@ mod tests {
             1.0, 0.0, 0.0, 0.0,  // First column
             0.0, 1.0, 0.0, 0.0   // Second column
         ]);
-        let point = DVector::from_vec(x_matrix.data.as_vec().clone());
+        let point = DVector::from_vec(x_matrix.as_slice().to_vec());
         
         // Create vector in horizontal tangent space (X^T V = 0)
         let v_matrix = DMatrix::from_vec(4, 2, vec![
             0.0, 0.0, 1.0, 0.0,  // First column
             0.0, 0.0, 0.0, 1.0   // Second column
         ]);
-        let tangent = DVector::from_vec(v_matrix.data.as_vec().clone());
+        let tangent = DVector::from_vec(v_matrix.as_slice().to_vec());
         
         assert!(grassmann.is_vector_in_tangent_space(&point, &tangent, 1e-10));
         
@@ -579,7 +762,7 @@ mod tests {
             1.0, 0.0, 0.0, 0.0,  // This violates X^T V = 0
             0.0, 0.0, 0.0, 1.0
         ]);
-        let bad_tangent = DVector::from_vec(bad_v_matrix.data.as_vec().clone());
+        let bad_tangent = DVector::from_vec(bad_v_matrix.as_slice().to_vec());
         
         assert!(!grassmann.is_vector_in_tangent_space(&point, &bad_tangent, 1e-10));
     }
@@ -590,13 +773,15 @@ mod tests {
         
         // Test point projection
         let bad_point = DVector::from_vec(vec![2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
-        let projected_point = grassmann.project_point(&bad_point);
+        let mut projected_point = DVector::zeros(8); // n * p = 4 * 2 = 8
+        grassmann.project_point(&bad_point, &mut projected_point);
         assert!(grassmann.is_point_on_manifold(&projected_point, 1e-10));
         
         // Test tangent projection
         let point = grassmann.random_point();
         let bad_vector = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-        let projected_tangent = grassmann.project_tangent(&point, &bad_vector).unwrap();
+        let mut projected_tangent = DVector::zeros(8); // n * p = 4 * 2 = 8
+        grassmann.project_tangent(&point, &bad_vector, &mut projected_tangent).unwrap();
         
         assert!(grassmann.is_vector_in_tangent_space(&point, &projected_tangent, 1e-10));
     }
@@ -608,12 +793,13 @@ mod tests {
         let zero_tangent = DVector::zeros(8);
         
         // Test centering property: R(x, 0) = x
-        let retracted = grassmann.retract(&point, &zero_tangent).unwrap();
+        let mut retracted = DVector::zeros(8); // n * p = 4 * 2 = 8
+        grassmann.retract(&point, &zero_tangent, &mut retracted).unwrap();
         
         // For Grassmann manifold, the retraction should preserve the subspace
         // Check that both points represent the same subspace
-        let x_matrix = DMatrix::from_vec(4, 2, point.data.as_vec().clone());
-        let r_matrix = DMatrix::from_vec(4, 2, retracted.data.as_vec().clone());
+        let x_matrix = DMatrix::from_vec(4, 2, point.as_slice().to_vec());
+        let r_matrix = DMatrix::from_vec(4, 2, retracted.as_slice().to_vec());
         
         let proj_x = &x_matrix * x_matrix.transpose();
         let proj_r = &r_matrix * r_matrix.transpose();
@@ -654,7 +840,8 @@ mod tests {
         assert!(grassmann.is_point_on_manifold(&random_point, 1e-10));
         
         // Test random tangent generation
-        let tangent = grassmann.random_tangent(&random_point).unwrap();
+        let mut tangent = DVector::zeros(15);
+        grassmann.random_tangent(&random_point, &mut tangent).unwrap();
         assert!(grassmann.is_vector_in_tangent_space(&random_point, &tangent, 1e-10));
     }
 
@@ -664,8 +851,9 @@ mod tests {
         let point = <Grassmann as Manifold<f64, Dyn>>::random_point(&grassmann);
         let euclidean_grad = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         
-        let riemannian_grad = grassmann
-            .euclidean_to_riemannian_gradient(&point, &euclidean_grad)
+        let mut riemannian_grad = DVector::zeros(6);
+        grassmann
+            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad)
             .unwrap();
         
         assert!(grassmann.is_vector_in_tangent_space(&point, &riemannian_grad, 1e-10));
@@ -689,8 +877,10 @@ mod tests {
         ]);
         let matrix2 = &matrix1 * rotation;
         
-        let point1 = grassmann.project_point(&DVector::from_vec(matrix1.data.as_vec().clone()));
-        let point2 = grassmann.project_point(&DVector::from_vec(matrix2.data.as_vec().clone()));
+        let mut point1 = DVector::zeros(8);
+        grassmann.project_point(&DVector::from_vec(matrix1.as_slice().to_vec()), &mut point1);
+        let mut point2 = DVector::zeros(8);
+        grassmann.project_point(&DVector::from_vec(matrix2.as_slice().to_vec()), &mut point2);
         
         // Distance between equivalent representations should be small
         let dist = grassmann.distance(&point1, &point2).unwrap();
@@ -720,226 +910,11 @@ mod tests {
         }
         
         // Distance should be sqrt(pi^2/2 + pi^2/2) = pi/sqrt(2)
-        let point1 = DVector::from_vec(matrix1.data.as_vec().clone());
-        let point2 = DVector::from_vec(matrix2.data.as_vec().clone());
+        let point1 = DVector::from_vec(matrix1.as_slice().to_vec());
+        let point2 = DVector::from_vec(matrix2.as_slice().to_vec());
         let dist = grassmann.distance(&point1, &point2).unwrap();
         let expected_dist = std::f64::consts::PI * std::f64::consts::FRAC_1_SQRT_2;
         assert_relative_eq!(dist, expected_dist, epsilon = 1e-10);
     }
 }
 
-// MatrixManifold implementation for efficient matrix operations
-impl<T: Scalar + Float> MatrixManifold<T> for Grassmann {
-    fn matrix_dims(&self) -> (usize, usize) {
-        (self.n, self.p)
-    }
-    
-    fn project_matrix(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if matrix.nrows() != self.n || matrix.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", matrix.nrows(), matrix.ncols()),
-            ));
-        }
-        
-        // Use QR decomposition to get orthonormal basis
-        Ok(self.canonical_representation(matrix))
-    }
-    
-    fn project_tangent_matrix(&self, point: &DMatrix<T>, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if point.nrows() != self.n || point.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        if matrix.nrows() != self.n || matrix.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", matrix.nrows(), matrix.ncols()),
-            ));
-        }
-        
-        // Project to horizontal space: V - XX^T V
-        let xv = point.transpose() * matrix;
-        Ok(matrix - point * xv)
-    }
-    
-    fn inner_product_matrix(&self, _point: &DMatrix<T>, u: &DMatrix<T>, v: &DMatrix<T>) -> Result<T> {
-        if u.nrows() != self.n || u.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", u.nrows(), u.ncols()),
-            ));
-        }
-        if v.nrows() != self.n || v.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", v.nrows(), v.ncols()),
-            ));
-        }
-        
-        // Frobenius inner product: trace(U^T V)
-        Ok((u.transpose() * v).trace())
-    }
-    
-    fn retract_matrix(&self, point: &DMatrix<T>, tangent: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if point.nrows() != self.n || point.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        if tangent.nrows() != self.n || tangent.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", tangent.nrows(), tangent.ncols()),
-            ));
-        }
-        
-        // QR retraction on Grassmann: R_X(V) = qf([X V])
-        let combined = DMatrix::from_columns(&[
-            point.column_iter().collect::<Vec<_>>().as_slice(),
-            tangent.column_iter().collect::<Vec<_>>().as_slice(),
-        ].concat());
-        
-        let qr = combined.qr();
-        let q = qr.q();
-        
-        // Extract first p columns and canonicalize
-        let result = q.columns(0, self.p).into_owned();
-        Ok(self.canonical_representation(&result))
-    }
-    
-    fn inverse_retract_matrix(&self, point: &DMatrix<T>, other: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if point.nrows() != self.n || point.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        if other.nrows() != self.n || other.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", other.nrows(), other.ncols()),
-            ));
-        }
-        
-        // For Grassmann, inverse retraction via projection
-        // This is an approximation
-        let diff = other - point;
-        self.project_tangent_matrix(point, &diff)
-    }
-    
-    fn euclidean_to_riemannian_gradient_matrix(
-        &self,
-        point: &DMatrix<T>,
-        euclidean_grad: &DMatrix<T>,
-    ) -> Result<DMatrix<T>> {
-        // Riemannian gradient is the projection to horizontal space
-        self.project_tangent_matrix(point, euclidean_grad)
-    }
-    
-    fn parallel_transport_matrix(
-        &self,
-        from: &DMatrix<T>,
-        to: &DMatrix<T>,
-        tangent: &DMatrix<T>,
-    ) -> Result<DMatrix<T>> {
-        if from.nrows() != self.n || from.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", from.nrows(), from.ncols()),
-            ));
-        }
-        if to.nrows() != self.n || to.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", to.nrows(), to.ncols()),
-            ));
-        }
-        if tangent.nrows() != self.n || tangent.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", tangent.nrows(), tangent.ncols()),
-            ));
-        }
-        
-        // Simple parallel transport via projection
-        self.project_tangent_matrix(to, tangent)
-    }
-    
-    fn random_point_matrix(&self) -> DMatrix<T> {
-        let mut rng = rand::thread_rng();
-        let normal = StandardNormal;
-        
-        // Generate random Gaussian matrix
-        let mut a = DMatrix::<T>::zeros(self.n, self.p);
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let sample: f64 = normal.sample(&mut rng);
-                a[(i, j)] = T::from(sample).unwrap();
-            }
-        }
-        
-        // Get canonical representation
-        self.canonical_representation(&a)
-    }
-    
-    fn random_tangent_matrix(&self, point: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if point.nrows() != self.n || point.ncols() != self.p {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.p),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        
-        let mut rng = rand::thread_rng();
-        let normal = StandardNormal;
-        
-        // Generate random matrix
-        let mut v = DMatrix::<T>::zeros(self.n, self.p);
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let sample: f64 = normal.sample(&mut rng);
-                v[(i, j)] = T::from(sample).unwrap();
-            }
-        }
-        
-        // Project to horizontal space
-        self.project_tangent_matrix(point, &v)
-    }
-    
-    fn is_point_on_manifold_matrix(&self, matrix: &DMatrix<T>, tolerance: T) -> bool {
-        if matrix.nrows() != self.n || matrix.ncols() != self.p {
-            return false;
-        }
-        
-        // Check X^T X = I (orthonormality)
-        let gram = matrix.transpose() * matrix;
-        let identity = DMatrix::<T>::identity(self.p, self.p);
-        let diff = &gram - &identity;
-        
-        diff.norm() <= tolerance
-    }
-    
-    fn is_vector_in_tangent_space_matrix(
-        &self,
-        point: &DMatrix<T>,
-        tangent: &DMatrix<T>,
-        tolerance: T,
-    ) -> bool {
-        if point.nrows() != self.n || point.ncols() != self.p {
-            return false;
-        }
-        if tangent.nrows() != self.n || tangent.ncols() != self.p {
-            return false;
-        }
-        
-        // Check X^T V = 0 (horizontal condition)
-        let xtv = point.transpose() * tangent;
-        
-        // Check if xtv is approximately zero
-        xtv.norm() <= tolerance
-    }
-}

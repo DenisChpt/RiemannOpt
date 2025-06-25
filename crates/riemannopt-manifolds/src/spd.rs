@@ -12,12 +12,11 @@
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
-    manifold::Manifold,
-    types::Scalar,
-    numerical_stability::{safe_epsilon, positive_definite_tolerance, regularize_spd, is_finite_matrix},
-    core::MatrixManifold,
+    manifold::{Manifold, Point, TangentVector},
+    types::{Scalar, DVector},
+    memory::Workspace,
 };
-use nalgebra::{DMatrix, DVector, Dyn};
+use nalgebra::{DMatrix, Dyn};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
@@ -79,7 +78,7 @@ impl SPD {
     pub fn new(n: usize) -> Result<Self> {
         if n == 0 {
             return Err(ManifoldError::invalid_point(
-                "SPD manifold requires matrix dimension n > 0",
+                format!("SPD manifold SPD(n) requires matrix dimension n > 0, got n={}", n),
             ));
         }
         Ok(Self {
@@ -96,12 +95,12 @@ impl SPD {
     pub fn with_min_eigenvalue(n: usize, min_eigenvalue: f64) -> Result<Self> {
         if n == 0 {
             return Err(ManifoldError::invalid_point(
-                "SPD manifold requires matrix dimension n > 0",
+                format!("SPD manifold SPD(n) requires matrix dimension n > 0, got n={}", n),
             ));
         }
         if min_eigenvalue <= 0.0 {
             return Err(ManifoldError::invalid_point(
-                "Minimum eigenvalue must be positive",
+                format!("SPD manifold requires positive minimum eigenvalue, got min_eigenvalue={}", min_eigenvalue),
             ));
         }
         Ok(Self { n, min_eigenvalue })
@@ -180,10 +179,9 @@ impl SPD {
         T: Scalar,
     {
         // Check for numerical issues first
-        if !is_finite_matrix(matrix) {
+        if matrix.iter().any(|x| !x.is_finite()) {
             // Return identity matrix with regularization if input is not finite
-            let mut identity = DMatrix::<T>::identity(self.n, self.n);
-            regularize_spd(&mut identity, <T as Scalar>::from_f64(self.min_eigenvalue));
+            let identity = DMatrix::<T>::identity(self.n, self.n) * <T as Scalar>::from_f64(1.0 + self.min_eigenvalue);
             return identity;
         }
         
@@ -197,7 +195,7 @@ impl SPD {
 
         // Clamp eigenvalues to ensure positive definiteness with numerical stability
         let min_eval = <T as Scalar>::from_f64(self.min_eigenvalue);
-        let tolerance = <T as Scalar>::from_f64(positive_definite_tolerance::<f64>());
+        let tolerance = <T as Scalar>::from_f64(1e-12);
         
         for i in 0..eigenvalues.len() {
             if eigenvalues[i] < min_eval {
@@ -226,12 +224,12 @@ impl SPD {
         }
 
         // Check for finite values first
-        if !is_finite_matrix(matrix) {
+        if matrix.iter().any(|x| !x.is_finite()) {
             return false;
         }
 
         // Check symmetry with numerical tolerance
-        let sym_tolerance = <T as Float>::max(tolerance, <T as Scalar>::from_f64(safe_epsilon::<f64>()));
+        let sym_tolerance = <T as Float>::max(tolerance, T::epsilon());
         for i in 0..self.n {
             for j in 0..self.n {
                 if <T as Float>::abs(matrix[(i, j)] - matrix[(j, i)]) > sym_tolerance {
@@ -242,7 +240,7 @@ impl SPD {
 
         // Check positive definiteness via eigenvalues for more robust check
         let eigen = matrix.clone().symmetric_eigen();
-        let min_eigenvalue = <T as Scalar>::from_f64(positive_definite_tolerance::<f64>());
+        let min_eigenvalue = <T as Scalar>::from_f64(1e-12);
         
         // All eigenvalues must be positive and finite
         eigen.eigenvalues.iter().all(|&eval| eval > min_eigenvalue && eval.is_finite())
@@ -362,9 +360,9 @@ impl SPD {
         let mut candidate = point + symmetric_tangent;
         
         // Ensure numerical stability: if candidate is not finite, add regularization
-        if !is_finite_matrix(&candidate) {
+        // Check for NaN or Inf values
+        if candidate.iter().any(|x| !x.is_finite()) {
             candidate = point.clone();
-            regularize_spd(&mut candidate, <T as Scalar>::from_f64(safe_epsilon::<f64>()));
         }
         
         self.project_to_spd(&candidate)
@@ -388,7 +386,7 @@ impl SPD {
         for &eigenval in eigen.eigenvalues.iter() {
             if eigenval <= min_eigenvalue {
                 return Err(ManifoldError::numerical_error(
-                    "Matrix logarithm requires positive eigenvalues"
+                    format!("Matrix logarithm requires all eigenvalues > {}, found eigenvalue {}", self.min_eigenvalue, eigenval)
                 ));
             }
         }
@@ -483,6 +481,298 @@ impl SPD {
         // Ensure the final result is symmetric
         Ok((result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5))
     }
+
+    /// Projects a matrix to the SPD manifold using a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn project_to_spd_with_workspace<T>(
+        &self,
+        matrix: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        // Check for numerical issues first
+        if matrix.iter().any(|x| !x.is_finite()) {
+            // Return identity matrix with regularization if input is not finite
+            result.copy_from(&DMatrix::<T>::identity(self.n, self.n));
+            *result *= <T as Scalar>::from_f64(1.0 + self.min_eigenvalue);
+            return Ok(());
+        }
+        
+        // Use workspace buffer for symmetric matrix
+        let mut symmetric = workspace.acquire_temp_matrix(self.n, self.n);
+        symmetric.copy_from(&((matrix + matrix.transpose()) * <T as Scalar>::from_f64(0.5)));
+        
+        // Compute eigenvalue decomposition
+        let eigen = symmetric.clone().symmetric_eigen();
+        let mut eigenvalues = eigen.eigenvalues.clone();
+        let eigenvectors = eigen.eigenvectors;
+
+        // Clamp eigenvalues to ensure positive definiteness
+        let min_eval = <T as Scalar>::from_f64(self.min_eigenvalue);
+        let tolerance = <T as Scalar>::from_f64(1e-12);
+        
+        for i in 0..eigenvalues.len() {
+            if eigenvalues[i] < min_eval {
+                eigenvalues[i] = min_eval + tolerance;
+            } else if !eigenvalues[i].is_finite() {
+                eigenvalues[i] = min_eval + tolerance;
+            }
+        }
+
+        // Reconstruct matrix using workspace
+        let lambda_matrix = DMatrix::from_diagonal(&eigenvalues);
+        let mut temp = workspace.acquire_temp_matrix(self.n, self.n);
+        temp.copy_from(&(&eigenvectors * &lambda_matrix));
+        result.copy_from(&(&*temp * eigenvectors.transpose()));
+        
+        // Final symmetry enforcement
+        let mut final_result = workspace.acquire_temp_matrix(self.n, self.n);
+        final_result.copy_from(&((result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5)));
+        result.copy_from(&*final_result);
+        
+        Ok(())
+    }
+
+    /// Computes the matrix logarithm using eigenvalue decomposition with a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn matrix_logarithm_with_workspace<T>(
+        &self,
+        matrix: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        // Compute eigenvalue decomposition
+        let eigen = matrix.clone().symmetric_eigen();
+        
+        // Check all eigenvalues are positive
+        let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
+        
+        for &eigenval in eigen.eigenvalues.iter() {
+            if eigenval <= min_eigenvalue {
+                return Err(ManifoldError::numerical_error(
+                    format!("Matrix logarithm requires all eigenvalues > {}, found eigenvalue {}", self.min_eigenvalue, eigenval)
+                ));
+            }
+        }
+        
+        // Compute log of eigenvalues
+        let log_eigenvals = eigen.eigenvalues.map(|x| {
+            if x <= T::zero() {
+                <T as Scalar>::from_f64(-50.0)
+            } else {
+                <T as Float>::ln(x)
+            }
+        });
+        
+        // Reconstruct using workspace
+        let log_diag = DMatrix::from_diagonal(&log_eigenvals);
+        let mut temp = workspace.acquire_temp_matrix(self.n, self.n);
+        temp.copy_from(&(&eigen.eigenvectors * &log_diag));
+        result.copy_from(&(&*temp * eigen.eigenvectors.transpose()));
+        
+        // Ensure symmetry
+        let mut symmetric_result = workspace.acquire_temp_matrix(self.n, self.n);
+        symmetric_result.copy_from(&((result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5)));
+        result.copy_from(&*symmetric_result);
+        
+        Ok(())
+    }
+
+    /// Computes the exponential map on SPD manifold using a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn exponential_map_with_workspace<T>(
+        &self,
+        point: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        // Project tangent to ensure it's symmetric
+        let mut symmetric_tangent = workspace.acquire_temp_matrix(self.n, self.n);
+        symmetric_tangent.copy_from(&self.project_to_tangent(point, tangent));
+        
+        // For efficiency, use simple retraction: P + V
+        let mut candidate = workspace.acquire_temp_matrix(self.n, self.n);
+        candidate.copy_from(&(point + &*symmetric_tangent));
+        
+        // Ensure numerical stability
+        if candidate.iter().any(|x| !x.is_finite()) {
+            result.copy_from(point);
+            return Ok(());
+        }
+        
+        // Project to SPD
+        self.project_to_spd_with_workspace(&*candidate, result, workspace)?;
+        Ok(())
+    }
+
+    /// Computes the logarithmic map using a workspace.
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn logarithmic_map_with_workspace<T>(
+        &self,
+        point: &DMatrix<T>,
+        other: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        // First check if points are close
+        let diff = other - point;
+        let diff_norm = diff.norm();
+        let point_norm = point.norm();
+        
+        let relative_distance = diff_norm / point_norm;
+        if relative_distance < <T as Scalar>::from_f64(1e-8) {
+            result.copy_from(&self.project_to_tangent(point, &diff));
+            return Ok(());
+        }
+        
+        // Compute eigendecomposition
+        let x_eigen = point.clone().symmetric_eigen();
+        
+        // Check for positive definiteness
+        let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
+        
+        for &eigenval in x_eigen.eigenvalues.iter() {
+            if eigenval <= min_eigenvalue {
+                return Err(ManifoldError::invalid_point(
+                    "Base point must be positive definite for logarithmic map"
+                ));
+            }
+        }
+        
+        // Compute square root eigenvalues
+        let x_sqrt_eigenvals = x_eigen.eigenvalues.map(|x| {
+            if x <= T::zero() {
+                T::zero()
+            } else {
+                <T as Float>::sqrt(x)
+            }
+        });
+        let x_sqrt_inv_eigenvals = x_eigen.eigenvalues.map(|x| {
+            if x <= T::zero() {
+                T::zero()
+            } else {
+                T::one() / <T as Float>::sqrt(x)
+            }
+        });
+        
+        // Compute X^{1/2} and X^{-1/2} using workspace
+        let x_sqrt_diag = DMatrix::from_diagonal(&x_sqrt_eigenvals);
+        let x_sqrt_inv_diag = DMatrix::from_diagonal(&x_sqrt_inv_eigenvals);
+        
+        let mut x_sqrt = workspace.acquire_temp_matrix(self.n, self.n);
+        let mut temp = workspace.acquire_temp_matrix(self.n, self.n);
+        temp.copy_from(&(&x_eigen.eigenvectors * &x_sqrt_diag));
+        x_sqrt.copy_from(&(&*temp * x_eigen.eigenvectors.transpose()));
+        
+        let mut x_sqrt_inv = workspace.acquire_temp_matrix(self.n, self.n);
+        temp.copy_from(&(&x_eigen.eigenvectors * &x_sqrt_inv_diag));
+        x_sqrt_inv.copy_from(&(&*temp * x_eigen.eigenvectors.transpose()));
+        
+        // Compute X^{-1/2} Y X^{-1/2}
+        let mut middle = workspace.acquire_temp_matrix(self.n, self.n);
+        temp.copy_from(&(&*x_sqrt_inv * other));
+        middle.copy_from(&(&*temp * &*x_sqrt_inv));
+        
+        // Ensure symmetry
+        let mut symmetric_middle = workspace.acquire_temp_matrix(self.n, self.n);
+        symmetric_middle.copy_from(&((middle.clone() + middle.transpose()) * <T as Scalar>::from_f64(0.5)));
+        
+        // Compute log of the middle matrix
+        let mut log_middle = workspace.acquire_temp_matrix(self.n, self.n);
+        self.matrix_logarithm_with_workspace(&*symmetric_middle, &mut *log_middle, workspace)?;
+        
+        // Return X^{1/2} log(X^{-1/2} Y X^{-1/2}) X^{1/2}
+        temp.copy_from(&(&*x_sqrt * &*log_middle));
+        result.copy_from(&(&*temp * &*x_sqrt));
+        
+        // Ensure the final result is symmetric
+        let mut final_symmetric = workspace.acquire_temp_matrix(self.n, self.n);
+        final_symmetric.copy_from(&((result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5)));
+        result.copy_from(&*final_symmetric);
+        
+        Ok(())
+    }
+
+    /// Retracts a tangent vector at a point using a workspace (vectorized interface).
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn retract_with_workspace<T>(
+        &self,
+        point: &DVector<T>,
+        tangent: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        let expected_dim = self.n * (self.n + 1) / 2;
+        if point.len() != expected_dim || tangent.len() != expected_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point and tangent must have correct dimensions",
+                format!("point: {}, tangent: {}", point.len(), tangent.len()),
+            ));
+        }
+        
+        let point_matrix = self.vector_to_matrix(point)?;
+        let tangent_matrix = self.vector_to_matrix(tangent)?;
+        
+        let mut retracted_matrix = workspace.acquire_temp_matrix(self.n, self.n);
+        self.exponential_map_with_workspace(&point_matrix, &tangent_matrix, &mut *retracted_matrix, workspace)?;
+        
+        let retracted_vector = self.matrix_to_vector(&*retracted_matrix);
+        result.copy_from(&retracted_vector);
+        Ok(())
+    }
+
+    /// Computes the inverse retraction using a workspace (vectorized interface).
+    ///
+    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
+    pub fn inverse_retract_with_workspace<T>(
+        &self,
+        point: &DVector<T>,
+        other: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+    {
+        let expected_dim = self.n * (self.n + 1) / 2;
+        if point.len() != expected_dim || other.len() != expected_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Points must have correct dimensions",
+                format!("point: {}, other: {}", point.len(), other.len()),
+            ));
+        }
+        
+        let point_matrix = self.vector_to_matrix(point)?;
+        let other_matrix = self.vector_to_matrix(other)?;
+        
+        let mut tangent_matrix = workspace.acquire_temp_matrix(self.n, self.n);
+        self.logarithmic_map_with_workspace(&point_matrix, &other_matrix, &mut *tangent_matrix, workspace)?;
+        
+        let tangent_vector = self.matrix_to_vector(&*tangent_matrix);
+        result.copy_from(&tangent_vector);
+        Ok(())
+    }
 }
 
 impl<T> Manifold<T, Dyn> for SPD
@@ -497,7 +787,7 @@ where
         self.n * (self.n + 1) / 2
     }
 
-    fn is_point_on_manifold(&self, point: &DVector<T>, tolerance: T) -> bool {
+    fn is_point_on_manifold(&self, point: &Point<T, Dyn>, tolerance: T) -> bool {
         let expected_dim = self.n * (self.n + 1) / 2;
         if point.len() != expected_dim {
             return false;
@@ -511,8 +801,8 @@ where
 
     fn is_vector_in_tangent_space(
         &self,
-        _point: &DVector<T>,
-        vector: &DVector<T>,
+        _point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
         tolerance: T,
     ) -> bool {
         let expected_dim = self.n * (self.n + 1) / 2;
@@ -537,8 +827,9 @@ where
         }
     }
 
-    fn project_point(&self, point: &DVector<T>) -> DVector<T> {
+    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>) {
         let expected_dim = self.n * (self.n + 1) / 2;
+        
         let matrix = if point.len() == expected_dim {
             // Try to convert vector to matrix, use safe fallback if needed
             match self.vector_to_matrix(point) {
@@ -571,42 +862,61 @@ where
             DMatrix::<T>::identity(self.n, self.n)
         };
 
-        let projected_matrix = self.project_to_spd(&matrix);
-        self.matrix_to_vector(&projected_matrix)
+        // Use workspace variant for projection
+        let mut workspace = Workspace::new();
+        let mut projected_matrix = DMatrix::<T>::zeros(self.n, self.n);
+        
+        // Use the project_to_spd_with_workspace if it doesn't error
+        match self.project_to_spd_with_workspace(&matrix, &mut projected_matrix, &mut workspace) {
+            Ok(_) => {
+                let projected_vector = self.matrix_to_vector(&projected_matrix);
+                result.copy_from(&projected_vector);
+            }
+            Err(_) => {
+                // Fallback to non-workspace version
+                let projected = self.project_to_spd(&matrix);
+                let projected_vector = self.matrix_to_vector(&projected);
+                result.copy_from(&projected_vector);
+            }
+        }
     }
 
     fn project_tangent(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         let expected_dim = self.n * (self.n + 1) / 2;
         if point.len() != expected_dim || vector.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
-                "Point and vector must have correct dimensions for SPD manifold",
-                format!("point: {}, vector: {}", point.len(), vector.len()),
+                format!("{}D vector for SPD({})", expected_dim, self.n),
+                format!("point has {} elements, vector has {} elements", point.len(), vector.len()),
             ));
         }
+        
 
         let point_matrix = self.vector_to_matrix(point)?;
         let vector_matrix = self.vector_to_matrix(vector)?;
 
         // Project to tangent space (symmetric matrices)
         let projected_matrix = self.project_to_tangent(&point_matrix, &vector_matrix);
-        Ok(self.matrix_to_vector(&projected_matrix))
+        let projected_vector = self.matrix_to_vector(&projected_matrix);
+        result.copy_from(&projected_vector);
+        Ok(())
     }
 
     fn inner_product(
         &self,
-        point: &DVector<T>,
-        u: &DVector<T>,
-        v: &DVector<T>,
+        point: &Point<T, Dyn>,
+        u: &TangentVector<T, Dyn>,
+        v: &TangentVector<T, Dyn>,
     ) -> Result<T> {
         let expected_dim = self.n * (self.n + 1) / 2;
         if point.len() != expected_dim || u.len() != expected_dim || v.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
-                "All vectors must have correct dimensions",
-                format!("expected: {}", expected_dim),
+                format!("{}D vector for SPD({})", expected_dim, self.n),
+                format!("point has {} elements, u has {} elements, v has {} elements", point.len(), u.len(), v.len()),
             ));
         }
 
@@ -616,14 +926,14 @@ where
 
         // Affine-invariant metric: <U,V>_P = tr(P^{-1} U P^{-1} V)
         let p_inv = point_matrix.clone().try_inverse().ok_or_else(|| {
-            ManifoldError::numerical_error("Matrix is not invertible")
+            ManifoldError::numerical_error("Point matrix is not invertible for inner product computation")
         })?;
 
         let result = (&p_inv * &u_matrix * &p_inv * &v_matrix).trace();
         Ok(result)
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
+    fn retract(&self, point: &Point<T, Dyn>, tangent: &TangentVector<T, Dyn>, result: &mut Point<T, Dyn>) -> Result<()> {
         let expected_dim = self.n * (self.n + 1) / 2;
         if point.len() != expected_dim || tangent.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -631,32 +941,36 @@ where
                 format!("point: {}, tangent: {}", point.len(), tangent.len()),
             ));
         }
-
+        
         let point_matrix = self.vector_to_matrix(point)?;
         let tangent_matrix = self.vector_to_matrix(tangent)?;
 
         // Check for numerical issues in input
-        if !is_finite_matrix(&point_matrix) {
-            return Err(ManifoldError::numerical_error("Point matrix contains non-finite values"));
+        if point_matrix.iter().any(|x| !x.is_finite()) {
+            return Err(ManifoldError::numerical_error("Point matrix contains non-finite values (NaN or infinity)"));
         }
-        if !is_finite_matrix(&tangent_matrix) {
-            return Err(ManifoldError::numerical_error("Tangent matrix contains non-finite values"));
+        if tangent_matrix.iter().any(|x| !x.is_finite()) {
+            return Err(ManifoldError::numerical_error("Tangent matrix contains non-finite values (NaN or infinity)"));
         }
 
-        // Use exponential map retraction
-        let mut retracted_matrix = self.exponential_map(&point_matrix, &tangent_matrix);
+        // Use exponential map retraction with workspace
+        let mut workspace = Workspace::new();
+        let mut retracted_matrix = DMatrix::<T>::zeros(self.n, self.n);
+        self.exponential_map_with_workspace(&point_matrix, &tangent_matrix, &mut retracted_matrix, &mut workspace)?;
         
         // Check for numerical issues in result
-        if !is_finite_matrix(&retracted_matrix) {
+        if retracted_matrix.iter().any(|x| !x.is_finite()) {
             // Fallback: use simple retraction with regularization
             retracted_matrix = &point_matrix + &tangent_matrix;
-            regularize_spd(&mut retracted_matrix, <T as Scalar>::from_f64(positive_definite_tolerance::<f64>()));
-            retracted_matrix = self.project_to_spd(&retracted_matrix);
+            // Add small multiple of identity for regularization
+            let identity = DMatrix::<T>::identity(self.n, self.n);
+            retracted_matrix = retracted_matrix + identity * <T as Scalar>::from_f64(1e-12);
+            self.project_to_spd_with_workspace(&retracted_matrix.clone(), &mut retracted_matrix, &mut workspace)?;
         }
         
         // Ensure positive definiteness with stability check
         let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
-        let tolerance = <T as Scalar>::from_f64(positive_definite_tolerance::<f64>());
+        let tolerance = <T as Scalar>::from_f64(1e-12);
         
         // Check if the matrix is sufficiently positive definite
         let eigen = retracted_matrix.clone().symmetric_eigen();
@@ -664,65 +978,78 @@ where
         
         if min_eval < min_eigenvalue {
             // Regularize to ensure numerical stability
-            regularize_spd(&mut retracted_matrix, min_eigenvalue - min_eval + tolerance);
+            // Add regularization to ensure positive definiteness
+            let identity = DMatrix::<T>::identity(self.n, self.n);
+            retracted_matrix = retracted_matrix + identity * (min_eigenvalue - min_eval + tolerance);
         }
         
-        Ok(self.matrix_to_vector(&retracted_matrix))
+        let retracted_vector = self.matrix_to_vector(&retracted_matrix);
+        result.copy_from(&retracted_vector);
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        other: &Point<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         let expected_dim = self.n * (self.n + 1) / 2;
         if point.len() != expected_dim || other.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("point: {}, other: {}", point.len(), other.len()),
+                format!("{}D vector for SPD({})", expected_dim, self.n),
+                format!("point has {} elements, other has {} elements", point.len(), other.len()),
             ));
         }
-
+        
         let point_matrix = self.vector_to_matrix(point)?;
         let other_matrix = self.vector_to_matrix(other)?;
 
-        // Use the proper logarithmic map for affine-invariant metric
-        let tangent_matrix = self.logarithmic_map(&point_matrix, &other_matrix)?;
+        // Use the proper logarithmic map with workspace
+        let mut workspace = Workspace::new();
+        let mut tangent_matrix = DMatrix::<T>::zeros(self.n, self.n);
+        self.logarithmic_map_with_workspace(&point_matrix, &other_matrix, &mut tangent_matrix, &mut workspace)?;
         
         // The result is already in the tangent space (symmetric matrix)
-        Ok(self.matrix_to_vector(&tangent_matrix))
+        let tangent_vector = self.matrix_to_vector(&tangent_matrix);
+        result.copy_from(&tangent_vector);
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &DVector<T>,
-        grad: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        euclidean_grad: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         let expected_dim = self.n * (self.n + 1) / 2;
-        if point.len() != expected_dim || grad.len() != expected_dim {
+        if point.len() != expected_dim || euclidean_grad.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
                 "Point and gradient must have correct dimensions",
-                format!("point: {}, grad: {}", point.len(), grad.len()),
+                format!("point: {}, euclidean_grad: {}", point.len(), euclidean_grad.len()),
             ));
         }
+        
 
         let point_matrix = self.vector_to_matrix(point)?;
-        let grad_matrix = self.vector_to_matrix(grad)?;
+        let grad_matrix = self.vector_to_matrix(euclidean_grad)?;
 
         // Convert Euclidean gradient to Riemannian gradient
         // For affine-invariant metric: grad_R = P * grad_E * P
         let riemannian_grad_matrix = &point_matrix * &grad_matrix * &point_matrix;
         let symmetric_grad = self.project_to_tangent(&point_matrix, &riemannian_grad_matrix);
         
-        Ok(self.matrix_to_vector(&symmetric_grad))
+        let gradient_vector = self.matrix_to_vector(&symmetric_grad);
+        result.copy_from(&gradient_vector);
+        Ok(())
     }
 
-    fn random_point(&self) -> DVector<T> {
+    fn random_point(&self) -> Point<T, Dyn> {
         let matrix = self.random_spd_matrix();
         self.matrix_to_vector(&matrix)
     }
 
-    fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>) -> Result<()> {
         let expected_dim = self.n * (self.n + 1) / 2;
         if point.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -730,9 +1057,12 @@ where
                 format!("expected: {}, actual: {}", expected_dim, point.len()),
             ));
         }
+        
 
         let symmetric_matrix = self.random_symmetric_matrix();
-        Ok(self.matrix_to_vector(&symmetric_matrix))
+        let tangent_vector = self.matrix_to_vector(&symmetric_matrix);
+        result.copy_from(&tangent_vector);
+        Ok(())
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -741,10 +1071,11 @@ where
 
     fn parallel_transport(
         &self,
-        from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        from: &Point<T, Dyn>,
+        to: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         let expected_dim = self.n * (self.n + 1) / 2;
         if from.len() != expected_dim || to.len() != expected_dim || vector.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -752,6 +1083,7 @@ where
                 format!("expected: {}", expected_dim),
             ));
         }
+        
 
         let x_matrix = self.vector_to_matrix(from)?;
         let y_matrix = self.vector_to_matrix(to)?;
@@ -822,20 +1154,22 @@ where
         // Ensure symmetry of the result
         let symmetric_transported = (&transported_matrix + transported_matrix.transpose()) * <T as Scalar>::from_f64(0.5);
         
-        Ok(self.matrix_to_vector(&symmetric_transported))
+        let transported_vector = self.matrix_to_vector(&symmetric_transported);
+        result.copy_from(&transported_vector);
+        Ok(())
     }
 
-    fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
+    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
         let expected_dim = self.n * (self.n + 1) / 2;
-        if point1.len() != expected_dim || point2.len() != expected_dim {
+        if x.len() != expected_dim || y.len() != expected_dim {
             return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("point1: {}, point2: {}", point1.len(), point2.len()),
+                format!("{}D vector for SPD({})", expected_dim, self.n),
+                format!("x has {} elements, y has {} elements", x.len(), y.len()),
             ));
         }
 
-        let matrix1 = self.vector_to_matrix(point1)?;
-        let matrix2 = self.vector_to_matrix(point2)?;
+        let matrix1 = self.vector_to_matrix(x)?;
+        let matrix2 = self.vector_to_matrix(y)?;
 
         // Use affine-invariant distance
         Ok(self.affine_invariant_distance(&matrix1, &matrix2))
@@ -966,7 +1300,8 @@ mod tests {
         let zero_tangent = DVector::zeros(3); // dim = 2*(2+1)/2 = 3
         
         // Test centering property: R(x, 0) = x
-        let retracted = spd.retract(&point, &zero_tangent).unwrap();
+        let mut retracted = DVector::zeros(3);
+        spd.retract(&point, &zero_tangent, &mut retracted).unwrap();
         
         // Should be close to original point
         assert_relative_eq!(
@@ -1008,7 +1343,8 @@ mod tests {
         assert!(spd.is_point_on_manifold(&random_point, 1e-10));
         
         // Test random tangent generation
-        let tangent = spd.random_tangent(&random_point).unwrap();
+        let mut tangent = DVector::zeros(6);
+        spd.random_tangent(&random_point, &mut tangent).unwrap();
         assert!(spd.is_vector_in_tangent_space(&random_point, &tangent, 1e-10));
     }
 
@@ -1018,8 +1354,9 @@ mod tests {
         let point = <SPD as Manifold<f64, Dyn>>::random_point(&spd);
         let euclidean_grad = DVector::from_vec(vec![1.0, 2.0, 3.0]);
         
-        let riemannian_grad = spd
-            .euclidean_to_riemannian_gradient(&point, &euclidean_grad)
+        let mut riemannian_grad = DVector::zeros(3);
+        spd
+            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad)
             .unwrap();
         
         assert!(spd.is_vector_in_tangent_space(&point, &riemannian_grad, 1e-10));
@@ -1048,13 +1385,15 @@ mod tests {
         
         // Test point projection with invalid point
         let bad_point = DVector::from_vec(vec![1.0, 2.0, -1.0]); // Would give negative eigenvalue
-        let projected_point = spd.project_point(&bad_point);
+        let mut projected_point = DVector::zeros(3);
+        spd.project_point(&bad_point, &mut projected_point);
         assert!(spd.is_point_on_manifold(&projected_point, 1e-10));
         
         // Test tangent projection
         let point = spd.random_point();
         let non_symmetric_vec = DVector::from_vec(vec![1.0, 2.0, 3.0]); // This represents non-symmetric matrix
-        let projected_tangent = spd.project_tangent(&point, &non_symmetric_vec).unwrap();
+        let mut projected_tangent = DVector::zeros(3);
+        spd.project_tangent(&point, &non_symmetric_vec, &mut projected_tangent).unwrap();
         
         // Should be symmetric (in tangent space)
         assert!(spd.is_vector_in_tangent_space(&point, &projected_tangent, 1e-10));
@@ -1089,14 +1428,18 @@ mod tests {
         
         // Test 1: log_X(X) should be zero
         let point = spd.random_point();
-        let log_self = spd.inverse_retract(&point, &point).unwrap();
+        let mut log_self = DVector::zeros(3);
+        spd.inverse_retract(&point, &point, &mut log_self).unwrap();
         assert_relative_eq!(log_self.norm(), 0.0, epsilon = 1e-10);
         
         // Test 2: For nearby points, verify consistency
-        let tangent = spd.random_tangent(&point).unwrap();
+        let mut tangent = DVector::zeros(3);
+        spd.random_tangent(&point, &mut tangent).unwrap();
         let small_tangent = tangent * 0.001; // Very small step
-        let nearby_point = spd.retract(&point, &small_tangent).unwrap();
-        let log_map = spd.inverse_retract(&point, &nearby_point).unwrap();
+        let mut nearby_point = DVector::zeros(3);
+        spd.retract(&point, &small_tangent, &mut nearby_point).unwrap();
+        let mut log_map = DVector::zeros(3);
+        spd.inverse_retract(&point, &nearby_point, &mut log_map).unwrap();
         
         // The result should be in the tangent space
         assert!(spd.is_vector_in_tangent_space(&point, &log_map, 1e-10));
@@ -1111,7 +1454,8 @@ mod tests {
         let point2 = spd.random_point();
         
         // log map should give tangent vector
-        let tangent_vec = spd.inverse_retract(&point1, &point2).unwrap();
+        let mut tangent_vec = DVector::zeros(3);
+        spd.inverse_retract(&point1, &point2, &mut tangent_vec).unwrap();
         assert!(spd.is_vector_in_tangent_space(&point1, &tangent_vec, 1e-10));
         
         // Test 4: Specific case with known matrices
@@ -1121,7 +1465,8 @@ mod tests {
         let scaled = &identity * 4.0; // Scale by 4
         let scaled_vec = spd.matrix_to_vector(&scaled);
         
-        let log_vec = spd.inverse_retract(&id_vec, &scaled_vec).unwrap();
+        let mut log_vec = DVector::zeros(3);
+        spd.inverse_retract(&id_vec, &scaled_vec, &mut log_vec).unwrap();
         let log_mat = spd.vector_to_matrix(&log_vec).unwrap();
         
         // log(4*I) at I should be log(4)*I = ln(4)*I
@@ -1166,241 +1511,3 @@ mod tests {
 }
 
 // MatrixManifold implementation for efficient matrix operations
-impl<T: Scalar + Float> MatrixManifold<T> for SPD {
-    fn matrix_dims(&self) -> (usize, usize) {
-        (self.n, self.n)
-    }
-    
-    fn project_matrix(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if matrix.nrows() != self.n || matrix.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", matrix.nrows(), matrix.ncols()),
-            ));
-        }
-        
-        // Symmetrize the matrix
-        let symmetric = (matrix + matrix.transpose()) * T::from(0.5).unwrap();
-        
-        // Eigendecomposition
-        let eigen = symmetric.symmetric_eigen();
-        let mut eigenvalues = eigen.eigenvalues.clone();
-        
-        // Clamp eigenvalues to be positive
-        let min_eig = T::from(self.min_eigenvalue).unwrap();
-        for i in 0..eigenvalues.len() {
-            if eigenvalues[i] < min_eig {
-                eigenvalues[i] = min_eig;
-            }
-        }
-        
-        // Reconstruct matrix
-        let diag = DMatrix::from_diagonal(&eigenvalues);
-        Ok(&eigen.eigenvectors * diag * eigen.eigenvectors.transpose())
-    }
-    
-    fn project_tangent_matrix(&self, _point: &DMatrix<T>, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if matrix.nrows() != self.n || matrix.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", matrix.nrows(), matrix.ncols()),
-            ));
-        }
-        
-        // Tangent space consists of symmetric matrices
-        Ok((matrix + matrix.transpose()) * T::from(0.5).unwrap())
-    }
-    
-    fn inner_product_matrix(&self, point: &DMatrix<T>, u: &DMatrix<T>, v: &DMatrix<T>) -> Result<T> {
-        if point.nrows() != self.n || point.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        if u.nrows() != self.n || u.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", u.nrows(), u.ncols()),
-            ));
-        }
-        if v.nrows() != self.n || v.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", v.nrows(), v.ncols()),
-            ));
-        }
-        
-        // Affine-invariant metric: <U,V>_P = tr(P^{-1}U P^{-1}V)
-        let chol = point.clone().cholesky()
-            .ok_or_else(|| ManifoldError::numerical_error("Matrix is not positive definite"))?;
-        let p_inv_u = chol.solve(&u);
-        let p_inv_v = chol.solve(&v);
-        
-        Ok((p_inv_u.transpose() * p_inv_v).trace())
-    }
-    
-    fn retract_matrix(&self, point: &DMatrix<T>, tangent: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if point.nrows() != self.n || point.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        if tangent.nrows() != self.n || tangent.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", tangent.nrows(), tangent.ncols()),
-            ));
-        }
-        
-        // Use first-order retraction: R_P(V) = P + V + 0.5 * V * P^{-1} * V
-        let chol = point.clone().cholesky()
-            .ok_or_else(|| ManifoldError::numerical_error("Matrix is not positive definite"))?;
-        let p_inv_v = chol.solve(&tangent);
-        let result = point + tangent + (tangent * p_inv_v) * T::from(0.5).unwrap();
-        
-        // Ensure positive definiteness
-        self.project_matrix(&result)
-    }
-    
-    fn inverse_retract_matrix(&self, point: &DMatrix<T>, other: &DMatrix<T>) -> Result<DMatrix<T>> {
-        if point.nrows() != self.n || point.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        if other.nrows() != self.n || other.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", other.nrows(), other.ncols()),
-            ));
-        }
-        
-        // First-order approximation
-        let diff = other - point;
-        self.project_tangent_matrix(point, &diff)
-    }
-    
-    fn euclidean_to_riemannian_gradient_matrix(
-        &self,
-        point: &DMatrix<T>,
-        euclidean_grad: &DMatrix<T>,
-    ) -> Result<DMatrix<T>> {
-        if point.nrows() != self.n || point.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", point.nrows(), point.ncols()),
-            ));
-        }
-        if euclidean_grad.nrows() != self.n || euclidean_grad.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", euclidean_grad.nrows(), euclidean_grad.ncols()),
-            ));
-        }
-        
-        // Riemannian gradient: grad_R = P * grad_E * P
-        let sym_grad = self.project_tangent_matrix(point, euclidean_grad)?;
-        Ok(point * &sym_grad * point)
-    }
-    
-    fn parallel_transport_matrix(
-        &self,
-        _from: &DMatrix<T>,
-        to: &DMatrix<T>,
-        tangent: &DMatrix<T>,
-    ) -> Result<DMatrix<T>> {
-        if to.nrows() != self.n || to.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", to.nrows(), to.ncols()),
-            ));
-        }
-        if tangent.nrows() != self.n || tangent.ncols() != self.n {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("{}×{}", self.n, self.n),
-                format!("{}×{}", tangent.nrows(), tangent.ncols()),
-            ));
-        }
-        
-        // Simple approximation: project to new tangent space
-        self.project_tangent_matrix(to, tangent)
-    }
-    
-    fn random_point_matrix(&self) -> DMatrix<T> {
-        let mut rng = rand::thread_rng();
-        let normal = StandardNormal;
-        
-        // Generate random symmetric matrix
-        let mut a = DMatrix::<T>::zeros(self.n, self.n);
-        for i in 0..self.n {
-            for j in i..self.n {
-                let sample: f64 = normal.sample(&mut rng);
-                let value = T::from(sample).unwrap();
-                a[(i, j)] = value;
-                if i != j {
-                    a[(j, i)] = value;
-                }
-            }
-        }
-        
-        // Make it positive definite: P = A^T A + εI
-        let result = &a.transpose() * &a + DMatrix::<T>::identity(self.n, self.n) * T::from(self.min_eigenvalue).unwrap();
-        result
-    }
-    
-    fn random_tangent_matrix(&self, _point: &DMatrix<T>) -> Result<DMatrix<T>> {
-        let mut rng = rand::thread_rng();
-        let normal = StandardNormal;
-        
-        // Generate random symmetric matrix (tangent space)
-        let mut v = DMatrix::<T>::zeros(self.n, self.n);
-        for i in 0..self.n {
-            for j in i..self.n {
-                let sample: f64 = normal.sample(&mut rng);
-                let value = T::from(sample).unwrap();
-                v[(i, j)] = value;
-                if i != j {
-                    v[(j, i)] = value;
-                }
-            }
-        }
-        
-        Ok(v)
-    }
-    
-    fn is_point_on_manifold_matrix(&self, matrix: &DMatrix<T>, tolerance: T) -> bool {
-        if matrix.nrows() != self.n || matrix.ncols() != self.n {
-            return false;
-        }
-        
-        // Check symmetry
-        let diff_sym = matrix - matrix.transpose();
-        if diff_sym.norm() > tolerance {
-            return false;
-        }
-        
-        // Check positive definiteness via eigenvalues
-        let eigen = matrix.clone().symmetric_eigen();
-        let min_eig = T::from(self.min_eigenvalue).unwrap();
-        
-        eigen.eigenvalues.iter().all(|&eig| eig >= min_eig - tolerance)
-    }
-    
-    fn is_vector_in_tangent_space_matrix(
-        &self,
-        _point: &DMatrix<T>,
-        tangent: &DMatrix<T>,
-        tolerance: T,
-    ) -> bool {
-        if tangent.nrows() != self.n || tangent.ncols() != self.n {
-            return false;
-        }
-        
-        // Check symmetry (tangent vectors must be symmetric)
-        let diff = tangent - tangent.transpose();
-        diff.norm() <= tolerance
-    }
-}

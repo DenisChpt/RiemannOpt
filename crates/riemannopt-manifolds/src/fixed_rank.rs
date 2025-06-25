@@ -2,14 +2,14 @@
 //!
 //! The manifold of m×n matrices with fixed rank k.
 
-use nalgebra::{DMatrix, DVector, Dyn, SVD};
+use nalgebra::{DMatrix, Dyn, SVD};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
-    manifold::{Manifold, Point, TangentVector},
-    types::Scalar,
+    manifold::Manifold,
+    types::{Scalar, DVector},
 };
 
 /// The fixed-rank manifold of m×n matrices with rank k.
@@ -220,7 +220,7 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         self.m * self.k + self.k + self.n * self.k
     }
 
-    fn is_point_on_manifold(&self, point: &Point<T, Dyn>, tol: T) -> bool {
+    fn is_point_on_manifold(&self, point: &DVector<T>, tol: T) -> bool {
         if point.len() != <Self as Manifold<T, Dyn>>::ambient_dimension(self) {
             return false;
         }
@@ -253,7 +253,14 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         true
     }
 
-    fn project_point(&self, point: &Point<T, Dyn>) -> Point<T, Dyn> {
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let mut pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
         
         // Project U and V onto Stiefel manifolds
@@ -261,19 +268,34 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         
         // Ensure singular values are positive
         for i in 0..self.k {
-            if pt.s[i] < T::default_epsilon() {
-                pt.s[i] = T::default_epsilon();
+            if pt.s[i] < T::epsilon() {
+                pt.s[i] = T::epsilon();
             }
         }
         
-        pt.to_vector()
+        let projected = pt.to_vector();
+        result.copy_from(&projected);
     }
 
     fn project_tangent(
         &self,
-        point: &Point<T, Dyn>,
-        vector: &TangentVector<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        point: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if point.len() != ambient_dim || vector.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point and vector must have correct dimensions",
+                format!("expected: {}, got point: {}, vector: {}", ambient_dim, point.len(), vector.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
         let tangent = FixedRankPoint::from_vector(vector, self.m, self.n, self.k);
         
@@ -283,14 +305,16 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         
         let proj_tangent = FixedRankPoint::new(u_proj, tangent.s.clone(), v_proj);
         
-        Ok(proj_tangent.to_vector())
+        let projected = proj_tangent.to_vector();
+        result.copy_from(&projected);
+        Ok(())
     }
 
     fn inner_product(
         &self,
-        point: &Point<T, Dyn>,
-        u: &TangentVector<T, Dyn>,
-        v: &TangentVector<T, Dyn>,
+        point: &DVector<T>,
+        u: &DVector<T>,
+        v: &DVector<T>,
     ) -> Result<T> {
         let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
         let u_tan = FixedRankPoint::from_vector(u, self.m, self.n, self.k);
@@ -323,9 +347,23 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn retract(
         &self,
-        point: &Point<T, Dyn>,
-        tangent: &TangentVector<T, Dyn>,
-    ) -> Result<Point<T, Dyn>> {
+        point: &DVector<T>,
+        tangent: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if point.len() != ambient_dim || tangent.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point and tangent must have correct dimensions",
+                format!("expected: {}, got point: {}, tangent: {}", ambient_dim, point.len(), tangent.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
         let tan = FixedRankPoint::from_vector(tangent, self.m, self.n, self.k);
         
@@ -341,24 +379,27 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         
         // Ensure singular values are positive
         for i in 0..self.k {
-            if new_pt.s[i] < T::default_epsilon() {
-                new_pt.s[i] = T::default_epsilon();
+            if new_pt.s[i] < T::epsilon() {
+                new_pt.s[i] = T::epsilon();
             }
         }
         
-        Ok(new_pt.to_vector())
+        let retracted = new_pt.to_vector();
+        result.copy_from(&retracted);
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &Point<T, Dyn>,
-        euclidean_grad: &TangentVector<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        point: &DVector<T>,
+        euclidean_grad: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
         // For the canonical metric, just project to tangent space
-        self.project_tangent(point, euclidean_grad)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> Point<T, Dyn> {
+    fn random_point(&self) -> DVector<T> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -393,7 +434,20 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         pt.to_vector()
     }
 
-    fn random_tangent(&self, point: &Point<T, Dyn>) -> Result<TangentVector<T, Dyn>> {
+    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if point.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Point must have correct dimension",
+                format!("expected: {}, got: {}", ambient_dim, point.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -419,13 +473,15 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         v_tan = &v_tan - &pt.v * (pt.v.transpose() * &v_tan);
         
         let tangent = FixedRankPoint::new(u_tan, s_tan, v_tan);
-        Ok(tangent.to_vector())
+        let tangent_vec = tangent.to_vector();
+        result.copy_from(&tangent_vec);
+        Ok(())
     }
 
     fn is_vector_in_tangent_space(
         &self,
-        point: &Point<T, Dyn>,
-        vector: &TangentVector<T, Dyn>,
+        point: &DVector<T>,
+        vector: &DVector<T>,
         tol: T,
     ) -> bool {
         if !self.is_point_on_manifold(point, tol) {
@@ -460,20 +516,60 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn inverse_retract(
         &self,
-        point: &Point<T, Dyn>,
-        other: &Point<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        point: &DVector<T>,
+        other: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if point.len() != ambient_dim || other.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "Points must have correct dimensions",
+                format!("expected: {}, got point: {}, other: {}", ambient_dim, point.len(), other.len()),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
         // Simple approximation: project the difference
         let diff = other - point;
-        self.project_tangent(point, &diff)
+        self.project_tangent(point, &diff, result)
+    }
+
+    fn parallel_transport(
+        &self,
+        from: &DVector<T>,
+        to: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+    ) -> Result<()> {
+        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if from.len() != ambient_dim || to.len() != ambient_dim || vector.len() != ambient_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                "All vectors must have correct dimensions",
+                format!("expected: {}", ambient_dim),
+            ));
+        }
+        
+        // Ensure result has correct size
+        if result.len() != ambient_dim {
+            *result = DVector::zeros(ambient_dim);
+        }
+        
+        // Simple approximation: project vector to tangent space at destination
+        self.project_tangent(to, vector, result)
     }
 }
+
+// MatrixManifold implementation for efficient matrix operations
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use nalgebra::OVector;
+    use nalgebra::DVector;
 
     fn create_test_manifold() -> FixedRank {
         FixedRank::new(6, 4, 2).unwrap()
@@ -511,7 +607,8 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = <FixedRank as Manifold<f64, Dyn>>::random_point(&manifold);
-        let projected = <FixedRank as Manifold<f64, Dyn>>::project_point(&manifold, &point);
+        let mut projected = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <FixedRank as Manifold<f64, Dyn>>::project_point(&manifold, &point, &mut projected);
         
         assert!(<FixedRank as Manifold<f64, Dyn>>::is_point_on_manifold(&manifold, &projected, 1e-6));
     }
@@ -521,11 +618,13 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = <FixedRank as Manifold<f64, Dyn>>::random_point(&manifold);
-        let vector = OVector::<f64, Dyn>::from_vec(vec![0.1; <FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold)]);
-        let tangent = <FixedRank as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vector).unwrap();
+        let vector = DVector::<f64>::from_vec(vec![0.1; <FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold)]);
+        let mut tangent = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <FixedRank as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vector, &mut tangent).unwrap();
         
         // Check that projection is idempotent
-        let tangent2 = <FixedRank as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &tangent).unwrap();
+        let mut tangent2 = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <FixedRank as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &tangent, &mut tangent2).unwrap();
         assert_relative_eq!(&tangent, &tangent2, epsilon = 1e-10);
     }
 
@@ -534,8 +633,11 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = <FixedRank as Manifold<f64, Dyn>>::random_point(&manifold);
-        let tangent = <FixedRank as Manifold<f64, Dyn>>::random_tangent(&manifold, &point).unwrap();
-        let retracted = <FixedRank as Manifold<f64, Dyn>>::retract(&manifold, &point, &(0.1 * &tangent)).unwrap();
+        let mut tangent = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <FixedRank as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut tangent).unwrap();
+        let scaled_tangent = 0.1 * &tangent;
+        let mut retracted = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <FixedRank as Manifold<f64, Dyn>>::retract(&manifold, &point, &scaled_tangent, &mut retracted).unwrap();
         
         assert!(<FixedRank as Manifold<f64, Dyn>>::is_point_on_manifold(&manifold, &retracted, 1e-6));
     }

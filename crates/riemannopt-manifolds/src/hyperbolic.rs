@@ -12,10 +12,11 @@
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
-    manifold::Manifold,
-    types::Scalar,
+    manifold::{Manifold, Point, TangentVector},
+    types::{Scalar, DVector},
+    compute::{get_dispatcher, SimdBackend},
 };
-use nalgebra::{DVector, Dyn};
+use nalgebra::Dyn;
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
@@ -347,39 +348,52 @@ where
         self.n
     }
 
-    fn is_point_on_manifold(&self, point: &DVector<T>, tolerance: T) -> bool {
+    fn is_point_on_manifold(&self, point: &Point<T, Dyn>, tolerance: T) -> bool {
         self.is_in_poincare_ball(point, tolerance)
     }
 
     fn is_vector_in_tangent_space(
         &self,
-        _point: &DVector<T>,
-        vector: &DVector<T>,
+        _point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
         _tolerance: T,
     ) -> bool {
         // In Poincare ball model, all vectors of correct dimension are tangent vectors
         vector.len() == self.n
     }
 
-    fn project_point(&self, point: &DVector<T>) -> DVector<T> {
+    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>) {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n {
             // Handle wrong dimension by padding/truncating
-            let mut result = DVector::<T>::zeros(self.n);
+            let mut temp = DVector::<T>::zeros(self.n);
             let copy_len = point.len().min(self.n);
             for i in 0..copy_len {
-                result[i] = point[i];
+                temp[i] = point[i];
             }
-            self.project_to_poincare_ball(&result)
+            let projected = self.project_to_poincare_ball(&temp);
+            result.copy_from(&projected);
         } else {
-            self.project_to_poincare_ball(point)
+            let projected = self.project_to_poincare_ball(point);
+            result.copy_from(&projected);
         }
     }
 
     fn project_tangent(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n || vector.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 "Point and vector must have correct dimensions for hyperbolic manifold",
@@ -387,14 +401,16 @@ where
             ));
         }
 
-        Ok(self.project_to_tangent(point, vector))
+        let proj = self.project_to_tangent(point, vector);
+        result.copy_from(&proj);
+        Ok(())
     }
 
     fn inner_product(
         &self,
-        point: &DVector<T>,
-        u: &DVector<T>,
-        v: &DVector<T>,
+        point: &Point<T, Dyn>,
+        u: &TangentVector<T, Dyn>,
+        v: &TangentVector<T, Dyn>,
     ) -> Result<T> {
         if point.len() != self.n || u.len() != self.n || v.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
@@ -405,11 +421,17 @@ where
 
         // Hyperbolic inner product: <u,v>_x = lambda(x)^2 * <u,v>_euclidean
         let lambda = self.conformal_factor(point);
-        let euclidean_inner = u.dot(v);
+        let dispatcher = get_dispatcher::<T>();
+        let euclidean_inner = dispatcher.dot_product(u, v);
         Ok(lambda * lambda * euclidean_inner)
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
+    fn retract(&self, point: &Point<T, Dyn>, tangent: &TangentVector<T, Dyn>, result: &mut Point<T, Dyn>) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n || tangent.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 "Point and tangent must have correct dimensions",
@@ -418,14 +440,22 @@ where
         }
 
         // Use exponential map as retraction
-        Ok(self.exponential_map(point, tangent))
+        let exp = self.exponential_map(point, tangent);
+        result.copy_from(&exp);
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        other: &Point<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n || other.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 "Points must have correct dimensions",
@@ -434,18 +464,26 @@ where
         }
 
         // Use logarithmic map as inverse retraction
-        Ok(self.logarithmic_map(point, other))
+        let log = self.logarithmic_map(point, other);
+        result.copy_from(&log);
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &DVector<T>,
-        grad: &DVector<T>,
-    ) -> Result<DVector<T>> {
-        if point.len() != self.n || grad.len() != self.n {
+        point: &Point<T, Dyn>,
+        euclidean_grad: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
+        if point.len() != self.n || euclidean_grad.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 "Point and gradient must have correct dimensions",
-                format!("point: {}, grad: {}", point.len(), grad.len()),
+                format!("point: {}, euclidean_grad: {}", point.len(), euclidean_grad.len()),
             ));
         }
 
@@ -454,14 +492,20 @@ where
         let norm_squared = point.norm_squared();
         let factor = (T::one() - norm_squared) * (T::one() - norm_squared) / <T as Scalar>::from_f64(4.0);
         
-        Ok(grad * factor)
+        result.copy_from(&(euclidean_grad * factor));
+        Ok(())
     }
 
-    fn random_point(&self) -> DVector<T> {
+    fn random_point(&self) -> Point<T, Dyn> {
         self.random_poincare_point()
     }
 
-    fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 "Point must have correct dimensions",
@@ -477,7 +521,9 @@ where
             tangent[i] = <T as Scalar>::from_f64(val);
         }
         
-        Ok(self.project_to_tangent(point, &tangent))
+        let proj = self.project_to_tangent(point, &tangent);
+        result.copy_from(&proj);
+        Ok(())
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -486,10 +532,16 @@ where
 
     fn parallel_transport(
         &self,
-        from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        from: &Point<T, Dyn>,
+        to: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if from.len() != self.n || to.len() != self.n || vector.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 "All vectors must have correct dimensions",
@@ -497,18 +549,20 @@ where
             ));
         }
 
-        Ok(self.parallel_transport_vector(from, to, vector))
+        let transported = self.parallel_transport_vector(from, to, vector);
+        result.copy_from(&transported);
+        Ok(())
     }
 
-    fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
-        if point1.len() != self.n || point2.len() != self.n {
+    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
+        if x.len() != self.n || y.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 "Points must have correct dimensions",
-                format!("point1: {}, point2: {}", point1.len(), point2.len()),
+                format!("x: {}, y: {}", x.len(), y.len()),
             ));
         }
 
-        Ok(self.hyperbolic_distance(point1, point2))
+        Ok(self.hyperbolic_distance(x, y))
     }
 }
 
@@ -637,8 +691,9 @@ mod tests {
         let zero_tangent = DVector::zeros(2);
         
         // Test centering property: R(x, 0) = x
-        let retracted = hyperbolic.retract(&point, &zero_tangent).unwrap();
-        assert_relative_eq!(retracted, point, epsilon = 1e-10);
+        let mut retracted = DVector::zeros(2);
+        hyperbolic.retract(&point, &zero_tangent, &mut retracted).unwrap();
+        assert_relative_eq!(&retracted, &point, epsilon = 1e-10);
         
         // Result should be on manifold
         assert!(hyperbolic.is_point_on_manifold(&retracted, 1e-6));
@@ -666,8 +721,9 @@ mod tests {
         let point = DVector::from_vec(vec![0.2, 0.3]);
         let euclidean_grad = DVector::from_vec(vec![1.0, -1.0]);
         
-        let riemannian_grad = hyperbolic
-            .euclidean_to_riemannian_gradient(&point, &euclidean_grad)
+        let mut riemannian_grad = DVector::zeros(2);
+        hyperbolic
+            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad)
             .unwrap();
         
         // Riemannian gradient should be scaled version of Euclidean gradient
@@ -691,7 +747,8 @@ mod tests {
         
         // Test random tangent generation
         let point = hyperbolic.random_point();
-        let tangent = hyperbolic.random_tangent(&point).unwrap();
+        let mut tangent = DVector::zeros(3);
+        hyperbolic.random_tangent(&point, &mut tangent).unwrap();
         assert!(hyperbolic.is_vector_in_tangent_space(&point, &tangent, 1e-10));
     }
 
@@ -722,7 +779,8 @@ mod tests {
         let to = DVector::from_vec(vec![0.3, 0.4]);
         let vector = DVector::from_vec(vec![0.1, 0.0]);
         
-        let transported = hyperbolic.parallel_transport(&from, &to, &vector).unwrap();
+        let mut transported = DVector::zeros(2);
+        hyperbolic.parallel_transport(&from, &to, &vector, &mut transported).unwrap();
         
         // Transported vector should be in tangent space at destination
         assert!(hyperbolic.is_vector_in_tangent_space(&to, &transported, 1e-10));
@@ -754,7 +812,8 @@ mod tests {
         
         // Test wrong dimension handling
         let wrong_dim_point = DVector::from_vec(vec![1.0, 2.0]); // 2D instead of 3D
-        let projected = hyperbolic.project_point(&wrong_dim_point);
+        let mut projected = DVector::zeros(3);
+        hyperbolic.project_point(&wrong_dim_point, &mut projected);
         assert_eq!(projected.len(), 3);
         assert!(hyperbolic.is_point_on_manifold(&projected, 1e-6));
     }

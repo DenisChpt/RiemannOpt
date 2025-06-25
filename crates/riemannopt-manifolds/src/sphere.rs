@@ -98,20 +98,21 @@
 //!
 //! // Project arbitrary vector to sphere
 //! let y = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-//! let projected: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_point(&sphere, &y);
+//! let mut projected = DVector::<f64>::zeros(3);
+//! <Sphere as Manifold<f64, Dyn>>::project_point(&sphere, &y, &mut projected);
 //! assert!((projected.norm() - 1.0f64).abs() < 1e-10f64);
 //!
 //! // Work with tangent vectors
 //! let tangent = DVector::from_vec(vec![0.0, 1.0, 0.0]);
-//! let tangent_proj: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_tangent(&sphere, &x, &tangent).unwrap();
+//! let mut tangent_proj = DVector::<f64>::zeros(3);
+//! <Sphere as Manifold<f64, Dyn>>::project_tangent(&sphere, &x, &tangent, &mut tangent_proj).unwrap();
 //! assert!(x.dot(&tangent_proj).abs() < 1e-10f64);
 //! ```
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
-    manifold::{Manifold, Point},
+    manifold::{Manifold, Point, TangentVector},
     types::{DVector, Scalar},
-    memory::workspace::Workspace,
     compute::{get_dispatcher, SimdBackend, specialized::small_dim::*},
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, Dyn, OVector, U1, Vector2, Vector3};
@@ -212,14 +213,16 @@ use std::iter::Sum;
 ///
 /// // Project arbitrary point to sphere
 /// let point = DVector::from_vec(vec![3.0, 4.0, 0.0]);
-/// let projected: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_point(&sphere, &point);
+/// let mut projected = DVector::<f64>::zeros(3);
+/// <Sphere as Manifold<f64, Dyn>>::project_point(&sphere, &point, &mut projected);
 /// assert!((projected.norm() - 1.0f64).abs() < 1e-12f64);
 /// assert!((projected - &point / point.norm()).norm() < 1e-12f64);
 ///
 /// // Project vector to tangent space
 /// let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
 /// let v = DVector::from_vec(vec![0.5, 1.0, 2.0]);
-/// let v_tangent: DVector<f64> = <Sphere as Manifold<f64, Dyn>>::project_tangent(&sphere, &x, &v).unwrap();
+/// let mut v_tangent = DVector::<f64>::zeros(3);
+/// <Sphere as Manifold<f64, Dyn>>::project_tangent(&sphere, &x, &v, &mut v_tangent).unwrap();
 /// assert!(x.dot(&v_tangent).abs() < 1e-12f64); // Orthogonal to x
 /// ```
 ///
@@ -294,7 +297,7 @@ impl Sphere {
     pub fn new(ambient_dim: usize) -> Result<Self> {
         if ambient_dim < 2 {
             return Err(ManifoldError::invalid_point(
-                "Sphere requires ambient dimension >= 2",
+                format!("Sphere manifold requires ambient dimension >= 2, got ambient_dim={}", ambient_dim),
             ));
         }
         Ok(Self { ambient_dim })
@@ -496,7 +499,7 @@ where
         self.ambient_dim - 1
     }
 
-    fn is_point_on_manifold(&self, point: &DVector<T>, tolerance: T) -> bool {
+    fn is_point_on_manifold(&self, point: &Point<T, Dyn>, tolerance: T) -> bool {
         if point.len() != self.ambient_dim {
             return false;
         }
@@ -509,8 +512,8 @@ where
 
     fn is_vector_in_tangent_space(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
+        point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
         tolerance: T,
     ) -> bool {
         if point.len() != self.ambient_dim || vector.len() != self.ambient_dim {
@@ -523,7 +526,7 @@ where
         <T as Float>::abs(inner_product) < tolerance
     }
 
-    fn project_point(&self, point: &DVector<T>) -> DVector<T> {
+    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>) {
         // Dispatch to specialized implementations for small dimensions
         match self.ambient_dim {
             2 => {
@@ -534,10 +537,12 @@ where
                 
                 if norm < T::epsilon() {
                     // Handle zero vector
-                    DVector::from_vec(vec![T::one(), T::zero()])
+                    result[0] = T::one();
+                    result[1] = T::zero();
                 } else {
                     let inv_norm = T::one() / norm;
-                    DVector::from_vec(vec![slice[0] * inv_norm, slice[1] * inv_norm])
+                    result[0] = slice[0] * inv_norm;
+                    result[1] = slice[1] * inv_norm;
                 }
             }
             3 => {
@@ -548,14 +553,14 @@ where
                 
                 if norm < T::epsilon() {
                     // Handle zero vector
-                    DVector::from_vec(vec![T::one(), T::zero(), T::zero()])
+                    result[0] = T::one();
+                    result[1] = T::zero();
+                    result[2] = T::zero();
                 } else {
                     let inv_norm = T::one() / norm;
-                    DVector::from_vec(vec![
-                        slice[0] * inv_norm,
-                        slice[1] * inv_norm,
-                        slice[2] * inv_norm,
-                    ])
+                    result[0] = slice[0] * inv_norm;
+                    result[1] = slice[1] * inv_norm;
+                    result[2] = slice[2] * inv_norm;
                 }
             }
             4 => {
@@ -566,15 +571,16 @@ where
                 
                 if norm < T::epsilon() {
                     // Handle zero vector
-                    DVector::from_vec(vec![T::one(), T::zero(), T::zero(), T::zero()])
+                    result[0] = T::one();
+                    result[1] = T::zero();
+                    result[2] = T::zero();
+                    result[3] = T::zero();
                 } else {
                     let inv_norm = T::one() / norm;
-                    DVector::from_vec(vec![
-                        slice[0] * inv_norm,
-                        slice[1] * inv_norm,
-                        slice[2] * inv_norm,
-                        slice[3] * inv_norm,
-                    ])
+                    result[0] = slice[0] * inv_norm;
+                    result[1] = slice[1] * inv_norm;
+                    result[2] = slice[2] * inv_norm;
+                    result[3] = slice[3] * inv_norm;
                 }
             }
             _ => {
@@ -585,15 +591,13 @@ where
                 if norm < T::epsilon() {
                     // Handle zero vector by creating a standard basis vector
                     // Choose e₁ = (1, 0, ..., 0) as canonical representative
-                    let mut result = DVector::zeros(self.ambient_dim);
+                    result.fill(T::zero());
                     result[0] = T::one();
-                    result
                 } else {
                     // Standard projection: Π(x) = x / ‖x‖
                     // The dispatcher will handle SIMD/parallel optimizations internally
-                    let mut result = point.clone();
-                    dispatcher.scale(&mut result, T::one() / norm);
-                    result
+                    result.copy_from(point);
+                    dispatcher.scale(result, T::one() / norm);
                 }
             }
         }
@@ -601,9 +605,10 @@ where
 
     fn project_tangent(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         // Dispatch to specialized implementations for small dimensions
         match self.ambient_dim {
             2 => {
@@ -611,14 +616,19 @@ where
                 let p = Vector2::new(point[0], point[1]);
                 let mut v = Vector2::new(vector[0], vector[1]);
                 project_tangent_sphere_2d(&p, &mut v);
-                Ok(DVector::from_vec(vec![v[0], v[1]]))
+                result[0] = v[0];
+                result[1] = v[1];
+                Ok(())
             }
             3 => {
                 // Use specialized 3D implementation
                 let p = Vector3::new(point[0], point[1], point[2]);
                 let mut v = Vector3::new(vector[0], vector[1], vector[2]);
                 project_tangent_sphere_3d(&p, &mut v);
-                Ok(DVector::from_vec(vec![v[0], v[1], v[2]]))
+                result[0] = v[0];
+                result[1] = v[1];
+                result[2] = v[2];
+                Ok(())
             }
             _ => {
                 // Generic implementation for higher dimensions
@@ -628,18 +638,18 @@ where
                 let dispatcher = get_dispatcher::<T>();
                 let inner = dispatcher.dot_product(point, vector);
                 
-                let mut result = vector.clone();
-                dispatcher.axpy(-inner, point, &mut result);
-                Ok(result)
+                result.copy_from(vector);
+                dispatcher.axpy(-inner, point, result);
+                Ok(())
             }
         }
     }
 
     fn inner_product(
         &self,
-        _point: &DVector<T>,
-        u: &DVector<T>,
-        v: &DVector<T>,
+        _point: &Point<T, Dyn>,
+        u: &TangentVector<T, Dyn>,
+        v: &TangentVector<T, Dyn>,
     ) -> Result<T> {
         // Canonical Riemannian metric: restriction of Euclidean inner product
         // g_x(u, v) = ⟨u, v⟩_ℝⁿ for u, v ∈ T_x S^{n-1}
@@ -649,53 +659,64 @@ where
         Ok(dispatcher.dot_product(u, v))
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
+    fn retract(&self, point: &Point<T, Dyn>, tangent: &TangentVector<T, Dyn>, result: &mut Point<T, Dyn>) -> Result<()> {
         // Dispatch to specialized implementations for small dimensions
         match self.ambient_dim {
             2 => {
                 // Use specialized 2D implementation
                 let p = Vector2::new(point[0], point[1]);
                 let v = Vector2::new(tangent[0], tangent[1]);
-                let result = retract_sphere_2d(&p, &v, T::one());
-                Ok(DVector::from_vec(vec![result[0], result[1]]))
+                let res = retract_sphere_2d(&p, &v, T::one());
+                result[0] = res[0];
+                result[1] = res[1];
+                Ok(())
             }
             3 => {
                 // Use specialized 3D implementation
                 let p = Vector3::new(point[0], point[1], point[2]);
                 let v = Vector3::new(tangent[0], tangent[1], tangent[2]);
-                let result = retract_sphere_3d(&p, &v, T::one());
-                Ok(DVector::from_vec(vec![result[0], result[1], result[2]]))
+                let res = retract_sphere_3d(&p, &v, T::one());
+                result[0] = res[0];
+                result[1] = res[1];
+                result[2] = res[2];
+                Ok(())
             }
             _ => {
                 // Use exponential map as retraction (exact on sphere)
                 // R_x(v) = exp_x(v) = cos(‖v‖)x + sin(‖v‖)v/‖v‖
                 // This is the optimal retraction for the sphere
-                self.exp_map(point, tangent)
+                let exp_result = self.exp_map(point, tangent)?;
+                result.copy_from(&exp_result);
+                Ok(())
             }
         }
     }
 
     fn inverse_retract(
         &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        other: &Point<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         // Use logarithmic map as inverse retraction
-        self.log_map(point, other)
+        let log_result = self.log_map(point, other)?;
+        result.copy_from(&log_result);
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &DVector<T>,
-        grad: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Point<T, Dyn>,
+        euclidean_grad: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         // For embedded manifolds with canonical metric,
         // Riemannian gradient = projection of Euclidean gradient
         // grad_ℳ f(x) = P_x(∇f(x))
-        self.project_tangent(point, grad)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> DVector<T> {
+    fn random_point(&self) -> Point<T, Dyn> {
         let mut rng = rand::thread_rng();
         let mut point = DVector::zeros(self.ambient_dim);
         
@@ -707,11 +728,15 @@ where
             point[i] = <T as Scalar>::from_f64(val);
         }
         
-        self.project_point(&point)
+        let mut result = DVector::zeros(self.ambient_dim);
+        self.project_point(&point, &mut result);
+        result
     }
 
-    fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
-        self.random_tangent_vector(point)
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>) -> Result<()> {
+        let tangent = self.random_tangent_vector(point)?;
+        result.copy_from(&tangent);
+        Ok(())
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -720,10 +745,11 @@ where
 
     fn parallel_transport(
         &self,
-        from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        from: &Point<T, Dyn>,
+        to: &Point<T, Dyn>,
+        vector: &TangentVector<T, Dyn>,
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
         // Parallel transport on sphere preserves angles and lengths
         // Formula for sphere: P_{x→y}(v) = v - ⟨v,y⟩y - ⟨v,x⟩x + ⟨x,y⟩⟨v,x⟩y
         // This transports v ∈ T_x S^{n-1} to T_y S^{n-1}
@@ -732,19 +758,19 @@ where
         let inner_vy = dispatcher.dot_product(vector, to);
         let inner_xy = dispatcher.dot_product(from, to);
         
-        let mut transported = vector.clone();
-        dispatcher.axpy(-inner_vy, to, &mut transported);
-        dispatcher.axpy(-inner_vx, from, &mut transported);
-        dispatcher.axpy(inner_xy * inner_vx, to, &mut transported);
+        result.copy_from(vector);
+        dispatcher.axpy(-inner_vy, to, result);
+        dispatcher.axpy(-inner_vx, from, result);
+        dispatcher.axpy(inner_xy * inner_vx, to, result);
             
-        Ok(transported)
+        Ok(())
     }
 
-    fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
+    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
         // Geodesic distance on sphere: d(x, y) = arccos(⟨x, y⟩)
         // This is the length of the shorter great circle arc connecting x and y
         let dispatcher = get_dispatcher::<T>();
-        let inner_product = dispatcher.dot_product(point1, point2);
+        let inner_product = dispatcher.dot_product(x, y);
         let cos_theta = <T as Float>::max(
             <T as Float>::min(inner_product, T::one()),
             -T::one(),
@@ -752,217 +778,6 @@ where
         Ok(<T as Float>::acos(cos_theta))
     }
 
-    // ========================================================================
-    // Workspace-based methods for zero-allocation operations
-    // ========================================================================
-
-    fn project_tangent_with_workspace(
-        &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-        result: &mut DVector<T>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Check dimensions
-        if point.len() != self.ambient_dim || vector.len() != self.ambient_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("Expected dimension {}", self.ambient_dim),
-                format!("Got point: {}, vector: {}", point.len(), vector.len()),
-            ));
-        }
-
-        // Check if point is on manifold
-        let dispatcher = get_dispatcher::<T>();
-        let norm = dispatcher.norm(point);
-        if <T as Float>::abs(norm - T::one()) > <T as Scalar>::from_f64(1e-6) {
-            return Err(ManifoldError::invalid_point(
-                "Point is not on the unit sphere",
-            ));
-        }
-
-        // Ensure result has correct size
-        if result.len() != self.ambient_dim {
-            *result = DVector::zeros(self.ambient_dim);
-        }
-
-        // Compute projection: v - <v,x>x
-        let inner_prod = dispatcher.dot_product(vector, point);
-        
-        // result = vector - inner_prod * point
-        result.copy_from(vector);
-        dispatcher.axpy(-inner_prod, point, result);
-
-        Ok(())
-    }
-
-    fn retract_with_workspace(
-        &self,
-        point: &DVector<T>,
-        tangent: &DVector<T>,
-        result: &mut DVector<T>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Check dimensions
-        if point.len() != self.ambient_dim || tangent.len() != self.ambient_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("Expected dimension {}", self.ambient_dim),
-                format!("Got point: {}, tangent: {}", point.len(), tangent.len()),
-            ));
-        }
-
-        // Check if point is on manifold
-        let dispatcher = get_dispatcher::<T>();
-        let norm = dispatcher.norm(point);
-        if <T as Float>::abs(norm - T::one()) > <T as Scalar>::from_f64(1e-6) {
-            return Err(ManifoldError::invalid_point(
-                "Point is not on the unit sphere",
-            ));
-        }
-
-        // Ensure result has correct size
-        if result.len() != self.ambient_dim {
-            *result = DVector::zeros(self.ambient_dim);
-        }
-
-        let tangent_norm = dispatcher.norm(tangent);
-        
-        if tangent_norm < T::epsilon() {
-            // If tangent is zero, return the point itself
-            result.copy_from(point);
-        } else {
-            // Exponential map formula: cos(||v||) * x + sin(||v||) * v/||v||
-            let cos_norm = <T as Float>::cos(tangent_norm);
-            let sin_norm = <T as Float>::sin(tangent_norm);
-            let normalized_tangent_factor = sin_norm / tangent_norm;
-            
-            for i in 0..self.ambient_dim {
-                result[i] = cos_norm * point[i] + normalized_tangent_factor * tangent[i];
-            }
-        }
-
-        Ok(())
-    }
-
-    fn inverse_retract_with_workspace(
-        &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-        result: &mut DVector<T>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Check dimensions
-        if point.len() != self.ambient_dim || other.len() != self.ambient_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("Expected dimension {}", self.ambient_dim),
-                format!("Got point: {}, other: {}", point.len(), other.len()),
-            ));
-        }
-
-        // Check if points are on manifold
-        let dispatcher = get_dispatcher::<T>();
-        let norm1 = dispatcher.norm(point);
-        let norm2 = dispatcher.norm(other);
-        if <T as Float>::abs(norm1 - T::one()) > <T as Scalar>::from_f64(1e-6) || <T as Float>::abs(norm2 - T::one()) > <T as Scalar>::from_f64(1e-6) {
-            return Err(ManifoldError::invalid_point(
-                "Points are not on the unit sphere",
-            ));
-        }
-
-        // Ensure result has correct size
-        if result.len() != self.ambient_dim {
-            *result = DVector::zeros(self.ambient_dim);
-        }
-
-        // Use logarithmic map
-        let inner_product = dispatcher.dot_product(point, other);
-        let cos_theta = <T as Float>::max(
-            <T as Float>::min(inner_product, T::one()),
-            -T::one(),
-        );
-
-        if <T as Float>::abs(cos_theta - T::one()) < T::epsilon() {
-            // Points are identical
-            result.fill(T::zero());
-        } else if <T as Float>::abs(cos_theta + T::one()) < T::epsilon() {
-            // Points are antipodal - log is undefined
-            return Err(ManifoldError::numerical_error(
-                "Logarithm undefined: points are antipodal on sphere",
-            ));
-        } else {
-            let theta = <T as Float>::acos(cos_theta);
-            let sin_theta = <T as Float>::sin(theta);
-            let factor = theta / sin_theta;
-
-            for i in 0..self.ambient_dim {
-                result[i] = factor * (other[i] - cos_theta * point[i]);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn euclidean_to_riemannian_gradient_with_workspace(
-        &self,
-        point: &DVector<T>,
-        euclidean_grad: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // For sphere, this is just projection to tangent space
-        self.project_tangent_with_workspace(point, euclidean_grad, result, workspace)
-    }
-
-    fn parallel_transport_with_workspace(
-        &self,
-        from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // Check dimensions
-        if from.len() != self.ambient_dim || to.len() != self.ambient_dim || vector.len() != self.ambient_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                format!("Expected dimension {}", self.ambient_dim),
-                format!("Got from: {}, to: {}, vector: {}", from.len(), to.len(), vector.len()),
-            ));
-        }
-
-        // Check if points are on manifold
-        let dispatcher = get_dispatcher::<T>();
-        let norm1 = dispatcher.norm(from);
-        let norm2 = dispatcher.norm(to);
-        if <T as Float>::abs(norm1 - T::one()) > <T as Scalar>::from_f64(1e-6) || <T as Float>::abs(norm2 - T::one()) > <T as Scalar>::from_f64(1e-6) {
-            return Err(ManifoldError::invalid_point(
-                "Points are not on the unit sphere",
-            ));
-        }
-
-        // Ensure result has correct size
-        if result.len() != self.ambient_dim {
-            *result = DVector::zeros(self.ambient_dim);
-        }
-
-        // If points are identical, return the vector unchanged
-        let mut diff = workspace.acquire_temp_vector(self.ambient_dim);
-        diff.copy_from(to);
-        dispatcher.axpy(-T::one(), from, &mut diff);
-        let diff_norm = dispatcher.norm(&diff);
-        if diff_norm < T::epsilon() {
-            result.copy_from(vector);
-            return Ok(());
-        }
-
-        // Use Schild's ladder approximation for simplicity
-        // This could be improved with exact parallel transport formula
-        let mut temp = workspace.acquire_temp_vector(self.ambient_dim);
-        
-        // Project vector to tangent space at 'to'
-        self.project_tangent_with_workspace(to, vector, &mut temp, workspace)?;
-        result.copy_from(&temp);
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -1009,7 +824,8 @@ mod tests {
         let sphere = Sphere::new(3).unwrap();
         
         let point = DVector::from_vec(vec![2.0, 0.0, 0.0]);
-        let projected = sphere.project_point(&point);
+        let mut projected = DVector::zeros(3);
+        sphere.project_point(&point, &mut projected);
         assert_relative_eq!(projected.norm(), 1.0, epsilon = 1e-10);
         assert_relative_eq!(projected[0], 1.0, epsilon = 1e-10);
     }
@@ -1020,7 +836,8 @@ mod tests {
         let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
         let vector = DVector::from_vec(vec![0.5, 1.0, 0.0]);
         
-        let projected = sphere.project_tangent(&point, &vector).unwrap();
+        let mut projected = DVector::zeros(3);
+        sphere.project_tangent(&point, &vector, &mut projected).unwrap();
         assert_relative_eq!(point.dot(&projected), 0.0, epsilon = 1e-10);
         assert_relative_eq!(projected[0], 0.0, epsilon = 1e-10);
         assert_relative_eq!(projected[1], 1.0, epsilon = 1e-10);
@@ -1047,7 +864,8 @@ mod tests {
         let zero_tangent = DVector::zeros(3);
         
         // Test centering: R(x, 0) = x
-        let retracted = sphere.retract(&point, &zero_tangent).unwrap();
+        let mut retracted = DVector::zeros(3);
+        sphere.retract(&point, &zero_tangent, &mut retracted).unwrap();
         assert_relative_eq!(&retracted, &point, epsilon = 1e-10);
     }
 
@@ -1060,7 +878,8 @@ mod tests {
         assert!(sphere.is_point_on_manifold(&random_point, 1e-10));
         
         // Test random tangent
-        let tangent = sphere.random_tangent(&random_point).unwrap();
+        let mut tangent = DVector::zeros(3);
+        sphere.random_tangent(&random_point, &mut tangent).unwrap();
         assert!(sphere.is_vector_in_tangent_space(&random_point, &tangent, 1e-10));
     }
 
@@ -1081,7 +900,8 @@ mod tests {
         let to = DVector::from_vec(vec![0.0, 1.0, 0.0]);
         let vector = DVector::from_vec(vec![0.0, 0.0, 1.0]);
         
-        let transported = sphere.parallel_transport(&from, &to, &vector).unwrap();
+        let mut transported = DVector::zeros(3);
+        sphere.parallel_transport(&from, &to, &vector, &mut transported).unwrap();
         
         // Check it's still in tangent space at destination
         assert!(sphere.is_vector_in_tangent_space(&to, &transported, 1e-10));

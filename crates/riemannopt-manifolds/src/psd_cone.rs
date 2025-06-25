@@ -200,7 +200,13 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         true
     }
 
-    fn project_point(&self, point: &Point<T, Dyn>) -> Point<T, Dyn> {
+    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>) {
+        // Ensure result has correct size
+        let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let mat = if point.len() == self.n * self.n {
             // If given as full matrix, reshape
             DMatrix::from_vec(self.n, self.n, point.as_slice().to_vec())
@@ -209,14 +215,22 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         };
         
         let projected = self.project_to_psd(&mat);
-        self.mat_to_vec(&projected)
+        let projected_vec = self.mat_to_vec(&projected);
+        result.copy_from(&projected_vec);
     }
 
     fn project_tangent(
         &self,
         _point: &Point<T, Dyn>,
         vector: &TangentVector<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         // For PSD cone, tangent projection is just symmetrization
         let mat = if vector.len() == self.n * self.n {
             DMatrix::from_vec(self.n, self.n, vector.as_slice().to_vec())
@@ -225,7 +239,9 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         };
         
         let sym = (mat.clone() + mat.transpose()) / <T as Scalar>::from_f64(2.0);
-        Ok(self.mat_to_vec(&sym))
+        let sym_vec = self.mat_to_vec(&sym);
+        result.copy_from(&sym_vec);
+        Ok(())
     }
 
     fn inner_product(
@@ -242,7 +258,14 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         &self,
         point: &Point<T, Dyn>,
         tangent: &TangentVector<T, Dyn>,
-    ) -> Result<Point<T, Dyn>> {
+        result: &mut Point<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let x_mat = self.vec_to_mat(point);
         let v_mat = self.vec_to_mat(tangent);
         
@@ -250,26 +273,42 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         let new_mat = &x_mat + &v_mat;
         let projected = self.project_to_psd(&new_mat);
         
-        Ok(self.mat_to_vec(&projected))
+        let projected_vec = self.mat_to_vec(&projected);
+        result.copy_from(&projected_vec);
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
         point: &Point<T, Dyn>,
         other: &Point<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         // Simple approximation: project the difference
         let diff = other - point;
-        self.project_tangent(point, &diff)
+        self.project_tangent(point, &diff, result)
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &Point<T, Dyn>,
         euclidean_grad: &TangentVector<T, Dyn>,
-    ) -> Result<TangentVector<T, Dyn>> {
+        result: &mut TangentVector<T, Dyn>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         // For the standard metric, just project to tangent space
-        self.project_tangent(point, euclidean_grad)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn random_point(&self) -> Point<T, Dyn> {
@@ -297,7 +336,13 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         self.mat_to_vec(&psd_scaled)
     }
 
-    fn random_tangent(&self, point: &Point<T, Dyn>) -> Result<TangentVector<T, Dyn>> {
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>) -> Result<()> {
+        // Ensure result has correct size
+        let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+        if result.len() != expected_size {
+            *result = DVector::zeros(expected_size);
+        }
+        
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -314,7 +359,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         }
         
         let tangent = self.mat_to_vec(&mat);
-        self.project_tangent(point, &tangent)
+        self.project_tangent(point, &tangent, result)
     }
 
     fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
@@ -352,7 +397,8 @@ mod tests {
         ]);
         let vec = manifold.mat_to_vec(&mat);
         
-        let projected = <PSDCone as Manifold<f64, Dyn>>::project_point(&manifold, &vec);
+        let mut projected = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <PSDCone as Manifold<f64, Dyn>>::project_point(&manifold, &vec, &mut projected);
         let proj_mat = manifold.vec_to_mat(&projected);
         
         // Check that projection is PSD
@@ -373,7 +419,8 @@ mod tests {
         ]);
         let vec = manifold.mat_to_vec(&mat);
         
-        let tangent = <PSDCone as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vec).unwrap();
+        let mut tangent = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <PSDCone as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vec, &mut tangent).unwrap();
         let tan_mat = manifold.vec_to_mat(&tangent);
         
         // Check symmetry
@@ -389,8 +436,11 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = <PSDCone as Manifold<f64, Dyn>>::random_point(&manifold);
-        let tangent = <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point).unwrap();
-        let retracted = <PSDCone as Manifold<f64, Dyn>>::retract(&manifold, &point, &(0.1 * &tangent)).unwrap();
+        let mut tangent = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut tangent).unwrap();
+        let scaled_tangent = 0.1 * &tangent;
+        let mut retracted = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <PSDCone as Manifold<f64, Dyn>>::retract(&manifold, &point, &scaled_tangent, &mut retracted).unwrap();
         
         // Check that result is on manifold
         assert!(<PSDCone as Manifold<f64, Dyn>>::is_point_on_manifold(&manifold, &retracted, 1e-6));
@@ -401,8 +451,10 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = <PSDCone as Manifold<f64, Dyn>>::random_point(&manifold);
-        let u = <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point).unwrap();
-        let v = <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point).unwrap();
+        let mut u = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        let mut v = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut u).unwrap();
+        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut v).unwrap();
         
         let ip_uv = <PSDCone as Manifold<f64, Dyn>>::inner_product(&manifold, &point, &u, &v).unwrap();
         let ip_vu = <PSDCone as Manifold<f64, Dyn>>::inner_product(&manifold, &point, &v, &u).unwrap();
