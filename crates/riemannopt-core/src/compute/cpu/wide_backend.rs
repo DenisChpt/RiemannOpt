@@ -26,11 +26,11 @@ impl<T> Default for WideBackend<T> {
 
 impl<T: SimdOps> SimdBackend<T> for WideBackend<T> {
     fn dot_product(&self, a: &DVector<T>, b: &DVector<T>) -> T {
-        SimdVectorOps::dot_product(a, b)
+        SimdVectorOps::dot_product(a.as_view(), b.as_view())
     }
     
     fn norm(&self, v: &DVector<T>) -> T {
-        SimdVectorOps::norm(v)
+        SimdVectorOps::norm(v.as_view())
     }
     
     fn norm_squared(&self, v: &DVector<T>) -> T {
