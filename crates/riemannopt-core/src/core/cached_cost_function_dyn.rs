@@ -9,6 +9,7 @@ use crate::{
     error::Result,
     memory::Workspace,
     types::{Scalar, constants},
+    compute::cpu::{get_dispatcher, SimdBackend},
 };
 use nalgebra::{DVector, DMatrix, Dyn};
 use std::fmt::Debug;
@@ -41,8 +42,21 @@ impl<T: Scalar> LastPointCache<T> {
             return false;
         }
         
-        // Check if the difference between points is within tolerance
-        // Using L∞ norm (max absolute difference) for efficiency
+        // For f64, we can use the dispatcher directly
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
+            // SAFETY: We've verified T is f64
+            unsafe {
+                let self_point_f64 = &*(&self.point as *const DVector<T> as *const DVector<f64>);
+                let point_f64 = &*(point as *const DVector<T> as *const DVector<f64>);
+                let tolerance_f64 = *(&tolerance as *const T as *const f64);
+                
+                let dispatcher = get_dispatcher::<f64>();
+                let max_diff = dispatcher.max_abs_diff(self_point_f64, point_f64);
+                return max_diff <= tolerance_f64;
+            }
+        }
+        
+        // Fallback for other types (shouldn't happen in practice since this is used with f64)
         for i in 0..self.point.len() {
             let diff = self.point[i] - point[i];
             if num_traits::Signed::abs(&diff) > tolerance {

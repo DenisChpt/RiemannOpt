@@ -68,6 +68,12 @@ pub trait SimdVector: Copy {
     
     /// Reciprocal
     fn recip(self) -> Self;
+    
+    /// Element-wise maximum
+    fn max(self, other: Self) -> Self;
+    
+    /// Horizontal maximum (maximum of all elements)
+    fn horizontal_max(self) -> Self::Scalar;
 }
 
 // Implement for f32x8
@@ -114,6 +120,15 @@ impl SimdVector for f32x8 {
     fn recip(self) -> Self {
         f32x8::splat(1.0) / self
     }
+    
+    fn max(self, other: Self) -> Self {
+        self.max(other)
+    }
+    
+    fn horizontal_max(self) -> f32 {
+        let arr = self.to_array();
+        arr.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+    }
 }
 
 // Implement for f64x4
@@ -156,6 +171,15 @@ impl SimdVector for f64x4 {
     
     fn recip(self) -> Self {
         f64x4::splat(1.0) / self
+    }
+    
+    fn max(self, other: Self) -> Self {
+        self.max(other)
+    }
+    
+    fn horizontal_max(self) -> f64 {
+        let arr = self.to_array();
+        arr.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
 }
 
