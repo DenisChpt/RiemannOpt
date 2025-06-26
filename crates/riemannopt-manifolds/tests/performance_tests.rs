@@ -4,7 +4,7 @@
 //! characteristics and don't regress.
 
 use riemannopt_manifolds::{Sphere, Stiefel, Grassmann};
-use riemannopt_core::manifold::Manifold;
+use riemannopt_core::{manifold::Manifold, memory::Workspace};
 use std::time::Instant;
 
 /// Helper to measure operation time
@@ -19,17 +19,18 @@ fn test_sphere_projection_performance() {
     let sphere = Sphere::new(1000).unwrap();
     let point: nalgebra::DVector<f64> = sphere.random_point();
     let mut result = nalgebra::DVector::zeros(1000);
+    let mut workspace = Workspace::new();
     
     // Warm up
     for _ in 0..10 {
-        sphere.project_point(&point, &mut result);
+        sphere.project_point(&point, &mut result, &mut workspace);
     }
     
     // Measure
     let iterations = 1000;
     let duration = time_operation(|| {
         for _ in 0..iterations {
-            sphere.project_point(&point, &mut result);
+            sphere.project_point(&point, &mut result, &mut workspace);
         }
     });
     
@@ -45,19 +46,20 @@ fn test_stiefel_retraction_performance() {
     let stiefel = Stiefel::new(50, 10).unwrap();
     let point: nalgebra::DVector<f64> = stiefel.random_point();
     let mut tangent = nalgebra::DVector::zeros(50 * 10);
-    stiefel.random_tangent(&point, &mut tangent).unwrap();
+    let mut workspace = Workspace::new();
+    stiefel.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
     let mut result = nalgebra::DVector::zeros(50 * 10);
     
     // Warm up
     for _ in 0..10 {
-        let _ = stiefel.retract(&point, &tangent, &mut result);
+        let _ = stiefel.retract(&point, &tangent, &mut result, &mut workspace);
     }
     
     // Measure
     let iterations = 100;
     let duration = time_operation(|| {
         for _ in 0..iterations {
-            let _ = stiefel.retract(&point, &tangent, &mut result);
+            let _ = stiefel.retract(&point, &tangent, &mut result, &mut workspace);
         }
     });
     
@@ -73,17 +75,18 @@ fn test_grassmann_distance_performance() {
     let grassmann = Grassmann::new(20, 5).unwrap();
     let x: nalgebra::DVector<f64> = grassmann.random_point();
     let y: nalgebra::DVector<f64> = grassmann.random_point();
+    let mut workspace = Workspace::new();
     
     // Warm up
     for _ in 0..10 {
-        let _ = grassmann.distance(&x, &y);
+        let _ = grassmann.distance(&x, &y, &mut workspace);
     }
     
     // Measure
     let iterations = 100;
     let duration = time_operation(|| {
         for _ in 0..iterations {
-            let _ = grassmann.distance(&x, &y);
+            let _ = grassmann.distance(&x, &y, &mut workspace);
         }
     });
     

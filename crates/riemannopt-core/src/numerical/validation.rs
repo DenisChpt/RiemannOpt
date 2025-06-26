@@ -94,7 +94,8 @@ impl NumericalValidator {
     {
         let analytical_grad = grad_f(point);
         let mut riemannian_grad = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-        manifold.euclidean_to_riemannian_gradient(point, &analytical_grad, &mut riemannian_grad)?;
+        let mut workspace = crate::memory::workspace::Workspace::new();
+        manifold.euclidean_to_riemannian_gradient(point, &analytical_grad, &mut riemannian_grad, &mut workspace)?;
         let analytical_grad = riemannian_grad;
 
         let mut component_errors = Vec::new();
@@ -105,7 +106,7 @@ impl NumericalValidator {
         let num_tests = analytical_grad.len().min(20);
         for _ in 0..num_tests {
             let mut direction = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.random_tangent(point, &mut direction)?;
+            manifold.random_tangent(point, &mut direction, &mut workspace)?;
             let direction_norm = manifold.norm(point, &direction)?;
 
             if direction_norm > T::epsilon() {
@@ -119,10 +120,10 @@ impl NumericalValidator {
                 // Compute directional derivative numerically
                 let direction_h = &direction * h;
                 let mut retracted_plus = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-                manifold.retract(point, &direction_h, &mut retracted_plus)?;
+                manifold.retract(point, &direction_h, &mut retracted_plus, &mut workspace)?;
                 let direction_neg_h = &direction * (-h);
                 let mut retracted_minus = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-                manifold.retract(point, &direction_neg_h, &mut retracted_minus)?;
+                manifold.retract(point, &direction_neg_h, &mut retracted_minus, &mut workspace)?;
 
                 let f_plus = f(&retracted_plus);
                 let f_minus = f(&retracted_minus);
@@ -180,6 +181,7 @@ impl NumericalValidator {
         R: Retraction<T, D>,
         DefaultAllocator: Allocator<D>,
     {
+        let mut workspace = crate::memory::workspace::Workspace::new();
         let mut step_sizes = Vec::new();
         let mut errors = Vec::new();
 
@@ -203,14 +205,14 @@ impl NumericalValidator {
             let exp_point = if manifold.has_exact_exp_log() {
                 // If manifold has exact exp, it should be implemented as default retraction
                 let mut exp_pt = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-                manifold.retract(point, &scaled_tangent, &mut exp_pt)?;
+                manifold.retract(point, &scaled_tangent, &mut exp_pt, &mut workspace)?;
                 exp_pt
             } else {
                 // Otherwise, compare against a second-order approximation
                 // R(x, tv) = x + tv + O(||tv||^2)
                 let first_order = point + &scaled_tangent;
                 let mut projected = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-                manifold.project_point(&first_order, &mut projected);
+                manifold.project_point(&first_order, &mut projected, &mut workspace);
                 projected
             };
 
@@ -254,11 +256,12 @@ impl NumericalValidator {
         let h = config.base_step_size;
 
         // Test with random tangent vectors
+        let mut workspace = crate::memory::workspace::Workspace::new();
         for _ in 0..10 {
             let mut u = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.random_tangent(point, &mut u)?;
+            manifold.random_tangent(point, &mut u, &mut workspace)?;
             let mut v = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.random_tangent(point, &mut v)?;
+            manifold.random_tangent(point, &mut v, &mut workspace)?;
 
             // Scale to small vectors
             let u = u * h;
@@ -273,7 +276,7 @@ impl NumericalValidator {
 
             // Transport v to y (using differential of retraction)
             let mut v_at_y = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.parallel_transport(point, &y, &v, &mut v_at_y)?;
+            manifold.parallel_transport(point, &y, &v, &mut v_at_y, &mut workspace)?;
 
             // Compute metric at y
             let g_y = manifold.inner_product(&y, &v_at_y, &v_at_y)?;
@@ -308,10 +311,11 @@ impl NumericalValidator {
 
         // Test 1: Projection stability
         let point = manifold.random_point();
+        let mut workspace = crate::memory::workspace::Workspace::new();
         for scale in [T::epsilon(), T::one(), <T as Scalar>::from_f64(1e6)] {
             let perturbed = &point * (T::one() + scale * T::epsilon());
             let mut projected = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.project_point(&perturbed, &mut projected);
+            manifold.project_point(&perturbed, &mut projected, &mut workspace);
 
             if !manifold.is_point_on_manifold(&projected, <T as Scalar>::from_f64(1e-10)) {
                 issues.push(format!(
@@ -323,7 +327,7 @@ impl NumericalValidator {
 
         // Test 2: Retraction near singularities
         let mut tangent = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-        manifold.random_tangent(&point, &mut tangent)?;
+        manifold.random_tangent(&point, &mut tangent, &mut workspace)?;
         for scale in [
             T::epsilon(),
             <T as Scalar>::from_f64(1e-8),
@@ -331,10 +335,10 @@ impl NumericalValidator {
         ] {
             let tiny_tangent = tangent.clone() * scale;
             let mut retracted = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            match manifold.retract(&point, &tiny_tangent, &mut retracted) {
+            match manifold.retract(&point, &tiny_tangent, &mut retracted, &mut workspace) {
                 Ok(()) => {
                     let mut back = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-                    manifold.inverse_retract(&point, &retracted, &mut back)?;
+                    manifold.inverse_retract(&point, &retracted, &mut back, &mut workspace)?;
                     let diff_vec = &back - &tiny_tangent;
                     let norm_diff = manifold.norm(&point, &diff_vec)?;
                     let norm_tiny = manifold.norm(&point, &tiny_tangent)?;
@@ -359,9 +363,9 @@ impl NumericalValidator {
 
         // Test 3: Orthogonality preservation
         let mut u = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-        manifold.random_tangent(&point, &mut u)?;
+        manifold.random_tangent(&point, &mut u, &mut workspace)?;
         let mut v = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-        manifold.random_tangent(&point, &mut v)?;
+        manifold.random_tangent(&point, &mut v, &mut workspace)?;
 
         // Make v orthogonal to u
         let u_norm_sq = manifold.inner_product(&point, &u, &u)?;

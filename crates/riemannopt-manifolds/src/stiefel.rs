@@ -102,6 +102,7 @@
 //! ```rust
 //! use riemannopt_manifolds::Stiefel;
 //! use riemannopt_core::manifold::Manifold;
+//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::{DMatrix, DVector, Dyn};
 //!
 //! // Create Stiefel manifold St(5,3)
@@ -117,7 +118,8 @@
 //! // Project arbitrary matrix to Stiefel manifold
 //! let arbitrary: DVector<f64> = DVector::from_vec(vec![1.0; 15]);
 //! let mut projected = DVector::<f64>::zeros(15);
-//! stiefel.project_point(&arbitrary, &mut projected);
+//! let mut workspace = Workspace::new();
+//! stiefel.project_point(&arbitrary, &mut projected, &mut workspace);
 //! ```
 
 use riemannopt_core::{
@@ -127,15 +129,15 @@ use riemannopt_core::{
     compute::{get_dispatcher, SimdBackend},
     memory::Workspace,
 };
-use crate::utils::vector_to_matrix_view;
+use crate::utils::{vector_to_matrix_view, vector_to_matrix_view_mut};
 // use crate::stiefel_small::{project_tangent_stiefel_3_2, project_tangent_stiefel_4_2, can_use_specialized_stiefel};
 use nalgebra::{DMatrix, Dyn};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use std::iter::Sum;
 
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
+// #[cfg(feature = "parallel")]
+// use rayon::prelude::*;
 
 /// The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = Iₚ}.
 ///
@@ -246,13 +248,15 @@ use rayon::prelude::*;
 /// ```rust
 /// # use riemannopt_manifolds::Stiefel;
 /// # use riemannopt_core::manifold::Manifold;
+/// # use riemannopt_core::memory::workspace::Workspace;
 /// # use nalgebra::{DMatrix, DVector, Dyn};
 /// # let stiefel = Stiefel::new(3, 2).unwrap();
 ///
 /// // Project arbitrary matrix to Stiefel manifold
 /// let arbitrary: DVector<f64> = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 /// let mut projected = DVector::<f64>::zeros(6);
-/// stiefel.project_point(&arbitrary, &mut projected);
+/// let mut workspace = Workspace::new();
+/// stiefel.project_point(&arbitrary, &mut projected, &mut workspace);
 /// 
 /// // Result has orthonormal columns
 /// assert!(stiefel.is_point_on_manifold(&projected, 1e-12));
@@ -261,7 +265,7 @@ use rayon::prelude::*;
 /// let x: DVector<f64> = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
 /// let v: DVector<f64> = DVector::from_vec(vec![0.1; 6]);
 /// let mut v_tangent = DVector::<f64>::zeros(6);
-/// stiefel.project_tangent(&x, &v, &mut v_tangent).unwrap();
+/// stiefel.project_tangent(&x, &v, &mut v_tangent, &mut workspace).unwrap();
 /// assert!(stiefel.is_vector_in_tangent_space(&x, &v_tangent, 1e-12));
 /// ```
 ///
@@ -269,6 +273,7 @@ use rayon::prelude::*;
 /// ```rust
 /// # use riemannopt_manifolds::Stiefel;
 /// # use riemannopt_core::manifold::Manifold;
+/// # use riemannopt_core::memory::workspace::Workspace;
 /// # use nalgebra::{DVector, Dyn};
 /// # let stiefel = Stiefel::new(3, 2).unwrap();
 /// # let x: DVector<f64> = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
@@ -276,13 +281,14 @@ use rayon::prelude::*;
 /// // Simulate optimization step
 /// let euclidean_grad: DVector<f64> = DVector::from_vec(vec![0.1, -0.2, 0.3, -0.1, 0.2, -0.3]);
 /// let mut riemannian_grad = DVector::<f64>::zeros(6);
-/// stiefel.euclidean_to_riemannian_gradient(&x, &euclidean_grad, &mut riemannian_grad).unwrap();
+/// let mut workspace = Workspace::new();
+/// stiefel.euclidean_to_riemannian_gradient(&x, &euclidean_grad, &mut riemannian_grad, &mut workspace).unwrap();
 /// 
 /// // Take step using retraction
 /// let step_size: f64 = 0.01;
 /// let direction: DVector<f64> = &riemannian_grad * (-step_size);
 /// let mut x_new = DVector::<f64>::zeros(6);
-/// stiefel.retract(&x, &direction, &mut x_new).unwrap();
+/// stiefel.retract(&x, &direction, &mut x_new, &mut workspace).unwrap();
 /// 
 /// // New point maintains orthogonality
 /// assert!(stiefel.is_point_on_manifold(&x_new, 1e-12));
@@ -444,20 +450,22 @@ impl Stiefel {
     ///
     /// # Complexity
     /// O(np²) for QR decomposition of n×p matrix
-    fn qr_projection<T>(&self, matrix: &DMatrix<T>) -> DMatrix<T>
+    fn qr_projection<T>(&self, matrix: &DMatrix<T>, workspace: &mut Workspace<T>) -> DMatrix<T>
     where
         T: Scalar,
     {
-        self.qr_projection_sequential(matrix)
+        self.qr_projection_with_workspace(matrix, workspace)
     }
     
-    fn qr_projection_sequential<T>(&self, matrix: &DMatrix<T>) -> DMatrix<T>
+    fn qr_projection_with_workspace<T>(&self, matrix: &DMatrix<T>, workspace: &mut Workspace<T>) -> DMatrix<T>
     where
         T: Scalar,
     {
         if matrix.nrows() != self.n || matrix.ncols() != self.p {
-            // Handle wrong dimensions by padding or truncating
-            let mut result = DMatrix::<T>::zeros(self.n, self.p);
+            // Use workspace buffer for wrong dimensions case
+            let mut result = workspace.acquire_temp_matrix(self.n, self.p);
+            result.fill(T::zero());
+            
             let copy_rows = matrix.nrows().min(self.n);
             let copy_cols = matrix.ncols().min(self.p);
             
@@ -472,10 +480,12 @@ impl Stiefel {
                 result[(0, 0)] = T::one();
             }
             
-            let qr = result.qr();
+            // Must clone here for QR decomposition which consumes the matrix
+            let qr = result.clone_owned().qr();
             // Take only the first p columns of Q
             qr.q().columns(0, self.p).into_owned()
         } else {
+            // Must clone here for QR decomposition which consumes the matrix
             let qr = matrix.clone().qr();
             // Take only the first p columns of Q
             qr.q().columns(0, self.p).into_owned()
@@ -549,9 +559,9 @@ impl Stiefel {
         let mut xtv = workspace.acquire_temp_matrix(self.p, self.p);
         let mut vtx = workspace.acquire_temp_matrix(self.p, self.p);
         
-        // Convert to matrix views
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.data.as_vec().clone());
+        // Use matrix views instead of cloning
+        let x_matrix = vector_to_matrix_view(point, self.n, self.p);
+        let v_matrix = vector_to_matrix_view(vector, self.n, self.p);
         
         // Compute X^T V and V^T X
         xtv.copy_from(&(x_matrix.transpose() * &v_matrix));
@@ -562,9 +572,10 @@ impl Stiefel {
         symmetric.copy_from(&(&*xtv + &*vtx));
         *symmetric *= <T as Scalar>::from_f64(0.5);
         
-        // Compute projection: V - X * symmetric
-        let projected = v_matrix - &x_matrix * &*symmetric;
-        result.copy_from(&DVector::from_vec(projected.data.as_vec().clone()));
+        // Compute projection: V - X * symmetric directly into result
+        result.copy_from(vector);
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix -= &x_matrix * &*symmetric;
         
         Ok(())
     }
@@ -599,18 +610,19 @@ impl Stiefel {
         // Use workspace buffer for the candidate matrix
         let mut candidate = workspace.acquire_temp_matrix(self.n, self.p);
         
-        // Convert to matrices and compute X + V
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, tangent.data.as_vec().clone());
-        candidate.copy_from(&(&x_matrix + &v_matrix));
+        // Use matrix views and compute X + V
+        let x_matrix = vector_to_matrix_view(point, self.n, self.p);
+        let v_matrix = vector_to_matrix_view(tangent, self.n, self.p);
+        candidate.copy_from(&x_matrix);
+        *candidate += &v_matrix;
         
         // QR retraction: extract Q factor
-        // Clone the candidate matrix to perform QR decomposition
-        let qr = (*candidate).clone().qr();
+        // Clone is necessary here as QR decomposition consumes the matrix
+        let qr = candidate.clone_owned().qr();
         let q_full = qr.q();
         let q = q_full.columns(0, self.p);
         
-        // Convert back to vector
+        // Copy directly into result
         let q_owned = q.into_owned();
         result.copy_from(&DVector::from_vec(q_owned.data.as_vec().clone()));
         
@@ -644,27 +656,31 @@ impl Stiefel {
         }
         
         // Use workspace buffers
-        let mut v_matrix = workspace.acquire_temp_matrix(self.n, self.p);
         let mut xtv = workspace.acquire_temp_matrix(self.p, self.p);
         let mut vtx = workspace.acquire_temp_matrix(self.p, self.p);
         
-        // Convert to matrices
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let y_matrix = DMatrix::from_vec(self.n, self.p, other.data.as_vec().clone());
+        // Use matrix views
+        let x_matrix = vector_to_matrix_view(point, self.n, self.p);
+        let _y_matrix = vector_to_matrix_view(other, self.n, self.p);
         
         // Approximate inverse retraction: V ≈ Y - X
-        v_matrix.copy_from(&(y_matrix - &x_matrix));
+        // First copy Y to result, then subtract X
+        result.copy_from(other);
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix -= &x_matrix;
         
-        // Project to tangent space
-        xtv.copy_from(&(x_matrix.transpose() * &*v_matrix));
+        // Now project to tangent space in-place
+        let v_matrix = vector_to_matrix_view(result, self.n, self.p);
+        xtv.copy_from(&(x_matrix.transpose() * &v_matrix));
         vtx.copy_from(&(v_matrix.transpose() * &x_matrix));
         
         let mut symmetric = workspace.acquire_temp_matrix(self.p, self.p);
         symmetric.copy_from(&(&*xtv + &*vtx));
         *symmetric *= <T as Scalar>::from_f64(0.5);
         
-        let projected = &*v_matrix - &x_matrix * &*symmetric;
-        result.copy_from(&DVector::from_vec(projected.data.as_vec().clone()));
+        // Final projection: result = result - X * symmetric
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix -= &x_matrix * &*symmetric;
         
         Ok(())
     }
@@ -724,23 +740,25 @@ where
         true
     }
 
-    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>) {
-
+    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>, workspace: &mut Workspace<T>) {
         let matrix = if point.len() == self.n * self.p {
-            DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone())
+            // Use matrix view to avoid cloning
+            let view = vector_to_matrix_view(point, self.n, self.p);
+            view.clone_owned()
         } else {
-            // Handle wrong size by creating a random matrix
-            let mut matrix = DMatrix::<T>::zeros(self.n, self.p);
+            // Handle wrong size by creating a matrix in workspace
+            let mut matrix = workspace.acquire_temp_matrix(self.n, self.p);
+            matrix.fill(T::zero());
             let copy_len = point.len().min(self.n * self.p);
             for i in 0..copy_len {
                 let row = i / self.p;
                 let col = i % self.p;
                 matrix[(row, col)] = point[i];
             }
-            matrix
+            matrix.clone_owned()
         };
         
-        let projected = self.qr_projection(&matrix);
+        let projected = self.qr_projection(&matrix, workspace);
         result.copy_from(&DVector::from_vec(projected.data.as_vec().clone()))
     }
 
@@ -749,10 +767,9 @@ where
         point: &Point<T, Dyn>,
         vector: &TangentVector<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        // Use the workspace variant with a temporary workspace
-        let mut workspace = Workspace::new();
-        self.project_tangent_with_workspace(point, vector, result, &mut workspace)
+        self.project_tangent_with_workspace(point, vector, result, workspace)
     }
 
     fn inner_product(
@@ -766,10 +783,8 @@ where
         Ok(dispatcher.dot_product(u, v))
     }
 
-    fn retract(&self, point: &Point<T, Dyn>, tangent: &TangentVector<T, Dyn>, result: &mut Point<T, Dyn>) -> Result<()> {
-        // Use the workspace variant with a temporary workspace
-        let mut workspace = Workspace::new();
-        self.retract_with_workspace(point, tangent, result, &mut workspace)
+    fn retract(&self, point: &Point<T, Dyn>, tangent: &TangentVector<T, Dyn>, result: &mut Point<T, Dyn>, workspace: &mut Workspace<T>) -> Result<()> {
+        self.retract_with_workspace(point, tangent, result, workspace)
     }
 
     fn inverse_retract(
@@ -777,10 +792,9 @@ where
         point: &Point<T, Dyn>,
         other: &Point<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        // Use the workspace variant with a temporary workspace
-        let mut workspace = Workspace::new();
-        self.inverse_retract_with_workspace(point, other, result, &mut workspace)
+        self.inverse_retract_with_workspace(point, other, result, workspace)
     }
 
     fn euclidean_to_riemannian_gradient(
@@ -788,9 +802,10 @@ where
         point: &Point<T, Dyn>,
         euclidean_grad: &TangentVector<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Project Euclidean gradient to tangent space
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> Point<T, Dyn> {
@@ -805,11 +820,13 @@ where
             }
         }
         
-        let projected = self.qr_projection(&matrix);
+        // Create temporary workspace for QR projection
+        let mut workspace = Workspace::new();
+        let projected = self.qr_projection(&matrix, &mut workspace);
         DVector::from_vec(projected.data.as_vec().clone())
     }
 
-    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>) -> Result<()> {
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>, _workspace: &mut Workspace<T>) -> Result<()> {
         if point.len() != self.n * self.p {
             return Err(ManifoldError::dimension_mismatch(
                 format!("n*p={} elements for St({},{})", self.n * self.p, self.n, self.p),
@@ -817,9 +834,9 @@ where
             ));
         }
         
-        
-        let x_matrix = DMatrix::from_vec(self.n, self.p, point.data.as_vec().clone());
-        let tangent = self.random_tangent_matrix(&x_matrix)?;
+        // Use matrix view to avoid cloning
+        let x_matrix = vector_to_matrix_view(point, self.n, self.p);
+        let tangent = self.random_tangent_matrix(&x_matrix.clone_owned())?;
         result.copy_from(&DVector::from_vec(tangent.data.as_vec().clone()));
         Ok(())
     }
@@ -834,6 +851,7 @@ where
         to: &Point<T, Dyn>,
         vector: &TangentVector<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if from.len() != self.n * self.p || to.len() != self.n * self.p || vector.len() != self.n * self.p {
             return Err(ManifoldError::dimension_mismatch(
@@ -842,47 +860,58 @@ where
             ));
         }
         
+        // Use matrix views to avoid cloning
+        let x_matrix = vector_to_matrix_view(from, self.n, self.p);
+        let y_matrix = vector_to_matrix_view(to, self.n, self.p);
+        let v_matrix = vector_to_matrix_view(vector, self.n, self.p);
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, from.data.as_vec().clone());
-        let y_matrix = DMatrix::from_vec(self.n, self.p, to.data.as_vec().clone());
-        let v_matrix = DMatrix::from_vec(self.n, self.p, vector.data.as_vec().clone());
+        // Use workspace buffers for temporary matrices
+        let mut ytv = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut vty = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut xtv = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut vtx = workspace.acquire_temp_matrix(self.p, self.p);
         
-        // Implement parallel transport along geodesics for Stiefel manifold
-        // This uses the algorithm from "Optimization Algorithms on Matrix Manifolds" by Absil et al.
+        // Compute all the necessary products
+        ytv.copy_from(&(y_matrix.transpose() * &v_matrix));
+        vty.copy_from(&(v_matrix.transpose() * &y_matrix));
+        xtv.copy_from(&(x_matrix.transpose() * &v_matrix));
+        vtx.copy_from(&(v_matrix.transpose() * &x_matrix));
         
-        // First, compute the direction of the geodesic from X to Y
-        // We need to find the tangent vector W at X such that geodesic γ(1) = Y
+        let mut term1 = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut term2 = workspace.acquire_temp_matrix(self.p, self.p);
         
-        // For computational efficiency, we use a first-order approximation:
-        // The parallel transport of V from X to Y along the geodesic is approximately:
-        // P_{X→Y}(V) = V - X * ((Y^T V + V^T Y) / 2) + Y * ((X^T V + V^T X) / 2)
+        term1.copy_from(&(&*ytv + &*vty));
+        *term1 *= <T as Scalar>::from_f64(0.5);
         
-        // This formula ensures that the transported vector remains in the tangent space at Y
-        // and preserves the inner product structure along the geodesic
+        term2.copy_from(&(&*xtv + &*vtx));
+        *term2 *= <T as Scalar>::from_f64(0.5);
         
-        let ytv = y_matrix.transpose() * &v_matrix;
-        let vty = v_matrix.transpose() * &y_matrix;
-        let xtv = x_matrix.transpose() * &v_matrix;
-        let vtx = v_matrix.transpose() * &x_matrix;
-        
-        let term1 = (&ytv + &vty) * <T as Scalar>::from_f64(0.5);
-        let term2 = (&xtv + &vtx) * <T as Scalar>::from_f64(0.5);
-        
-        let transported = &v_matrix - &x_matrix * term1 + &y_matrix * term2;
+        // Compute transported = V - X * term1 + Y * term2
+        result.copy_from(vector);
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix -= &x_matrix * &*term1;
+        result_matrix += &y_matrix * &*term2;
         
         // Project to ensure we're exactly in the tangent space at Y
-        let final_transported = {
-            let ytw = y_matrix.transpose() * &transported;
-            let wty = transported.transpose() * &y_matrix;
-            let symmetric = (&ytw + &wty) * <T as Scalar>::from_f64(0.5);
-            transported - &y_matrix * symmetric
-        };
+        let transported_view = vector_to_matrix_view(result, self.n, self.p);
+        let mut ytw = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut wty = workspace.acquire_temp_matrix(self.p, self.p);
         
-        result.copy_from(&DVector::from_vec(final_transported.data.as_vec().clone()));
+        ytw.copy_from(&(y_matrix.transpose() * &transported_view));
+        wty.copy_from(&(transported_view.transpose() * &y_matrix));
+        
+        let mut symmetric = workspace.acquire_temp_matrix(self.p, self.p);
+        symmetric.copy_from(&(&*ytw + &*wty));
+        *symmetric *= <T as Scalar>::from_f64(0.5);
+        
+        // Final projection in-place
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix -= &y_matrix * &*symmetric;
+        
         Ok(())
     }
 
-    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
+    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>, workspace: &mut Workspace<T>) -> Result<T> {
         if x.len() != self.n * self.p || y.len() != self.n * self.p {
             return Err(ManifoldError::dimension_mismatch(
                 format!("n*p={} elements for St({},{})", self.n * self.p, self.n, self.p),
@@ -890,57 +919,29 @@ where
             ));
         }
         
-        let x_matrix = DMatrix::from_vec(self.n, self.p, x.data.as_vec().clone());
-        let y_matrix = DMatrix::from_vec(self.n, self.p, y.data.as_vec().clone());
+        // Use matrix views to avoid cloning
+        let x_matrix = vector_to_matrix_view(x, self.n, self.p);
+        let y_matrix = vector_to_matrix_view(y, self.n, self.p);
         
-        // Geodesic distance using principal angles between column spaces
-        // Algorithm: d(X,Y) = √(∑ᵢ θᵢ²) where cos(θᵢ) = σᵢ(X^T Y)
-        // The θᵢ are principal angles between the column spaces
+        // Use workspace buffer for the product
+        let mut m = workspace.acquire_temp_matrix(self.p, self.p);
+        m.copy_from(&(x_matrix.transpose() * &y_matrix));
         
-        let m = x_matrix.transpose() * &y_matrix;
-        let svd = m.svd(true, true);
+        // SVD requires owned matrix, so we must clone here
+        let svd = m.clone_owned().svd(true, true);
         
         let mut distance_squared = T::zero();
         let singular_values = svd.singular_values;
         
-        // For large number of singular values, we could parallelize this loop
-        if false {
-            #[cfg(feature = "parallel")]
-            {
-                distance_squared = singular_values.as_slice()
-                    .par_iter()
-                    .map(|&sigma| {
-                        let clamped = <T as Float>::max(
-                            <T as Float>::min(sigma, T::one()),
-                            -T::one(),
-                        );
-                        let angle = <T as Float>::acos(clamped);
-                        angle * angle
-                    })
-                    .sum::<T>();
-            }
-            #[cfg(not(feature = "parallel"))]
-            {
-                for i in 0..singular_values.len() {
-                    let sigma = singular_values[i];
-                    let clamped = <T as Float>::max(
-                        <T as Float>::min(sigma, T::one()),
-                        -T::one(),
-                    );
-                    let angle = <T as Float>::acos(clamped);
-                    distance_squared = distance_squared + angle * angle;
-                }
-            }
-        } else {
-            for i in 0..singular_values.len() {
-                let sigma = singular_values[i];
-                let clamped = <T as Float>::max(
-                    <T as Float>::min(sigma, T::one()),
-                    -T::one(),
-                );
-                let angle = <T as Float>::acos(clamped);
-                distance_squared = distance_squared + angle * angle;
-            }
+        // Process singular values sequentially for now
+        for i in 0..singular_values.len() {
+            let sigma = singular_values[i];
+            let clamped = <T as Float>::max(
+                <T as Float>::min(sigma, T::one()),
+                -T::one(),
+            );
+            let angle = <T as Float>::acos(clamped);
+            distance_squared = distance_squared + angle * angle;
         }
         
         Ok(<T as Float>::sqrt(distance_squared))
@@ -1025,11 +1026,12 @@ mod tests {
     #[test]
     fn test_projection() {
         let stiefel = Stiefel::new(3, 2).unwrap();
+        let mut workspace = Workspace::new();
         
         // Create non-orthonormal matrix
         let point = DVector::from_vec(vec![2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
         let mut projected = DVector::zeros(6);
-        stiefel.project_point(&point, &mut projected);
+        stiefel.project_point(&point, &mut projected, &mut workspace);
         
         assert!(stiefel.is_point_on_manifold(&projected, 1e-10));
     }
@@ -1037,24 +1039,26 @@ mod tests {
     #[test]
     fn test_tangent_projection() {
         let stiefel = Stiefel::new(3, 2).unwrap();
+        let mut workspace = Workspace::new();
         
         let point = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
         let vector = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         
         let mut projected = DVector::zeros(6);
-        stiefel.project_tangent(&point, &vector, &mut projected).unwrap();
+        stiefel.project_tangent(&point, &vector, &mut projected, &mut workspace).unwrap();
         assert!(stiefel.is_vector_in_tangent_space(&point, &projected, 1e-10));
     }
 
     #[test]
     fn test_retraction_properties() {
         let stiefel = Stiefel::new(3, 2).unwrap();
+        let mut workspace = Workspace::new();
         let point = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
         let zero_tangent = DVector::zeros(6);
         
         // Test centering: R(x, 0) = x
         let mut retracted = DVector::zeros(6);
-        stiefel.retract(&point, &zero_tangent, &mut retracted).unwrap();
+        stiefel.retract(&point, &zero_tangent, &mut retracted, &mut workspace).unwrap();
         assert_relative_eq!(
             (&retracted - &point).norm(), 
             0.0, 
@@ -1065,6 +1069,7 @@ mod tests {
     #[test]
     fn test_random_generation() {
         let stiefel = Stiefel::new(4, 2).unwrap();
+        let mut workspace = Workspace::new();
         
         // Test random point
         let random_point = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
@@ -1072,19 +1077,20 @@ mod tests {
         
         // Test random tangent
         let mut tangent = DVector::zeros(8);
-        stiefel.random_tangent(&random_point, &mut tangent).unwrap();
+        stiefel.random_tangent(&random_point, &mut tangent, &mut workspace).unwrap();
         assert!(stiefel.is_vector_in_tangent_space(&random_point, &tangent, 1e-10));
     }
 
     #[test]
     fn test_gradient_conversion() {
         let stiefel = Stiefel::new(3, 2).unwrap();
+        let mut workspace = Workspace::new();
         let point = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
         let euclidean_grad = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         
         let mut riemannian_grad = DVector::zeros(6);
         stiefel
-            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad)
+            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad, &mut workspace)
             .unwrap();
         
         assert!(stiefel.is_vector_in_tangent_space(&point, &riemannian_grad, 1e-10));
@@ -1093,15 +1099,16 @@ mod tests {
     #[test]
     fn test_distance() {
         let stiefel = Stiefel::new(3, 2).unwrap();
+        let mut workspace = Workspace::new();
         let point1 = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
         let point2 = <Stiefel as Manifold<f64, Dyn>>::random_point(&stiefel);
         
         // Distance should be non-negative
-        let dist = stiefel.distance(&point1, &point2).unwrap();
+        let dist = stiefel.distance(&point1, &point2, &mut workspace).unwrap();
         assert!(dist >= 0.0);
         
         // Distance to self should be zero
-        let self_dist = stiefel.distance(&point1, &point1).unwrap();
+        let self_dist = stiefel.distance(&point1, &point1, &mut workspace).unwrap();
         assert_relative_eq!(self_dist, 0.0, epsilon = 1e-7);
     }
 }
