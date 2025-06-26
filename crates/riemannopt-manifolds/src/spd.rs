@@ -350,6 +350,7 @@ impl SPD {
     ///
     /// Uses the formula: exp_P(V) = P^{1/2} exp(P^{-1/2} V P^{-1/2}) P^{1/2}
     /// For efficiency, we use a simpler retraction in practice.
+    #[allow(dead_code)]
     fn exponential_map<T>(&self, point: &DMatrix<T>, tangent: &DMatrix<T>) -> DMatrix<T>
     where
         T: Scalar,
@@ -372,6 +373,7 @@ impl SPD {
     ///
     /// For a symmetric positive definite matrix A = V D V^T where D is diagonal
     /// with positive eigenvalues, log(A) = V log(D) V^T.
+    #[allow(dead_code)]
     fn matrix_logarithm<T>(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>>
     where
         T: Scalar,
@@ -408,10 +410,10 @@ impl SPD {
         // Ensure the result is symmetric (numerical errors might break symmetry)
         Ok((log_matrix.clone() + log_matrix.transpose()) * <T as Scalar>::from_f64(0.5))
     }
-
     /// Computes the logarithmic map (inverse retraction) for the affine-invariant metric.
     ///
     /// The formula is: log_X(Y) = X^{1/2} log(X^{-1/2} Y X^{-1/2}) X^{1/2}
+    #[allow(dead_code)]
     fn logarithmic_map<T>(&self, point: &DMatrix<T>, other: &DMatrix<T>) -> Result<DMatrix<T>>
     where
         T: Scalar,

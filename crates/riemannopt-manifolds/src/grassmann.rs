@@ -187,6 +187,7 @@ impl Grassmann {
     /// Computes principal angles between two subspaces.
     ///
     /// Returns the cosines of principal angles, sorted in descending order.
+	#[allow(dead_code)]
     fn principal_angles_cosines<T>(
         &self,
         x1: &DMatrix<T>,
