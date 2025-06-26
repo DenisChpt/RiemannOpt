@@ -4,7 +4,7 @@
 //! and can be used independently of other crates.
 
 use riemannopt_manifolds::{Sphere, Stiefel, Grassmann, SPD, Hyperbolic, ProductManifold};
-use riemannopt_core::manifold::Manifold;
+use riemannopt_core::{manifold::Manifold, memory::Workspace};
 use nalgebra::{DVector, DMatrix};
 
 #[test]
@@ -18,14 +18,15 @@ fn test_sphere_basic_operations() {
     // Test projection
     let y = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
     let mut projected = DVector::zeros(5);
-    sphere.project_point(&y, &mut projected);
+    let mut workspace = Workspace::new();
+    sphere.project_point(&y, &mut projected, &mut workspace);
     let norm_diff: f64 = projected.norm() - 1.0f64;
     assert!(norm_diff.abs() < 1e-10f64, "Projected point not on sphere");
     
     // Test tangent space projection
     let v = DVector::from_vec(vec![0.1, 0.2, -0.1, 0.3, -0.2]);
     let mut tangent = DVector::zeros(5);
-    sphere.project_tangent(&x, &v, &mut tangent).unwrap();
+    sphere.project_tangent(&x, &v, &mut tangent, &mut workspace).unwrap();
     assert!(x.dot(&tangent).abs() < 1e-10f64, "Tangent vector not orthogonal to point");
 }
 
@@ -85,7 +86,8 @@ fn test_hyperbolic_operations() {
     // Test projection keeps points in ball
     let y = DVector::from_vec(vec![0.8, 0.8, 0.0]);
     let mut projected = DVector::zeros(3);
-    hyperbolic.project_point(&y, &mut projected);
+    let mut workspace = Workspace::new();
+    hyperbolic.project_point(&y, &mut projected, &mut workspace);
     assert!(projected.norm() < 1.0f64, "Projected point not in Poincaré ball");
 }
 
@@ -123,9 +125,10 @@ fn test_sphere_properties() {
     // Test retraction preserves manifold
     let x: DVector<f64> = sphere.random_point();
     let mut v = DVector::zeros(10);
-    sphere.random_tangent(&x, &mut v).unwrap();
+    let mut workspace = Workspace::new();
+    sphere.random_tangent(&x, &mut v, &mut workspace).unwrap();
     let mut y = DVector::zeros(10);
-    sphere.retract(&x, &v, &mut y).unwrap();
+    sphere.retract(&x, &v, &mut y, &mut workspace).unwrap();
     assert!((y.norm() - 1.0f64).abs() < 1e-10, "Retraction doesn't preserve sphere constraint");
 }
 
@@ -136,9 +139,10 @@ fn test_stiefel_properties() {
     // Test retraction preserves orthogonality
     let x: DVector<f64> = stiefel.random_point();
     let mut v = DVector::zeros(10 * 3);
-    stiefel.random_tangent(&x, &mut v).unwrap();
+    let mut workspace = Workspace::new();
+    stiefel.random_tangent(&x, &mut v, &mut workspace).unwrap();
     let mut y = DVector::zeros(10 * 3);
-    stiefel.retract(&x, &v, &mut y).unwrap();
+    stiefel.retract(&x, &v, &mut y, &mut workspace).unwrap();
     
     let y_mat = DMatrix::<f64>::from_vec(10, 3, y.data.as_vec().clone());
     let yty = y_mat.transpose() * &y_mat;

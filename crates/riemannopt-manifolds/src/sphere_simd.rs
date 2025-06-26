@@ -8,6 +8,7 @@ use riemannopt_core::{
     manifold::Manifold,
     compute::{get_dispatcher, SimdBackend},
     types::DVector,
+    memory::Workspace,
 };
 
 /// Extension trait for SIMD-accelerated sphere operations.
@@ -41,7 +42,8 @@ impl SphereSimdExt for Sphere {
         } else {
             // Fall back to standard implementation for small vectors
             let mut result = point.clone();
-            self.project_point(point, &mut result);
+            let mut workspace = Workspace::new();
+            self.project_point(point, &mut result, &mut workspace);
             result
         }
     }
@@ -61,7 +63,8 @@ impl SphereSimdExt for Sphere {
         } else {
             // Fall back to standard implementation for small vectors
             let mut result = point.clone();
-            self.project_point(point, &mut result);
+            let mut workspace = Workspace::new();
+            self.project_point(point, &mut result, &mut workspace);
             result
         }
     }
@@ -96,7 +99,8 @@ mod tests {
         let point = DVector::from_vec(vec![1.0; 100]);
         
         let mut proj_standard = DVector::zeros(100);
-        sphere.project_point(&point, &mut proj_standard);
+        let mut workspace = Workspace::new();
+        sphere.project_point(&point, &mut proj_standard, &mut workspace);
         let proj_simd = sphere.project_point_simd_f64(&point);
         
         assert_relative_eq!(proj_standard, proj_simd, epsilon = 1e-10);
@@ -109,7 +113,8 @@ mod tests {
         let point = DVector::from_vec(vec![1.0f32; 100]);
         
         let mut proj_standard = DVector::zeros(100);
-        sphere.project_point(&point, &mut proj_standard);
+        let mut workspace = Workspace::new();
+        sphere.project_point(&point, &mut proj_standard, &mut workspace);
         let proj_simd = sphere.project_point_simd_f32(&point);
         
         assert_relative_eq!(proj_standard, proj_simd, epsilon = 1e-6);

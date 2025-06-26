@@ -9,6 +9,7 @@ use crate::{
     error::Result,
     manifold::Manifold,
     types::{DVector, Scalar},
+    memory::workspace::Workspace,
 };
 use nalgebra::Dyn;
 use num_traits::Float;
@@ -50,11 +51,11 @@ impl<T: Scalar> Manifold<T, Dyn> for TestEuclideanManifold {
         true // All vectors are valid
     }
 
-    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) {
         result.copy_from(point);
     }
 
-    fn project_tangent(&self, _point: &DVector<T>, vector: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn project_tangent(&self, _point: &DVector<T>, vector: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         result.copy_from(vector);
         Ok(())
     }
@@ -68,12 +69,12 @@ impl<T: Scalar> Manifold<T, Dyn> for TestEuclideanManifold {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         result.copy_from(&(point + tangent));
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<T>, other: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<T>, other: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         result.copy_from(&(other - point));
         Ok(())
     }
@@ -83,6 +84,7 @@ impl<T: Scalar> Manifold<T, Dyn> for TestEuclideanManifold {
         _point: &DVector<T>,
         grad: &DVector<T>,
         result: &mut DVector<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         result.copy_from(grad);
         Ok(())
@@ -94,7 +96,7 @@ impl<T: Scalar> Manifold<T, Dyn> for TestEuclideanManifold {
         })
     }
 
-    fn random_tangent(&self, _point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn random_tangent(&self, _point: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         *result = DVector::from_fn(self.dim, |_, _| {
 <T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
         });
@@ -138,7 +140,7 @@ impl<T: Scalar> Manifold<T, Dyn> for TestSphereManifold {
 <T as Float>::abs(point.dot(vector)) < tolerance
     }
 
-    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) {
         let norm = point.norm();
         if norm > T::epsilon() {
             result.copy_from(&(point / norm));
@@ -149,7 +151,7 @@ impl<T: Scalar> Manifold<T, Dyn> for TestSphereManifold {
         }
     }
 
-    fn project_tangent(&self, point: &DVector<T>, vector: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn project_tangent(&self, point: &DVector<T>, vector: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         // Project to tangent space: v - <v, p>p
         let inner = point.dot(vector);
         result.copy_from(&(vector - point * inner));
@@ -165,17 +167,17 @@ impl<T: Scalar> Manifold<T, Dyn> for TestSphereManifold {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>, workspace: &mut Workspace<T>) -> Result<()> {
         // Simple projection retraction
         let y = point + tangent;
-        self.project_point(&y, result);
+        self.project_point(&y, result, workspace);
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<T>, other: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<T>, other: &DVector<T>, result: &mut DVector<T>, workspace: &mut Workspace<T>) -> Result<()> {
         // Project the difference onto the tangent space
         let diff = other - point;
-        self.project_tangent(point, &diff, result)
+        self.project_tangent(point, &diff, result, workspace)
     }
 
     fn euclidean_to_riemannian_gradient(
@@ -183,8 +185,9 @@ impl<T: Scalar> Manifold<T, Dyn> for TestSphereManifold {
         point: &DVector<T>,
         grad: &DVector<T>,
         result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        self.project_tangent(point, grad, result)
+        self.project_tangent(point, grad, result, workspace)
     }
 
     fn random_point(&self) -> DVector<T> {
@@ -201,11 +204,11 @@ impl<T: Scalar> Manifold<T, Dyn> for TestSphereManifold {
         point
     }
 
-    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>, workspace: &mut Workspace<T>) -> Result<()> {
         let v = DVector::from_fn(self.dim, |_, _| {
 <T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
         });
-        self.project_tangent(point, &v, result)
+        self.project_tangent(point, &v, result, workspace)
     }
 }
 
@@ -245,11 +248,11 @@ impl<T: Scalar> Manifold<T, Dyn> for MinimalTestManifold {
         true
     }
 
-    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) {
         result.copy_from(point);
     }
 
-    fn project_tangent(&self, _point: &DVector<T>, vector: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn project_tangent(&self, _point: &DVector<T>, vector: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         result.copy_from(vector);
         Ok(())
     }
@@ -263,12 +266,12 @@ impl<T: Scalar> Manifold<T, Dyn> for MinimalTestManifold {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         result.copy_from(&(point + tangent));
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<T>, other: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<T>, other: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         result.copy_from(&(other - point));
         Ok(())
     }
@@ -278,6 +281,7 @@ impl<T: Scalar> Manifold<T, Dyn> for MinimalTestManifold {
         _point: &DVector<T>,
         grad: &DVector<T>,
         result: &mut DVector<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         result.copy_from(grad);
         Ok(())
@@ -287,7 +291,7 @@ impl<T: Scalar> Manifold<T, Dyn> for MinimalTestManifold {
         DVector::zeros(self.dim)
     }
 
-    fn random_tangent(&self, _point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn random_tangent(&self, _point: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
         *result = DVector::zeros(self.dim);
         Ok(())
     }

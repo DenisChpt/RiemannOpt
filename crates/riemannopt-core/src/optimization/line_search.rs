@@ -22,6 +22,7 @@ use crate::{
     cost_function::CostFunction,
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::Workspace,
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};
@@ -391,11 +392,12 @@ where
         let mut step_size = params.initial_step_size;
 
         // Backtracking loop
+        let mut workspace = Workspace::new();
         for (iteration, _) in (0..params.max_iterations).enumerate() {
             // Compute new point using retraction
             let scaled_direction = direction * step_size;
             let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.retract(point, &scaled_direction, &mut new_point)?;
+            manifold.retract(point, &scaled_direction, &mut new_point, &mut workspace)?;
 
             // Evaluate function at new point
             let new_value = cost_fn.cost(&new_point)?;
@@ -508,11 +510,12 @@ where
         let mut gradient_evals = 0;
 
         // Bracketing phase
+        let mut workspace = Workspace::new();
         for _ in 0..params.max_iterations {
             // Evaluate at current alpha
             let scaled_dir = direction * alpha;
             let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.retract(point, &scaled_dir, &mut new_point)?;
+            manifold.retract(point, &scaled_dir, &mut new_point, &mut workspace)?;
             let new_value = cost_fn.cost(&new_point)?;
             function_evals += 1;
 
@@ -548,7 +551,7 @@ where
 
             // Transport direction to new point and compute directional derivative
             let mut transported_dir = TangentVector::<T, D>::zeros_generic(direction.shape_generic().0, nalgebra::Const::<1>);
-            manifold.parallel_transport(point, &new_point, direction, &mut transported_dir)?;
+            manifold.parallel_transport(point, &new_point, direction, &mut transported_dir, &mut workspace)?;
             let new_deriv = manifold.inner_product(&new_point, &new_gradient, &transported_dir)?;
 
             // Check curvature condition
@@ -640,6 +643,7 @@ impl StrongWolfeLineSearch {
         D: Dim,
         DefaultAllocator: Allocator<D>,
     {
+        let mut workspace = Workspace::new();
         for _ in 0..params.max_iterations {
             // Bisection (could use cubic interpolation for better convergence)
             let alpha = (alpha_low + alpha_high) * <T as Scalar>::from_f64(0.5);
@@ -647,7 +651,7 @@ impl StrongWolfeLineSearch {
             // Evaluate at alpha
             let scaled_dir = direction * alpha;
             let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-            manifold.retract(point, &scaled_dir, &mut new_point)?;
+            manifold.retract(point, &scaled_dir, &mut new_point, &mut workspace)?;
             let new_value = cost_fn.cost(&new_point)?;
             function_evals += 1;
 
@@ -663,7 +667,7 @@ impl StrongWolfeLineSearch {
 
                 // Transport direction and compute derivative
                 let mut transported_dir = TangentVector::<T, D>::zeros_generic(direction.shape_generic().0, nalgebra::Const::<1>);
-                manifold.parallel_transport(point, &new_point, direction, &mut transported_dir)?;
+                manifold.parallel_transport(point, &new_point, direction, &mut transported_dir, &mut workspace)?;
                 let new_deriv =
                     manifold.inner_product(&new_point, &new_gradient, &transported_dir)?;
 
@@ -694,7 +698,7 @@ impl StrongWolfeLineSearch {
                 // Return the best point found
                 let scaled_dir = direction * alpha_low;
                 let mut final_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-                manifold.retract(point, &scaled_dir, &mut final_point)?;
+                manifold.retract(point, &scaled_dir, &mut final_point, &mut workspace)?;
 
                 return Ok(LineSearchResult {
                     step_size: alpha_low,
@@ -749,9 +753,10 @@ where
         _directional_deriv: T,
         _params: &LineSearchParams<T>,
     ) -> Result<LineSearchResult<T, D>> {
+        let mut workspace = Workspace::new();
         let scaled_direction = direction * self.step_size;
         let mut new_point = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-        manifold.retract(point, &scaled_direction, &mut new_point)?;
+        manifold.retract(point, &scaled_direction, &mut new_point, &mut workspace)?;
         let new_value = cost_fn.cost(&new_point)?;
 
         Ok(LineSearchResult {
@@ -801,7 +806,7 @@ mod tests {
         ) -> bool {
             true
         }
-        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
             result.copy_from(point);
         }
         fn project_tangent(
@@ -809,6 +814,7 @@ mod tests {
             _point: &DVector<f64>,
             vector: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(vector);
             Ok(())
@@ -821,7 +827,7 @@ mod tests {
         ) -> Result<f64> {
             Ok(u.dot(v))
         }
-        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
             result.copy_from(&(point + tangent));
             Ok(())
         }
@@ -830,6 +836,7 @@ mod tests {
             point: &DVector<f64>,
             other: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(&(other - point));
             Ok(())
@@ -839,6 +846,7 @@ mod tests {
             _point: &DVector<f64>,
             euclidean_grad: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(euclidean_grad);
             Ok(())
@@ -846,7 +854,7 @@ mod tests {
         fn random_point(&self) -> DVector<f64> {
             DVector::zeros(self.dim)
         }
-        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
             result.fill(0.0);
             Ok(())
         }

@@ -16,7 +16,7 @@
 //! - **Riemannian gradient**: The unique vector in T_p M representing the derivative
 //! - **Parallel transport**: Moving vectors along curves while preserving angles
 
-use crate::{error::Result, types::Scalar};
+use crate::{error::Result, types::Scalar, memory::workspace::Workspace};
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OVector};
 use num_traits::Float;
 use std::fmt::Debug;
@@ -197,7 +197,8 @@ where
     ///
     /// * `point` - The point to project
     /// * `result` - Pre-allocated output buffer for the projected point
-    fn project_point(&self, point: &Point<T, D>, result: &mut Point<T, D>);
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    fn project_point(&self, point: &Point<T, D>, result: &mut Point<T, D>, workspace: &mut Workspace<T>);
 
     /// Projects a vector onto the tangent space at a given point.
     ///
@@ -224,6 +225,7 @@ where
     /// * `point` - A point p ∈ ℳ on the manifold
     /// * `vector` - The ambient vector v ∈ ℝⁿ to project
     /// * `result` - Pre-allocated output buffer for the projected tangent vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Errors
     ///
@@ -233,6 +235,7 @@ where
         point: &Point<T, D>,
         vector: &TangentVector<T, D>,
         result: &mut TangentVector<T, D>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Computes the Riemannian inner product between two tangent vectors.
@@ -325,6 +328,7 @@ where
     /// * `point` - A point p ∈ ℳ on the manifold
     /// * `tangent` - A tangent vector v ∈ T_p ℳ (direction and magnitude of step)
     /// * `result` - Pre-allocated output buffer for the retracted point
+    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Errors
     ///
@@ -332,7 +336,7 @@ where
     /// - `point` is not on the manifold
     /// - `tangent` is not in the tangent space at `point`
     /// - Numerical issues prevent computation (e.g., singularities)
-    fn retract(&self, point: &Point<T, D>, tangent: &TangentVector<T, D>, result: &mut Point<T, D>) -> Result<()>;
+    fn retract(&self, point: &Point<T, D>, tangent: &TangentVector<T, D>, result: &mut Point<T, D>, workspace: &mut Workspace<T>) -> Result<()>;
 
     /// Computes the inverse retraction (logarithmic map).
     ///
@@ -344,6 +348,7 @@ where
     /// * `point` - A point on the manifold
     /// * `other` - Another point on the manifold
     /// * `result` - Pre-allocated output buffer for the tangent vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Errors
     ///
@@ -354,6 +359,7 @@ where
         point: &Point<T, D>,
         other: &Point<T, D>,
         result: &mut TangentVector<T, D>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Converts the Euclidean gradient to the Riemannian gradient.
@@ -367,11 +373,13 @@ where
     /// * `point` - A point on the manifold
     /// * `euclidean_grad` - The Euclidean gradient at `point`
     /// * `result` - Pre-allocated output buffer for the Riemannian gradient
+    /// * `workspace` - Pre-allocated workspace for temporary computations
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &Point<T, D>,
         euclidean_grad: &TangentVector<T, D>,
         result: &mut TangentVector<T, D>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Performs parallel transport of a vector along a retraction.
@@ -385,6 +393,7 @@ where
     /// * `to` - Ending point on the manifold
     /// * `vector` - Tangent vector at `from` to transport
     /// * `result` - Pre-allocated output buffer for the transported vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Default Implementation
     ///
@@ -396,9 +405,10 @@ where
         to: &Point<T, D>,
         vector: &TangentVector<T, D>,
         result: &mut TangentVector<T, D>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Default: vector transport by projection
-        self.project_tangent(to, vector, result)
+        self.project_tangent(to, vector, result, workspace)
     }
 
     /// Generates a random point on the manifold.
@@ -416,11 +426,12 @@ where
     ///
     /// * `point` - A point on the manifold
     /// * `result` - Pre-allocated output buffer for the random tangent vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Returns
     ///
     /// A random tangent vector at `point` with unit norm.
-    fn random_tangent(&self, point: &Point<T, D>, result: &mut TangentVector<T, D>) -> Result<()>;
+    fn random_tangent(&self, point: &Point<T, D>, result: &mut TangentVector<T, D>, workspace: &mut Workspace<T>) -> Result<()>;
 
     /// Computes the geodesic distance between two points.
     ///
@@ -428,6 +439,7 @@ where
     ///
     /// * `x` - First point on the manifold
     /// * `y` - Second point on the manifold
+    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Returns
     ///
@@ -436,9 +448,9 @@ where
     /// # Default Implementation
     ///
     /// Uses the norm of the logarithmic map.
-    fn distance(&self, x: &Point<T, D>, y: &Point<T, D>) -> Result<T> {
+    fn distance(&self, x: &Point<T, D>, y: &Point<T, D>, workspace: &mut Workspace<T>) -> Result<T> {
         let mut log = TangentVector::<T, D>::zeros_generic(x.shape_generic().0, nalgebra::Const::<1>);
-        self.inverse_retract(x, y, &mut log)?;
+        self.inverse_retract(x, y, &mut log, workspace)?;
         self.norm(x, &log)
     }
 
@@ -479,6 +491,7 @@ mod tests {
         let manifold = TestEuclideanManifold::new(3);
         let point = DVector::zeros(3);
         let vector = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+        let mut workspace = Workspace::new();
 
         // Test norm (uses inner_product)
         let norm = manifold.norm(&point, &vector).unwrap();
@@ -487,13 +500,13 @@ mod tests {
         // Test parallel transport (uses project_tangent by default)
         let mut transported = DVector::zeros(3);
         manifold
-            .parallel_transport(&point, &point, &vector, &mut transported)
+            .parallel_transport(&point, &point, &vector, &mut transported, &mut workspace)
             .unwrap();
         assert_eq!(transported, vector);
 
         // Test distance (uses inverse_retract and norm)
         let other_point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let dist = manifold.distance(&point, &other_point).unwrap();
+        let dist = manifold.distance(&point, &other_point, &mut workspace).unwrap();
         assert_eq!(dist, 1.0);
     }
 

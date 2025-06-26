@@ -15,6 +15,11 @@ pub mod oblique;
 pub mod fixed_rank;
 pub mod psd_cone;
 pub mod utils;
+pub mod matrix_manifold;
+pub mod stiefel_matrix;
+pub mod spd_matrix;
+pub mod grassmann_matrix;
+pub mod oblique_matrix;
 
 #[cfg(feature = "parallel")]
 pub mod sphere_simd;
@@ -30,3 +35,8 @@ pub use product_static::{ProductManifoldStatic, product};
 pub use oblique::Oblique;
 pub use fixed_rank::{FixedRank, FixedRankPoint};
 pub use psd_cone::PSDCone;
+pub use matrix_manifold::{MatrixManifold, MatrixManifoldExt};
+pub use stiefel_matrix::StiefelMatrix;
+pub use spd_matrix::SPDMatrix;
+pub use grassmann_matrix::GrassmannMatrix;
+pub use oblique_matrix::ObliqueMatrix;

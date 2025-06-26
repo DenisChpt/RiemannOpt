@@ -7,6 +7,7 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     types::{Scalar, DVector},
+    memory::Workspace,
 };
 use nalgebra::Dyn;
 use std::marker::PhantomData;
@@ -274,14 +275,14 @@ where
         }
     }
 
-    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>) {
+    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>, workspace: &mut Workspace<T>) {
         let (p1, p2) = self.split_vector(point).expect("Invalid point dimension");
 
         let mut proj1 = DVector::zeros(self.dim1);
         let mut proj2 = DVector::zeros(self.dim2);
         
-        self.manifold1.project_point(&p1, &mut proj1);
-        self.manifold2.project_point(&p2, &mut proj2);
+        self.manifold1.project_point(&p1, &mut proj1, workspace);
+        self.manifold2.project_point(&p2, &mut proj2, workspace);
 
         self.combine_vectors_with_workspace(&proj1, &proj2, result).expect("Invalid result dimension");
     }
@@ -291,6 +292,7 @@ where
         point: &DVector<T>,
         vector: &DVector<T>,
         result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (v1, v2) = self.split_vector(vector)?;
@@ -298,8 +300,8 @@ where
         let mut proj1 = DVector::zeros(self.dim1);
         let mut proj2 = DVector::zeros(self.dim2);
         
-        self.manifold1.project_tangent(&p1, &v1, &mut proj1)?;
-        self.manifold2.project_tangent(&p2, &v2, &mut proj2)?;
+        self.manifold1.project_tangent(&p1, &v1, &mut proj1, workspace)?;
+        self.manifold2.project_tangent(&p2, &v2, &mut proj2, workspace)?;
 
         self.combine_vectors_with_workspace(&proj1, &proj2, result)
     }
@@ -320,15 +322,15 @@ where
         Ok(inner1 + inner2)
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>, result: &mut DVector<T>, workspace: &mut Workspace<T>) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (t1, t2) = self.split_vector(tangent)?;
 
         let mut ret1 = DVector::zeros(self.dim1);
         let mut ret2 = DVector::zeros(self.dim2);
         
-        self.manifold1.retract(&p1, &t1, &mut ret1)?;
-        self.manifold2.retract(&p2, &t2, &mut ret2)?;
+        self.manifold1.retract(&p1, &t1, &mut ret1, workspace)?;
+        self.manifold2.retract(&p2, &t2, &mut ret2, workspace)?;
 
         self.combine_vectors_with_workspace(&ret1, &ret2, result)
     }
@@ -338,6 +340,7 @@ where
         point: &DVector<T>,
         other: &DVector<T>,
         result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (o1, o2) = self.split_vector(other)?;
@@ -345,8 +348,8 @@ where
         let mut inv1 = DVector::zeros(self.dim1);
         let mut inv2 = DVector::zeros(self.dim2);
         
-        self.manifold1.inverse_retract(&p1, &o1, &mut inv1)?;
-        self.manifold2.inverse_retract(&p2, &o2, &mut inv2)?;
+        self.manifold1.inverse_retract(&p1, &o1, &mut inv1, workspace)?;
+        self.manifold2.inverse_retract(&p2, &o2, &mut inv2, workspace)?;
 
         self.combine_vectors_with_workspace(&inv1, &inv2, result)
     }
@@ -356,6 +359,7 @@ where
         point: &DVector<T>,
         grad: &DVector<T>,
         result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
         let (g1, g2) = self.split_vector(grad)?;
@@ -363,8 +367,8 @@ where
         let mut riem1 = DVector::zeros(self.dim1);
         let mut riem2 = DVector::zeros(self.dim2);
         
-        self.manifold1.euclidean_to_riemannian_gradient(&p1, &g1, &mut riem1)?;
-        self.manifold2.euclidean_to_riemannian_gradient(&p2, &g2, &mut riem2)?;
+        self.manifold1.euclidean_to_riemannian_gradient(&p1, &g1, &mut riem1, workspace)?;
+        self.manifold2.euclidean_to_riemannian_gradient(&p2, &g2, &mut riem2, workspace)?;
 
         self.combine_vectors_with_workspace(&riem1, &riem2, result)
     }
@@ -375,6 +379,7 @@ where
         to: &DVector<T>,
         vector: &DVector<T>,
         result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         let (from1, from2) = self.split_vector(from)?;
         let (to1, to2) = self.split_vector(to)?;
@@ -383,8 +388,8 @@ where
         let mut trans1 = DVector::zeros(self.dim1);
         let mut trans2 = DVector::zeros(self.dim2);
         
-        self.manifold1.parallel_transport(&from1, &to1, &v1, &mut trans1)?;
-        self.manifold2.parallel_transport(&from2, &to2, &v2, &mut trans2)?;
+        self.manifold1.parallel_transport(&from1, &to1, &v1, &mut trans1, workspace)?;
+        self.manifold2.parallel_transport(&from2, &to2, &v2, &mut trans2, workspace)?;
 
         self.combine_vectors_with_workspace(&trans1, &trans2, result)
     }
@@ -395,24 +400,24 @@ where
         self.combine_vectors(&p1, &p2).unwrap()
     }
 
-    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
+    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>, workspace: &mut Workspace<T>) -> Result<()> {
         let (p1, p2) = self.split_vector(point)?;
 
         let mut t1 = DVector::zeros(self.dim1);
         let mut t2 = DVector::zeros(self.dim2);
         
-        self.manifold1.random_tangent(&p1, &mut t1)?;
-        self.manifold2.random_tangent(&p2, &mut t2)?;
+        self.manifold1.random_tangent(&p1, &mut t1, workspace)?;
+        self.manifold2.random_tangent(&p2, &mut t2, workspace)?;
 
         self.combine_vectors_with_workspace(&t1, &t2, result)
     }
 
-    fn distance(&self, x: &DVector<T>, y: &DVector<T>) -> Result<T> {
+    fn distance(&self, x: &DVector<T>, y: &DVector<T>, workspace: &mut Workspace<T>) -> Result<T> {
         let (x1, x2) = self.split_vector(x)?;
         let (y1, y2) = self.split_vector(y)?;
 
-        let d1 = self.manifold1.distance(&x1, &y1)?;
-        let d2 = self.manifold2.distance(&x2, &y2)?;
+        let d1 = self.manifold1.distance(&x1, &y1, workspace)?;
+        let d2 = self.manifold2.distance(&x2, &y2, workspace)?;
 
         // Euclidean distance in product space
         Ok(num_traits::Float::sqrt(d1 * d1 + d2 * d2))
@@ -447,9 +452,11 @@ mod tests {
         
         // Test tangent projection
         let mut tangent = DVector::zeros(point.len());
-        product.random_tangent(&point, &mut tangent).unwrap();
+        let mut workspace = Workspace::new();
+        product.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         let mut projected = DVector::zeros(point.len());
-        product.project_tangent(&point, &tangent, &mut projected).unwrap();
+        let mut workspace = Workspace::new();
+        product.project_tangent(&point, &tangent, &mut projected, &mut workspace).unwrap();
         assert!(product.is_vector_in_tangent_space(&point, &projected, 1e-10));
     }
 
@@ -465,19 +472,21 @@ mod tests {
         
         // Scale down tangent vector to avoid numerical issues
         let mut tangent = DVector::zeros(point.len());
-        product.random_tangent(&point, &mut tangent).unwrap();
+        let mut workspace = Workspace::new();
+        product.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         tangent *= 0.01; // Small step
         assert!(product.is_vector_in_tangent_space(&point, &tangent, 1e-10), "Tangent not in tangent space");
         
         let mut result = DVector::zeros(point.len());
         
         // Test retraction
-        product.retract(&point, &tangent, &mut result).unwrap();
+        let mut workspace = Workspace::new();
+        product.retract(&point, &tangent, &mut result, &mut workspace).unwrap();
         assert!(product.is_point_on_manifold(&result, 1e-9), "Result not on manifold");
         
         // Test tangent projection
         let mut proj_result = DVector::zeros(tangent.len());
-        product.project_tangent(&point, &tangent, &mut proj_result).unwrap();
+        product.project_tangent(&point, &tangent, &mut proj_result, &mut workspace).unwrap();
         assert!(product.is_vector_in_tangent_space(&point, &proj_result, 1e-9));
     }
 

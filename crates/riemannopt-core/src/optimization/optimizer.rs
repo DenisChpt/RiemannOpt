@@ -15,6 +15,7 @@
 use crate::{
     error::Result,
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::Workspace,
     types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};
@@ -311,7 +312,10 @@ where
     /// Computes the distance between current and previous points.
     pub fn point_change(&self, manifold: &impl Manifold<T, D>) -> Result<Option<T>> {
         match &self.previous_point {
-            Some(prev) => manifold.distance(&self.point, prev).map(Some),
+            Some(prev) => {
+                let mut workspace = Workspace::new();
+                manifold.distance(&self.point, prev, &mut workspace).map(Some)
+            },
             None => Ok(None),
         }
     }
@@ -638,10 +642,10 @@ mod tests {
             ) -> bool {
                 true
             }
-            fn project_point(&self, p: &DVector<f64>, result: &mut DVector<f64>) {
+            fn project_point(&self, p: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
                 result.copy_from(p);
             }
-            fn project_tangent(&self, _: &DVector<f64>, v: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            fn project_tangent(&self, _: &DVector<f64>, v: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
                 result.copy_from(v);
                 Ok(())
             }
@@ -653,11 +657,11 @@ mod tests {
             ) -> Result<f64> {
                 Ok(u.dot(v))
             }
-            fn retract(&self, p: &DVector<f64>, v: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            fn retract(&self, p: &DVector<f64>, v: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
                 result.copy_from(&(p + v));
                 Ok(())
             }
-            fn inverse_retract(&self, p: &DVector<f64>, q: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            fn inverse_retract(&self, p: &DVector<f64>, q: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
                 result.copy_from(&(q - p));
                 Ok(())
             }
@@ -666,6 +670,7 @@ mod tests {
                 _: &DVector<f64>,
                 g: &DVector<f64>,
                 result: &mut DVector<f64>,
+                _workspace: &mut Workspace<f64>,
             ) -> Result<()> {
                 result.copy_from(g);
                 Ok(())
@@ -673,7 +678,7 @@ mod tests {
             fn random_point(&self) -> DVector<f64> {
                 DVector::zeros(3)
             }
-            fn random_tangent(&self, _: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+            fn random_tangent(&self, _: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
                 *result = DVector::zeros(3);
                 Ok(())
             }

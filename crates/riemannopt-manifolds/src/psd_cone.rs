@@ -10,6 +10,7 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
     types::Scalar,
+    memory::Workspace,
 };
 
 /// The positive semi-definite cone S^n_+ of n×n symmetric PSD matrices.
@@ -200,7 +201,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         true
     }
 
-    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>) {
+    fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>, _workspace: &mut Workspace<T>) {
         // Ensure result has correct size
         let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
         if result.len() != expected_size {
@@ -224,6 +225,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         _point: &Point<T, Dyn>,
         vector: &TangentVector<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
@@ -259,6 +261,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         point: &Point<T, Dyn>,
         tangent: &TangentVector<T, Dyn>,
         result: &mut Point<T, Dyn>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
@@ -283,6 +286,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         point: &Point<T, Dyn>,
         other: &Point<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
@@ -292,7 +296,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         
         // Simple approximation: project the difference
         let diff = other - point;
-        self.project_tangent(point, &diff, result)
+        self.project_tangent(point, &diff, result, workspace)
     }
 
     fn euclidean_to_riemannian_gradient(
@@ -300,6 +304,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         point: &Point<T, Dyn>,
         euclidean_grad: &TangentVector<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
@@ -308,7 +313,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         }
         
         // For the standard metric, just project to tangent space
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> Point<T, Dyn> {
@@ -336,7 +341,7 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         self.mat_to_vec(&psd_scaled)
     }
 
-    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>) -> Result<()> {
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>, workspace: &mut Workspace<T>) -> Result<()> {
         // Ensure result has correct size
         let expected_size = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
         if result.len() != expected_size {
@@ -359,10 +364,10 @@ impl<T: Scalar> Manifold<T, Dyn> for PSDCone {
         }
         
         let tangent = self.mat_to_vec(&mat);
-        self.project_tangent(point, &tangent, result)
+        self.project_tangent(point, &tangent, result, workspace)
     }
 
-    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>) -> Result<T> {
+    fn distance(&self, x: &Point<T, Dyn>, y: &Point<T, Dyn>, _workspace: &mut Workspace<T>) -> Result<T> {
         // Frobenius distance
         let diff = y - x;
         Ok(Float::sqrt(diff.dot(&diff)))
@@ -398,7 +403,8 @@ mod tests {
         let vec = manifold.mat_to_vec(&mat);
         
         let mut projected = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
-        <PSDCone as Manifold<f64, Dyn>>::project_point(&manifold, &vec, &mut projected);
+        let mut workspace = Workspace::new();
+        <PSDCone as Manifold<f64, Dyn>>::project_point(&manifold, &vec, &mut projected, &mut workspace);
         let proj_mat = manifold.vec_to_mat(&projected);
         
         // Check that projection is PSD
@@ -420,7 +426,8 @@ mod tests {
         let vec = manifold.mat_to_vec(&mat);
         
         let mut tangent = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
-        <PSDCone as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vec, &mut tangent).unwrap();
+        let mut workspace = Workspace::new();
+        <PSDCone as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vec, &mut tangent, &mut workspace).unwrap();
         let tan_mat = manifold.vec_to_mat(&tangent);
         
         // Check symmetry
@@ -437,10 +444,12 @@ mod tests {
         
         let point = <PSDCone as Manifold<f64, Dyn>>::random_point(&manifold);
         let mut tangent = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
-        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut tangent).unwrap();
+        let mut workspace = Workspace::new();
+        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut tangent, &mut workspace).unwrap();
         let scaled_tangent = 0.1 * &tangent;
         let mut retracted = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
-        <PSDCone as Manifold<f64, Dyn>>::retract(&manifold, &point, &scaled_tangent, &mut retracted).unwrap();
+        let mut workspace = Workspace::new();
+        <PSDCone as Manifold<f64, Dyn>>::retract(&manifold, &point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
         
         // Check that result is on manifold
         assert!(<PSDCone as Manifold<f64, Dyn>>::is_point_on_manifold(&manifold, &retracted, 1e-6));
@@ -453,8 +462,9 @@ mod tests {
         let point = <PSDCone as Manifold<f64, Dyn>>::random_point(&manifold);
         let mut u = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
         let mut v = DVector::zeros(<PSDCone as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
-        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut u).unwrap();
-        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut v).unwrap();
+        let mut workspace = Workspace::new();
+        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut u, &mut workspace).unwrap();
+        <PSDCone as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut v, &mut workspace).unwrap();
         
         let ip_uv = <PSDCone as Manifold<f64, Dyn>>::inner_product(&manifold, &point, &u, &v).unwrap();
         let ip_vu = <PSDCone as Manifold<f64, Dyn>>::inner_product(&manifold, &point, &v, &u).unwrap();
