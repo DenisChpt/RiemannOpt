@@ -268,7 +268,7 @@ impl Grassmann {
     /// * `vector` - Vector to project
     /// * `result` - Output buffer for the projected vector
     /// * `workspace` - Pre-allocated workspace for temporary buffers
-    pub fn project_tangent_with_workspace<T>(
+    fn project_tangent_with_workspace<T>(
         &self,
         point: &DVector<T>,
         vector: &DVector<T>,
@@ -313,7 +313,7 @@ impl Grassmann {
     /// * `tangent` - Tangent vector
     /// * `result` - Output buffer for the retracted point
     /// * `workspace` - Pre-allocated workspace for temporary buffers
-    pub fn retract_with_workspace<T>(
+    fn retract_with_workspace<T>(
         &self,
         point: &DVector<T>,
         tangent: &DVector<T>,
@@ -364,7 +364,7 @@ impl Grassmann {
     /// Computes principal angles between two subspaces using a workspace.
     ///
     /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn principal_angles_cosines_with_workspace<T>(
+    fn principal_angles_cosines_with_workspace<T>(
         &self,
         x1: &DMatrix<T>,
         x2: &DMatrix<T>,
@@ -396,7 +396,7 @@ impl Grassmann {
     /// Computes distance between two points using a workspace.
     ///
     /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn distance_with_workspace<T>(
+    fn distance_with_workspace<T>(
         &self,
         x: &Point<T, Dyn>,
         y: &Point<T, Dyn>,

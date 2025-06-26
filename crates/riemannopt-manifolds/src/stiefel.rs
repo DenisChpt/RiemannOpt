@@ -538,7 +538,7 @@ impl Stiefel {
     /// * `vector` - Vector to project
     /// * `result` - Output buffer for the projected vector
     /// * `workspace` - Pre-allocated workspace for temporary buffers
-    pub fn project_tangent_with_workspace<T>(
+    fn project_tangent_with_workspace<T>(
         &self,
         point: &DVector<T>,
         vector: &DVector<T>,
@@ -590,7 +590,7 @@ impl Stiefel {
     /// * `tangent` - Tangent vector
     /// * `result` - Output buffer for the retracted point
     /// * `workspace` - Pre-allocated workspace for temporary buffers
-    pub fn retract_with_workspace<T>(
+    fn retract_with_workspace<T>(
         &self,
         point: &DVector<T>,
         tangent: &DVector<T>,
@@ -638,7 +638,7 @@ impl Stiefel {
     /// * `other` - Target point on the manifold
     /// * `result` - Output buffer for the tangent vector
     /// * `workspace` - Pre-allocated workspace for temporary buffers
-    pub fn inverse_retract_with_workspace<T>(
+    fn inverse_retract_with_workspace<T>(
         &self,
         point: &DVector<T>,
         other: &DVector<T>,

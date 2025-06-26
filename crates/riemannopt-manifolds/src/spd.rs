@@ -189,6 +189,7 @@ impl SPD {
         let symmetric = (matrix + matrix.transpose()) * <T as Scalar>::from_f64(0.5);
         
         // Compute eigenvalue decomposition
+        // TODO: Avoid clone when nalgebra API allows
         let eigen = symmetric.clone().symmetric_eigen();
         let mut eigenvalues = eigen.eigenvalues.clone();
         let eigenvectors = eigen.eigenvectors;
@@ -493,7 +494,7 @@ impl SPD {
     /// Projects a matrix to the SPD manifold using a workspace.
     ///
     /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn project_to_spd_with_workspace<T>(
+    fn project_to_spd_with_workspace<T>(
         &self,
         matrix: &DMatrix<T>,
         result: &mut DMatrix<T>,
@@ -515,6 +516,7 @@ impl SPD {
         symmetric.copy_from(&((matrix + matrix.transpose()) * <T as Scalar>::from_f64(0.5)));
         
         // Compute eigenvalue decomposition
+        // TODO: Avoid clone when nalgebra API allows
         let eigen = symmetric.clone().symmetric_eigen();
         let mut eigenvalues = eigen.eigenvalues.clone();
         let eigenvectors = eigen.eigenvectors;
@@ -548,7 +550,7 @@ impl SPD {
     /// Computes the matrix logarithm using eigenvalue decomposition with a workspace.
     ///
     /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn matrix_logarithm_with_workspace<T>(
+    fn matrix_logarithm_with_workspace<T>(
         &self,
         matrix: &DMatrix<T>,
         result: &mut DMatrix<T>,
@@ -597,7 +599,7 @@ impl SPD {
     /// Computes the exponential map on SPD manifold using a workspace.
     ///
     /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn exponential_map_with_workspace<T>(
+    fn exponential_map_with_workspace<T>(
         &self,
         point: &DMatrix<T>,
         tangent: &DMatrix<T>,
@@ -629,7 +631,7 @@ impl SPD {
     /// Computes the logarithmic map using a workspace.
     ///
     /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn logarithmic_map_with_workspace<T>(
+    fn logarithmic_map_with_workspace<T>(
         &self,
         point: &DMatrix<T>,
         other: &DMatrix<T>,
@@ -651,6 +653,7 @@ impl SPD {
         }
         
         // Compute eigendecomposition
+        // TODO: Avoid clone when nalgebra API allows
         let x_eigen = point.clone().symmetric_eigen();
         
         // Check for positive definiteness
@@ -718,69 +721,7 @@ impl SPD {
         Ok(())
     }
 
-    /// Retracts a tangent vector at a point using a workspace (vectorized interface).
-    ///
-    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn retract_with_workspace<T>(
-        &self,
-        point: &DVector<T>,
-        tangent: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()>
-    where
-        T: Scalar,
-    {
-        let expected_dim = self.n * (self.n + 1) / 2;
-        if point.len() != expected_dim || tangent.len() != expected_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                "Point and tangent must have correct dimensions",
-                format!("point: {}, tangent: {}", point.len(), tangent.len()),
-            ));
-        }
-        
-        let point_matrix = self.vector_to_matrix(point)?;
-        let tangent_matrix = self.vector_to_matrix(tangent)?;
-        
-        let mut retracted_matrix = workspace.acquire_temp_matrix(self.n, self.n);
-        self.exponential_map_with_workspace(&point_matrix, &tangent_matrix, &mut *retracted_matrix, workspace)?;
-        
-        let retracted_vector = self.matrix_to_vector(&*retracted_matrix);
-        result.copy_from(&retracted_vector);
-        Ok(())
-    }
 
-    /// Computes the inverse retraction using a workspace (vectorized interface).
-    ///
-    /// This variant avoids allocations by using pre-allocated buffers from the workspace.
-    pub fn inverse_retract_with_workspace<T>(
-        &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-        result: &mut DVector<T>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()>
-    where
-        T: Scalar,
-    {
-        let expected_dim = self.n * (self.n + 1) / 2;
-        if point.len() != expected_dim || other.len() != expected_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("point: {}, other: {}", point.len(), other.len()),
-            ));
-        }
-        
-        let point_matrix = self.vector_to_matrix(point)?;
-        let other_matrix = self.vector_to_matrix(other)?;
-        
-        let mut tangent_matrix = workspace.acquire_temp_matrix(self.n, self.n);
-        self.logarithmic_map_with_workspace(&point_matrix, &other_matrix, &mut *tangent_matrix, workspace)?;
-        
-        let tangent_vector = self.matrix_to_vector(&*tangent_matrix);
-        result.copy_from(&tangent_vector);
-        Ok(())
-    }
 }
 
 impl<T> Manifold<T, Dyn> for SPD
@@ -982,6 +923,7 @@ where
         let tolerance = <T as Scalar>::from_f64(1e-12);
         
         // Check if the matrix is sufficiently positive definite
+        // TODO: Avoid clone when nalgebra API allows
         let eigen = retracted_matrix.clone().symmetric_eigen();
         let min_eval = eigen.eigenvalues.min();
         
@@ -1105,6 +1047,7 @@ where
         // P_{X→Y}(V) = Y^{1/2} (Y^{-1/2} X Y^{-1/2})^{1/2} X^{-1/2} V X^{-1/2} (Y^{-1/2} X Y^{-1/2})^{1/2} Y^{1/2}
 
         // Compute Y^{1/2} and Y^{-1/2} using workspace
+        // TODO: Avoid clone when nalgebra API allows
         let y_eigen = y_matrix.clone().symmetric_eigen();
         let y_sqrt_eigenvals = y_eigen.eigenvalues.map(|x| {
             if x <= T::zero() {
@@ -1134,6 +1077,7 @@ where
         y_sqrt_inv.copy_from(&(&*temp * y_eigen.eigenvectors.transpose()));
 
         // Compute X^{-1/2} using workspace
+        // TODO: Avoid clone when nalgebra API allows
         let x_eigen = x_matrix.clone().symmetric_eigen();
         let x_sqrt_inv_eigenvals = x_eigen.eigenvalues.map(|x| {
             if x <= T::zero() {
@@ -1154,6 +1098,7 @@ where
         a.copy_from(&(&*temp * &*y_sqrt_inv));
 
         // Compute A^{1/2} = (Y^{-1/2} X Y^{-1/2})^{1/2}
+        // TODO: Avoid clone when nalgebra API allows
         let a_eigen = a.clone().symmetric_eigen();
         let a_sqrt_eigenvals = a_eigen.eigenvalues.map(|x| {
             if x <= T::zero() {

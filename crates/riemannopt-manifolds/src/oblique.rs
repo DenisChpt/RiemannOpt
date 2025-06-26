@@ -12,6 +12,7 @@ use riemannopt_core::{
     manifold::Manifold,
     types::{Scalar, DVector},
     memory::Workspace,
+    compute::{get_dispatcher, SimdBackend},
 };
 use crate::utils::vector_to_matrix_view;
 use rayon::prelude::*;
@@ -140,14 +141,23 @@ where T: Send + Sync,
         let mat_view = vector_to_matrix_view(point, self.n, self.p);
         
         // Check that each column has unit norm
-        for j in 0..self.p {
-            let col_norm = mat_view.column(j).norm();
-            if Float::abs(col_norm - T::one()) > tol {
-                return false;
+        if self.p > 10 {
+            // Parallel check for larger manifolds
+            (0..self.p).into_par_iter()
+                .all(|j| {
+                    let col_norm = mat_view.column(j).norm();
+                    Float::abs(col_norm - T::one()) <= tol
+                })
+        } else {
+            // Sequential for small manifolds
+            for j in 0..self.p {
+                let col_norm = mat_view.column(j).norm();
+                if Float::abs(col_norm - T::one()) > tol {
+                    return false;
+                }
             }
+            true
         }
-        
-        true
     }
 
     fn is_vector_in_tangent_space(
@@ -168,14 +178,22 @@ where T: Send + Sync,
         let v_mat_view = vector_to_matrix_view(vector, self.n, self.p);
         
         // Check that each tangent column is orthogonal to corresponding point column
-        for j in 0..self.p {
-            let inner_prod = x_mat_view.column(j).dot(&v_mat_view.column(j));
-            if Float::abs(inner_prod) > tol {
-                return false;
+        if self.p > 10 {
+            // Parallel check for larger manifolds
+            (0..self.p).into_par_iter().all(|j| {
+                let inner_prod = x_mat_view.column(j).dot(&v_mat_view.column(j));
+                Float::abs(inner_prod) <= tol
+            })
+        } else {
+            // Sequential for small manifolds
+            for j in 0..self.p {
+                let inner_prod = x_mat_view.column(j).dot(&v_mat_view.column(j));
+                if Float::abs(inner_prod) > tol {
+                    return false;
+                }
             }
+            true
         }
-        
-        true
     }
 
     fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>, workspace: &mut Workspace<T>) {
@@ -243,9 +261,18 @@ where T: Send + Sync,
         proj_mat.copy_from(&v_mat_view);
         
         // For larger manifolds, parallelize over columns
-        // Note: Can't easily parallelize with PooledMatrix, so use sequential for now
-        if false {  // Disabled parallel version due to PooledMatrix limitations
-            // Would need to use raw pointers or different approach
+        if self.p > 10 {
+            // Compute inner products in parallel, then apply updates sequentially
+            let inner_prods: Vec<T> = (0..self.p)
+                .into_par_iter()
+                .map(|j| x_mat_view.column(j).dot(&v_mat_view.column(j)))
+                .collect();
+            
+            // Apply the projections sequentially (due to PooledMatrix limitations)
+            for j in 0..self.p {
+                let x_col = x_mat_view.column(j);
+                proj_mat.column_mut(j).axpy(-inner_prods[j], &x_col, T::one());
+            }
         } else {
             // Sequential for small manifolds
             for j in 0..self.p {
@@ -267,7 +294,9 @@ where T: Send + Sync,
         u: &DVector<T>,
         v: &DVector<T>,
     ) -> Result<T> {
-        Ok(u.dot(v))
+        // Use SIMD dispatcher for better performance on larger vectors
+        let dispatcher = get_dispatcher::<T>();
+        Ok(dispatcher.dot_product(u, v))
     }
 
     fn retract(
@@ -295,10 +324,29 @@ where T: Send + Sync,
         
         let mut retract_mat = workspace.acquire_temp_matrix(self.n, self.p);
         
-        // For larger manifolds, would parallelize but can't with PooledMatrix
-        // Use sequential for all sizes
-        if false {  // Disabled parallel version due to PooledMatrix limitations
-            // Would need to use raw pointers or different approach
+        // For larger manifolds, parallelize computation
+        if self.p > 10 {
+            // Compute new columns and norms in parallel
+            let new_cols_data: Vec<(DVector<T>, T)> = (0..self.p)
+                .into_par_iter()
+                .map(|j| {
+                    let x_col = x_mat_view.column(j);
+                    let v_col = v_mat_view.column(j);
+                    let new_col = &x_col + &v_col;
+                    let norm = new_col.norm();
+                    (new_col.clone_owned(), norm)
+                })
+                .collect();
+            
+            // Apply results sequentially (due to PooledMatrix limitations)
+            for (j, (new_col, norm)) in new_cols_data.into_iter().enumerate() {
+                if norm > T::epsilon() {
+                    retract_mat.set_column(j, &(new_col / norm));
+                } else {
+                    // If too close to zero, keep original point
+                    retract_mat.set_column(j, &x_mat_view.column(j));
+                }
+            }
         } else {
             // Sequential for small manifolds
             for j in 0..self.p {
@@ -404,25 +452,51 @@ where T: Send + Sync,
         let x_mat_view = vector_to_matrix_view(x, self.n, self.p);
         let y_mat_view = vector_to_matrix_view(y, self.n, self.p);
         
-        // Sequential computation for all sizes (parallel version has type issues with PooledMatrix)
-        let mut dist_squared = T::zero();
-        for j in 0..self.p {
-            let x_col = x_mat_view.column(j);
-            let y_col = y_mat_view.column(j);
-            
-            // Geodesic distance on sphere
-            let inner_prod = x_col.dot(&y_col);
-            let clamped = if inner_prod > T::one() {
-                T::one()
-            } else if inner_prod < -T::one() {
-                -T::one()
-            } else {
-                inner_prod
-            };
-            
-            let angle = Float::acos(clamped);
-            dist_squared += angle * angle;
-        }
+        // Parallelize distance computation for larger manifolds
+        let dist_squared = if self.p > 10 {
+            (0..self.p)
+                .into_par_iter()
+                .map(|j| {
+                    let x_col = x_mat_view.column(j);
+                    let y_col = y_mat_view.column(j);
+                    
+                    // Geodesic distance on sphere
+                    let inner_prod = x_col.dot(&y_col);
+                    let clamped = if inner_prod > T::one() {
+                        T::one()
+                    } else if inner_prod < -T::one() {
+                        -T::one()
+                    } else {
+                        inner_prod
+                    };
+                    
+                    let angle = Float::acos(clamped);
+                    angle * angle
+                })
+                .fold(|| T::zero(), |a, b| a + b)
+                .reduce(|| T::zero(), |a, b| a + b)
+        } else {
+            // Sequential for small manifolds
+            let mut dist_squared = T::zero();
+            for j in 0..self.p {
+                let x_col = x_mat_view.column(j);
+                let y_col = y_mat_view.column(j);
+                
+                // Geodesic distance on sphere
+                let inner_prod = x_col.dot(&y_col);
+                let clamped = if inner_prod > T::one() {
+                    T::one()
+                } else if inner_prod < -T::one() {
+                    -T::one()
+                } else {
+                    inner_prod
+                };
+                
+                let angle = Float::acos(clamped);
+                dist_squared += angle * angle;
+            }
+            dist_squared
+        };
         
         Ok(Float::sqrt(dist_squared))
     }

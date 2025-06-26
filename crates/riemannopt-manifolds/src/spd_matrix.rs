@@ -97,6 +97,7 @@ impl SPDMatrix {
         }
 
         // Check positive definiteness
+        // TODO: Avoid clone when nalgebra API allows
         let eigen = matrix.clone().symmetric_eigen();
         let min_eigenvalue = <T as Scalar>::from_f64(self.min_eigenvalue);
         
@@ -122,6 +123,7 @@ impl SPDMatrix {
         symmetric.copy_from(&((matrix + matrix.transpose()) * <T as Scalar>::from_f64(0.5)));
 
         // Eigenvalue decomposition
+        // TODO: Avoid clone when nalgebra API allows
         let eigen = symmetric.clone().symmetric_eigen();
         let mut eigenvalues = eigen.eigenvalues.clone();
         let eigenvectors = eigen.eigenvectors;
@@ -158,6 +160,7 @@ impl SPDMatrix {
         // d(P,Q) = ||log(P^{-1/2} Q P^{-1/2})||_F
         
         // Compute P^{-1/2}
+        // TODO: Avoid clone when nalgebra API allows
         let p_eigen = p.clone().symmetric_eigen();
         let p_sqrt_inv_eigenvals = p_eigen.eigenvalues.map(|x| {
             if x <= T::zero() {
@@ -179,6 +182,7 @@ impl SPDMatrix {
         middle.copy_from(&(&*temp * &*p_sqrt_inv));
 
         // Compute matrix logarithm
+        // TODO: Avoid clone when nalgebra API allows
         let middle_eigen = middle.clone().symmetric_eigen();
         let log_eigenvals = middle_eigen.eigenvalues.map(|x| {
             if x <= T::zero() {
