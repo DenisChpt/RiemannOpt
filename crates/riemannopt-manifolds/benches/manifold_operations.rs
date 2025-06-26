@@ -12,23 +12,27 @@ fn benchmark_sphere_operations(c: &mut Criterion) {
     for &n in &[10, 100, 1000] {
         let sphere = Sphere::new(n).unwrap();
         let point: nalgebra::DVector<f64> = sphere.random_point();
-        let vector = sphere.random_tangent(&point).unwrap();
+        let mut vector = nalgebra::DVector::zeros(n);
+        sphere.random_tangent(&point, &mut vector).unwrap();
         
         group.bench_with_input(BenchmarkId::new("projection", n), &n, |b, _| {
+            let mut result = nalgebra::DVector::zeros(n);
             b.iter(|| {
-                sphere.project_point(black_box(&point))
+                sphere.project_point(black_box(&point), &mut result)
             });
         });
         
         group.bench_with_input(BenchmarkId::new("retraction", n), &n, |b, _| {
+            let mut result = nalgebra::DVector::zeros(n);
             b.iter(|| {
-                sphere.retract(black_box(&point), black_box(&vector))
+                sphere.retract(black_box(&point), black_box(&vector), &mut result).unwrap()
             });
         });
         
         group.bench_with_input(BenchmarkId::new("tangent_projection", n), &n, |b, _| {
+            let mut result = nalgebra::DVector::zeros(n);
             b.iter(|| {
-                sphere.project_tangent(black_box(&point), black_box(&vector))
+                sphere.project_tangent(black_box(&point), black_box(&vector), &mut result).unwrap()
             });
         });
     }
@@ -44,14 +48,16 @@ fn benchmark_stiefel_operations(c: &mut Criterion) {
     for &(n, p) in &configs {
         let stiefel = Stiefel::new(n, p).unwrap();
         let point: nalgebra::DVector<f64> = stiefel.random_point();
-        let vector = stiefel.random_tangent(&point).unwrap();
+        let mut vector = nalgebra::DVector::zeros(n * p);
+        stiefel.random_tangent(&point, &mut vector).unwrap();
         
         group.bench_with_input(
             BenchmarkId::new("qr_retraction", format!("{}x{}", n, p)), 
             &(n, p), 
             |b, _| {
+                let mut result = nalgebra::DVector::zeros(n * p);
                 b.iter(|| {
-                    stiefel.retract(black_box(&point), black_box(&vector))
+                    stiefel.retract(black_box(&point), black_box(&vector), &mut result).unwrap()
                 });
             }
         );
@@ -60,8 +66,9 @@ fn benchmark_stiefel_operations(c: &mut Criterion) {
             BenchmarkId::new("projection", format!("{}x{}", n, p)), 
             &(n, p), 
             |b, _| {
+                let mut result = nalgebra::DVector::zeros(n * p);
                 b.iter(|| {
-                    stiefel.project_point(black_box(&point))
+                    stiefel.project_point(black_box(&point), &mut result)
                 });
             }
         );
@@ -85,7 +92,7 @@ fn benchmark_grassmann_operations(c: &mut Criterion) {
             &(n, p), 
             |b, _| {
                 b.iter(|| {
-                    grassmann.distance(black_box(&x), black_box(&y))
+                    grassmann.distance(black_box(&x), black_box(&y)).unwrap()
                 });
             }
         );
