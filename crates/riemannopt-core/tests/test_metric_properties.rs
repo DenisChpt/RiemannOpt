@@ -4,7 +4,7 @@
 //! and other required mathematical properties.
 
 use nalgebra::Dyn;
-use riemannopt_core::{error::Result, manifold::Manifold, types::DVector};
+use riemannopt_core::{error::Result, manifold::Manifold, memory::workspace::Workspace, types::DVector};
 
 /// Test manifold with custom metric
 #[derive(Debug)]
@@ -57,7 +57,7 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         true
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         result.copy_from(point);
     }
 
@@ -66,6 +66,7 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         _point: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         result.copy_from(vector);
         Ok(())
@@ -82,12 +83,12 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         Ok(v.dot(&gu))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         *result = point + tangent;
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         *result = other - point;
         Ok(())
     }
@@ -97,6 +98,7 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         _point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         // Riemannian gradient = G^{-1} * Euclidean gradient
         let g_inv = self.metric_matrix.clone().try_inverse().ok_or_else(|| {
@@ -110,7 +112,7 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         DVector::from_fn(self.dim, |_, _| rand::random::<f64>() * 2.0 - 1.0)
     }
 
-    fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         *result = DVector::from_fn(self.dim, |_, _| {
             rand::random::<f64>() * 2.0 - 1.0
         });
@@ -122,11 +124,12 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
 fn test_euclidean_metric_positive_definite() {
     let manifold = ManifoldWithMetric::new_euclidean(3);
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
 
     // Test with multiple random vectors
     for _ in 0..20 {
         let mut v = DVector::zeros(3);
-        manifold.random_tangent(&point, &mut v).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
         let inner = manifold.inner_product(&point, &v, &v).unwrap();
 
         // For non-zero vectors, inner product should be positive
@@ -147,10 +150,11 @@ fn test_weighted_metric_positive_definite() {
     let weights = vec![1.0, 2.0, 0.5, 3.0];
     let manifold = ManifoldWithMetric::new_weighted(4, weights);
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
 
     for _ in 0..20 {
         let mut v = DVector::zeros(4);
-        manifold.random_tangent(&point, &mut v).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
         let inner = manifold.inner_product(&point, &v, &v).unwrap();
 
         if v.norm() > 1e-10 {
@@ -167,13 +171,14 @@ fn test_weighted_metric_positive_definite() {
 fn test_metric_symmetry() {
     let manifold = ManifoldWithMetric::new_euclidean(3);
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
 
     // Test that <u,v> = <v,u>
     for _ in 0..10 {
         let mut u = DVector::zeros(3);
         let mut v = DVector::zeros(3);
-        manifold.random_tangent(&point, &mut u).unwrap();
-        manifold.random_tangent(&point, &mut v).unwrap();
+        manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
 
         let inner_uv = manifold.inner_product(&point, &u, &v).unwrap();
         let inner_vu = manifold.inner_product(&point, &v, &u).unwrap();
@@ -191,13 +196,14 @@ fn test_metric_symmetry() {
 fn test_metric_bilinearity() {
     let manifold = ManifoldWithMetric::new_euclidean(3);
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
 
     let mut u = DVector::zeros(3);
     let mut v = DVector::zeros(3);
     let mut w = DVector::zeros(3);
-    manifold.random_tangent(&point, &mut u).unwrap();
-    manifold.random_tangent(&point, &mut v).unwrap();
-    manifold.random_tangent(&point, &mut w).unwrap();
+    manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+    manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
+    manifold.random_tangent(&point, &mut w, &mut workspace).unwrap();
 
     let alpha = 2.5;
     let beta = -1.3;
@@ -235,13 +241,14 @@ fn test_metric_bilinearity() {
 fn test_cauchy_schwarz_inequality() {
     let manifold = ManifoldWithMetric::new_euclidean(5);
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
 
     // Test Cauchy-Schwarz: |<u,v>| ≤ ||u|| ||v||
     for _ in 0..20 {
         let mut u = DVector::zeros(5);
         let mut v = DVector::zeros(5);
-        manifold.random_tangent(&point, &mut u).unwrap();
-        manifold.random_tangent(&point, &mut v).unwrap();
+        manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
 
         let inner_uv = manifold.inner_product(&point, &u, &v).unwrap();
         let norm_u = manifold.inner_product(&point, &u, &u).unwrap().sqrt();
@@ -260,13 +267,14 @@ fn test_cauchy_schwarz_inequality() {
 fn test_triangle_inequality() {
     let manifold = ManifoldWithMetric::new_weighted(3, vec![1.0, 1.5, 2.0]);
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
 
     // Test triangle inequality: ||u + v|| ≤ ||u|| + ||v||
     for _ in 0..20 {
         let mut u = DVector::zeros(3);
         let mut v = DVector::zeros(3);
-        manifold.random_tangent(&point, &mut u).unwrap();
-        manifold.random_tangent(&point, &mut v).unwrap();
+        manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
         let sum = &u + &v;
 
         let norm_sum = manifold.inner_product(&point, &sum, &sum).unwrap().sqrt();
@@ -303,8 +311,9 @@ fn test_metric_scaling() {
     // Test that scaling a vector scales the norm quadratically
     let manifold = ManifoldWithMetric::new_euclidean(3);
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
     let mut v = DVector::zeros(3);
-    manifold.random_tangent(&point, &mut v).unwrap();
+    manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
 
     let norm_v = manifold.inner_product(&point, &v, &v).unwrap();
 
@@ -369,12 +378,13 @@ fn test_metric_eigenvalues() {
 
     // Verify by computing condition number estimate
     let point = manifold.random_point();
+    let mut workspace = Workspace::new();
     let mut min_ratio = f64::INFINITY;
     let mut max_ratio: f64 = 0.0;
 
     for _ in 0..50 {
         let mut v = DVector::zeros(5);
-        manifold.random_tangent(&point, &mut v).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
         let v_norm = v.norm();
         if v_norm > 1e-10 {
             let inner = manifold.inner_product(&point, &v, &v).unwrap();

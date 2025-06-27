@@ -3,6 +3,7 @@
 use nalgebra::{DVector, Dyn};
 use riemannopt_core::prelude::*;
 use riemannopt_core::optimization::OptimizerStateLegacy;
+use riemannopt_core::memory::workspace::Workspace;
 
 /// Simple Euclidean manifold for testing.
 #[derive(Debug, Clone)]
@@ -38,7 +39,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         true // All vectors are valid
     }
 
-    fn project_point(&self, point: &Point<f64, Dyn>, result: &mut Point<f64, Dyn>) {
+    fn project_point(&self, point: &Point<f64, Dyn>, result: &mut Point<f64, Dyn>, _workspace: &mut Workspace<f64>) {
         result.copy_from(point); // No projection needed
     }
 
@@ -47,6 +48,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         _point: &Point<f64, Dyn>,
         vector: &Point<f64, Dyn>,
         result: &mut Point<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         result.copy_from(vector); // No projection needed
         Ok(())
@@ -66,6 +68,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         point: &Point<f64, Dyn>,
         tangent: &Point<f64, Dyn>,
         result: &mut Point<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         result.copy_from(&(point + tangent));
         Ok(())
@@ -76,6 +79,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         point: &Point<f64, Dyn>,
         other: &Point<f64, Dyn>,
         result: &mut Point<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         result.copy_from(&(other - point));
         Ok(())
@@ -86,6 +90,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         _point: &Point<f64, Dyn>,
         euclidean_grad: &Point<f64, Dyn>,
         result: &mut Point<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         result.copy_from(euclidean_grad);
         Ok(())
@@ -105,6 +110,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         &self,
         _point: &Point<f64, Dyn>,
         result: &mut Point<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -243,15 +249,16 @@ fn test_retraction_properties() {
     // Test retraction at zero
     let zero_tangent = DVector::zeros(3);
     let mut result = DVector::zeros(3);
-    manifold.retract(&point, &zero_tangent, &mut result).unwrap();
+    let mut workspace = Workspace::new();
+    manifold.retract(&point, &zero_tangent, &mut result, &mut workspace).unwrap();
     assert!((result - &point).norm() < 1e-10);
     
     // Test retraction is smooth
     let mut result1 = DVector::zeros(3);
-    manifold.retract(&point, &tangent, &mut result1).unwrap();
+    manifold.retract(&point, &tangent, &mut result1, &mut workspace).unwrap();
     let small_tangent = &tangent * 0.001;
     let mut result2 = DVector::zeros(3);
-    manifold.retract(&point, &small_tangent, &mut result2).unwrap();
+    manifold.retract(&point, &small_tangent, &mut result2, &mut workspace).unwrap();
     
     // Small retractions should be approximately linear
     let expected = &point + &small_tangent;

@@ -7,6 +7,7 @@
 use crate::{
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::Workspace,
     retraction::Retraction,
     types::Scalar,
 };
@@ -478,7 +479,7 @@ mod tests {
         ) -> bool {
             true
         }
-        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
             result.copy_from(point);
         }
         fn project_tangent(
@@ -486,6 +487,7 @@ mod tests {
             _point: &DVector<f64>,
             vector: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(vector);
             Ok(())
@@ -498,7 +500,7 @@ mod tests {
         ) -> Result<f64> {
             Ok(u.dot(v))
         }
-        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
             *result = point + tangent;
             Ok(())
         }
@@ -507,6 +509,7 @@ mod tests {
             point: &DVector<f64>,
             other: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             *result = other - point;
             Ok(())
@@ -516,6 +519,7 @@ mod tests {
             _point: &DVector<f64>,
             grad: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(grad);
             Ok(())
@@ -523,7 +527,7 @@ mod tests {
         fn random_point(&self) -> DVector<f64> {
             DVector::zeros(3)
         }
-        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
             *result = DVector::from_vec(vec![1.0, 0.0, 0.0]);
             Ok(())
         }
@@ -533,6 +537,7 @@ mod tests {
             _to: &DVector<f64>,
             vector: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(vector);
             Ok(())

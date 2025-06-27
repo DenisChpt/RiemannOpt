@@ -7,6 +7,7 @@ use nalgebra::Dyn;
 use riemannopt_core::{
     error::Result,
     manifold::Manifold,
+    memory::workspace::Workspace,
     retraction::{DefaultRetraction, ExponentialRetraction, ProjectionRetraction, Retraction},
     types::DVector,
 };
@@ -70,7 +71,7 @@ impl Manifold<f64, Dyn> for UnitSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
             result.copy_from(point);
@@ -81,7 +82,7 @@ impl Manifold<f64, Dyn> for UnitSphere {
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         // Project vector to tangent space: v - <v, p>p
         let inner = point.dot(vector);
         result.copy_from(vector);
@@ -98,16 +99,16 @@ impl Manifold<f64, Dyn> for UnitSphere {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
         // Simple retraction: normalize(x + v)
         result.copy_from(point);
         result.add_assign(tangent);
         let temp = result.clone();
-        self.project_point(&temp, result);
+        self.project_point(&temp, result, workspace);
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         // Log map on sphere
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
@@ -132,8 +133,9 @@ impl Manifold<f64, Dyn> for UnitSphere {
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -142,16 +144,17 @@ impl Manifold<f64, Dyn> for UnitSphere {
             v[i] = rand::random::<f64>() * 2.0 - 1.0;
         }
         let mut result = DVector::zeros(self.dim);
-        self.project_point(&v, &mut result);
+        let mut workspace = Workspace::new();
+        self.project_point(&v, &mut result, &mut workspace);
         result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rand::random::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v, result)
+        self.project_tangent(point, &v, result, workspace)
     }
 
     fn parallel_transport(
@@ -160,6 +163,7 @@ impl Manifold<f64, Dyn> for UnitSphere {
         to: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         // Parallel transport on sphere using Schild's ladder approximation
         if (from - to).norm() < f64::EPSILON {
@@ -168,7 +172,7 @@ impl Manifold<f64, Dyn> for UnitSphere {
         }
 
         // For simplicity, use projection-based transport
-        self.project_tangent(to, vector, result)
+        self.project_tangent(to, vector, result, workspace)
     }
 }
 
@@ -333,13 +337,14 @@ fn test_retraction_produces_valid_points() {
     let config = PropertyTestConfig::default();
 
     let retraction = DefaultRetraction;
+    let mut workspace = Workspace::new();
 
     for _ in 0..config.num_points {
         let point = sphere.random_point();
 
         for _ in 0..config.num_tangents {
             let mut tangent = DVector::zeros(sphere.dim);
-            sphere.random_tangent(&point, &mut tangent).unwrap();
+            sphere.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
             let scaled_tangent = tangent * config.tangent_scale;
 
             let mut new_point = DVector::zeros(sphere.dim);
@@ -362,12 +367,13 @@ fn test_retraction_local_rigidity() {
     let point = sphere.random_point();
 
     let retraction = DefaultRetraction;
+    let mut workspace = Workspace::new();
 
     // Test with very small tangent vectors
     // Avoid scales below 1e-8 where numerical precision issues dominate
     for scale in [1e-4, 1e-6, 1e-8] {
         let mut tangent = DVector::zeros(sphere.dim);
-        sphere.random_tangent(&point, &mut tangent).unwrap();
+        sphere.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         let scaled_tangent = tangent * scale;
 
         let mut new_point = DVector::zeros(sphere.dim);
@@ -377,7 +383,7 @@ fn test_retraction_local_rigidity() {
 
         // Distance on manifold should approximately equal norm of tangent vector
         let mut log_vector = DVector::zeros(sphere.dim);
-        sphere.inverse_retract(&point, &new_point, &mut log_vector).unwrap();
+        sphere.inverse_retract(&point, &new_point, &mut log_vector, &mut workspace).unwrap();
         let log_norm = log_vector.norm();
         let tangent_norm = scaled_tangent.norm();
 
