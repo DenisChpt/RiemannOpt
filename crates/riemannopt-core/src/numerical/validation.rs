@@ -7,7 +7,7 @@
 use crate::{
     error::{ManifoldError, Result},
     manifold::{Manifold, Point, TangentVector},
-    memory::workspace::Workspace,
+    memory::Workspace,
     retraction::Retraction,
     types::Scalar,
 };
@@ -95,7 +95,7 @@ impl NumericalValidator {
     {
         let analytical_grad = grad_f(point);
         let mut riemannian_grad = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
-        let mut workspace = crate::memory::workspace::Workspace::new();
+        let mut workspace = Workspace::new();
         manifold.euclidean_to_riemannian_gradient(point, &analytical_grad, &mut riemannian_grad, &mut workspace)?;
         let analytical_grad = riemannian_grad;
 
@@ -182,7 +182,7 @@ impl NumericalValidator {
         R: Retraction<T, D>,
         DefaultAllocator: Allocator<D>,
     {
-        let mut workspace = crate::memory::workspace::Workspace::new();
+        let mut workspace = Workspace::new();
         let mut step_sizes = Vec::new();
         let mut errors = Vec::new();
 
@@ -257,7 +257,7 @@ impl NumericalValidator {
         let h = config.base_step_size;
 
         // Test with random tangent vectors
-        let mut workspace = crate::memory::workspace::Workspace::new();
+        let mut workspace = Workspace::new();
         for _ in 0..10 {
             let mut u = TangentVector::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
             manifold.random_tangent(point, &mut u, &mut workspace)?;
@@ -312,7 +312,7 @@ impl NumericalValidator {
 
         // Test 1: Projection stability
         let point = manifold.random_point();
-        let mut workspace = crate::memory::workspace::Workspace::new();
+        let mut workspace = Workspace::new();
         for scale in [T::epsilon(), T::one(), <T as Scalar>::from_f64(1e6)] {
             let perturbed = &point * (T::one() + scale * T::epsilon());
             let mut projected = Point::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::Const::<1>);
