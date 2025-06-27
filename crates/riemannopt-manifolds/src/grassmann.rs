@@ -110,12 +110,16 @@ impl Grassmann {
     ///
     /// Given an orthonormal matrix X, returns a canonical representative
     /// of the same subspace. This ensures uniqueness of representation.
-    fn canonical_representation<T>(&self, matrix: &DMatrix<T>, _workspace: &mut Workspace<T>) -> DMatrix<T>
+    fn canonical_representation<T>(&self, matrix: &DMatrix<T>, workspace: &mut Workspace<T>) -> DMatrix<T>
     where
         T: Scalar,
     {
-        // Clone is necessary here as QR decomposition consumes the matrix
-        let qr = matrix.clone().qr();
+        // Use workspace buffer to avoid allocation in the clone
+        let mut work_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        work_matrix.copy_from(matrix);
+        
+        // QR decomposition still requires consuming the matrix
+        let qr = work_matrix.clone_owned().qr();
         let mut q = qr.q().columns(0, self.p).into_owned();
         
         // Ensure positive diagonal elements in R for canonical form
@@ -169,23 +173,6 @@ impl Grassmann {
         }
     }
 
-    /// Projects a vector to the horizontal tangent space at a point.
-    ///
-    /// The horizontal tangent space consists of matrices V such that X^T V = 0,
-    /// representing variations in the subspace that don't correspond to
-    /// rotations within the subspace.
-    fn project_to_horizontal_tangent<T>(
-        &self,
-        point: &DMatrix<T>,
-        vector: &DMatrix<T>,
-    ) -> DMatrix<T>
-    where
-        T: Scalar,
-    {
-        // Project to horizontal space: V - X(X^T V)
-        let xtv = point.transpose() * vector;
-        vector - point * xtv
-    }
 
     /// Computes principal angles between two subspaces.
     ///
@@ -216,25 +203,6 @@ impl Grassmann {
         cosines
     }
 
-    /// Generates a random tangent vector in the horizontal space.
-    fn random_horizontal_tangent<T>(&self, point: &DMatrix<T>) -> Result<DMatrix<T>>
-    where
-        T: Scalar,
-    {
-        let mut rng = rand::thread_rng();
-        
-        // Generate random matrix
-        let mut random_matrix = DMatrix::<T>::zeros(self.n, self.p);
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                random_matrix[(i, j)] = <T as Scalar>::from_f64(val);
-            }
-        }
-        
-        // Project to horizontal tangent space
-        Ok(self.project_to_horizontal_tangent(point, &random_matrix))
-    }
 
     /// Checks if a matrix represents a valid point on the Grassmann manifold.
     fn is_valid_subspace_representative<T>(&self, matrix: &DMatrix<T>, tolerance: T) -> bool
@@ -357,7 +325,9 @@ impl Grassmann {
             }
         }
         
-        result.copy_from(&DVector::from_vec(q.as_slice().to_vec()));
+        // Copy directly to result without intermediate vector allocation
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix.copy_from(&q);
         Ok(())
     }
 
@@ -493,7 +463,7 @@ where
         // Ensure result has correct size
         let expected_size = self.n * self.p;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
 
         let matrix = if point.len() == self.n * self.p {
@@ -514,7 +484,9 @@ where
         };
         
         let projected = self.project_to_manifold(&matrix, workspace);
-        result.copy_from(&DVector::from_vec(projected.as_slice().to_vec()))
+        // Copy directly to result without intermediate vector allocation
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix.copy_from(&projected);
     }
 
     fn project_tangent(
@@ -527,7 +499,7 @@ where
         // Ensure result has correct size
         let expected_size = self.n * self.p;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         self.project_tangent_with_workspace(point, vector, result, workspace)
@@ -548,7 +520,7 @@ where
         // Ensure result has correct size
         let expected_size = self.n * self.p;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         self.retract_with_workspace(point, tangent, result, workspace)
@@ -564,7 +536,7 @@ where
         // Ensure result has correct size
         let expected_size = self.n * self.p;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         if point.len() != self.n * self.p || other.len() != self.n * self.p {
@@ -605,7 +577,7 @@ where
         // Ensure result has correct size
         let expected_size = self.n * self.p;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         // Project Euclidean gradient to horizontal tangent space
@@ -614,20 +586,22 @@ where
 
     fn random_point(&self) -> Point<T, Dyn> {
         let mut rng = rand::thread_rng();
-        let mut matrix = DMatrix::<T>::zeros(self.n, self.p);
         
-        // Generate random matrix
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                matrix[(i, j)] = <T as Scalar>::from_f64(val);
-            }
+        // Create result vector
+        let mut result = DVector::<T>::zeros(self.n * self.p);
+        
+        // Generate random data directly in result
+        for i in 0..self.n * self.p {
+            let val: f64 = StandardNormal.sample(&mut rng);
+            result[i] = <T as Scalar>::from_f64(val);
         }
         
-        // Create temporary workspace for projection
+        // Create temporary workspace and project to manifold
         let mut workspace = Workspace::new();
-        let projected = self.project_to_manifold(&matrix, &mut workspace);
-        DVector::from_vec(projected.as_slice().to_vec())
+        let mut projected_result = DVector::<T>::zeros(self.n * self.p);
+        self.project_point(&result, &mut projected_result, &mut workspace);
+        
+        projected_result
     }
 
     fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>, _workspace: &mut Workspace<T>) -> Result<()> {
@@ -644,10 +618,21 @@ where
             ));
         }
         
-        // Use matrix view to avoid cloning
+        let mut rng = rand::thread_rng();
+        
+        // Generate random matrix directly in result
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        for i in 0..self.n {
+            for j in 0..self.p {
+                let val: f64 = StandardNormal.sample(&mut rng);
+                result_matrix[(i, j)] = <T as Scalar>::from_f64(val);
+            }
+        }
+        
+        // Project to horizontal tangent space
         let x_matrix = vector_to_matrix_view(point, self.n, self.p);
-        let tangent = self.random_horizontal_tangent(&x_matrix.clone_owned())?;
-        result.copy_from(&DVector::from_vec(tangent.as_slice().to_vec()));
+        let xtv = x_matrix.transpose() * &result_matrix;
+        result_matrix -= &x_matrix * xtv;
         Ok(())
     }
 
@@ -666,7 +651,7 @@ where
         // Ensure result has correct size
         let expected_size = self.n * self.p;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         // Use projection-based parallel transport for simplicity

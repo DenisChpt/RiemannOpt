@@ -492,6 +492,28 @@ impl Sphere {
         let tangent = random_vec - point * inner;
         Ok(tangent)
     }
+    
+    /// Generates a random tangent vector at the given point, writing directly to result.
+    fn random_tangent_vector_mut<T, D>(&self, point: &Point<T, D>, result: &mut OVector<T, D>) -> Result<()>
+    where
+        T: Scalar,
+        D: Dim,
+        DefaultAllocator: Allocator<D>,
+    {
+        let mut rng = rand::thread_rng();
+        let dim = point.len();
+        
+        // Generate random vector directly in result
+        for i in 0..dim {
+            let val: f64 = StandardNormal.sample(&mut rng);
+            result[i] = <T as Scalar>::from_f64(val);
+        }
+        
+        // Project to tangent space: v - <v,x>x
+        let inner = point.dot(result);
+        result.axpy(-inner, point, T::one());
+        Ok(())
+    }
 }
 
 impl<T> Manifold<T, Dyn> for Sphere
@@ -693,8 +715,24 @@ where
                 // Use exponential map as retraction (exact on sphere)
                 // R_x(v) = exp_x(v) = cos(‖v‖)x + sin(‖v‖)v/‖v‖
                 // This is the optimal retraction for the sphere
-                let exp_result = self.exp_map(point, tangent)?;
-                result.copy_from(&exp_result);
+                // Implement directly without allocation
+                let tangent_norm = tangent.norm();
+                
+                if tangent_norm < T::epsilon() {
+                    // exp_x(0) = x
+                    result.copy_from(point);
+                    return Ok(());
+                }
+
+                let cos_norm = <T as Float>::cos(tangent_norm);
+                let sin_norm = <T as Float>::sin(tangent_norm);
+                let sin_over_norm = sin_norm / tangent_norm;
+                
+                // result = point * cos_norm + tangent * (sin_norm / tangent_norm)
+                // Use nalgebra operations to avoid allocations
+                result.copy_from(point);
+                result.scale_mut(cos_norm);
+                result.axpy(sin_over_norm, tangent, T::one());
                 Ok(())
             }
         }
@@ -705,11 +743,56 @@ where
         point: &Point<T, Dyn>,
         other: &Point<T, Dyn>,
         result: &mut TangentVector<T, Dyn>,
-        _workspace: &mut Workspace<T>,
+        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Use logarithmic map as inverse retraction
-        let log_result = self.log_map(point, other)?;
-        result.copy_from(&log_result);
+        // Implement directly without allocation
+        let inner_product = point.dot(other);
+        
+        // Clamp to avoid numerical issues with arccos
+        let cos_theta = <T as Float>::max(
+            <T as Float>::min(inner_product, T::one()),
+            -T::one(),
+        );
+        
+        let theta = <T as Float>::acos(cos_theta);
+        
+        if theta < T::epsilon() {
+            // Points are very close, return zero vector
+            result.fill(T::zero());
+            return Ok(());
+        }
+        
+        let sin_theta = <T as Float>::sin(theta);
+        
+        if sin_theta < T::epsilon() {
+            // Points are antipodal, log map is not unique
+            // Return any tangent vector of length π
+            // Use workspace to avoid allocation
+            let mut tangent = workspace.acquire_temp_vector(self.ambient_dim);
+            self.random_tangent_vector_mut(point, &mut tangent)?;
+            let current_norm = tangent.norm();
+            if current_norm > T::epsilon() {
+                let pi_over_norm = <T as Scalar>::from_f64(std::f64::consts::PI) / current_norm;
+                result.copy_from(&tangent);
+                result.scale_mut(pi_over_norm);
+            } else {
+                result.fill(T::zero());
+            }
+            // PooledVector is automatically released when it goes out of scope
+            return Ok(());
+        }
+        
+        // log_x(y) = θ (y - cos(θ)x) / sin(θ)
+        let theta_over_sin_theta = theta / sin_theta;
+        
+        // result = other - point * cos_theta
+        result.copy_from(other);
+        result.axpy(-cos_theta, point, T::one());
+        
+        // result *= theta / sin_theta
+        result.scale_mut(theta_over_sin_theta);
+        
         Ok(())
     }
 
@@ -745,8 +828,7 @@ where
     }
 
     fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>, _workspace: &mut Workspace<T>) -> Result<()> {
-        let tangent = self.random_tangent_vector(point)?;
-        result.copy_from(&tangent);
+        self.random_tangent_vector_mut(point, result)?;
         Ok(())
     }
 

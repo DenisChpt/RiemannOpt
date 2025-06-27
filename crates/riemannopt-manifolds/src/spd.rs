@@ -178,41 +178,18 @@ impl SPD {
     where
         T: Scalar,
     {
-        // Check for numerical issues first
-        if matrix.iter().any(|x| !x.is_finite()) {
-            // Return identity matrix with regularization if input is not finite
-            let identity = DMatrix::<T>::identity(self.n, self.n) * <T as Scalar>::from_f64(1.0 + self.min_eigenvalue);
-            return identity;
-        }
+        // Create a temporary workspace and delegate to the workspace version
+        let mut workspace = Workspace::new();
+        let mut result = DMatrix::<T>::zeros(self.n, self.n);
         
-        // Ensure symmetry first
-        let symmetric = (matrix + matrix.transpose()) * <T as Scalar>::from_f64(0.5);
-        
-        // Compute eigenvalue decomposition
-        // TODO: Avoid clone when nalgebra API allows
-        let eigen = symmetric.clone().symmetric_eigen();
-        let mut eigenvalues = eigen.eigenvalues.clone();
-        let eigenvectors = eigen.eigenvectors;
-
-        // Clamp eigenvalues to ensure positive definiteness with numerical stability
-        let min_eval = <T as Scalar>::from_f64(self.min_eigenvalue);
-        let tolerance = <T as Scalar>::from_f64(1e-12);
-        
-        for i in 0..eigenvalues.len() {
-            if eigenvalues[i] < min_eval {
-                eigenvalues[i] = min_eval + tolerance;
-            } else if !eigenvalues[i].is_finite() {
-                // Handle non-finite eigenvalues
-                eigenvalues[i] = min_eval + tolerance;
+        // Use the workspace version
+        match self.project_to_spd_with_workspace(matrix, &mut result, &mut workspace) {
+            Ok(()) => result,
+            Err(_) => {
+                // Fallback to identity matrix on error
+                DMatrix::<T>::identity(self.n, self.n) * <T as Scalar>::from_f64(1.0 + self.min_eigenvalue)
             }
         }
-
-        // Reconstruct matrix: P = V * diag(lambda) * V^T
-        let lambda_matrix = DMatrix::from_diagonal(&eigenvalues);
-        let result = &eigenvectors * &lambda_matrix * eigenvectors.transpose();
-        
-        // Final symmetry enforcement to handle numerical errors
-        (result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5)
     }
 
     /// Checks if a matrix is symmetric positive definite.
@@ -306,52 +283,6 @@ impl SPD {
         (vector + vector.transpose()) * <T as Scalar>::from_f64(0.5)
     }
 
-    /// Generates a random SPD matrix.
-    fn random_spd_matrix<T>(&self) -> DMatrix<T>
-    where
-        T: Scalar,
-    {
-        let mut rng = rand::thread_rng();
-        
-        // Generate random matrix
-        let mut random_matrix = DMatrix::<T>::zeros(self.n, self.n);
-        for i in 0..self.n {
-            for j in 0..self.n {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                random_matrix[(i, j)] = <T as Scalar>::from_f64(val);
-            }
-        }
-
-        // Make it SPD: A = B^T B + epsilon * I
-        let btb = random_matrix.transpose() * &random_matrix;
-        let identity = DMatrix::<T>::identity(self.n, self.n);
-        let epsilon = <T as Scalar>::from_f64(self.min_eigenvalue);
-        
-        btb + identity * epsilon
-    }
-
-    /// Generates a random symmetric matrix for tangent space.
-    fn random_symmetric_matrix<T>(&self) -> DMatrix<T>
-    where
-        T: Scalar,
-    {
-        let mut rng = rand::thread_rng();
-        
-        // Generate random symmetric matrix
-        let mut matrix = DMatrix::<T>::zeros(self.n, self.n);
-        for i in 0..self.n {
-            for j in i..self.n {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                let val_t = <T as Scalar>::from_f64(val);
-                matrix[(i, j)] = val_t;
-                if i != j {
-                    matrix[(j, i)] = val_t;
-                }
-            }
-        }
-        
-        matrix
-    }
 
     /// Exponential map on SPD manifold (approximate for efficiency).
     ///
@@ -817,14 +748,33 @@ where
         // Use the project_to_spd_with_workspace
         match self.project_to_spd_with_workspace(&matrix, &mut *projected_matrix, workspace) {
             Ok(_) => {
-                let projected_vector = self.matrix_to_vector(&*projected_matrix);
-                result.copy_from(&projected_vector);
+                // Convert matrix to vector directly into result
+                let size = self.n * (self.n + 1) / 2;
+                if result.len() != size {
+                    *result = DVector::<T>::zeros(size);
+                }
+                let mut idx = 0;
+                for j in 0..self.n {
+                    for i in 0..=j {
+                        result[idx] = projected_matrix[(i, j)];
+                        idx += 1;
+                    }
+                }
             }
             Err(_) => {
                 // Fallback: project to identity with regularization
-                let identity = DMatrix::<T>::identity(self.n, self.n) * <T as Scalar>::from_f64(1.0 + self.min_eigenvalue);
-                let projected_vector = self.matrix_to_vector(&identity);
-                result.copy_from(&projected_vector);
+                let identity_val = <T as Scalar>::from_f64(1.0 + self.min_eigenvalue);
+                let size = self.n * (self.n + 1) / 2;
+                if result.len() != size {
+                    *result = DVector::<T>::zeros(size);
+                }
+                let mut idx = 0;
+                for j in 0..self.n {
+                    for i in 0..=j {
+                        result[idx] = if i == j { identity_val } else { T::zero() };
+                        idx += 1;
+                    }
+                }
             }
         }
     }
@@ -935,8 +885,18 @@ where
             retracted_matrix.copy_from(&temp);
         }
         
-        let retracted_vector = self.matrix_to_vector(&*retracted_matrix);
-        result.copy_from(&retracted_vector);
+        // Convert matrix to vector directly into result
+        let size = self.n * (self.n + 1) / 2;
+        if result.len() != size {
+            *result = DVector::<T>::zeros(size);
+        }
+        let mut idx = 0;
+        for j in 0..self.n {
+            for i in 0..=j {
+                result[idx] = retracted_matrix[(i, j)];
+                idx += 1;
+            }
+        }
         Ok(())
     }
 
@@ -962,9 +922,18 @@ where
         let mut tangent_matrix = workspace.acquire_temp_matrix(self.n, self.n);
         self.logarithmic_map_with_workspace(&point_matrix, &other_matrix, &mut *tangent_matrix, workspace)?;
         
-        // The result is already in the tangent space (symmetric matrix)
-        let tangent_vector = self.matrix_to_vector(&*tangent_matrix);
-        result.copy_from(&tangent_vector);
+        // Convert matrix to vector directly into result
+        let size = self.n * (self.n + 1) / 2;
+        if result.len() != size {
+            *result = DVector::<T>::zeros(size);
+        }
+        let mut idx = 0;
+        for j in 0..self.n {
+            for i in 0..=j {
+                result[idx] = tangent_matrix[(i, j)];
+                idx += 1;
+            }
+        }
         Ok(())
     }
 
@@ -992,14 +961,50 @@ where
         let riemannian_grad_matrix = &point_matrix * &grad_matrix * &point_matrix;
         let symmetric_grad = self.project_to_tangent(&point_matrix, &riemannian_grad_matrix);
         
-        let gradient_vector = self.matrix_to_vector(&symmetric_grad);
-        result.copy_from(&gradient_vector);
+        // Convert matrix to vector directly into result
+        let size = self.n * (self.n + 1) / 2;
+        if result.len() != size {
+            *result = DVector::<T>::zeros(size);
+        }
+        let mut idx = 0;
+        for j in 0..self.n {
+            for i in 0..=j {
+                result[idx] = symmetric_grad[(i, j)];
+                idx += 1;
+            }
+        }
         Ok(())
     }
 
     fn random_point(&self) -> Point<T, Dyn> {
-        let matrix = self.random_spd_matrix();
-        self.matrix_to_vector(&matrix)
+        let mut rng = rand::thread_rng();
+        
+        // Generate random matrix
+        let mut random_matrix = DMatrix::<T>::zeros(self.n, self.n);
+        for i in 0..self.n {
+            for j in 0..self.n {
+                let val: f64 = StandardNormal.sample(&mut rng);
+                random_matrix[(i, j)] = <T as Scalar>::from_f64(val);
+            }
+        }
+
+        // Make it SPD: A = B^T B + epsilon * I
+        let btb = random_matrix.transpose() * &random_matrix;
+        let identity = DMatrix::<T>::identity(self.n, self.n);
+        let epsilon = <T as Scalar>::from_f64(self.min_eigenvalue);
+        let spd_matrix = btb + identity * epsilon;
+        
+        // Convert to vector
+        let size = self.n * (self.n + 1) / 2;
+        let mut result = DVector::<T>::zeros(size);
+        let mut idx = 0;
+        for j in 0..self.n {
+            for i in 0..=j {
+                result[idx] = spd_matrix[(i, j)];
+                idx += 1;
+            }
+        }
+        result
     }
 
     fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>, _workspace: &mut Workspace<T>) -> Result<()> {
@@ -1012,9 +1017,22 @@ where
         }
         
 
-        let symmetric_matrix = self.random_symmetric_matrix();
-        let tangent_vector = self.matrix_to_vector(&symmetric_matrix);
-        result.copy_from(&tangent_vector);
+        let mut rng = rand::thread_rng();
+        
+        // Generate random symmetric matrix directly in result
+        let size = self.n * (self.n + 1) / 2;
+        if result.len() != size {
+            *result = DVector::<T>::zeros(size);
+        }
+        
+        let mut idx = 0;
+        for j in 0..self.n {
+            for _i in 0..=j {
+                let val: f64 = StandardNormal.sample(&mut rng);
+                result[idx] = <T as Scalar>::from_f64(val);
+                idx += 1;
+            }
+        }
         Ok(())
     }
 
@@ -1133,8 +1151,18 @@ where
         let mut symmetric_transported = workspace.acquire_temp_matrix(self.n, self.n);
         symmetric_transported.copy_from(&((&*transported_matrix + transported_matrix.transpose()) * <T as Scalar>::from_f64(0.5)));
         
-        let transported_vector = self.matrix_to_vector(&*symmetric_transported);
-        result.copy_from(&transported_vector);
+        // Convert matrix to vector directly into result
+        let size = self.n * (self.n + 1) / 2;
+        if result.len() != size {
+            *result = DVector::<T>::zeros(size);
+        }
+        let mut idx = 0;
+        for j in 0..self.n {
+            for i in 0..=j {
+                result[idx] = symmetric_transported[(i, j)];
+                idx += 1;
+            }
+        }
         Ok(())
     }
 
@@ -1265,7 +1293,6 @@ mod tests {
         let v_vec = spd.matrix_to_vector(&v);
         
         // Test inner product
-        let mut workspace: Workspace<f64> = Workspace::new();
         let inner = spd.inner_product(&p_vec, &u_vec, &v_vec).unwrap();
         
         // For P = 2I, U = I, V = [0 1; 1 0]:
@@ -1480,8 +1507,9 @@ mod tests {
         assert_relative_eq!(log_diag[(1, 0)], 0.0, epsilon = 1e-10);
         
         // Test that exp(log(A)) = A
-        let random_spd = spd.random_spd_matrix::<f64>();
-        let log_matrix = spd.matrix_logarithm(&random_spd).unwrap();
+        // Create a simple SPD matrix
+        let test_matrix = DMatrix::from_vec(2, 2, vec![4.0, 1.0, 1.0, 3.0]);
+        let log_matrix = spd.matrix_logarithm(&test_matrix).unwrap();
         
         // Compute matrix exponential via eigendecomposition
         let log_eigen = log_matrix.symmetric_eigen();
@@ -1491,7 +1519,7 @@ mod tests {
         // Should recover original matrix
         for i in 0..2 {
             for j in 0..2 {
-                assert_relative_eq!(exp_matrix[(i, j)], random_spd[(i, j)], epsilon = 1e-8);
+                assert_relative_eq!(exp_matrix[(i, j)], test_matrix[(i, j)], epsilon = 1e-8);
             }
         }
     }

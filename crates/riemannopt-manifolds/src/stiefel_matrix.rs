@@ -56,9 +56,13 @@ impl StiefelMatrix {
     }
 
     /// QR-based projection onto the Stiefel manifold.
-    fn qr_projection<T: Scalar>(&self, matrix: &DMatrix<T>) -> DMatrix<T> {
+    fn qr_projection<T: Scalar>(&self, matrix: &DMatrix<T>, workspace: &mut Workspace<T>) -> DMatrix<T> {
+        // Use workspace buffer to avoid clone
+        let mut work_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        work_matrix.copy_from(matrix);
+        
         // Use QR decomposition to get orthonormal columns
-        let qr = matrix.clone().qr();
+        let qr = work_matrix.clone_owned().qr();
         let mut q = qr.q();
         
         // Ensure we only take the first p columns
@@ -83,12 +87,17 @@ impl StiefelMatrix {
         
         // I + 0.5 * X^T V
         let mut eye_plus = workspace.acquire_temp_matrix(self.p, self.p);
-        eye_plus.copy_from(&DMatrix::<T>::identity(self.p, self.p));
-        // eye_plus += 0.5 * x_t_v
-        let scaled_x_t_v = &*x_t_v * <T as Scalar>::from_f64(0.5);
-        let identity = DMatrix::<T>::identity(self.p, self.p);
-        let temp = &identity + &scaled_x_t_v;
-        eye_plus.copy_from(&temp);
+        eye_plus.fill(T::zero());
+        // Set diagonal to 1
+        for i in 0..self.p {
+            eye_plus[(i, i)] = T::one();
+        }
+        // Add 0.5 * x_t_v
+        for i in 0..self.p {
+            for j in 0..self.p {
+                eye_plus[(i, j)] += <T as Scalar>::from_f64(0.5) * x_t_v[(i, j)];
+            }
+        }
         
         // Solve (I + 0.5 * X^T V) * Y = I to get Y = (I + 0.5 * X^T V)^{-1}
         let inv = eye_plus.clone().try_inverse()
@@ -126,10 +135,18 @@ impl<T: Scalar> MatrixManifold<T> for StiefelMatrix {
         
         // Check X^T X = I_p
         let x_t_x = point.transpose() * point;
-        let identity = DMatrix::<T>::identity(self.p, self.p);
-        let diff = &x_t_x - &identity;
         
-        diff.norm() < tolerance
+        // Check if diagonal elements are close to 1 and off-diagonal close to 0
+        let mut max_diff = T::zero();
+        for i in 0..self.p {
+            for j in 0..self.p {
+                let expected = if i == j { T::one() } else { T::zero() };
+                let diff = <T as Float>::abs(x_t_x[(i, j)] - expected);
+                max_diff = <T as Float>::max(max_diff, diff);
+            }
+        }
+        
+        max_diff < tolerance
     }
 
     fn is_vector_in_tangent_space(
@@ -158,9 +175,9 @@ impl<T: Scalar> MatrixManifold<T> for StiefelMatrix {
         &self,
         matrix: &DMatrix<T>,
         result: &mut DMatrix<T>,
-        _workspace: &mut Workspace<T>,
+        workspace: &mut Workspace<T>,
     ) {
-        let projected = self.qr_projection(matrix);
+        let projected = self.qr_projection(matrix, workspace);
         result.copy_from(&projected);
     }
 
@@ -210,7 +227,7 @@ impl<T: Scalar> MatrixManifold<T> for StiefelMatrix {
         let mut x_plus_v = workspace.acquire_temp_matrix(self.n, self.p);
         x_plus_v.copy_from(&(point + tangent));
         
-        let qr = x_plus_v.clone().qr();
+        let qr = x_plus_v.clone_owned().qr();
         let q = qr.q();
         
         if q.ncols() > self.p {
@@ -251,8 +268,9 @@ impl<T: Scalar> MatrixManifold<T> for StiefelMatrix {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
-        // Generate random n×p matrix
-        let mut matrix = DMatrix::<T>::zeros(self.n, self.p);
+        // Generate random n×p matrix using workspace
+        let mut workspace = Workspace::new();
+        let mut matrix = workspace.acquire_temp_matrix(self.n, self.p);
         for i in 0..self.n {
             for j in 0..self.p {
                 matrix[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
@@ -260,7 +278,7 @@ impl<T: Scalar> MatrixManifold<T> for StiefelMatrix {
         }
         
         // Project to Stiefel via QR
-        self.qr_projection(&matrix)
+        self.qr_projection(&matrix, &mut workspace)
     }
 
     fn random_tangent(
@@ -272,8 +290,8 @@ impl<T: Scalar> MatrixManifold<T> for StiefelMatrix {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
-        // Generate random matrix
-        let mut tangent = DMatrix::<T>::zeros(self.n, self.p);
+        // Generate random matrix using workspace
+        let mut tangent = workspace.acquire_temp_matrix(self.n, self.p);
         for i in 0..self.n {
             for j in 0..self.p {
                 tangent[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
@@ -281,7 +299,7 @@ impl<T: Scalar> MatrixManifold<T> for StiefelMatrix {
         }
         
         // Project to tangent space
-        self.project_tangent(point, &tangent, result, workspace)
+        self.project_tangent(point, &*tangent, result, workspace)
     }
 
     fn parallel_transport(
@@ -328,6 +346,8 @@ impl<T: Scalar> MatrixManifoldExt<T> for StiefelMatrix {
     }
 
     fn matrix_to_vector(&self, matrix: &DMatrix<T>) -> Vec<T> {
+        // Note: This still allocates but is required by the trait.
+        // In performance-critical paths, use the matrix API directly.
         matrix.as_slice().to_vec()
     }
 

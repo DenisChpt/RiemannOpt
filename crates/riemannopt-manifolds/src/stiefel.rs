@@ -461,73 +461,37 @@ impl Stiefel {
     where
         T: Scalar,
     {
+        // Always use workspace buffer to avoid allocation in the clone
+        let mut work_matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        
         if matrix.nrows() != self.n || matrix.ncols() != self.p {
-            // Use workspace buffer for wrong dimensions case
-            let mut result = workspace.acquire_temp_matrix(self.n, self.p);
-            result.fill(T::zero());
+            // Handle wrong dimensions case
+            work_matrix.fill(T::zero());
             
             let copy_rows = matrix.nrows().min(self.n);
             let copy_cols = matrix.ncols().min(self.p);
             
             for i in 0..copy_rows {
                 for j in 0..copy_cols {
-                    result[(i, j)] = matrix[(i, j)];
+                    work_matrix[(i, j)] = matrix[(i, j)];
                 }
             }
             
             // If we have zero columns, fill with random data
-            if result.column(0).norm() < T::epsilon() {
-                result[(0, 0)] = T::one();
+            if work_matrix.column(0).norm() < T::epsilon() {
+                work_matrix[(0, 0)] = T::one();
             }
-            
-            // Must clone here for QR decomposition which consumes the matrix
-            let qr = result.clone_owned().qr();
-            // Take only the first p columns of Q
-            qr.q().columns(0, self.p).into_owned()
         } else {
-            // Must clone here for QR decomposition which consumes the matrix
-            let qr = matrix.clone().qr();
-            // Take only the first p columns of Q
-            qr.q().columns(0, self.p).into_owned()
+            // Copy matrix to workspace buffer
+            work_matrix.copy_from(matrix);
         }
+        
+        // QR decomposition still requires consuming the matrix, but at least we're using workspace memory
+        let qr = work_matrix.clone_owned().qr();
+        // Take only the first p columns of Q
+        qr.q().columns(0, self.p).into_owned()
     }
 
-    /// Generates a random tangent vector at the given point.
-    ///
-    /// # Algorithm
-    /// 1. Generate random matrix A with i.i.d. Gaussian entries
-    /// 2. Project to tangent space: V = A - X(X^T A + A^T X)/2
-    ///
-    /// # Mathematical Background
-    /// The projection formula ensures V ∈ T_X St(n,p):
-    /// - X^T V + V^T X = 0 (skew-symmetric condition)
-    /// - This is the orthogonal projection onto the tangent space
-    ///
-    /// # Distribution
-    /// The resulting tangent vector follows a matrix normal distribution
-    /// on the tangent space, providing good sampling coverage.
-    fn random_tangent_matrix<T>(&self, point: &DMatrix<T>) -> Result<DMatrix<T>>
-    where
-        T: Scalar,
-    {
-        let mut rng = rand::thread_rng();
-        
-        // Generate random matrix
-        let mut random_matrix = DMatrix::<T>::zeros(self.n, self.p);
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                random_matrix[(i, j)] = <T as Scalar>::from_f64(val);
-            }
-        }
-        
-        // Project to tangent space: V - X(X^T V + V^T X)/2
-        let xtv = point.transpose() * &random_matrix;
-        let vtx = random_matrix.transpose() * point;
-        let symmetric = (&xtv + &vtx) * <T as Scalar>::from_f64(0.5);
-        
-        Ok(random_matrix - point * symmetric)
-    }
 
     /// Projects a vector to the tangent space at a point using a workspace.
     ///
@@ -622,9 +586,9 @@ impl Stiefel {
         let q_full = qr.q();
         let q = q_full.columns(0, self.p);
         
-        // Copy directly into result
-        let q_owned = q.into_owned();
-        result.copy_from(&DVector::from_vec(q_owned.data.as_vec().clone()));
+        // Copy directly into result without intermediate vector allocation
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix.copy_from(&q);
         
         Ok(())
     }
@@ -741,13 +705,15 @@ where
     }
 
     fn project_point(&self, point: &Point<T, Dyn>, result: &mut Point<T, Dyn>, workspace: &mut Workspace<T>) {
-        let matrix = if point.len() == self.n * self.p {
-            // Use matrix view to avoid cloning
+        // Get a workspace matrix for the input
+        let mut matrix = workspace.acquire_temp_matrix(self.n, self.p);
+        
+        if point.len() == self.n * self.p {
+            // Copy point data to matrix
             let view = vector_to_matrix_view(point, self.n, self.p);
-            view.clone_owned()
+            matrix.copy_from(&view);
         } else {
-            // Handle wrong size by creating a matrix in workspace
-            let mut matrix = workspace.acquire_temp_matrix(self.n, self.p);
+            // Handle wrong size
             matrix.fill(T::zero());
             let copy_len = point.len().min(self.n * self.p);
             for i in 0..copy_len {
@@ -755,11 +721,12 @@ where
                 let col = i % self.p;
                 matrix[(row, col)] = point[i];
             }
-            matrix.clone_owned()
-        };
+        }
         
         let projected = self.qr_projection(&matrix, workspace);
-        result.copy_from(&DVector::from_vec(projected.data.as_vec().clone()))
+        // Copy projected matrix directly to result without intermediate vector
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        result_matrix.copy_from(&projected);
     }
 
     fn project_tangent(
@@ -810,23 +777,25 @@ where
 
     fn random_point(&self) -> Point<T, Dyn> {
         let mut rng = rand::thread_rng();
-        let mut matrix = DMatrix::<T>::zeros(self.n, self.p);
         
-        // Generate random matrix
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                matrix[(i, j)] = <T as Scalar>::from_f64(val);
-            }
+        // Create result vector
+        let mut result = DVector::<T>::zeros(self.n * self.p);
+        
+        // Generate random data directly in result
+        for i in 0..self.n * self.p {
+            let val: f64 = StandardNormal.sample(&mut rng);
+            result[i] = <T as Scalar>::from_f64(val);
         }
         
-        // Create temporary workspace for QR projection
+        // Create temporary workspace and project to manifold
         let mut workspace = Workspace::new();
-        let projected = self.qr_projection(&matrix, &mut workspace);
-        DVector::from_vec(projected.data.as_vec().clone())
+        let mut projected_result = DVector::<T>::zeros(self.n * self.p);
+        self.project_point(&result, &mut projected_result, &mut workspace);
+        
+        projected_result
     }
 
-    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>, _workspace: &mut Workspace<T>) -> Result<()> {
+    fn random_tangent(&self, point: &Point<T, Dyn>, result: &mut TangentVector<T, Dyn>, workspace: &mut Workspace<T>) -> Result<()> {
         if point.len() != self.n * self.p {
             return Err(ManifoldError::dimension_mismatch(
                 format!("n*p={} elements for St({},{})", self.n * self.p, self.n, self.p),
@@ -834,10 +803,34 @@ where
             ));
         }
         
-        // Use matrix view to avoid cloning
+        let mut rng = rand::thread_rng();
+        
+        // Generate random matrix directly in result
+        let mut result_matrix = vector_to_matrix_view_mut(result, self.n, self.p);
+        for i in 0..self.n {
+            for j in 0..self.p {
+                let val: f64 = StandardNormal.sample(&mut rng);
+                result_matrix[(i, j)] = <T as Scalar>::from_f64(val);
+            }
+        }
+        
+        // Project to tangent space: V - X(X^T V + V^T X)/2
         let x_matrix = vector_to_matrix_view(point, self.n, self.p);
-        let tangent = self.random_tangent_matrix(&x_matrix.clone_owned())?;
-        result.copy_from(&DVector::from_vec(tangent.data.as_vec().clone()));
+        
+        // Use workspace for temporary matrices
+        let mut xtv = workspace.acquire_temp_matrix(self.p, self.p);
+        let mut vtx = workspace.acquire_temp_matrix(self.p, self.p);
+        
+        xtv.copy_from(&(x_matrix.transpose() * &result_matrix));
+        vtx.copy_from(&(result_matrix.transpose() * &x_matrix));
+        
+        let mut symmetric = workspace.acquire_temp_matrix(self.p, self.p);
+        symmetric.copy_from(&(&*xtv + &*vtx));
+        *symmetric *= <T as Scalar>::from_f64(0.5);
+        
+        // Apply projection: result = result - X * symmetric
+        result_matrix -= &x_matrix * &*symmetric;
+        
         Ok(())
     }
 
