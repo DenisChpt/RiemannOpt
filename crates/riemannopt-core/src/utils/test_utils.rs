@@ -8,6 +8,7 @@
 use crate::{
     error::Result,
     manifold::{Manifold, Point, TangentVector as TangentVectorType},
+    memory::workspace::Workspace,
     retraction::Retraction,
     types::Scalar,
 };
@@ -132,7 +133,8 @@ impl ManifoldPropertyTester {
 
             for _ in 0..config.num_tangents {
                 let mut tangent = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
-                match manifold.random_tangent(&point, &mut tangent) {
+                let mut workspace = Workspace::<T>::new();
+                match manifold.random_tangent(&point, &mut tangent, &mut workspace) {
                     Ok(()) => {
                         // Scale the tangent vector
                         tangent *= config.tangent_scale;
@@ -201,16 +203,17 @@ impl ManifoldPropertyTester {
             for _ in 0..config.num_tangents {
                 // Generate a random vector (not necessarily in tangent space)
                 let mut random_vec = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
-                match manifold.random_tangent(&point, &mut random_vec) {
+                let mut workspace = Workspace::<T>::new();
+                match manifold.random_tangent(&point, &mut random_vec, &mut workspace) {
                     Ok(()) => {
                         // Add some component outside tangent space
                         let perturbed = random_vec * <T as Scalar>::from_f64(1.5);
 
                         let mut projected_once = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
-                        match manifold.project_tangent(&point, &perturbed, &mut projected_once) {
+                        match manifold.project_tangent(&point, &perturbed, &mut projected_once, &mut workspace) {
                             Ok(()) => {
                                 let mut projected_twice = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
-                                match manifold.project_tangent(&point, &projected_once, &mut projected_twice) {
+                                match manifold.project_tangent(&point, &projected_once, &mut projected_twice, &mut workspace) {
                                     Ok(()) => {
                                         let diff = &projected_twice - &projected_once;
                                         let error = diff.norm();
@@ -272,12 +275,13 @@ impl ManifoldPropertyTester {
 
             // Test 1: Transport along zero curve should be identity
             let mut tangent = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
-            match manifold.random_tangent(&point, &mut tangent) {
+            let mut workspace = Workspace::<T>::new();
+            match manifold.random_tangent(&point, &mut tangent, &mut workspace) {
                 Ok(()) => {
                     tangent *= config.tangent_scale;
 
                     let mut transported = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
-                    match manifold.parallel_transport(&point, &point, &tangent, &mut transported) {
+                    match manifold.parallel_transport(&point, &point, &tangent, &mut transported, &mut workspace) {
                         Ok(()) => {
                             let diff = &transported - &tangent;
                             let error = diff.norm();
@@ -306,15 +310,16 @@ impl ManifoldPropertyTester {
             for _ in 0..config.num_tangents.saturating_sub(1) {
                 let mut tangent1 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
                 let mut tangent2 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
+                let mut workspace = Workspace::<T>::new();
                 match (
-                    manifold.random_tangent(&point, &mut tangent1),
-                    manifold.random_tangent(&point, &mut tangent2),
+                    manifold.random_tangent(&point, &mut tangent1, &mut workspace),
+                    manifold.random_tangent(&point, &mut tangent2, &mut workspace),
                 ) {
                     (Ok(()), Ok(())) => {
                         tangent1 *= config.tangent_scale;
                         tangent2 *= config.tangent_scale;
                         let mut direction = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
-                        let _ = manifold.random_tangent(&point, &mut direction).unwrap_or_else(|_| {
+                        let _ = manifold.random_tangent(&point, &mut direction, &mut workspace).unwrap_or_else(|_| {
                             direction.copy_from(&tangent1);
                         });
                         direction *= config.tangent_scale;
@@ -325,8 +330,8 @@ impl ManifoldPropertyTester {
                                 let mut transported1 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
                                 let mut transported2 = TangentVectorType::<T, D>::zeros_generic(point.shape_generic().0, nalgebra::U1);
                                 match (
-                                    manifold.parallel_transport(&point, &new_point, &tangent1, &mut transported1),
-                                    manifold.parallel_transport(&point, &new_point, &tangent2, &mut transported2),
+                                    manifold.parallel_transport(&point, &new_point, &tangent1, &mut transported1, &mut workspace),
+                                    manifold.parallel_transport(&point, &new_point, &tangent2, &mut transported2, &mut workspace),
                                 ) {
                                     (Ok(()), Ok(())) => {
                                         match (
@@ -506,7 +511,7 @@ mod tests {
         ) -> bool {
             true
         }
-        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
             result.copy_from(point);
         }
         fn project_tangent(
@@ -514,6 +519,7 @@ mod tests {
             _point: &DVector<f64>,
             vector: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(vector);
             Ok(())
@@ -526,7 +532,7 @@ mod tests {
         ) -> Result<f64> {
             Ok(u.dot(v))
         }
-        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
             result.copy_from(&(point + tangent));
             Ok(())
         }
@@ -535,6 +541,7 @@ mod tests {
             point: &DVector<f64>,
             other: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(&(other - point));
             Ok(())
@@ -544,6 +551,7 @@ mod tests {
             _point: &DVector<f64>,
             euclidean_grad: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(euclidean_grad);
             Ok(())
@@ -551,7 +559,7 @@ mod tests {
         fn random_point(&self) -> DVector<f64> {
             DVector::zeros(self.dim)
         }
-        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
             *result = DVector::zeros(self.dim);
             for elem in result.iter_mut() {
                 *elem = rand::random::<f64>() * 2.0 - 1.0;
@@ -564,6 +572,7 @@ mod tests {
             _to: &DVector<f64>,
             vector: &DVector<f64>,
             result: &mut DVector<f64>,
+            _workspace: &mut Workspace<f64>,
         ) -> Result<()> {
             result.copy_from(vector);
             Ok(())

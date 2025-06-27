@@ -10,6 +10,7 @@ use nalgebra::{DVector, Dyn};
 use riemannopt_core::{
     prelude::*,
     manifold::{Manifold, Point, TangentVector},
+    memory::workspace::Workspace,
     cost_function::{CostFunction, CountingCostFunction},
     optimization::line_search::{BacktrackingLineSearch, LineSearchParams},
     error::{ManifoldError, Result},
@@ -50,7 +51,7 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
         true
     }
 
-    fn project_point(&self, point: &Point<f64, Dyn>, result: &mut Point<f64, Dyn>) {
+    fn project_point(&self, point: &Point<f64, Dyn>, result: &mut Point<f64, Dyn>, _workspace: &mut Workspace<f64>) {
         result.copy_from(point);
     }
 
@@ -59,6 +60,7 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
         _point: &Point<f64, Dyn>,
         vector: &TangentVector<f64, Dyn>,
         result: &mut TangentVector<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         result.copy_from(vector);
         Ok(())
@@ -78,6 +80,7 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
         point: &Point<f64, Dyn>,
         tangent: &TangentVector<f64, Dyn>,
         result: &mut Point<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         *result = point + tangent;
         Ok(())
@@ -88,6 +91,7 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
         point: &Point<f64, Dyn>,
         other: &Point<f64, Dyn>,
         result: &mut TangentVector<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         *result = other - point;
         Ok(())
@@ -98,6 +102,7 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
         _point: &Point<f64, Dyn>,
         euclidean_grad: &TangentVector<f64, Dyn>,
         result: &mut TangentVector<f64, Dyn>,
+        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         result.copy_from(euclidean_grad);
         Ok(())
@@ -107,7 +112,7 @@ impl Manifold<f64, Dyn> for EuclideanManifold {
         DVector::from_fn(self.dim, |_, _| rand::random::<f64>() * 2.0 - 1.0)
     }
 
-    fn random_tangent(&self, _point: &Point<f64, Dyn>, result: &mut TangentVector<f64, Dyn>) -> Result<()> {
+    fn random_tangent(&self, _point: &Point<f64, Dyn>, result: &mut TangentVector<f64, Dyn>, _workspace: &mut Workspace<f64>) -> Result<()> {
         *result = DVector::from_fn(self.dim, |_, _| {
             rand::random::<f64>() * 2.0 - 1.0
         });
@@ -159,11 +164,12 @@ fn gradient_descent(
     println!("Initial cost: {:.6}", cost_fn.cost(&point)?);
     println!();
     
+    let mut workspace = Workspace::new();
     for iter in 0..max_iterations {
         let value = cost_fn.cost(&point)?;
         let euclidean_grad = cost_fn.gradient(&point)?;
         let mut gradient = DVector::zeros(point.len());
-        manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut gradient)?;
+        manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut gradient, &mut workspace)?;
         let grad_norm = manifold.norm(&point, &gradient)?;
         
         if iter % 10 == 0 {
