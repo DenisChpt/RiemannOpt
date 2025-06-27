@@ -11,6 +11,7 @@ use riemannopt_core::{
     manifold::Manifold,
     retraction::{DefaultRetraction, ExponentialRetraction, ProjectionRetraction, Retraction},
     types::DVector,
+    memory::Workspace,
 };
 
 /// Test manifold with multiple retraction implementations
@@ -47,7 +48,7 @@ impl Manifold<f64, Dyn> for RetractionTestManifold {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
             result.copy_from(&(point / norm));
@@ -57,7 +58,7 @@ impl Manifold<f64, Dyn> for RetractionTestManifold {
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         let inner = point.dot(vector);
         result.copy_from(&(vector - point * inner));
         Ok(())
@@ -72,7 +73,7 @@ impl Manifold<f64, Dyn> for RetractionTestManifold {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         // Default to exponential map
         let norm_v = tangent.norm();
         if norm_v < f64::EPSILON {
@@ -85,7 +86,7 @@ impl Manifold<f64, Dyn> for RetractionTestManifold {
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
 
@@ -108,8 +109,9 @@ impl Manifold<f64, Dyn> for RetractionTestManifold {
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -119,17 +121,18 @@ impl Manifold<f64, Dyn> for RetractionTestManifold {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
         let mut result = DVector::zeros(self.dim);
-        self.project_point(&v, &mut result);
+        let mut workspace = Workspace::new();
+        self.project_point(&v, &mut result, &mut workspace);
         result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
         let mut rng = thread_rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v, result)
+        self.project_tangent(point, &v, result, workspace)
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -148,7 +151,8 @@ fn bench_retraction_methods(c: &mut Criterion) {
             .map(|_| {
                 let point = manifold.random_point();
                 let mut tangent = DVector::zeros(dim);
-                manifold.random_tangent(&point, &mut tangent).unwrap();
+                let mut workspace = Workspace::<f64>::new();
+                manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
                 tangent *= 0.1;
                 (point, tangent)
             })
@@ -214,10 +218,11 @@ fn bench_inverse_retraction(c: &mut Criterion) {
             .map(|_| {
                 let point = manifold.random_point();
                 let mut tangent = DVector::zeros(dim);
-                manifold.random_tangent(&point, &mut tangent).unwrap();
+                let mut workspace = Workspace::<f64>::new();
+                manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
                 tangent *= 0.1;
                 let mut other = DVector::zeros(dim);
-                manifold.retract(&point, &tangent, &mut other).unwrap();
+                manifold.retract(&point, &tangent, &mut other, &mut workspace).unwrap();
                 (point, other)
             })
             .collect();
@@ -227,8 +232,9 @@ fn bench_inverse_retraction(c: &mut Criterion) {
             b.iter(|| {
                 let (point, other) = &test_data[idx % test_data.len()];
                 let mut result = DVector::zeros(dim);
+                let mut workspace = Workspace::<f64>::new();
                 manifold
-                    .inverse_retract(black_box(point), black_box(other), &mut result)
+                    .inverse_retract(black_box(point), black_box(other), &mut result, &mut workspace)
                     .unwrap();
                 idx += 1;
                 black_box(result)
@@ -251,7 +257,8 @@ fn bench_retraction_small_steps(c: &mut Criterion) {
             .map(|_| {
                 let point = manifold.random_point();
                 let mut tangent = DVector::zeros(dim);
-                manifold.random_tangent(&point, &mut tangent).unwrap();
+                let mut workspace = Workspace::<f64>::new();
+                manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
                 let tangent_norm = tangent.norm();
                 tangent *= scale / tangent_norm;
                 (point, tangent)
@@ -303,7 +310,8 @@ fn bench_retraction_accuracy(c: &mut Criterion) {
         .map(|_| {
             let point = manifold.random_point();
             let mut tangent = DVector::zeros(dim);
-            manifold.random_tangent(&point, &mut tangent).unwrap();
+            let mut workspace = Workspace::new();
+            manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
             tangent *= 0.01;
             (point, tangent)
         })
@@ -315,10 +323,11 @@ fn bench_retraction_accuracy(c: &mut Criterion) {
         b.iter(|| {
             let mut max_error: f64 = 0.0;
             let mut exact = DVector::zeros(dim);
+            let mut workspace = Workspace::new();
             for (point, tangent) in &test_data {
                 let mut result = DVector::zeros(dim);
                 retraction.retract(&manifold, point, tangent, &mut result).unwrap();
-                manifold.retract(point, tangent, &mut exact).unwrap();
+                manifold.retract(point, tangent, &mut exact, &mut workspace).unwrap();
                 let error = (&result - &exact).norm();
                 max_error = max_error.max(error);
             }
