@@ -233,7 +233,7 @@ where
         // Ensure result has correct size
         let expected_size = self.dim1 + self.dim2;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         let point_f64 = Self::to_f64_vector(point);
@@ -276,7 +276,7 @@ where
         // Ensure result has correct size
         let expected_size = self.dim1 + self.dim2;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         let point_f64 = Self::to_f64_vector(point);
@@ -322,7 +322,7 @@ where
         // Ensure result has correct size
         let expected_size = self.dim1 + self.dim2;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         let point_f64 = Self::to_f64_vector(point);
@@ -354,7 +354,7 @@ where
         // Ensure result has correct size
         let expected_size = self.dim1 + self.dim2;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         let point_f64 = Self::to_f64_vector(point);
@@ -386,7 +386,7 @@ where
         // Ensure result has correct size
         let expected_size = self.dim1 + self.dim2;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         let point_f64 = Self::to_f64_vector(point);
@@ -422,7 +422,7 @@ where
         // Ensure result has correct size
         let expected_size = self.dim1 + self.dim2;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         let point_f64 = Self::to_f64_vector(point);
@@ -458,7 +458,7 @@ where
         // Ensure result has correct size
         let expected_size = self.dim1 + self.dim2;
         if result.len() != expected_size {
-            *result = DVector::zeros(expected_size);
+            result.resize_vertically_mut(expected_size, T::zero());
         }
         
         let from_f64 = Self::to_f64_vector(from);

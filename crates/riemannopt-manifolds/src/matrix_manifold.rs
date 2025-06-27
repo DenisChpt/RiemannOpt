@@ -299,6 +299,11 @@ pub trait MatrixManifold<T: Scalar> {
 ///
 /// This trait provides convenience methods for working with both the vector-based
 /// `Manifold` trait and the matrix-based `MatrixManifold` trait.
+///
+/// # Performance Note
+///
+/// These conversion methods allocate memory. For performance-critical paths,
+/// prefer using the `MatrixManifold` trait directly to avoid conversions.
 pub trait MatrixManifoldExt<T: Scalar> {
     /// Converts a flat vector to a matrix representation.
     fn vector_to_matrix(&self, vector: &[T]) -> DMatrix<T>;
@@ -315,6 +320,11 @@ pub trait MatrixManifoldExt<T: Scalar> {
 /// This macro generates a blanket implementation that handles the vector-matrix conversions
 /// automatically, allowing matrix manifolds to be used seamlessly with the existing
 /// optimization infrastructure.
+///
+/// # Performance Note
+///
+/// The generated implementation involves vector-matrix conversions that allocate memory.
+/// For performance-critical applications, prefer using the `MatrixManifold` trait directly.
 #[macro_export]
 macro_rules! impl_manifold_for_matrix_manifold {
     ($type:ty) => {
@@ -372,7 +382,7 @@ macro_rules! impl_manifold_for_matrix_manifold {
                 workspace: &mut riemannopt_core::memory::Workspace<T>,
             ) {
                 let matrix = self.vector_to_matrix(point.as_slice());
-                let mut result_matrix = nalgebra::DMatrix::zeros(self.nrows(), self.ncols());
+                let mut result_matrix = workspace.acquire_temp_matrix(self.nrows(), self.ncols());
                 MatrixManifold::project_point(self, &matrix, &mut result_matrix, workspace);
                 let result_vec = self.matrix_to_vector(&result_matrix);
                 result.copy_from_slice(&result_vec);
@@ -387,7 +397,7 @@ macro_rules! impl_manifold_for_matrix_manifold {
             ) -> riemannopt_core::error::Result<()> {
                 let point_matrix = self.vector_to_matrix(point.as_slice());
                 let vector_matrix = self.vector_to_matrix(vector.as_slice());
-                let mut result_matrix = nalgebra::DMatrix::zeros(self.nrows(), self.ncols());
+                let mut result_matrix = workspace.acquire_temp_matrix(self.nrows(), self.ncols());
                 MatrixManifold::project_tangent(
                     self,
                     &point_matrix,
@@ -421,7 +431,7 @@ macro_rules! impl_manifold_for_matrix_manifold {
             ) -> riemannopt_core::error::Result<()> {
                 let point_matrix = self.vector_to_matrix(point.as_slice());
                 let tangent_matrix = self.vector_to_matrix(tangent.as_slice());
-                let mut result_matrix = nalgebra::DMatrix::zeros(self.nrows(), self.ncols());
+                let mut result_matrix = workspace.acquire_temp_matrix(self.nrows(), self.ncols());
                 MatrixManifold::retract(
                     self,
                     &point_matrix,
@@ -443,7 +453,7 @@ macro_rules! impl_manifold_for_matrix_manifold {
             ) -> riemannopt_core::error::Result<()> {
                 let point_matrix = self.vector_to_matrix(point.as_slice());
                 let other_matrix = self.vector_to_matrix(other.as_slice());
-                let mut result_matrix = nalgebra::DMatrix::zeros(self.nrows(), self.ncols());
+                let mut result_matrix = workspace.acquire_temp_matrix(self.nrows(), self.ncols());
                 MatrixManifold::inverse_retract(
                     self,
                     &point_matrix,
@@ -465,7 +475,7 @@ macro_rules! impl_manifold_for_matrix_manifold {
             ) -> riemannopt_core::error::Result<()> {
                 let point_matrix = self.vector_to_matrix(point.as_slice());
                 let grad_matrix = self.vector_to_matrix(euclidean_grad.as_slice());
-                let mut result_matrix = nalgebra::DMatrix::zeros(self.nrows(), self.ncols());
+                let mut result_matrix = workspace.acquire_temp_matrix(self.nrows(), self.ncols());
                 MatrixManifold::euclidean_to_riemannian_gradient(
                     self,
                     &point_matrix,
@@ -491,7 +501,7 @@ macro_rules! impl_manifold_for_matrix_manifold {
                 workspace: &mut riemannopt_core::memory::Workspace<T>,
             ) -> riemannopt_core::error::Result<()> {
                 let point_matrix = self.vector_to_matrix(point.as_slice());
-                let mut result_matrix = nalgebra::DMatrix::zeros(self.nrows(), self.ncols());
+                let mut result_matrix = workspace.acquire_temp_matrix(self.nrows(), self.ncols());
                 MatrixManifold::random_tangent(
                     self,
                     &point_matrix,
@@ -514,7 +524,7 @@ macro_rules! impl_manifold_for_matrix_manifold {
                 let from_matrix = self.vector_to_matrix(from.as_slice());
                 let to_matrix = self.vector_to_matrix(to.as_slice());
                 let vector_matrix = self.vector_to_matrix(vector.as_slice());
-                let mut result_matrix = nalgebra::DMatrix::zeros(self.nrows(), self.ncols());
+                let mut result_matrix = workspace.acquire_temp_matrix(self.nrows(), self.ncols());
                 MatrixManifold::parallel_transport(
                     self,
                     &from_matrix,
