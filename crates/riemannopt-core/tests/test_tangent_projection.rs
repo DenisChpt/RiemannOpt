@@ -4,7 +4,7 @@
 //! is an idempotent operation: P(P(v)) = P(v).
 
 use nalgebra::Dyn;
-use riemannopt_core::{error::Result, manifold::Manifold, types::DVector};
+use riemannopt_core::{error::Result, manifold::Manifold, types::DVector, memory::workspace::Workspace};
 
 /// Sphere manifold for testing projections
 #[derive(Debug)]
@@ -40,7 +40,7 @@ impl Manifold<f64, Dyn> for TestSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
             result.copy_from(&(point / norm));
@@ -50,7 +50,7 @@ impl Manifold<f64, Dyn> for TestSphere {
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         // Project vector to tangent space: v - <v, p>p
         let inner = point.dot(vector);
         result.copy_from(vector);
@@ -67,15 +67,15 @@ impl Manifold<f64, Dyn> for TestSphere {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
         result.copy_from(point);
         *result += tangent;
         let temp = result.clone();
-        self.project_point(&temp, result);
+        self.project_point(&temp, result, workspace);
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
 
@@ -99,8 +99,9 @@ impl Manifold<f64, Dyn> for TestSphere {
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -109,16 +110,17 @@ impl Manifold<f64, Dyn> for TestSphere {
             v[i] = rand::random::<f64>() * 2.0 - 1.0;
         }
         let mut result = DVector::zeros(self.dim);
-        self.project_point(&v, &mut result);
+        let mut workspace = Workspace::new();
+        self.project_point(&v, &mut result, &mut workspace);
         result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rand::random::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v, result)
+        self.project_tangent(point, &v, result, workspace)
     }
 }
 
@@ -126,6 +128,7 @@ impl Manifold<f64, Dyn> for TestSphere {
 fn test_projection_idempotent_sphere() {
     let sphere = TestSphere::new(3);
     let tolerance = 1e-14;
+    let mut workspace = Workspace::new();
 
     for _ in 0..20 {
         let point = sphere.random_point();
@@ -139,11 +142,11 @@ fn test_projection_idempotent_sphere() {
 
             // Project once
             let mut projected_once = DVector::zeros(3);
-            sphere.project_tangent(&point, &random_vec, &mut projected_once).unwrap();
+            sphere.project_tangent(&point, &random_vec, &mut projected_once, &mut workspace).unwrap();
 
             // Project twice
             let mut projected_twice = DVector::zeros(3);
-            sphere.project_tangent(&point, &projected_once, &mut projected_twice).unwrap();
+            sphere.project_tangent(&point, &projected_once, &mut projected_twice, &mut workspace).unwrap();
 
             // Check idempotency
             let diff = &projected_twice - &projected_once;
@@ -169,17 +172,18 @@ fn test_projection_idempotent_sphere() {
 fn test_projection_preserves_tangent_vectors() {
     let sphere = TestSphere::new(4);
     let tolerance = 1e-14;
+    let mut workspace = Workspace::new();
 
     for _ in 0..20 {
         let point = sphere.random_point();
 
         // Generate a vector already in tangent space
         let mut tangent = DVector::zeros(4);
-        sphere.random_tangent(&point, &mut tangent).unwrap();
+        sphere.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
 
         // Project it
         let mut projected = DVector::zeros(4);
-        sphere.project_tangent(&point, &tangent, &mut projected).unwrap();
+        sphere.project_tangent(&point, &tangent, &mut projected, &mut workspace).unwrap();
 
         // Should be unchanged
         let diff = &projected - &tangent;
@@ -197,6 +201,7 @@ fn test_projection_preserves_tangent_vectors() {
 fn test_projection_orthogonality() {
     let sphere = TestSphere::new(3);
     let tolerance = 1e-14;
+    let mut workspace = Workspace::new();
 
     for _ in 0..20 {
         let point = sphere.random_point();
@@ -209,7 +214,7 @@ fn test_projection_orthogonality() {
 
         // Project it
         let mut projected = DVector::zeros(3);
-        sphere.project_tangent(&point, &v, &mut projected).unwrap();
+        sphere.project_tangent(&point, &v, &mut projected, &mut workspace).unwrap();
 
         // The difference (v - P(v)) should be parallel to the point
         let diff = &v - &projected;
@@ -245,6 +250,7 @@ fn test_projection_orthogonality() {
 fn test_projection_linearity() {
     let sphere = TestSphere::new(5);
     let tolerance = 1e-14;
+    let mut workspace = Workspace::new();
 
     let point = sphere.random_point();
 
@@ -262,12 +268,12 @@ fn test_projection_linearity() {
     // P(αu + βv) = αP(u) + βP(v)
     let combined = u.clone() * alpha + v.clone() * beta;
     let mut proj_combined = DVector::zeros(5);
-    sphere.project_tangent(&point, &combined, &mut proj_combined).unwrap();
+    sphere.project_tangent(&point, &combined, &mut proj_combined, &mut workspace).unwrap();
 
     let mut proj_u = DVector::zeros(5);
-    sphere.project_tangent(&point, &u, &mut proj_u).unwrap();
+    sphere.project_tangent(&point, &u, &mut proj_u, &mut workspace).unwrap();
     let mut proj_v = DVector::zeros(5);
-    sphere.project_tangent(&point, &v, &mut proj_v).unwrap();
+    sphere.project_tangent(&point, &v, &mut proj_v, &mut workspace).unwrap();
     let linear_combination = proj_u * alpha + proj_v * beta;
 
     let diff = &proj_combined - &linear_combination;
@@ -284,6 +290,7 @@ fn test_projection_linearity() {
 fn test_projection_dimension_reduction() {
     // On an n-sphere, the tangent space has dimension n-1
     let sphere = TestSphere::new(4); // 3-sphere in R^4
+    let mut workspace = Workspace::new();
 
     // Use a fixed point to make the test deterministic
     let mut point = DVector::zeros(4);
@@ -301,7 +308,7 @@ fn test_projection_dimension_reduction() {
     let mut projected: Vec<DVector<f64>> = Vec::new();
     for v in &vectors {
         let mut proj = DVector::zeros(4);
-        sphere.project_tangent(&point, v, &mut proj).unwrap();
+        sphere.project_tangent(&point, v, &mut proj, &mut workspace).unwrap();
         projected.push(proj);
     }
 
@@ -321,19 +328,20 @@ fn test_projection_dimension_reduction() {
 fn test_projection_multiple_iterations() {
     let sphere = TestSphere::new(3);
     let tolerance = 1e-14;
+    let mut workspace = Workspace::new();
 
     let point = sphere.random_point();
     let v = DVector::from_vec(vec![1.0, 2.0, 3.0]);
 
     // Project multiple times
     let mut p1 = DVector::zeros(3);
-    sphere.project_tangent(&point, &v, &mut p1).unwrap();
+    sphere.project_tangent(&point, &v, &mut p1, &mut workspace).unwrap();
     let mut p2 = DVector::zeros(3);
-    sphere.project_tangent(&point, &p1, &mut p2).unwrap();
+    sphere.project_tangent(&point, &p1, &mut p2, &mut workspace).unwrap();
     let mut p3 = DVector::zeros(3);
-    sphere.project_tangent(&point, &p2, &mut p3).unwrap();
+    sphere.project_tangent(&point, &p2, &mut p3, &mut workspace).unwrap();
     let mut p4 = DVector::zeros(3);
-    sphere.project_tangent(&point, &p3, &mut p4).unwrap();
+    sphere.project_tangent(&point, &p3, &mut p4, &mut workspace).unwrap();
 
     // All should be equal after first projection
     assert!((p1 - &p2).norm() < tolerance, "P != P²");
@@ -344,12 +352,13 @@ fn test_projection_multiple_iterations() {
 #[test]
 fn test_projection_zero_vector() {
     let sphere = TestSphere::new(3);
+    let mut workspace = Workspace::new();
 
     let point = sphere.random_point();
     let zero = DVector::zeros(3);
 
     let mut projected = DVector::zeros(3);
-    sphere.project_tangent(&point, &zero, &mut projected).unwrap();
+    sphere.project_tangent(&point, &zero, &mut projected, &mut workspace).unwrap();
 
     assert!(
         projected.norm() < 1e-15,
@@ -362,12 +371,13 @@ fn test_projection_zero_vector() {
 fn test_projection_normal_vector() {
     let sphere = TestSphere::new(3);
     let tolerance = 1e-14;
+    let mut workspace = Workspace::new();
 
     let point = sphere.random_point();
 
     // The point itself is normal to the tangent space
     let mut projected = DVector::zeros(3);
-    sphere.project_tangent(&point, &point, &mut projected).unwrap();
+    sphere.project_tangent(&point, &point, &mut projected, &mut workspace).unwrap();
 
     assert!(
         projected.norm() < tolerance,

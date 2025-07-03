@@ -10,6 +10,7 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::Result,
     manifold::Manifold,
+    memory::Workspace,
     retraction::{DefaultRetraction, Retraction},
     types::{DMatrix, DVector},
 };
@@ -49,7 +50,7 @@ impl Manifold<f64, Dyn> for TestSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
             *result = point / norm;
@@ -59,7 +60,7 @@ impl Manifold<f64, Dyn> for TestSphere {
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         let inner = point.dot(vector);
         *result = vector - point * inner;
         Ok(())
@@ -74,7 +75,7 @@ impl Manifold<f64, Dyn> for TestSphere {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         // Exponential map on sphere
         let norm_v = tangent.norm();
         if norm_v < f64::EPSILON {
@@ -87,7 +88,7 @@ impl Manifold<f64, Dyn> for TestSphere {
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
 
@@ -110,8 +111,9 @@ impl Manifold<f64, Dyn> for TestSphere {
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -121,17 +123,18 @@ impl Manifold<f64, Dyn> for TestSphere {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
         let mut result = DVector::zeros(self.dim);
-        self.project_point(&v, &mut result);
+        let mut workspace = Workspace::new();
+        self.project_point(&v, &mut result, &mut workspace);
         result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
         let mut rng = thread_rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v, result)
+        self.project_tangent(point, &v, result, workspace)
     }
 
     fn parallel_transport(
@@ -140,8 +143,9 @@ impl Manifold<f64, Dyn> for TestSphere {
         to: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
-        self.project_tangent(to, vector, result)
+        self.project_tangent(to, vector, result, workspace)
     }
 }
 
@@ -279,7 +283,7 @@ where
     let cost = cost_fn.cost_and_gradient(point, workspace, euclidean_grad)?;
 
     // Convert to Riemannian gradient
-    manifold.euclidean_to_riemannian_gradient(point, euclidean_grad, riemannian_grad)?;
+    manifold.euclidean_to_riemannian_gradient(point, euclidean_grad, riemannian_grad, workspace)?;
     let gradient_norm = manifold
         .inner_product(point, riemannian_grad, riemannian_grad)?
         .sqrt();
@@ -578,14 +582,16 @@ fn bench_hot_paths(c: &mut Criterion) {
         let (_, euclidean_grad) = cost_fn.cost_and_gradient_alloc(&point).unwrap();
         b.iter(|| {
             let mut riemannian_grad = DVector::zeros(point.len());
-            manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad).unwrap();
+            let mut workspace = Workspace::<f64>::new();
+            manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad, &mut workspace).unwrap();
             black_box(riemannian_grad)
         });
     });
 
     group.bench_function("retraction", |b| {
         let mut tangent = DVector::zeros(point.len());
-        manifold.random_tangent(&point, &mut tangent).unwrap();
+        let mut workspace = Workspace::new();
+        manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         tangent *= 0.01;
         b.iter(|| {
             let mut new_point = DVector::zeros(point.len());
@@ -597,8 +603,9 @@ fn bench_hot_paths(c: &mut Criterion) {
     group.bench_function("inner_product", |b| {
         let mut u = DVector::zeros(point.len());
         let mut v = DVector::zeros(point.len());
-        manifold.random_tangent(&point, &mut u).unwrap();
-        manifold.random_tangent(&point, &mut v).unwrap();
+        let mut workspace = Workspace::new();
+        manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
         b.iter(|| {
             let result = manifold.inner_product(&point, &u, &v).unwrap();
             black_box(result)

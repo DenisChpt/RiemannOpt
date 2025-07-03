@@ -6,7 +6,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nalgebra::Dyn;
 use rand::prelude::*;
-use riemannopt_core::{error::Result, manifold::Manifold, types::DVector};
+use riemannopt_core::{error::Result, manifold::Manifold, memory::Workspace, types::DVector};
 
 /// Simple sphere manifold for benchmarking
 #[derive(Debug)]
@@ -42,7 +42,7 @@ impl Manifold<f64, Dyn> for BenchSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
             result.copy_from(&(point / norm));
@@ -52,7 +52,7 @@ impl Manifold<f64, Dyn> for BenchSphere {
         }
     }
 
-    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         let inner = point.dot(vector);
         result.copy_from(&(vector - point * inner));
         Ok(())
@@ -67,7 +67,7 @@ impl Manifold<f64, Dyn> for BenchSphere {
         Ok(u.dot(v))
     }
 
-    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         // Exponential map on sphere
         let norm_v = tangent.norm();
         if norm_v < f64::EPSILON {
@@ -80,7 +80,7 @@ impl Manifold<f64, Dyn> for BenchSphere {
         Ok(())
     }
 
-    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn inverse_retract(&self, point: &DVector<f64>, other: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         let inner = point.dot(other).min(1.0).max(-1.0);
         let theta = inner.acos();
 
@@ -103,8 +103,9 @@ impl Manifold<f64, Dyn> for BenchSphere {
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -114,17 +115,18 @@ impl Manifold<f64, Dyn> for BenchSphere {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
         let mut result = DVector::zeros(self.dim);
-        self.project_point(&v, &mut result);
+        let mut workspace = Workspace::new();
+        self.project_point(&v, &mut result, &mut workspace);
         result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
         let mut rng = thread_rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v, result)
+        self.project_tangent(point, &v, result, workspace)
     }
 
     fn parallel_transport(
@@ -133,8 +135,9 @@ impl Manifold<f64, Dyn> for BenchSphere {
         to: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> Result<()> {
-        self.project_tangent(to, vector, result)
+        self.project_tangent(to, vector, result, workspace)
     }
 }
 
@@ -153,8 +156,9 @@ fn bench_point_projection(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("sphere", dim), &dim, |b, _| {
             let mut idx = 0;
             let mut result = DVector::zeros(dim);
+            let mut workspace = Workspace::new();
             b.iter(|| {
-                sphere.project_point(black_box(&points[idx % points.len()]), &mut result);
+                sphere.project_point(black_box(&points[idx % points.len()]), &mut result, &mut workspace);
                 idx += 1;
                 black_box(result.clone())
             });
@@ -182,10 +186,11 @@ fn bench_tangent_projection(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("sphere", dim), &dim, |b, _| {
             let mut idx = 0;
             let mut result = DVector::zeros(dim);
+            let mut workspace = Workspace::new();
             b.iter(|| {
                 let (point, vector) = &test_data[idx % test_data.len()];
                 sphere
-                    .project_tangent(black_box(point), black_box(vector), &mut result)
+                    .project_tangent(black_box(point), black_box(vector), &mut result, &mut workspace)
                     .unwrap();
                 idx += 1;
                 black_box(result.clone())
@@ -208,8 +213,9 @@ fn bench_inner_product(c: &mut Criterion) {
                 let point = sphere.random_point();
                 let mut u = DVector::zeros(dim);
                 let mut v = DVector::zeros(dim);
-                sphere.random_tangent(&point, &mut u).unwrap();
-                sphere.random_tangent(&point, &mut v).unwrap();
+                let mut workspace = Workspace::new();
+                sphere.random_tangent(&point, &mut u, &mut workspace).unwrap();
+                sphere.random_tangent(&point, &mut v, &mut workspace).unwrap();
                 (point, u, v)
             })
             .collect();
@@ -248,10 +254,11 @@ fn bench_gradient_conversion(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("sphere", dim), &dim, |b, _| {
             let mut idx = 0;
             let mut result = DVector::zeros(dim);
+            let mut workspace = Workspace::new();
             b.iter(|| {
                 let (point, grad) = &test_data[idx % test_data.len()];
                 sphere
-                    .euclidean_to_riemannian_gradient(black_box(point), black_box(grad), &mut result)
+                    .euclidean_to_riemannian_gradient(black_box(point), black_box(grad), &mut result, &mut workspace)
                     .unwrap();
                 idx += 1;
                 black_box(result.clone())
@@ -276,7 +283,8 @@ fn bench_manifold_checks(c: &mut Criterion) {
             .iter()
             .map(|p| {
                 let mut tangent = DVector::zeros(dim);
-                sphere.random_tangent(p, &mut tangent).unwrap();
+                let mut workspace = Workspace::new();
+                sphere.random_tangent(p, &mut tangent, &mut workspace).unwrap();
                 (p.clone(), tangent)
             })
             .collect();
@@ -326,12 +334,13 @@ fn bench_parallel_transport(c: &mut Criterion) {
             .map(|_| {
                 let from = sphere.random_point();
                 let mut direction = DVector::zeros(dim);
-                sphere.random_tangent(&from, &mut direction).unwrap();
+                let mut workspace = Workspace::new();
+                sphere.random_tangent(&from, &mut direction, &mut workspace).unwrap();
                 direction *= 0.1;
                 let mut to = DVector::zeros(dim);
-                sphere.retract(&from, &direction, &mut to).unwrap();
+                sphere.retract(&from, &direction, &mut to, &mut workspace).unwrap();
                 let mut vector = DVector::zeros(dim);
-                sphere.random_tangent(&from, &mut vector).unwrap();
+                sphere.random_tangent(&from, &mut vector, &mut workspace).unwrap();
                 (from, to, vector)
             })
             .collect();
@@ -339,10 +348,11 @@ fn bench_parallel_transport(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("sphere", dim), &dim, |b, _| {
             let mut idx = 0;
             let mut result = DVector::zeros(dim);
+            let mut workspace = Workspace::new();
             b.iter(|| {
                 let (from, to, vector) = &test_data[idx % test_data.len()];
                 sphere
-                    .parallel_transport(black_box(from), black_box(to), black_box(vector), &mut result)
+                    .parallel_transport(black_box(from), black_box(to), black_box(vector), &mut result, &mut workspace)
                     .unwrap();
                 idx += 1;
                 black_box(result.clone())

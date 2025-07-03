@@ -92,7 +92,7 @@ pub fn can_use_specialized_stiefel(n: usize, p: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+        
     #[test]
     fn test_project_tangent_stiefel_3_2() {
         // Create an orthonormal matrix X in St(3,2)

@@ -7,6 +7,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use nalgebra::Dyn;
 use riemannopt_core::{
     manifold::Manifold,
+    memory::Workspace,
     optimizer_state::{AdamState, LBFGSState, MomentumState},
     types::DVector,
 };
@@ -45,7 +46,7 @@ impl Manifold<f64, Dyn> for MemoryTestSphere {
         point.dot(vector).abs() < tol
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
             result.copy_from(&(point / norm));
@@ -60,6 +61,7 @@ impl Manifold<f64, Dyn> for MemoryTestSphere {
         point: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         let inner = point.dot(vector);
         result.copy_from(&(vector - point * inner));
@@ -80,9 +82,10 @@ impl Manifold<f64, Dyn> for MemoryTestSphere {
         point: &DVector<f64>,
         tangent: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         let new_point = point + tangent;
-        self.project_point(&new_point, result);
+        self.project_point(&new_point, result, workspace);
         Ok(())
     }
 
@@ -91,9 +94,10 @@ impl Manifold<f64, Dyn> for MemoryTestSphere {
         point: &DVector<f64>,
         other: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         let diff = other - point;
-        self.project_tangent(point, &diff, result)
+        self.project_tangent(point, &diff, result, workspace)
     }
 
     fn euclidean_to_riemannian_gradient(
@@ -101,8 +105,9 @@ impl Manifold<f64, Dyn> for MemoryTestSphere {
         point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
-        self.project_tangent(point, euclidean_grad, result)
+        self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
     fn random_point(&self) -> DVector<f64> {
@@ -113,18 +118,19 @@ impl Manifold<f64, Dyn> for MemoryTestSphere {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
         let mut result = DVector::zeros(self.dim);
-        self.project_point(&v, &mut result);
+        let mut workspace = Workspace::new();
+        self.project_point(&v, &mut result, &mut workspace);
         result
     }
 
-    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> riemannopt_core::error::Result<()> {
+    fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> riemannopt_core::error::Result<()> {
         use rand::prelude::*;
         let mut rng = thread_rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        self.project_tangent(point, &v, result)
+        self.project_tangent(point, &v, result, workspace)
     }
 }
 
@@ -145,9 +151,10 @@ fn bench_allocation_patterns(c: &mut Criterion) {
 
                 let mut idx = 0;
                 let mut result = DVector::zeros(dim);
+                let mut workspace = Workspace::new();
                 b.iter(|| {
                     // This allocates a new vector each time
-                    sphere.project_point(black_box(&points[idx % points.len()]), &mut result);
+                    sphere.project_point(black_box(&points[idx % points.len()]), &mut result, &mut workspace);
                     idx += 1;
                     black_box(result.clone())
                 });
@@ -163,7 +170,8 @@ fn bench_allocation_patterns(c: &mut Criterion) {
                 let tangents: Vec<DVector<f64>> = (0..10)
                     .map(|_| {
                         let mut tangent = DVector::zeros(dim);
-                        sphere.random_tangent(&point, &mut tangent).unwrap();
+                        let mut workspace = Workspace::new();
+                        sphere.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
                         tangent * 0.01
                     })
                     .collect();
@@ -266,7 +274,8 @@ fn bench_batch_operations(c: &mut Criterion) {
             .iter()
             .map(|p| {
                 let mut tangent = DVector::zeros(dim);
-                sphere.random_tangent(p, &mut tangent).unwrap();
+                let mut workspace = Workspace::new();
+                sphere.random_tangent(p, &mut tangent, &mut workspace).unwrap();
                 tangent * 0.1
             })
             .collect();
@@ -282,7 +291,8 @@ fn bench_batch_operations(c: &mut Criterion) {
                         .zip(tangents.iter())
                         .map(|(p, t)| {
                             let mut result = DVector::zeros(dim);
-                            sphere.retract(p, t, &mut result).unwrap();
+                            let mut workspace = Workspace::new();
+                            sphere.retract(p, t, &mut result, &mut workspace).unwrap();
                             result
                         })
                         .collect();
@@ -300,7 +310,8 @@ fn bench_batch_operations(c: &mut Criterion) {
                     let mut results = Vec::with_capacity(batch_size);
                     for (p, t) in points.iter().zip(tangents.iter()) {
                         let mut result = DVector::zeros(dim);
-                        sphere.retract(p, t, &mut result).unwrap();
+                        let mut workspace = Workspace::new();
+                        sphere.retract(p, t, &mut result, &mut workspace).unwrap();
                         results.push(result);
                     }
                     black_box(results)
@@ -326,8 +337,9 @@ fn bench_temporary_allocations(c: &mut Criterion) {
         b.iter(|| {
             // This creates temporaries: point * inner
             let mut result = DVector::zeros(dim);
+            let mut workspace = Workspace::new();
             sphere
-                .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut result)
+                .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut result, &mut workspace)
                 .unwrap();
             black_box(result)
         });
@@ -337,8 +349,9 @@ fn bench_temporary_allocations(c: &mut Criterion) {
     group.bench_function("chained_operations", |b| {
         let mut v1 = DVector::zeros(dim);
         let mut v2 = DVector::zeros(dim);
-        sphere.random_tangent(&point, &mut v1).unwrap();
-        sphere.random_tangent(&point, &mut v2).unwrap();
+        let mut workspace = Workspace::new();
+        sphere.random_tangent(&point, &mut v1, &mut workspace).unwrap();
+        sphere.random_tangent(&point, &mut v2, &mut workspace).unwrap();
 
         b.iter(|| {
             // Multiple temporaries created
