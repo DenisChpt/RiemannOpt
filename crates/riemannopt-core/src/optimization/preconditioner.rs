@@ -75,7 +75,7 @@ where
     T: Scalar,
 {
     /// Diagonal scaling factors
-    diagonal: TV,
+    _diagonal: TV,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -98,7 +98,7 @@ where
     /// Creates a new diagonal preconditioner with the given diagonal.
     pub fn new(diagonal: TV) -> Self {
         Self { 
-            diagonal,
+            _diagonal: diagonal,
             _phantom: std::marker::PhantomData,
         }
     }

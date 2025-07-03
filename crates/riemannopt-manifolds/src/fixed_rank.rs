@@ -894,6 +894,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DVector;
+    use riemannopt_core::memory::workspace::Workspace;
 
     fn create_test_manifold() -> FixedRank {
         FixedRank::new(6, 4, 2).unwrap()
@@ -906,7 +907,7 @@ mod tests {
         assert_eq!(m, 6);
         assert_eq!(n, 4);
         assert_eq!(k, 2);
-        assert_eq!(manifold.dimension(), 16); // 2*(6+4-2)
+        assert_eq!(<FixedRank as Manifold<f64>>::dimension(&manifold), 16); // 2*(6+4-2)
         
         // Test invalid creation
         assert!(FixedRank::new(0, 4, 2).is_err());
@@ -939,7 +940,7 @@ mod tests {
         
         let point = manifold.random_point();
         let mut projected = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         manifold.project_point(&point, &mut projected, &mut workspace);
         
         assert!(manifold.is_point_on_manifold(&projected, 1e-6));
@@ -952,12 +953,12 @@ mod tests {
         let point = manifold.random_point();
         let vector = DVector::<f64>::from_vec(vec![0.1; manifold.vector_size()]);
         let mut tangent = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         manifold.project_tangent(&point, &vector, &mut tangent, &mut workspace).unwrap();
         
         // Check that projection is idempotent
         let mut tangent2 = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         manifold.project_tangent(&point, &tangent, &mut tangent2, &mut workspace).unwrap();
         assert_relative_eq!(&tangent, &tangent2, epsilon = 1e-10);
     }
@@ -968,11 +969,11 @@ mod tests {
         
         let point = manifold.random_point();
         let mut tangent = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         let scaled_tangent = 0.1 * &tangent;
         let mut retracted = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         manifold.retract(&point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
         
         assert!(manifold.is_point_on_manifold(&retracted, 1e-6));
@@ -982,9 +983,9 @@ mod tests {
     fn test_fixed_rank_properties() {
         let manifold = create_test_manifold();
         
-        assert_eq!(manifold.name(), "FixedRank");
-        assert!(!manifold.has_exact_exp_log());
-        assert!(!manifold.is_flat());
+        assert_eq!(<FixedRank as Manifold<f64>>::name(&manifold), "FixedRank");
+        assert!(!<FixedRank as Manifold<f64>>::has_exact_exp_log(&manifold));
+        assert!(!<FixedRank as Manifold<f64>>::is_flat(&manifold));
     }
 
     #[test]
@@ -994,7 +995,7 @@ mod tests {
         let point = manifold.random_point();
         let mut u = DVector::zeros(manifold.vector_size());
         let mut v = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
         manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
         
@@ -1048,7 +1049,7 @@ mod tests {
     #[test]
     fn test_fixed_rank_distance() {
         let manifold = create_test_manifold();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         let x = manifold.random_point();
         let y = manifold.random_point();

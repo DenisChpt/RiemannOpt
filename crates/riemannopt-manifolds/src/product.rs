@@ -69,8 +69,8 @@
 //! use nalgebra::DVector;
 //!
 //! // Create S² × St(5,2) - sphere and Stiefel manifold
-//! let sphere = Sphere::new(3)?;
-//! let stiefel = Stiefel::new(5, 2)?;
+//! let sphere = Sphere::<f64>::new(3)?;
+//! let stiefel = Stiefel::<f64>::new(5, 2)?;
 //! let product = Product::new(vec![Box::new(sphere), Box::new(stiefel)]);
 //!
 //! // Points are concatenated vectors
@@ -82,8 +82,6 @@
 //! ```
 
 use nalgebra::DVector;
-use num_traits::Float;
-use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
@@ -137,8 +135,8 @@ impl Product {
     ///
     /// ```rust
     /// # use riemannopt_manifolds::{Product, Sphere, SPD};
-    /// let sphere = Sphere::new(3).unwrap();
-    /// let spd = SPD::new(2).unwrap();
+    /// let sphere = Sphere::<f64>::new(3).unwrap();
+    /// let spd = SPD::<f64>::new(2).unwrap();
     /// let product = Product::new(vec![Box::new(sphere), Box::new(spd)]);
     /// ```
     pub fn new(manifolds: Vec<Box<dyn Manifold<f64, Point = DVector<f64>, TangentVector = DVector<f64>>>>) -> Self {
@@ -380,7 +378,7 @@ impl<T: Scalar> Manifold<T> for Product {
 
         if let Ok(components) = self.split_vector(&padded_point, None) {
             let mut projected_components = Vec::with_capacity(self.manifolds.len());
-            let mut workspace_f64 = Workspace::new();
+            let mut workspace_f64 = Workspace::<f64>::new();
             
             for (comp, manifold) in components.iter().zip(self.manifolds.iter()) {
                 let mut proj_comp = comp.clone();
@@ -420,7 +418,7 @@ impl<T: Scalar> Manifold<T> for Product {
         let vector_comps = self.split_vector(&vector_f64, None)?;
 
         let mut projected_components = Vec::with_capacity(self.manifolds.len());
-        let mut workspace_f64 = Workspace::new();
+        let mut workspace_f64 = Workspace::<f64>::new();
 
         for ((p, v), manifold) in point_comps.iter()
             .zip(vector_comps.iter())
@@ -495,7 +493,7 @@ impl<T: Scalar> Manifold<T> for Product {
         let tangent_comps = self.split_vector(&tangent_f64, None)?;
 
         let mut retracted_components = Vec::with_capacity(self.manifolds.len());
-        let mut workspace_f64 = Workspace::new();
+        let mut workspace_f64 = Workspace::<f64>::new();
 
         for ((p, t), manifold) in point_comps.iter()
             .zip(tangent_comps.iter())
@@ -537,7 +535,7 @@ impl<T: Scalar> Manifold<T> for Product {
         let other_comps = self.split_vector(&other_f64, None)?;
 
         let mut tangent_components = Vec::with_capacity(self.manifolds.len());
-        let mut workspace_f64 = Workspace::new();
+        let mut workspace_f64 = Workspace::<f64>::new();
 
         for ((p, o), manifold) in point_comps.iter()
             .zip(other_comps.iter())
@@ -579,7 +577,7 @@ impl<T: Scalar> Manifold<T> for Product {
         let grad_comps = self.split_vector(&grad_f64, None)?;
 
         let mut rgrad_components = Vec::with_capacity(self.manifolds.len());
-        let mut workspace_f64 = Workspace::new();
+        let mut workspace_f64 = Workspace::<f64>::new();
 
         for ((p, g), manifold) in point_comps.iter()
             .zip(grad_comps.iter())
@@ -623,7 +621,7 @@ impl<T: Scalar> Manifold<T> for Product {
         let point_comps = self.split_vector(&point_f64, None)?;
 
         let mut tangent_components = Vec::with_capacity(self.manifolds.len());
-        let mut workspace_f64 = Workspace::new();
+        let mut workspace_f64 = Workspace::<f64>::new();
 
         for (p, manifold) in point_comps.iter().zip(self.manifolds.iter()) {
             let mut tan = DVector::zeros(p.len());
@@ -651,7 +649,7 @@ impl<T: Scalar> Manifold<T> for Product {
         let y_comps = self.split_vector(&y_f64, None)?;
 
         let mut dist_sq = 0.0;
-        let mut workspace_f64 = Workspace::new();
+        let mut workspace_f64 = Workspace::<f64>::new();
 
         for ((x_i, y_i), manifold) in x_comps.iter()
             .zip(y_comps.iter())
@@ -693,7 +691,7 @@ impl<T: Scalar> Manifold<T> for Product {
         let vector_comps = self.split_vector(&vector_f64, None)?;
 
         let mut transported_components = Vec::with_capacity(self.manifolds.len());
-        let mut workspace_f64 = Workspace::new();
+        let mut workspace_f64 = Workspace::<f64>::new();
 
         for (((f, t), v), manifold) in from_comps.iter()
             .zip(to_comps.iter())
@@ -725,20 +723,21 @@ pub type ProductManifold = Product;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Sphere, SPD};
+    use crate::Sphere;
     use approx::assert_relative_eq;
+    use riemannopt_core::memory::workspace::Workspace;
 
     fn create_test_product() -> Product {
-        let sphere = Sphere::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
-        Product::new(vec![Box::new(sphere), Box::new(spd)])
+        let sphere1 = Sphere::<f64>::new(3).unwrap();
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
+        Product::new(vec![Box::new(sphere1), Box::new(sphere2)])
     }
 
     #[test]
     fn test_product_creation() {
         let product = create_test_product();
         assert_eq!(product.num_components(), 2);
-        assert_eq!(product.dimension(), 2 + 3); // S^2 dim=2, SPD(2) dim=3
+        assert_eq!(<Product as Manifold<f64>>::dimension(&product), 2 + 3); // S^2 dim=2, S^3 dim=3
     }
 
     #[test]
@@ -747,7 +746,7 @@ mod tests {
         let point = product.random_point();
         
         // Split and recombine
-        let components = product.split_vector(&point, None).unwrap();
+        let components = product.split_vector::<f64>(&point, None).unwrap();
         assert_eq!(components.len(), 2);
         
         let recombined = product.combine_vectors(&components).unwrap();
@@ -757,20 +756,20 @@ mod tests {
     #[test]
     fn test_product_operations() {
         let product = create_test_product();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         // Test point validation
         let point = product.random_point();
         assert!(product.is_point_on_manifold(&point, 1e-6));
         
         // Test tangent projection
-        let mut tangent = DVector::zeros(product.dimension());
+        let mut tangent = DVector::zeros(<Product as Manifold<f64>>::dimension(&product));
         product.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         assert!(product.is_vector_in_tangent_space(&point, &tangent, 1e-6));
         
         // Test retraction
         let scaled_tangent = tangent * 0.1;
-        let mut retracted = DVector::zeros(product.dimension());
+        let mut retracted = DVector::zeros(<Product as Manifold<f64>>::dimension(&product));
         product.retract(&point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
         assert!(product.is_point_on_manifold(&retracted, 1e-6));
     }
@@ -778,11 +777,11 @@ mod tests {
     #[test]
     fn test_product_inner_product() {
         let product = create_test_product();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         let point = product.random_point();
-        let mut u = DVector::zeros(product.dimension());
-        let mut v = DVector::zeros(product.dimension());
+        let mut u = DVector::zeros(<Product as Manifold<f64>>::dimension(&product));
+        let mut v = DVector::zeros(<Product as Manifold<f64>>::dimension(&product));
         product.random_tangent(&point, &mut u, &mut workspace).unwrap();
         product.random_tangent(&point, &mut v, &mut workspace).unwrap();
         
@@ -796,7 +795,7 @@ mod tests {
     #[test]
     fn test_product_distance() {
         let product = create_test_product();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         let x = product.random_point();
         let y = product.random_point();
@@ -816,14 +815,13 @@ mod tests {
 
     #[test]
     fn test_product_properties() {
-        let sphere = Sphere::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
+        let sphere = Sphere::<f64>::new(3).unwrap();
         
         // Flat components
         let flat_prod = Product::new(vec![Box::new(sphere)]);
-        assert!(!flat_prod.is_flat()); // Sphere is not flat
+        assert!(!<Product as Manifold<f64>>::is_flat(&flat_prod)); // Sphere is not flat
         
         // Has exact exp/log
-        assert!(!flat_prod.has_exact_exp_log()); // Sphere doesn't have exact exp/log
+        assert!(!<Product as Manifold<f64>>::has_exact_exp_log(&flat_prod)); // Sphere doesn't have exact exp/log
     }
 }

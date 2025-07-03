@@ -61,13 +61,13 @@
 //! use riemannopt_core::memory::workspace::Workspace;
 //!
 //! // Create S² × St(5,2) statically
-//! let sphere = Sphere::new(3)?;
-//! let stiefel = Stiefel::new(5, 2)?;
+//! let sphere = Sphere::<f64>::new(3)?;
+//! let stiefel = Stiefel::<f64>::new(5, 2)?;
 //! let product = ProductStatic::new(sphere, stiefel);
 //!
 //! // Operations are fully type-safe and optimized
 //! let x = product.random_point();
-//! let mut workspace = Workspace::new();
+//! let mut workspace = Workspace::<f64>::new();
 //!
 //! // Access components directly
 //! let (x1, x2) = product.split_point(&x)?;
@@ -142,9 +142,9 @@ where
     ///
     /// ```rust
     /// # use riemannopt_manifolds::{ProductStatic, Sphere, SPD};
-    /// let sphere = Sphere::new(3).unwrap();
-    /// let spd = SPD::new(2).unwrap();
-    /// let product = ProductStatic::new(sphere, spd);
+    /// let sphere = Sphere::<f64>::new(3).unwrap();
+    /// let sphere2 = Sphere::<f64>::new(4).unwrap();
+    /// let product = ProductStatic::new(sphere, sphere2);
     /// ```
     pub fn new(manifold1: M1, manifold2: M2) -> Self {
         // Get dimensions by creating test points
@@ -655,8 +655,8 @@ where
 /// ```rust
 /// use riemannopt_manifolds::{product_static, Sphere, Stiefel};
 /// 
-/// let sphere = Sphere::new(3).unwrap();
-/// let stiefel = Stiefel::new(4, 2).unwrap();
+/// let sphere = Sphere::<f64>::new(3).unwrap();
+/// let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
 /// let product = product_static(sphere, stiefel);
 /// ```
 pub fn product_static<T, M1, M2>(manifold1: M1, manifold2: M2) -> ProductStatic<T, M1, M2>
@@ -677,24 +677,25 @@ pub use product_static as product;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Sphere, SPD};
+    use crate::Sphere;
     use approx::assert_relative_eq;
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_product_static_creation() {
-        let sphere = Sphere::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
-        let product = ProductStatic::new(sphere, spd);
+        let sphere = Sphere::<f64>::new(3).unwrap();
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
+        let product = ProductStatic::new(sphere, sphere2);
         
-        assert_eq!(product.component_dimensions(), (3, 3));
-        assert_eq!(product.dimension(), 2 + 3); // S^2 + SPD(2)
+        assert_eq!(product.component_dimensions(), (3, 4));
+        assert_eq!(product.dimension(), 2 + 3); // S^2 + S^3
     }
 
     #[test]
     fn test_split_combine() {
-        let sphere = Sphere::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
-        let product = ProductStatic::new(sphere, spd);
+        let sphere = Sphere::<f64>::new(3).unwrap();
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
+        let product = ProductStatic::new(sphere, sphere2);
         
         let point = product.random_point();
         
@@ -709,10 +710,10 @@ mod tests {
 
     #[test]
     fn test_product_static_operations() {
-        let sphere = Sphere::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
-        let product = ProductStatic::new(sphere, spd);
-        let mut workspace = Workspace::new();
+        let sphere = Sphere::<f64>::new(3).unwrap();
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
+        let product = ProductStatic::new(sphere, sphere2);
+        let mut workspace = Workspace::<f64>::new();
         
         // Test point validation
         let point = product.random_point();
@@ -732,10 +733,10 @@ mod tests {
 
     #[test]
     fn test_product_static_inner_product() {
-        let sphere = Sphere::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
-        let product = ProductStatic::new(sphere, spd);
-        let mut workspace = Workspace::new();
+        let sphere = Sphere::<f64>::new(3).unwrap();
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
+        let product = ProductStatic::new(sphere, sphere2);
+        let mut workspace = Workspace::<f64>::new();
         
         let point = product.random_point();
         let mut u = DVector::zeros(product.total_dim);
@@ -752,10 +753,10 @@ mod tests {
 
     #[test]
     fn test_product_static_distance() {
-        let sphere = Sphere::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
-        let product = ProductStatic::new(sphere, spd);
-        let mut workspace = Workspace::new();
+        let sphere = Sphere::<f64>::new(3).unwrap();
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
+        let product = ProductStatic::new(sphere, sphere2);
+        let mut workspace = Workspace::<f64>::new();
         
         let x = product.random_point();
         let y = product.random_point();
@@ -775,8 +776,8 @@ mod tests {
 
     #[test]
     fn test_product_static_properties() {
-        let sphere1 = Sphere::new(3).unwrap();
-        let sphere2 = Sphere::new(4).unwrap();
+        let sphere1 = Sphere::<f64>::new(3).unwrap();
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
         let product = ProductStatic::new(sphere1, sphere2);
         
         // Neither component is flat
@@ -789,9 +790,9 @@ mod tests {
     #[test]
     fn test_convenience_function() {
         let sphere = Sphere::<f64>::new(3).unwrap();
-        let spd = SPD::new(2).unwrap();
-        let product = product_static(sphere, spd);
+        let sphere2 = Sphere::<f64>::new(4).unwrap();
+        let product = product_static(sphere, sphere2);
         
-        assert_eq!(product.dimension(), 5);
+        assert_eq!(product.dimension(), 2 + 3); // S^2 + S^3
     }
 }

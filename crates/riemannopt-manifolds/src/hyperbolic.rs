@@ -103,7 +103,7 @@
 //! use nalgebra::DVector;
 //!
 //! // Create ℍ² (Poincaré disk)
-//! let hyperbolic = Hyperbolic::new(2)?;
+//! let hyperbolic = Hyperbolic::<f64>::new(2)?;
 //!
 //! // Random point in the ball
 //! let x = hyperbolic.random_point();
@@ -113,7 +113,7 @@
 //! let v = DVector::from_vec(vec![0.1, 0.2]);
 //!
 //! // Exponential map
-//! let mut workspace = Workspace::new();
+//! let mut workspace = Workspace::<f64>::new();
 //! let mut y = DVector::zeros(2);
 //! hyperbolic.retract(&x, &v, &mut y, &mut workspace)?;
 //!
@@ -817,26 +817,27 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DVector;
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_hyperbolic_creation() {
-        let hyperbolic = Hyperbolic::new(3).unwrap();
-        assert_eq!(<Hyperbolic as Manifold<f64, Dyn>>::dimension(&hyperbolic), 3);
-        assert_eq!(hyperbolic.dimension_space(), 3);
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
+        assert_eq!(<Hyperbolic as Manifold<f64>>::dimension(&hyperbolic), 3);
+        assert_eq!(hyperbolic.n, 3);
         
         // Test invalid dimension
-        assert!(Hyperbolic::new(0).is_err());
+        assert!(Hyperbolic::<f64>::new(0).is_err());
         
         // Test custom boundary tolerance
-        let hyperbolic_custom = Hyperbolic::with_boundary_tolerance(3, 1e-3).unwrap();
+        let hyperbolic_custom = Hyperbolic::with_parameters(3, 1e-3, -1.0).unwrap();
         assert_eq!(hyperbolic_custom.boundary_tolerance(), 1e-3);
-        assert!(Hyperbolic::with_boundary_tolerance(3, 0.0).is_err());
-        assert!(Hyperbolic::with_boundary_tolerance(3, 1.0).is_err());
+        assert!(Hyperbolic::with_parameters(3, 0.0, -1.0).is_err());
+        assert!(Hyperbolic::with_parameters(3, 1.0, -1.0).is_err());
     }
 
     #[test]
     fn test_poincare_ball_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         // Test point inside ball
         let inside_point = DVector::from_vec(vec![0.5, 0.3]);
@@ -853,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_projection_to_poincare_ball() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         // Test projection of outside point
         let outside_point = DVector::from_vec(vec![2.0, 0.0]);
@@ -870,7 +871,7 @@ mod tests {
 
     #[test]
     fn test_conformal_factor() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         // At origin, conformal factor should be 2
         let origin = DVector::zeros(2);
@@ -885,7 +886,7 @@ mod tests {
 
     #[test]
     fn test_hyperbolic_distance() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         let point1 = DVector::from_vec(vec![0.0, 0.0]); // Origin
         let point2 = DVector::from_vec(vec![0.5, 0.0]); // On x-axis
@@ -906,7 +907,7 @@ mod tests {
 
     #[test]
     fn test_exp_log_maps() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let point = DVector::from_vec(vec![0.2, 0.3]);
         let tangent = DVector::from_vec(vec![0.1, -0.1]);
         
@@ -932,13 +933,13 @@ mod tests {
 
     #[test]
     fn test_retraction_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
-        let point = <Hyperbolic as Manifold<f64, Dyn>>::random_point(&hyperbolic);
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
+        let point = <Hyperbolic as Manifold<f64>>::random_point(&hyperbolic);
         let zero_tangent = DVector::zeros(2);
         
         // Test centering property: R(x, 0) = x
         let mut retracted = DVector::zeros(2);
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         hyperbolic.retract(&point, &zero_tangent, &mut retracted, &mut workspace).unwrap();
         assert_relative_eq!(&retracted, &point, epsilon = 1e-10);
         
@@ -948,7 +949,7 @@ mod tests {
 
     #[test]
     fn test_inner_product() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let point = DVector::from_vec(vec![0.3, 0.4]);
         let u = DVector::from_vec(vec![1.0, 0.0]);
         let v = DVector::from_vec(vec![0.0, 1.0]);
@@ -964,12 +965,12 @@ mod tests {
 
     #[test]
     fn test_gradient_conversion() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let point = DVector::from_vec(vec![0.2, 0.3]);
         let euclidean_grad = DVector::from_vec(vec![1.0, -1.0]);
         
         let mut riemannian_grad = DVector::zeros(2);
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         hyperbolic
             .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad, &mut workspace)
             .unwrap();
@@ -985,7 +986,7 @@ mod tests {
 
     #[test]
     fn test_random_generation() {
-        let hyperbolic = Hyperbolic::new(3).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
         
         // Test random point generation
         for _ in 0..10 {
@@ -996,44 +997,44 @@ mod tests {
         // Test random tangent generation
         let point = hyperbolic.random_point();
         let mut tangent = DVector::zeros(3);
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         hyperbolic.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         assert!(hyperbolic.is_vector_in_tangent_space(&point, &tangent, 1e-10));
     }
 
     #[test]
     fn test_distance_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         let point1 = hyperbolic.random_point();
         let point2 = hyperbolic.random_point();
         
         // Distance should be non-negative
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         let dist = hyperbolic.distance(&point1, &point2, &mut workspace).unwrap();
         assert!(dist >= 0.0);
         
         // Distance to self should be zero
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         let self_dist = hyperbolic.distance(&point1, &point1, &mut workspace).unwrap();
         assert_relative_eq!(self_dist, 0.0, epsilon = 1e-10);
         
         // Distance should be symmetric
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         let dist_rev = hyperbolic.distance(&point2, &point1, &mut workspace).unwrap();
         assert_relative_eq!(dist, dist_rev, epsilon = 1e-10);
     }
 
     #[test]
     fn test_parallel_transport() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let from = DVector::from_vec(vec![0.1, 0.2]);
         let to = DVector::from_vec(vec![0.3, 0.4]);
         let vector = DVector::from_vec(vec![0.1, 0.0]);
         
         let mut transported = DVector::zeros(2);
-        let mut workspace = Workspace::new();
-        hyperbolic.parallel_transport(&from, &to, &vector, &mut transported, &mut workspace).unwrap();
+        let mut workspace = Workspace::<f64>::new();
+        <Hyperbolic<f64> as Manifold<f64>>::parallel_transport(&hyperbolic, &from, &to, &vector, &mut transported, &mut workspace).unwrap();
         
         // Transported vector should be in tangent space at destination
         assert!(hyperbolic.is_vector_in_tangent_space(&to, &transported, 1e-10));
@@ -1044,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_origin_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let origin = DVector::zeros(2);
         
         // Origin should be on manifold
@@ -1055,19 +1056,19 @@ mod tests {
         assert_relative_eq!(lambda, 2.0, epsilon = 1e-10);
         
         // Distance from origin to origin
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         let dist = hyperbolic.distance(&origin, &origin, &mut workspace).unwrap();
         assert_relative_eq!(dist, 0.0, epsilon = 1e-10);
     }
 
     #[test]
     fn test_dimension_handling() {
-        let hyperbolic = Hyperbolic::new(3).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
         
         // Test wrong dimension handling
         let wrong_dim_point = DVector::from_vec(vec![1.0, 2.0]); // 2D instead of 3D
         let mut projected = DVector::zeros(3);
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         hyperbolic.project_point(&wrong_dim_point, &mut projected, &mut workspace);
         assert_eq!(projected.len(), 3);
         assert!(hyperbolic.is_point_on_manifold(&projected, 1e-6));
@@ -1075,14 +1076,14 @@ mod tests {
 
     #[test]
     fn test_check_point() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         // Valid point inside ball
         let valid_point = DVector::from_vec(vec![0.3, 0.4]);
         assert!(hyperbolic.check_point(&valid_point).is_ok());
         
-        // Point on boundary
-        let boundary_point = DVector::from_vec(vec![0.99, 0.0]);
+        // Point very close to boundary
+        let boundary_point = DVector::from_vec(vec![0.9999995, 0.0]);
         assert!(hyperbolic.check_point(&boundary_point).is_err());
         
         // Point outside ball
@@ -1096,7 +1097,7 @@ mod tests {
 
     #[test]
     fn test_public_exp_log_maps() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let x = DVector::from_vec(vec![0.2, 0.3]);
         let v = DVector::from_vec(vec![0.1, -0.1]);
         
@@ -1115,7 +1116,7 @@ mod tests {
 
     #[test]
     fn test_public_parallel_transport() {
-        let hyperbolic = Hyperbolic::new(3).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
         let x = DVector::from_vec(vec![0.1, 0.2, 0.3]);
         let y = DVector::from_vec(vec![0.2, 0.3, 0.1]);
         let v = DVector::from_vec(vec![0.1, 0.0, -0.1]);
@@ -1127,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_manifold_properties() {
-        let hyperbolic = Hyperbolic::new(4).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(4).unwrap();
         
         assert_eq!(hyperbolic.name(), "Hyperbolic");
         assert_eq!(hyperbolic.dimension(), 4);

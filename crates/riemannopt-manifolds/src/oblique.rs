@@ -107,7 +107,7 @@
 //!
 //! // Tangent vector
 //! let mut v = DMatrix::zeros(3, 2);
-//! let mut workspace = Workspace::new();
+//! let mut workspace = Workspace::<f64>::new();
 //! oblique.random_tangent(&x, &mut v, &mut workspace)?;
 //!
 //! // Verify orthogonality: x_j^T v_j = 0
@@ -822,13 +822,14 @@ impl<T: Scalar> Manifold<T> for Oblique {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_oblique_creation() {
         let oblique = Oblique::new(3, 4).unwrap();
         assert_eq!(oblique.n, 3);
         assert_eq!(oblique.p, 4);
-        assert_eq!(oblique.dimension(), 8); // 4*(3-1) = 8
+        assert_eq!(<Oblique as Manifold<f64>>::dimension(&oblique), 8); // 4*(3-1) = 8
         
         // Error cases
         assert!(Oblique::new(0, 4).is_err());
@@ -859,7 +860,7 @@ mod tests {
     #[test]
     fn test_projection() {
         let oblique = Oblique::new(3, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         let matrix = DMatrix::from_column_slice(3, 2, &[
             3.0, 0.0, 0.0,
@@ -899,7 +900,7 @@ mod tests {
     #[test]
     fn test_retraction() {
         let oblique = Oblique::new(3, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         let point = oblique.random_point();
         let mut tangent = DMatrix::zeros(3, 2);
@@ -917,7 +918,7 @@ mod tests {
     #[test]
     fn test_distance() {
         let oblique = Oblique::new(3, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         let x = DMatrix::from_column_slice(3, 2, &[
             1.0, 0.0, 0.0,
@@ -967,7 +968,7 @@ mod tests {
         let oblique = Oblique::new(3, 2).unwrap();
         
         let x = oblique.random_point();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         let mut v = DMatrix::zeros(3, 2);
         oblique.random_tangent(&x, &mut v, &mut workspace).unwrap();
         v *= 0.5; // Small tangent vector
@@ -991,7 +992,7 @@ mod tests {
         
         let x = oblique.random_point();
         let y = oblique.random_point();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         let mut v = DMatrix::zeros(4, 3);
         oblique.random_tangent(&x, &mut v, &mut workspace).unwrap();
         
@@ -1004,12 +1005,12 @@ mod tests {
     fn test_manifold_properties() {
         let oblique = Oblique::new(5, 3).unwrap();
         
-        assert_eq!(oblique.name(), "Oblique");
-        assert_eq!(oblique.dimension(), 12); // 3*(5-1) = 12
+        assert_eq!(<Oblique as Manifold<f64>>::name(&oblique), "Oblique");
+        assert_eq!(<Oblique as Manifold<f64>>::dimension(&oblique), 12); // 3*(5-1) = 12
         assert_eq!(oblique.ambient_dim(), (5, 3));
         assert_eq!(oblique.manifold_dim(), 12);
-        assert!(oblique.has_exact_exp_log());
-        assert!(!oblique.is_flat());
+        assert!(<Oblique as Manifold<f64>>::has_exact_exp_log(&oblique));
+        assert!(!<Oblique as Manifold<f64>>::is_flat(&oblique));
     }
 
     #[test]

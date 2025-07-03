@@ -628,7 +628,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
         
         // Ensure result has correct size
         if result.len() != self.n * (self.n + 1) / 2 {
-            *result = DVector::zeros(self.dimension());
+            *result = DVector::zeros(self.n * (self.n + 1) / 2);
         }
         
         let x_mat = self.vec_to_mat(point);
@@ -659,7 +659,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
         
         // Ensure result has correct size
         if result.len() != self.n * (self.n + 1) / 2 {
-            *result = DVector::zeros(self.dimension());
+            *result = DVector::zeros(self.n * (self.n + 1) / 2);
         }
         
         // Simple approximation: project the difference
@@ -713,7 +713,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
         
         // Ensure result has correct size
         if result.len() != self.n * (self.n + 1) / 2 {
-            *result = DVector::zeros(self.dimension());
+            *result = DVector::zeros(self.n * (self.n + 1) / 2);
         }
         
         let mut rng = rand::thread_rng();
@@ -750,7 +750,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 
     fn parallel_transport(
         &self,
-        from: &Self::Point,
+        _from: &Self::Point,
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
@@ -774,6 +774,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use riemannopt_core::memory::workspace::Workspace;
 
     fn create_test_manifold() -> PSDCone {
         PSDCone::new(3).unwrap()
@@ -783,7 +784,7 @@ mod tests {
     fn test_psd_cone_creation() {
         let manifold = create_test_manifold();
         assert_eq!(manifold.matrix_size(), 3);
-        assert_eq!(manifold.dimension(), 6); // 3*(3+1)/2
+        assert_eq!(<PSDCone as Manifold<f64>>::dimension(&manifold), 6); // 3*(3+1)/2
         assert_eq!(manifold.manifold_dim(), 6);
     }
 
@@ -799,8 +800,8 @@ mod tests {
         ]);
         let vec = manifold.matrix_to_vector(&mat);
         
-        let mut projected = DVector::zeros(manifold.dimension());
-        let mut workspace = Workspace::new();
+        let mut projected = DVector::zeros(<PSDCone as Manifold<f64>>::dimension(&manifold));
+        let mut workspace = Workspace::<f64>::new();
         manifold.project_point(&vec, &mut projected, &mut workspace);
         let proj_mat = manifold.vector_to_matrix(&projected);
         
@@ -826,8 +827,8 @@ mod tests {
         ]);
         let vec = manifold.matrix_to_vector(&mat);
         
-        let mut tangent = DVector::zeros(manifold.dimension());
-        let mut workspace = Workspace::new();
+        let mut tangent = DVector::zeros(<PSDCone as Manifold<f64>>::dimension(&manifold));
+        let mut workspace = Workspace::<f64>::new();
         manifold.project_tangent(&point, &vec, &mut tangent, &mut workspace).unwrap();
         let tan_mat = manifold.vector_to_matrix(&tangent);
         
@@ -844,11 +845,11 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = manifold.random_point();
-        let mut tangent = DVector::zeros(manifold.dimension());
-        let mut workspace = Workspace::new();
+        let mut tangent = DVector::zeros(<PSDCone as Manifold<f64>>::dimension(&manifold));
+        let mut workspace = Workspace::<f64>::new();
         manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         let scaled_tangent = &tangent * 0.1;
-        let mut retracted = DVector::zeros(manifold.dimension());
+        let mut retracted = DVector::zeros(<PSDCone as Manifold<f64>>::dimension(&manifold));
         manifold.retract(&point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
         
         // Check that result is on manifold
@@ -860,9 +861,9 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = manifold.random_point();
-        let mut u = DVector::zeros(manifold.dimension());
-        let mut v = DVector::zeros(manifold.dimension());
-        let mut workspace = Workspace::new();
+        let mut u = DVector::zeros(<PSDCone as Manifold<f64>>::dimension(&manifold));
+        let mut v = DVector::zeros(<PSDCone as Manifold<f64>>::dimension(&manifold));
+        let mut workspace = Workspace::<f64>::new();
         manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
         manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
         
@@ -903,10 +904,10 @@ mod tests {
     fn test_psd_cone_properties() {
         let manifold = PSDCone::new(4).unwrap();
         
-        assert_eq!(manifold.name(), "PSDCone");
-        assert_eq!(manifold.dimension(), 10); // 4*(4+1)/2 = 10
-        assert!(!manifold.has_exact_exp_log());
-        assert!(manifold.is_flat());
+        assert_eq!(<PSDCone as Manifold<f64>>::name(&manifold), "PSDCone");
+        assert_eq!(<PSDCone as Manifold<f64>>::dimension(&manifold), 10); // 4*(4+1)/2 = 10
+        assert!(!<PSDCone as Manifold<f64>>::has_exact_exp_log(&manifold));
+        assert!(<PSDCone as Manifold<f64>>::is_flat(&manifold));
     }
 
     #[test]

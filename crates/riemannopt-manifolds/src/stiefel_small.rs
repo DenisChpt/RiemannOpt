@@ -92,7 +92,7 @@ pub fn can_use_specialized_stiefel(n: usize, p: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+        
     #[test]
     fn test_project_tangent_stiefel_3_2() {
         // Create an orthonormal matrix X in St(3,2)
@@ -120,8 +120,8 @@ mod tests {
         let xtr_11 = x[3] * result[3] + x[4] * result[4] + x[5] * result[5];
         
         // Check skew-symmetry
-        assert!((xtr_00 + xtr_00<T as Float>::abs()) < 1e-10);
-        assert!((xtr_11 + xtr_11<T as Float>::abs()) < 1e-10);
-        assert!((xtr_01 + xtr_10<T as Float>::abs()) < 1e-10);
+        assert!((xtr_00 + xtr_00).abs() < 1e-10);
+        assert!((xtr_11 + xtr_11).abs() < 1e-10);
+        assert!((xtr_01 + xtr_10).abs() < 1e-10);
     }
 }

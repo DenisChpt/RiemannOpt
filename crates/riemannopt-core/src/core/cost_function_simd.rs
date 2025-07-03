@@ -136,7 +136,7 @@ where
 pub fn gradient_fd_simd<T, P, F>(
     cost_fn: &F,
     point: &P,
-    workspace: &mut Workspace<T>,
+    _workspace: &mut Workspace<T>,
     gradient: &mut P,
 ) -> Result<()>
 where
