@@ -8,6 +8,7 @@ use nalgebra::Dyn;
 use rand::prelude::*;
 use riemannopt_core::{
     manifold::Manifold,
+    memory::Workspace,
     tangent::{gram_schmidt, normalize},
     types::DVector,
 };
@@ -46,7 +47,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         true
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         result.copy_from(point);
     }
 
@@ -55,6 +56,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         _point: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         result.copy_from(vector);
         Ok(())
@@ -74,6 +76,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         point: &DVector<f64>,
         tangent: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         result.copy_from(&(point + tangent));
         Ok(())
@@ -84,6 +87,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         point: &DVector<f64>,
         other: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         result.copy_from(&(other - point));
         Ok(())
@@ -94,6 +98,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         _point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         result.copy_from(euclidean_grad);
         Ok(())
@@ -108,6 +113,7 @@ impl Manifold<f64, Dyn> for EuclideanSpace {
         &self,
         _point: &DVector<f64>,
         result: &mut DVector<f64>,
+        _workspace: &mut Workspace<f64>,
     ) -> riemannopt_core::error::Result<()> {
         let mut rng = thread_rng();
         for i in 0..self.dim {
@@ -208,8 +214,9 @@ fn bench_vector_operations(c: &mut Criterion) {
         .map(|_| {
             let mut u = DVector::zeros(dim);
             let mut v = DVector::zeros(dim);
-            manifold.random_tangent(&point, &mut u).unwrap();
-            manifold.random_tangent(&point, &mut v).unwrap();
+            let mut workspace = Workspace::new();
+            manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+            manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
             (u, v)
         })
         .collect();
@@ -271,7 +278,8 @@ fn bench_orthogonalization_methods(c: &mut Criterion) {
             (0..num_vectors)
                 .map(|_| {
                     let mut tangent = DVector::zeros(dim);
-                    manifold.random_tangent(&point, &mut tangent).unwrap();
+                    let mut workspace = Workspace::new();
+                    manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
                     tangent
                 })
                 .collect()

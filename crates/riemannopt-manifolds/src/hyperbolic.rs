@@ -1,23 +1,137 @@
-//! Hyperbolic manifold H^n - the space of hyperbolic geometry
+//! # Hyperbolic Manifold ℍⁿ
 //!
-//! The hyperbolic manifold represents the n-dimensional hyperbolic space,
-//! a fundamental non-Euclidean geometry with constant negative curvature.
-//! This manifold is particularly important in:
-//! - Hierarchical embeddings for tree-like data
-//! - Natural language processing (word embeddings)
-//! - Social network analysis and complex networks
-//! - Machine learning on non-Euclidean data
-//! - Computer vision for wide-angle imaging
-//! - Representation learning for biological data
+//! The hyperbolic manifold ℍⁿ is the n-dimensional hyperbolic space, a complete
+//! Riemannian manifold with constant negative sectional curvature -1. It provides
+//! a natural geometry for hierarchical and tree-like data structures.
+//!
+//! ## Mathematical Definition
+//!
+//! Hyperbolic space can be represented through several equivalent models:
+//!
+//! ### Poincaré Ball Model
+//! ```text
+//! 𝔹ⁿ = {x ∈ ℝⁿ : ‖x‖ < 1}
+//! ```
+//! with metric tensor:
+//! ```text
+//! g_x = (2/(1 - ‖x‖²))² · g_E
+//! ```
+//! where g_E is the Euclidean metric.
+//!
+//! ### Hyperboloid Model
+//! ```text
+//! ℍⁿ = {x ∈ ℝⁿ⁺¹ : ⟨x,x⟩_L = -1, x₀ > 0}
+//! ```
+//! with Lorentzian inner product ⟨x,y⟩_L = -x₀y₀ + x₁y₁ + ... + xₙyₙ.
+//!
+//! ## Geometric Structure
+//!
+//! ### Tangent Space
+//! In the Poincaré ball model:
+//! ```text
+//! T_x 𝔹ⁿ ≅ ℝⁿ
+//! ```
+//! The tangent space is isomorphic to ℝⁿ but with a different metric.
+//!
+//! ### Riemannian Metric
+//! The conformal factor λ(x) = 2/(1 - ‖x‖²) gives:
+//! ```text
+//! ⟨u, v⟩_x = λ(x)² ⟨u, v⟩_E
+//! ```
+//!
+//! ### Geodesics
+//! In the Poincaré ball:
+//! - Through origin: straight lines
+//! - General: circular arcs orthogonal to the boundary
+//!
+//! ### Distance Formula
+//! ```text
+//! d(x, y) = arcosh(1 + 2‖x - y‖²/((1 - ‖x‖²)(1 - ‖y‖²)))
+//! ```
+//!
+//! ## Maps and Operations
+//!
+//! ### Exponential Map
+//! ```text
+//! exp_x(v) = x ⊕ tanh(λ_x ‖v‖/2) v/‖v‖
+//! ```
+//! where ⊕ is the Möbius addition.
+//!
+//! ### Logarithmic Map
+//! ```text
+//! log_x(y) = (2/λ_x) artanh(‖-x ⊕ y‖) (-x ⊕ y)/‖-x ⊕ y‖
+//! ```
+//!
+//! ### Parallel Transport
+//! Along geodesic from x to y:
+//! ```text
+//! P_{x→y}(v) = v - (2⟨y,v⟩/(1 - ‖y‖²))(y + (⟨x,y⟩/(1 + ⟨x,y⟩))(x + y))
+//! ```
+//!
+//! ## Geometric Properties
+//!
+//! - **Sectional curvature**: K ≡ -1 (constant negative)
+//! - **Scalar curvature**: R = -n(n-1)
+//! - **Ricci curvature**: Ric = -(n-1)g
+//! - **Injectivity radius**: ∞ (simply connected)
+//! - **Volume growth**: Exponential
+//! - **Isometry group**: SO⁺(n,1)
+//!
+//! ## Applications
+//!
+//! 1. **Hierarchical embeddings**: Tree-like data structures
+//! 2. **Natural language processing**: Word embeddings with hierarchy
+//! 3. **Social networks**: Community detection and influence propagation
+//! 4. **Bioinformatics**: Phylogenetic trees and protein folding
+//! 5. **Computer vision**: Wide-angle and omnidirectional imaging
+//! 6. **Recommendation systems**: Capturing latent hierarchies
+//!
+//! ## Numerical Considerations
+//!
+//! This implementation ensures:
+//! - **Numerical stability** near the boundary using careful projections
+//! - **Efficient computation** through optimized Möbius operations
+//! - **Boundary handling** with configurable tolerance
+//! - **Exact geodesics** through closed-form expressions
+//!
+//! ## Example Usage
+//!
+//! ```rust,no_run
+//! use riemannopt_manifolds::Hyperbolic;
+//! use riemannopt_core::manifold::Manifold;
+//! use riemannopt_core::memory::workspace::Workspace;
+//! use nalgebra::DVector;
+//!
+//! // Create ℍ² (Poincaré disk)
+//! let hyperbolic = Hyperbolic::<f64>::new(2)?;
+//!
+//! // Random point in the ball
+//! let x = hyperbolic.random_point();
+//! assert!(x.norm() < 1.0);
+//!
+//! // Tangent vector
+//! let v = DVector::from_vec(vec![0.1, 0.2]);
+//!
+//! // Exponential map
+//! let mut workspace = Workspace::<f64>::new();
+//! let mut y = DVector::zeros(2);
+//! hyperbolic.retract(&x, &v, &mut y, &mut workspace)?;
+//!
+//! // Verify y is in the ball
+//! assert!(hyperbolic.is_point_on_manifold(&y, 1e-10));
+//! # Ok::<(), riemannopt_core::error::ManifoldError>(())
+//! ```
 
+use nalgebra::DVector;
+use num_traits::Float;
+use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
+    memory::workspace::Workspace,
     types::Scalar,
 };
-use nalgebra::{DVector, Dyn};
-use num_traits::Float;
-use rand_distr::{Distribution, StandardNormal};
+use std::fmt::{self, Debug};
 
 /// Default boundary tolerance for Poincaré ball boundary stability
 const DEFAULT_BOUNDARY_TOLERANCE: f64 = 1e-6;
@@ -25,115 +139,265 @@ const DEFAULT_BOUNDARY_TOLERANCE: f64 = 1e-6;
 /// Safety margin for projection to ensure points stay well inside the ball
 const PROJECTION_SAFETY_MARGIN: f64 = 0.999;
 
-/// The hyperbolic manifold H^n using the Poincare ball model.
+/// The hyperbolic manifold ℍⁿ using the Poincaré ball model.
 ///
-/// This manifold represents n-dimensional hyperbolic space using the Poincare ball
-/// model, where points are represented as vectors in the unit ball with the
-/// hyperbolic metric. The Poincare ball model is computationally efficient
-/// and numerically stable.
+/// This structure represents n-dimensional hyperbolic space using the Poincaré ball
+/// model 𝔹ⁿ = {x ∈ ℝⁿ : ‖x‖ < 1}, equipped with the hyperbolic metric.
 ///
-/// # Mathematical Properties
+/// # Type Parameters
 ///
-/// - **Dimension**: n (same as ambient Euclidean space)
-/// - **Curvature**: Constant negative curvature K = -1
-/// - **Metric**: Riemannian metric derived from the hyperbolic geometry
-/// - **Geodesics**: Circular arcs orthogonal to the boundary (in 2D)
-/// - **Distance**: Hyperbolic distance using the Poincare metric
+/// * `T` - Scalar type (f32 or f64) for numerical computations
 ///
-/// # Poincare Ball Model
+/// # Invariants
 ///
-/// Points x in H^n are represented as vectors in R^n with ||x|| < 1.
-/// The hyperbolic metric tensor at point x is:
-/// g_x = (4 / (1 - ||x||^2)^2) * I
-///
-/// # Applications
-///
-/// - **NLP**: Word embeddings capturing hierarchical relationships
-/// - **Biology**: Phylogenetic tree embeddings
-/// - **Social networks**: Community structure representation
-/// - **Computer vision**: Fish-eye and omnidirectional imaging
-/// - **Machine learning**: Non-Euclidean neural networks
-#[derive(Debug, Clone)]
-pub struct Hyperbolic {
+/// - `n ≥ 1`: Dimension must be positive
+/// - All points x satisfy ‖x‖ < 1
+/// - Tangent vectors can be any vectors in ℝⁿ
+#[derive(Clone)]
+pub struct Hyperbolic<T = f64> {
     /// Dimension of the hyperbolic space
     n: usize,
     /// Numerical tolerance for boundary checks
-    boundary_tolerance: f64,
+    boundary_tolerance: T,
+    /// Curvature parameter (default -1)
+    curvature: T,
 }
 
-impl Hyperbolic {
-    /// Creates a new hyperbolic manifold H^n.
+impl<T: Scalar> Debug for Hyperbolic<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Hyperbolic ℍ^{} (Poincaré ball)", self.n)
+    }
+}
+
+impl<T: Scalar> Hyperbolic<T> {
+    /// Creates a new hyperbolic manifold ℍⁿ with standard curvature -1.
     ///
     /// # Arguments
-    /// * `n` - Dimension of the hyperbolic space (must be > 0)
+    ///
+    /// * `n` - Dimension of the hyperbolic space (must be ≥ 1)
     ///
     /// # Returns
-    /// A hyperbolic manifold with intrinsic dimension n
+    ///
+    /// A hyperbolic manifold with dimension n.
     ///
     /// # Errors
-    /// Returns an error if dimension is invalid
     ///
-    /// # Examples
-    /// ```
-    /// use riemannopt_manifolds::Hyperbolic;
+    /// Returns `ManifoldError::InvalidParameter` if n = 0.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use riemannopt_manifolds::Hyperbolic;
+    /// // Create ℍ² (Poincaré disk)
+    /// let h2 = Hyperbolic::<f64>::new(2)?;
     /// 
-    /// // Create H^2 - 2D hyperbolic space (Poincare disk)
-    /// let hyperbolic = Hyperbolic::new(2).unwrap();
-    /// assert_eq!(hyperbolic.dimension_space(), 2);
+    /// // Create ℍ³ (Poincaré ball in 3D)
+    /// let h3 = Hyperbolic::<f64>::new(3)?;
+    /// # Ok::<(), riemannopt_core::error::ManifoldError>(())
     /// ```
     pub fn new(n: usize) -> Result<Self> {
         if n == 0 {
-            return Err(ManifoldError::invalid_point(
-                "Hyperbolic manifold requires dimension n > 0",
+            return Err(ManifoldError::invalid_parameter(
+                "Hyperbolic manifold requires dimension n ≥ 1",
             ));
         }
         Ok(Self {
             n,
-            boundary_tolerance: DEFAULT_BOUNDARY_TOLERANCE,
+            boundary_tolerance: <T as Scalar>::from_f64(DEFAULT_BOUNDARY_TOLERANCE),
+            curvature: -T::one(),
         })
     }
 
-    /// Creates a hyperbolic manifold with custom boundary tolerance.
+    /// Creates a hyperbolic manifold with custom parameters.
     ///
     /// # Arguments
+    ///
     /// * `n` - Dimension of the space
-    /// * `boundary_tolerance` - How close to unit sphere boundary to allow
-    pub fn with_boundary_tolerance(n: usize, boundary_tolerance: f64) -> Result<Self> {
+    /// * `boundary_tolerance` - Distance from boundary to maintain
+    /// * `curvature` - Sectional curvature (must be negative)
+    pub fn with_parameters(n: usize, boundary_tolerance: T, curvature: T) -> Result<Self> {
         if n == 0 {
-            return Err(ManifoldError::invalid_point(
-                "Hyperbolic manifold requires dimension n > 0",
+            return Err(ManifoldError::invalid_parameter(
+                "Hyperbolic manifold requires dimension n ≥ 1",
             ));
         }
-        if boundary_tolerance <= 0.0 || boundary_tolerance >= 1.0 {
-            return Err(ManifoldError::invalid_point(
+        if boundary_tolerance <= T::zero() || boundary_tolerance >= T::one() {
+            return Err(ManifoldError::invalid_parameter(
                 "Boundary tolerance must be in (0, 1)",
             ));
         }
-        Ok(Self { n, boundary_tolerance })
+        if curvature >= T::zero() {
+            return Err(ManifoldError::invalid_parameter(
+                "Curvature must be negative for hyperbolic space",
+            ));
+        }
+        Ok(Self {
+            n,
+            boundary_tolerance,
+            curvature,
+        })
     }
 
-    /// Returns the dimension of the hyperbolic space
-    pub fn dimension_space(&self) -> usize {
+    /// Returns the dimension of the hyperbolic space.
+    #[inline]
+    pub fn ambient_dim(&self) -> usize {
         self.n
     }
 
-    /// Returns the boundary tolerance
-    pub fn boundary_tolerance(&self) -> f64 {
+    /// Returns the boundary tolerance.
+    #[inline]
+    pub fn boundary_tolerance(&self) -> T {
         self.boundary_tolerance
     }
 
+    /// Returns the curvature.
+    #[inline]
+    pub fn curvature(&self) -> T {
+        self.curvature
+    }
+
+    /// Validates that a point lies in the Poincaré ball.
+    ///
+    /// # Mathematical Check
+    ///
+    /// Verifies that ‖x‖ < 1 within boundary tolerance.
+    ///
+    /// # Errors
+    ///
+    /// - `DimensionMismatch`: If x.len() ≠ n
+    /// - `NotOnManifold`: If ‖x‖ ≥ 1 - boundary_tolerance
+    pub fn check_point(&self, x: &DVector<T>) -> Result<()> {
+        if x.len() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                self.n,
+                x.len()
+            ));
+        }
+
+        let norm_squared = x.norm_squared();
+        let boundary = T::one() - self.boundary_tolerance;
+        
+        if norm_squared >= boundary * boundary {
+            return Err(ManifoldError::invalid_point(format!(
+                "Point not in Poincaré ball: ‖x‖² = {} (boundary: {}²)",
+                norm_squared, boundary
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Validates that a vector is a valid tangent vector.
+    ///
+    /// # Mathematical Check
+    ///
+    /// In the Poincaré ball model, all vectors in ℝⁿ are valid tangent vectors.
+    ///
+    /// # Errors
+    ///
+    /// - `DimensionMismatch`: If dimensions don't match
+    /// - `NotOnManifold`: If x is not in the Poincaré ball
+    pub fn check_tangent(&self, x: &DVector<T>, v: &DVector<T>) -> Result<()> {
+        self.check_point(x)?;
+
+        if v.len() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                self.n,
+                v.len()
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Computes the exponential map exp_x(v).
+    ///
+    /// # Mathematical Formula
+    ///
+    /// In the Poincaré ball model:
+    /// exp_x(v) = x ⊕ tanh(λ_x ‖v‖/2) v/‖v‖
+    /// where ⊕ is the Möbius addition and λ_x is the conformal factor.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Point in the Poincaré ball
+    /// * `v` - Tangent vector at x
+    ///
+    /// # Returns
+    ///
+    /// The point exp_x(v) in the Poincaré ball.
+    pub fn exp_map(&self, x: &DVector<T>, v: &DVector<T>) -> Result<DVector<T>> {
+        self.check_tangent(x, v)?;
+        Ok(self.exponential_map(x, v))
+    }
+
+    /// Computes the logarithmic map log_x(y).
+    ///
+    /// # Mathematical Formula
+    ///
+    /// For x, y in the Poincaré ball:
+    /// log_x(y) finds the tangent vector at x pointing towards y
+    /// such that exp_x(log_x(y)) = y.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Point in the Poincaré ball
+    /// * `y` - Another point in the Poincaré ball
+    ///
+    /// # Returns
+    ///
+    /// The tangent vector log_x(y) ∈ T_x ℍⁿ.
+    pub fn log_map(&self, x: &DVector<T>, y: &DVector<T>) -> Result<DVector<T>> {
+        self.check_point(x)?;
+        self.check_point(y)?;
+        Ok(self.logarithmic_map(x, y))
+    }
+
+    /// Computes the hyperbolic distance between two points.
+    ///
+    /// # Mathematical Formula
+    ///
+    /// d(x, y) = arcosh(1 + 2‖x - y‖²/((1 - ‖x‖²)(1 - ‖y‖²)))
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - First point in the Poincaré ball
+    /// * `y` - Second point in the Poincaré ball
+    ///
+    /// # Returns
+    ///
+    /// The hyperbolic distance d(x, y) ≥ 0.
+    pub fn geodesic_distance(&self, x: &DVector<T>, y: &DVector<T>) -> Result<T> {
+        self.check_point(x)?;
+        self.check_point(y)?;
+        Ok(self.hyperbolic_distance(x, y))
+    }
+
+    /// Parallel transports a tangent vector along a geodesic.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Starting point
+    /// * `y` - Ending point
+    /// * `v` - Tangent vector at x
+    ///
+    /// # Returns
+    ///
+    /// The parallel transported vector at y.
+    pub fn parallel_transport(&self, x: &DVector<T>, y: &DVector<T>, v: &DVector<T>) -> Result<DVector<T>> {
+        self.check_tangent(x, v)?;
+        self.check_point(y)?;
+        Ok(self.parallel_transport_vector(x, y, v))
+    }
+
     /// Checks if a point is in the Poincare ball (||x|| < 1).
-    fn is_in_poincare_ball<T>(&self, point: &DVector<T>, tolerance: T) -> bool
-    where
-        T: Scalar,
-    {
+    fn is_in_poincare_ball(&self, point: &DVector<T>, tolerance: T) -> bool {
         if point.len() != self.n {
             return false;
         }
         
         let norm_squared = point.norm_squared();
-        let tolerance_f64 = tolerance.to_f64();
-        let boundary = T::one() - <T as Scalar>::from_f64(tolerance_f64);
+        let boundary = T::one() - tolerance;
         norm_squared < boundary
     }
 
@@ -141,12 +405,9 @@ impl Hyperbolic {
     ///
     /// If the point is outside the unit ball, project it to a point
     /// slightly inside the boundary for numerical stability.
-    fn project_to_poincare_ball<T>(&self, point: &DVector<T>) -> DVector<T>
-    where
-        T: Scalar,
-    {
+    fn project_to_poincare_ball(&self, point: &DVector<T>) -> DVector<T> {
         let norm = point.norm();
-        let max_norm = T::one() - <T as Scalar>::from_f64(self.boundary_tolerance);
+        let max_norm = T::one() - self.boundary_tolerance;
         
         if norm > max_norm {
             // Project to boundary with tolerance (slightly inside)
@@ -158,10 +419,7 @@ impl Hyperbolic {
     }
 
     /// Computes the conformal factor lambda(x) = 2 / (1 - ||x||^2).
-    fn conformal_factor<T>(&self, point: &DVector<T>) -> T
-    where
-        T: Scalar,
-    {
+    fn conformal_factor(&self, point: &DVector<T>) -> T {
         let norm_squared = point.norm_squared();
         let two = <T as Scalar>::from_f64(2.0);
         two / (T::one() - norm_squared)
@@ -170,10 +428,7 @@ impl Hyperbolic {
     /// Computes the hyperbolic distance between two points in the Poincare ball.
     ///
     /// Distance formula: d(x,y) = arcosh(1 + 2||x-y||^2 / ((1-||x||^2)(1-||y||^2)))
-    fn hyperbolic_distance<T>(&self, x: &DVector<T>, y: &DVector<T>) -> T
-    where
-        T: Scalar,
-    {
+    fn hyperbolic_distance(&self, x: &DVector<T>, y: &DVector<T>) -> T {
         let diff = x - y;
         let diff_norm_sq = diff.norm_squared();
         
@@ -193,13 +448,10 @@ impl Hyperbolic {
     /// Computes the exponential map in the Poincare ball model.
     ///
     /// The exponential map moves along geodesics from a point in a given direction.
-    fn exponential_map<T>(&self, point: &DVector<T>, tangent: &DVector<T>) -> DVector<T>
-    where
-        T: Scalar,
-    {
+    fn exponential_map(&self, point: &DVector<T>, tangent: &DVector<T>) -> DVector<T> {
         let tangent_norm = tangent.norm();
         
-        if tangent_norm < T::epsilon() {
+        if tangent_norm < <T as Scalar>::from_f64(1e-16) {
             return point.clone();
         }
         
@@ -219,14 +471,11 @@ impl Hyperbolic {
     /// Computes the logarithmic map in the Poincare ball model.
     ///
     /// The logarithmic map finds the tangent vector from point to other.
-    fn logarithmic_map<T>(&self, point: &DVector<T>, other: &DVector<T>) -> DVector<T>
-    where
-        T: Scalar,
-    {
+    fn logarithmic_map(&self, point: &DVector<T>, other: &DVector<T>) -> DVector<T> {
         let diff = other - point;
         let diff_norm = diff.norm();
         
-        if diff_norm < T::epsilon() {
+        if diff_norm < <T as Scalar>::from_f64(1e-16) {
             return DVector::zeros(self.n);
         }
         
@@ -246,19 +495,13 @@ impl Hyperbolic {
     ///
     /// In the Poincare ball model, all vectors are valid tangent vectors,
     /// so this is essentially the identity operation.
-    fn project_to_tangent<T>(&self, _point: &DVector<T>, vector: &DVector<T>) -> DVector<T>
-    where
-        T: Scalar,
-    {
+    fn project_to_tangent(&self, _point: &DVector<T>, vector: &DVector<T>) -> DVector<T> {
         // In Poincare ball, tangent space is full R^n
         vector.clone()
     }
 
     /// Generates a random point in the Poincare ball.
-    fn random_poincare_point<T>(&self) -> DVector<T>
-    where
-        T: Scalar,
-    {
+    fn random_poincare_point(&self) -> DVector<T> {
         let mut rng = rand::thread_rng();
         
         // Generate random direction
@@ -270,13 +513,13 @@ impl Hyperbolic {
         
         // Normalize and scale by random radius
         let norm = point.norm();
-        if norm > T::epsilon() {
+        if norm > <T as Scalar>::from_f64(1e-16) {
             point = point / norm;
             
             // Random radius with appropriate distribution for uniform distribution in ball
             let u: f64 = rand::random();
             let radius = u.powf(1.0 / self.n as f64);
-            let max_radius = 1.0 - self.boundary_tolerance;
+            let max_radius = 1.0 - self.boundary_tolerance.to_f64();
             let scaled_radius = radius * max_radius;
             
             point * <T as Scalar>::from_f64(scaled_radius)
@@ -289,21 +532,18 @@ impl Hyperbolic {
     /// Parallel transport using the Levi-Civita connection.
     ///
     /// Transports a tangent vector along the geodesic from one point to another.
-    fn parallel_transport_vector<T>(
+    fn parallel_transport_vector(
         &self,
         from: &DVector<T>,
         to: &DVector<T>,
         vector: &DVector<T>,
-    ) -> DVector<T>
-    where
-        T: Scalar,
-    {
+    ) -> DVector<T> {
         // Exact parallel transport formula for the Poincaré ball model
         // Based on the gyrovector formalism and the Levi-Civita connection
         
         // If from == to, no transport needed
         let diff = to - from;
-        if diff.norm() < T::epsilon() {
+        if diff.norm() < <T as Scalar>::from_f64(1e-16) {
             return vector.clone();
         }
         
@@ -320,7 +560,7 @@ impl Hyperbolic {
         let denominator = T::one() + from_dot_to;
         
         // Avoid division by zero
-        if <T as Float>::abs(denominator) < T::epsilon() {
+        if <T as Float>::abs(denominator) < <T as Scalar>::from_f64(1e-16) {
             // Points are nearly antipodal in the ball - use simple scaling
             let lambda_from = self.conformal_factor(from);
             let lambda_to = self.conformal_factor(to);
@@ -335,10 +575,10 @@ impl Hyperbolic {
     }
 }
 
-impl<T> Manifold<T, Dyn> for Hyperbolic
-where
-    T: Scalar,
-{
+impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
+    type Point = DVector<T>;
+    type TangentVector = DVector<T>;
+
     fn name(&self) -> &str {
         "Hyperbolic"
     }
@@ -347,59 +587,75 @@ where
         self.n
     }
 
-    fn is_point_on_manifold(&self, point: &DVector<T>, tolerance: T) -> bool {
+    fn is_point_on_manifold(&self, point: &Self::Point, tolerance: T) -> bool {
         self.is_in_poincare_ball(point, tolerance)
     }
 
     fn is_vector_in_tangent_space(
         &self,
-        _point: &DVector<T>,
-        vector: &DVector<T>,
+        _point: &Self::Point,
+        vector: &Self::TangentVector,
         _tolerance: T,
     ) -> bool {
         // In Poincare ball model, all vectors of correct dimension are tangent vectors
         vector.len() == self.n
     }
 
-    fn project_point(&self, point: &DVector<T>) -> DVector<T> {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n {
             // Handle wrong dimension by padding/truncating
-            let mut result = DVector::<T>::zeros(self.n);
+            let mut temp = DVector::<T>::zeros(self.n);
             let copy_len = point.len().min(self.n);
             for i in 0..copy_len {
-                result[i] = point[i];
+                temp[i] = point[i];
             }
-            self.project_to_poincare_ball(&result)
+            let projected = self.project_to_poincare_ball(&temp);
+            result.copy_from(&projected);
         } else {
-            self.project_to_poincare_ball(point)
+            let projected = self.project_to_poincare_ball(point);
+            result.copy_from(&projected);
         }
     }
 
     fn project_tangent(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Self::Point,
+        vector: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n || vector.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "Point and vector must have correct dimensions for hyperbolic manifold",
-                format!("point: {}, vector: {}", point.len(), vector.len()),
+                self.n,
+                point.len().max(vector.len())
             ));
         }
 
-        Ok(self.project_to_tangent(point, vector))
+        let proj = self.project_to_tangent(point, vector);
+        result.copy_from(&proj);
+        Ok(())
     }
 
     fn inner_product(
         &self,
-        point: &DVector<T>,
-        u: &DVector<T>,
-        v: &DVector<T>,
+        point: &Self::Point,
+        u: &Self::TangentVector,
+        v: &Self::TangentVector,
     ) -> Result<T> {
         if point.len() != self.n || u.len() != self.n || v.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "All vectors must have correct dimensions",
-                format!("expected: {}", self.n),
+                self.n,
+                point.len().max(u.len()).max(v.len())
             ));
         }
 
@@ -409,43 +665,66 @@ where
         Ok(lambda * lambda * euclidean_inner)
     }
 
-    fn retract(&self, point: &DVector<T>, tangent: &DVector<T>) -> Result<DVector<T>> {
+    fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point, _workspace: &mut Workspace<T>) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n || tangent.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "Point and tangent must have correct dimensions",
-                format!("point: {}, tangent: {}", point.len(), tangent.len()),
+                self.n,
+                point.len().max(tangent.len())
             ));
         }
 
         // Use exponential map as retraction
-        Ok(self.exponential_map(point, tangent))
+        let exp = self.exponential_map(point, tangent);
+        result.copy_from(&exp);
+        Ok(())
     }
 
     fn inverse_retract(
         &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        point: &Self::Point,
+        other: &Self::Point,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n || other.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("point: {}, other: {}", point.len(), other.len()),
+                self.n,
+                point.len().max(other.len())
             ));
         }
 
         // Use logarithmic map as inverse retraction
-        Ok(self.logarithmic_map(point, other))
+        let log = self.logarithmic_map(point, other);
+        result.copy_from(&log);
+        Ok(())
     }
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &DVector<T>,
-        grad: &DVector<T>,
-    ) -> Result<DVector<T>> {
-        if point.len() != self.n || grad.len() != self.n {
+        point: &Self::Point,
+        euclidean_grad: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
+        if point.len() != self.n || euclidean_grad.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "Point and gradient must have correct dimensions",
-                format!("point: {}, grad: {}", point.len(), grad.len()),
+                self.n,
+                point.len().max(euclidean_grad.len())
             ));
         }
 
@@ -454,18 +733,24 @@ where
         let norm_squared = point.norm_squared();
         let factor = (T::one() - norm_squared) * (T::one() - norm_squared) / <T as Scalar>::from_f64(4.0);
         
-        Ok(grad * factor)
+        result.copy_from(&(euclidean_grad * factor));
+        Ok(())
     }
 
-    fn random_point(&self) -> DVector<T> {
+    fn random_point(&self) -> Self::Point {
         self.random_poincare_point()
     }
 
-    fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
+    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector, _workspace: &mut Workspace<T>) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if point.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "Point must have correct dimensions",
-                format!("expected: {}, actual: {}", self.n, point.len()),
+                self.n,
+                point.len()
             ));
         }
 
@@ -477,7 +762,9 @@ where
             tangent[i] = <T as Scalar>::from_f64(val);
         }
         
-        Ok(self.project_to_tangent(point, &tangent))
+        let proj = self.project_to_tangent(point, &tangent);
+        result.copy_from(&proj);
+        Ok(())
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -486,29 +773,42 @@ where
 
     fn parallel_transport(
         &self,
-        from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-    ) -> Result<DVector<T>> {
+        from: &Self::Point,
+        to: &Self::Point,
+        vector: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Ensure result has correct size
+        if result.len() != self.n {
+            *result = DVector::zeros(self.n);
+        }
+        
         if from.len() != self.n || to.len() != self.n || vector.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "All vectors must have correct dimensions",
-                format!("expected: {}", self.n),
+                self.n,
+                from.len().max(to.len()).max(vector.len())
             ));
         }
 
-        Ok(self.parallel_transport_vector(from, to, vector))
+        let transported = self.parallel_transport_vector(from, to, vector);
+        result.copy_from(&transported);
+        Ok(())
     }
 
-    fn distance(&self, point1: &DVector<T>, point2: &DVector<T>) -> Result<T> {
-        if point1.len() != self.n || point2.len() != self.n {
+    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+        if x.len() != self.n || y.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("point1: {}, point2: {}", point1.len(), point2.len()),
+                self.n,
+                x.len().max(y.len())
             ));
         }
 
-        Ok(self.hyperbolic_distance(point1, point2))
+        Ok(self.hyperbolic_distance(x, y))
+    }
+
+    fn is_flat(&self) -> bool {
+        false  // Hyperbolic space has constant negative curvature
     }
 }
 
@@ -517,26 +817,27 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DVector;
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_hyperbolic_creation() {
-        let hyperbolic = Hyperbolic::new(3).unwrap();
-        assert_eq!(<Hyperbolic as Manifold<f64, Dyn>>::dimension(&hyperbolic), 3);
-        assert_eq!(hyperbolic.dimension_space(), 3);
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
+        assert_eq!(<Hyperbolic as Manifold<f64>>::dimension(&hyperbolic), 3);
+        assert_eq!(hyperbolic.n, 3);
         
         // Test invalid dimension
-        assert!(Hyperbolic::new(0).is_err());
+        assert!(Hyperbolic::<f64>::new(0).is_err());
         
         // Test custom boundary tolerance
-        let hyperbolic_custom = Hyperbolic::with_boundary_tolerance(3, 1e-3).unwrap();
+        let hyperbolic_custom = Hyperbolic::with_parameters(3, 1e-3, -1.0).unwrap();
         assert_eq!(hyperbolic_custom.boundary_tolerance(), 1e-3);
-        assert!(Hyperbolic::with_boundary_tolerance(3, 0.0).is_err());
-        assert!(Hyperbolic::with_boundary_tolerance(3, 1.0).is_err());
+        assert!(Hyperbolic::with_parameters(3, 0.0, -1.0).is_err());
+        assert!(Hyperbolic::with_parameters(3, 1.0, -1.0).is_err());
     }
 
     #[test]
     fn test_poincare_ball_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         // Test point inside ball
         let inside_point = DVector::from_vec(vec![0.5, 0.3]);
@@ -553,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_projection_to_poincare_ball() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         // Test projection of outside point
         let outside_point = DVector::from_vec(vec![2.0, 0.0]);
@@ -570,7 +871,7 @@ mod tests {
 
     #[test]
     fn test_conformal_factor() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         // At origin, conformal factor should be 2
         let origin = DVector::zeros(2);
@@ -585,7 +886,7 @@ mod tests {
 
     #[test]
     fn test_hyperbolic_distance() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
         let point1 = DVector::from_vec(vec![0.0, 0.0]); // Origin
         let point2 = DVector::from_vec(vec![0.5, 0.0]); // On x-axis
@@ -606,7 +907,7 @@ mod tests {
 
     #[test]
     fn test_exp_log_maps() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let point = DVector::from_vec(vec![0.2, 0.3]);
         let tangent = DVector::from_vec(vec![0.1, -0.1]);
         
@@ -632,13 +933,15 @@ mod tests {
 
     #[test]
     fn test_retraction_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
-        let point = <Hyperbolic as Manifold<f64, Dyn>>::random_point(&hyperbolic);
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
+        let point = <Hyperbolic as Manifold<f64>>::random_point(&hyperbolic);
         let zero_tangent = DVector::zeros(2);
         
         // Test centering property: R(x, 0) = x
-        let retracted = hyperbolic.retract(&point, &zero_tangent).unwrap();
-        assert_relative_eq!(retracted, point, epsilon = 1e-10);
+        let mut retracted = DVector::zeros(2);
+        let mut workspace = Workspace::<f64>::new();
+        hyperbolic.retract(&point, &zero_tangent, &mut retracted, &mut workspace).unwrap();
+        assert_relative_eq!(&retracted, &point, epsilon = 1e-10);
         
         // Result should be on manifold
         assert!(hyperbolic.is_point_on_manifold(&retracted, 1e-6));
@@ -646,7 +949,7 @@ mod tests {
 
     #[test]
     fn test_inner_product() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let point = DVector::from_vec(vec![0.3, 0.4]);
         let u = DVector::from_vec(vec![1.0, 0.0]);
         let v = DVector::from_vec(vec![0.0, 1.0]);
@@ -662,12 +965,14 @@ mod tests {
 
     #[test]
     fn test_gradient_conversion() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let point = DVector::from_vec(vec![0.2, 0.3]);
         let euclidean_grad = DVector::from_vec(vec![1.0, -1.0]);
         
-        let riemannian_grad = hyperbolic
-            .euclidean_to_riemannian_gradient(&point, &euclidean_grad)
+        let mut riemannian_grad = DVector::zeros(2);
+        let mut workspace = Workspace::<f64>::new();
+        hyperbolic
+            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad, &mut workspace)
             .unwrap();
         
         // Riemannian gradient should be scaled version of Euclidean gradient
@@ -681,48 +986,55 @@ mod tests {
 
     #[test]
     fn test_random_generation() {
-        let hyperbolic = Hyperbolic::new(3).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
         
         // Test random point generation
         for _ in 0..10 {
-            let random_point = <Hyperbolic as Manifold<f64, Dyn>>::random_point(&hyperbolic);
+            let random_point = hyperbolic.random_point();
             assert!(hyperbolic.is_point_on_manifold(&random_point, 1e-6));
         }
         
         // Test random tangent generation
         let point = hyperbolic.random_point();
-        let tangent = hyperbolic.random_tangent(&point).unwrap();
+        let mut tangent = DVector::zeros(3);
+        let mut workspace = Workspace::<f64>::new();
+        hyperbolic.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         assert!(hyperbolic.is_vector_in_tangent_space(&point, &tangent, 1e-10));
     }
 
     #[test]
     fn test_distance_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         
-        let point1 = <Hyperbolic as Manifold<f64, Dyn>>::random_point(&hyperbolic);
-        let point2 = <Hyperbolic as Manifold<f64, Dyn>>::random_point(&hyperbolic);
+        let point1 = hyperbolic.random_point();
+        let point2 = hyperbolic.random_point();
         
         // Distance should be non-negative
-        let dist = hyperbolic.distance(&point1, &point2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
+        let dist = hyperbolic.distance(&point1, &point2, &mut workspace).unwrap();
         assert!(dist >= 0.0);
         
         // Distance to self should be zero
-        let self_dist = hyperbolic.distance(&point1, &point1).unwrap();
+        let mut workspace = Workspace::<f64>::new();
+        let self_dist = hyperbolic.distance(&point1, &point1, &mut workspace).unwrap();
         assert_relative_eq!(self_dist, 0.0, epsilon = 1e-10);
         
         // Distance should be symmetric
-        let dist_rev = hyperbolic.distance(&point2, &point1).unwrap();
+        let mut workspace = Workspace::<f64>::new();
+        let dist_rev = hyperbolic.distance(&point2, &point1, &mut workspace).unwrap();
         assert_relative_eq!(dist, dist_rev, epsilon = 1e-10);
     }
 
     #[test]
     fn test_parallel_transport() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let from = DVector::from_vec(vec![0.1, 0.2]);
         let to = DVector::from_vec(vec![0.3, 0.4]);
         let vector = DVector::from_vec(vec![0.1, 0.0]);
         
-        let transported = hyperbolic.parallel_transport(&from, &to, &vector).unwrap();
+        let mut transported = DVector::zeros(2);
+        let mut workspace = Workspace::<f64>::new();
+        <Hyperbolic<f64> as Manifold<f64>>::parallel_transport(&hyperbolic, &from, &to, &vector, &mut transported, &mut workspace).unwrap();
         
         // Transported vector should be in tangent space at destination
         assert!(hyperbolic.is_vector_in_tangent_space(&to, &transported, 1e-10));
@@ -733,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_origin_properties() {
-        let hyperbolic = Hyperbolic::new(2).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
         let origin = DVector::zeros(2);
         
         // Origin should be on manifold
@@ -744,18 +1056,83 @@ mod tests {
         assert_relative_eq!(lambda, 2.0, epsilon = 1e-10);
         
         // Distance from origin to origin
-        let dist = hyperbolic.distance(&origin, &origin).unwrap();
+        let mut workspace = Workspace::<f64>::new();
+        let dist = hyperbolic.distance(&origin, &origin, &mut workspace).unwrap();
         assert_relative_eq!(dist, 0.0, epsilon = 1e-10);
     }
 
     #[test]
     fn test_dimension_handling() {
-        let hyperbolic = Hyperbolic::new(3).unwrap();
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
         
         // Test wrong dimension handling
         let wrong_dim_point = DVector::from_vec(vec![1.0, 2.0]); // 2D instead of 3D
-        let projected = hyperbolic.project_point(&wrong_dim_point);
+        let mut projected = DVector::zeros(3);
+        let mut workspace = Workspace::<f64>::new();
+        hyperbolic.project_point(&wrong_dim_point, &mut projected, &mut workspace);
         assert_eq!(projected.len(), 3);
         assert!(hyperbolic.is_point_on_manifold(&projected, 1e-6));
+    }
+
+    #[test]
+    fn test_check_point() {
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
+        
+        // Valid point inside ball
+        let valid_point = DVector::from_vec(vec![0.3, 0.4]);
+        assert!(hyperbolic.check_point(&valid_point).is_ok());
+        
+        // Point very close to boundary
+        let boundary_point = DVector::from_vec(vec![0.9999995, 0.0]);
+        assert!(hyperbolic.check_point(&boundary_point).is_err());
+        
+        // Point outside ball
+        let outside_point = DVector::from_vec(vec![1.5, 0.0]);
+        assert!(hyperbolic.check_point(&outside_point).is_err());
+        
+        // Wrong dimension
+        let wrong_dim = DVector::from_vec(vec![0.1, 0.2, 0.3]);
+        assert!(hyperbolic.check_point(&wrong_dim).is_err());
+    }
+
+    #[test]
+    fn test_public_exp_log_maps() {
+        let hyperbolic = Hyperbolic::<f64>::new(2).unwrap();
+        let x = DVector::from_vec(vec![0.2, 0.3]);
+        let v = DVector::from_vec(vec![0.1, -0.1]);
+        
+        // Test public exp_map
+        let y = hyperbolic.exp_map(&x, &v).unwrap();
+        assert!(hyperbolic.check_point(&y).is_ok());
+        
+        // Test public log_map
+        let v_recovered = hyperbolic.log_map(&x, &y).unwrap();
+        assert_relative_eq!(v, v_recovered, epsilon = 1e-10);
+        
+        // Test geodesic distance
+        let dist = hyperbolic.geodesic_distance(&x, &y).unwrap();
+        assert!(dist > 0.0);
+    }
+
+    #[test]
+    fn test_public_parallel_transport() {
+        let hyperbolic = Hyperbolic::<f64>::new(3).unwrap();
+        let x = DVector::from_vec(vec![0.1, 0.2, 0.3]);
+        let y = DVector::from_vec(vec![0.2, 0.3, 0.1]);
+        let v = DVector::from_vec(vec![0.1, 0.0, -0.1]);
+        
+        // Test public parallel_transport
+        let v_transported = hyperbolic.parallel_transport(&x, &y, &v).unwrap();
+        assert!(hyperbolic.check_tangent(&y, &v_transported).is_ok());
+    }
+
+    #[test]
+    fn test_manifold_properties() {
+        let hyperbolic = Hyperbolic::<f64>::new(4).unwrap();
+        
+        assert_eq!(hyperbolic.name(), "Hyperbolic");
+        assert_eq!(hyperbolic.dimension(), 4);
+        assert!(hyperbolic.has_exact_exp_log());
+        assert!(!hyperbolic.is_flat());
     }
 }
