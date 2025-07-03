@@ -408,7 +408,7 @@ fn test_retraction_local_rigidity() {
         } else if scale < 1e-5 {
             0.1 // Moderate tolerance for small scales
         } else {
-            (scale * 10.0).max(1e-3)
+            <f64 as num_traits::Float>::max(scale * 10.0, 1e-3)
         };
         assert!(
             (distance_ratio - 1.0).abs() < tolerance,

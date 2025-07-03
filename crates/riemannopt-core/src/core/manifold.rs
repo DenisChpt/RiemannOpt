@@ -6,24 +6,70 @@
 //!
 //! # Mathematical Background
 //!
-//! A Riemannian manifold (M, g) consists of:
-//! - A smooth manifold M
-//! - A Riemannian metric g that assigns an inner product to each tangent space
+//! A Riemannian manifold (ℳ, g) consists of:
+//! - A smooth manifold ℳ
+//! - A Riemannian metric g that assigns an inner product to each tangent space T_p ℳ
 //!
-//! Key concepts:
-//! - **Tangent space**: T_p M is the linear approximation of M at point p
-//! - **Retraction**: A smooth map R_p: T_p M → M that approximates the exponential map
-//! - **Riemannian gradient**: The unique vector in T_p M representing the derivative
+//! ## Key Concepts
+//!
+//! - **Tangent space**: T_p ℳ is the linear approximation of ℳ at point p
+//! - **Retraction**: A smooth map R_p: T_p ℳ → ℳ that approximates the exponential map
+//! - **Riemannian gradient**: The unique vector in T_p ℳ representing the derivative
 //! - **Parallel transport**: Moving vectors along curves while preserving angles
+//! - **Geodesics**: Curves that locally minimize distance on the manifold
+//!
+//! # Examples
+//!
+//! ## Basic Manifold Usage
+//!
+//! ```rust,no_run
+//! # use riemannopt_core::manifold::Manifold;
+//! # use riemannopt_core::memory::Workspace;
+//! # struct MySphere { radius: f64 }
+//! # impl Manifold<f64> for MySphere {
+//! #   type Point = nalgebra::DVector<f64>;
+//! #   type TangentVector = nalgebra::DVector<f64>;
+//! #   fn name(&self) -> &str { "Unit Sphere" }
+//! #   fn dimension(&self) -> usize { 2 }
+//! #   fn is_point_on_manifold(&self, point: &Self::Point, tol: f64) -> bool { true }
+//! #   fn is_vector_in_tangent_space(&self, point: &Self::Point, vector: &Self::TangentVector, tol: f64) -> bool { true }
+//! #   fn project_point(&self, point: &Self::Point, result: &mut Self::Point, workspace: &mut Workspace<f64>) {}
+//! #   fn project_tangent(&self, point: &Self::Point, vector: &Self::TangentVector, result: &mut Self::TangentVector, workspace: &mut Workspace<f64>) -> riemannopt_core::error::Result<()> { Ok(()) }
+//! #   fn inner_product(&self, point: &Self::Point, u: &Self::TangentVector, v: &Self::TangentVector) -> riemannopt_core::error::Result<f64> { Ok(0.0) }
+//! #   fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point, workspace: &mut Workspace<f64>) -> riemannopt_core::error::Result<()> { Ok(()) }
+//! #   fn inverse_retract(&self, point: &Self::Point, other: &Self::Point, result: &mut Self::TangentVector, workspace: &mut Workspace<f64>) -> riemannopt_core::error::Result<()> { Ok(()) }
+//! # }
+//! # fn main() -> riemannopt_core::error::Result<()> {
+//! use nalgebra::DVector;
+//!
+//! let sphere = MySphere { radius: 1.0 };
+//! let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+//! let tangent = DVector::from_vec(vec![0.0, 0.1, 0.0]);
+//!
+//! // Check if point is on manifold
+//! assert!(sphere.is_point_on_manifold(&point, 1e-10));
+//!
+//! // Perform retraction
+//! let mut new_point = point.clone();
+//! let mut workspace = Workspace::new();
+//! sphere.retract(&point, &tangent, &mut new_point, &mut workspace)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Common Manifolds
+//!
+//! This library provides implementations for several important manifolds:
+//!
+//! - **Unit Sphere S^{n-1}**: Points with unit norm in ℝⁿ
+//! - **Stiefel St(n,p)**: n×p matrices with orthonormal columns  
+//! - **Grassmann Gr(n,p)**: p-dimensional subspaces of ℝⁿ
+//! - **SPD(n)**: Symmetric positive definite matrices
+//! - **Euclidean ℝⁿ**: Flat space with identity metric
 
 use crate::{error::Result, types::Scalar, memory::workspace::Workspace};
-use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OVector};
 use num_traits::Float;
 use std::fmt::Debug;
-
-/// Type alias for manifold points and tangent vectors.
-pub type Point<T, D> = OVector<T, D>;
-pub type TangentVector<T, D> = OVector<T, D>;
 
 /// Trait for Riemannian manifolds.
 ///
@@ -134,12 +180,11 @@ pub type TangentVector<T, D> = OVector<T, D>;
 ///     }
 /// }
 /// ```
-pub trait Manifold<T, D>: Debug + Send + Sync
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
+pub trait Manifold<T: Scalar>: Debug + Send + Sync {
+    /// The type of data for a point (e.g., DVector<T> or DMatrix<T>).
+    type Point: Clone + Debug + Send + Sync;
+    /// The type of data for a tangent vector.
+    type TangentVector: Clone + Debug + Send + Sync;
     /// Returns a human-readable name for the manifold.
     fn name(&self) -> &str;
 
@@ -148,15 +193,6 @@ where
     /// For example, the sphere S^{n-1} embedded in R^n has dimension n-1.
     fn dimension(&self) -> usize;
 
-    /// Returns the dimension of the ambient space.
-    ///
-    /// For embedded manifolds, this is the dimension of the space in which
-    /// the manifold is embedded.
-    /// 
-    /// Returns 0 for dynamic dimensions where the size cannot be determined at compile time.
-    fn ambient_dimension(&self) -> usize {
-        D::try_to_usize().unwrap_or(0)
-    }
 
     /// Checks if a point lies on the manifold within a given tolerance.
     ///
@@ -168,7 +204,7 @@ where
     /// # Returns
     ///
     /// `true` if the point is on the manifold within tolerance, `false` otherwise.
-    fn is_point_on_manifold(&self, point: &Point<T, D>, tol: T) -> bool;
+    fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool;
 
     /// Checks if a vector is in the tangent space at a given point.
     ///
@@ -183,8 +219,8 @@ where
     /// `true` if the vector is in T_point M within tolerance, `false` otherwise.
     fn is_vector_in_tangent_space(
         &self,
-        point: &Point<T, D>,
-        vector: &TangentVector<T, D>,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
         tol: T,
     ) -> bool;
 
@@ -198,7 +234,7 @@ where
     /// * `point` - The point to project
     /// * `result` - Pre-allocated output buffer for the projected point
     /// * `workspace` - Pre-allocated workspace for temporary computations
-    fn project_point(&self, point: &Point<T, D>, result: &mut Point<T, D>, workspace: &mut Workspace<T>);
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, workspace: &mut Workspace<T>);
 
     /// Projects a vector onto the tangent space at a given point.
     ///
@@ -232,9 +268,9 @@ where
     /// Returns an error if `point` is not on the manifold within numerical tolerance.
     fn project_tangent(
         &self,
-        point: &Point<T, D>,
-        vector: &TangentVector<T, D>,
-        result: &mut TangentVector<T, D>,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
+        result: &mut Self::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
@@ -274,9 +310,9 @@ where
     /// are not in the tangent space at `point`.
     fn inner_product(
         &self,
-        point: &Point<T, D>,
-        u: &TangentVector<T, D>,
-        v: &TangentVector<T, D>,
+        point: &Self::Point,
+        u: &Self::TangentVector,
+        v: &Self::TangentVector,
     ) -> Result<T>;
 
     /// Computes the norm of a tangent vector.
@@ -291,7 +327,7 @@ where
     /// # Returns
     ///
     /// The norm ||v||_g.
-    fn norm(&self, point: &Point<T, D>, vector: &TangentVector<T, D>) -> Result<T> {
+    fn norm(&self, point: &Self::Point, vector: &Self::TangentVector) -> Result<T> {
         self.inner_product(point, vector, vector)
             .map(|ip| <T as Float>::sqrt(ip))
     }
@@ -336,7 +372,7 @@ where
     /// - `point` is not on the manifold
     /// - `tangent` is not in the tangent space at `point`
     /// - Numerical issues prevent computation (e.g., singularities)
-    fn retract(&self, point: &Point<T, D>, tangent: &TangentVector<T, D>, result: &mut Point<T, D>, workspace: &mut Workspace<T>) -> Result<()>;
+    fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point, workspace: &mut Workspace<T>) -> Result<()>;
 
     /// Computes the inverse retraction (logarithmic map).
     ///
@@ -356,9 +392,9 @@ where
     /// are too far apart or at cut locus).
     fn inverse_retract(
         &self,
-        point: &Point<T, D>,
-        other: &Point<T, D>,
-        result: &mut TangentVector<T, D>,
+        point: &Self::Point,
+        other: &Self::Point,
+        result: &mut Self::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
@@ -376,9 +412,9 @@ where
     /// * `workspace` - Pre-allocated workspace for temporary computations
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &Point<T, D>,
-        euclidean_grad: &TangentVector<T, D>,
-        result: &mut TangentVector<T, D>,
+        point: &Self::Point,
+        euclidean_grad: &Self::TangentVector,
+        result: &mut Self::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
@@ -401,10 +437,10 @@ where
     /// which may not be true parallel transport but is often sufficient.
     fn parallel_transport(
         &self,
-        _from: &Point<T, D>,
-        to: &Point<T, D>,
-        vector: &TangentVector<T, D>,
-        result: &mut TangentVector<T, D>,
+        _from: &Self::Point,
+        to: &Self::Point,
+        vector: &Self::TangentVector,
+        result: &mut Self::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Default: vector transport by projection
@@ -418,7 +454,7 @@ where
     /// # Returns
     ///
     /// A random point uniformly distributed on the manifold (if possible).
-    fn random_point(&self) -> Point<T, D>;
+    fn random_point(&self) -> Self::Point;
 
     /// Generates a random tangent vector at a given point.
     ///
@@ -431,7 +467,7 @@ where
     /// # Returns
     ///
     /// A random tangent vector at `point` with unit norm.
-    fn random_tangent(&self, point: &Point<T, D>, result: &mut TangentVector<T, D>, workspace: &mut Workspace<T>) -> Result<()>;
+    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector, workspace: &mut Workspace<T>) -> Result<()>;
 
     /// Computes the geodesic distance between two points.
     ///
@@ -448,11 +484,7 @@ where
     /// # Default Implementation
     ///
     /// Uses the norm of the logarithmic map.
-    fn distance(&self, x: &Point<T, D>, y: &Point<T, D>, workspace: &mut Workspace<T>) -> Result<T> {
-        let mut log = TangentVector::<T, D>::zeros_generic(x.shape_generic().0, nalgebra::Const::<1>);
-        self.inverse_retract(x, y, &mut log, workspace)?;
-        self.norm(x, &log)
-    }
+    fn distance(&self, x: &Self::Point, y: &Self::Point, workspace: &mut Workspace<T>) -> Result<T>;
 
     /// Checks if the manifold has a closed-form exponential map.
     ///
@@ -474,16 +506,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_manifolds::TestEuclideanManifold;
+    use crate::utils::test_manifolds::TestEuclideanManifold;
     use crate::types::DVector;
 
     #[test]
     fn test_manifold_basic_properties() {
         let manifold = TestEuclideanManifold::new(10);
-        assert_eq!(<TestEuclideanManifold as Manifold<f64, _>>::name(&manifold), "TestEuclidean");
-        assert_eq!(<TestEuclideanManifold as Manifold<f64, _>>::dimension(&manifold), 10);
-        assert!(!<TestEuclideanManifold as Manifold<f64, _>>::has_exact_exp_log(&manifold));
-        assert!(!<TestEuclideanManifold as Manifold<f64, _>>::is_flat(&manifold));
+        assert_eq!(<TestEuclideanManifold as Manifold<f64>>::name(&manifold), "TestEuclidean");
+        assert_eq!(<TestEuclideanManifold as Manifold<f64>>::dimension(&manifold), 10);
+        assert!(!<TestEuclideanManifold as Manifold<f64>>::has_exact_exp_log(&manifold));
+        assert!(!<TestEuclideanManifold as Manifold<f64>>::is_flat(&manifold));
     }
 
     #[test]

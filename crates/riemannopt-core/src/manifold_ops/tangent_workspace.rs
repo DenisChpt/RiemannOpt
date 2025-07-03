@@ -1,212 +1,180 @@
 //! Tangent space operations using pre-allocated workspace.
+//!
+//! This module provides workspace-aware implementations of tangent space operations
+//! to reduce memory allocations in performance-critical code.
 
 use crate::{
     error::Result,
-    manifold::{Point, TangentVector},
     memory::{Workspace, BufferId},
-    types::Scalar,
+    types::{Scalar, DVector, DMatrix},
 };
-use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, DVector};
 
-/// Project a vector onto the tangent space using workspace.
-pub fn project<T, D>(
-    _point: &Point<T, D>,
-    vector: &TangentVector<T, D>,
-    _workspace: &mut Workspace<T>,
-    result: &mut TangentVector<T, D>,
-) -> Result<()>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    // For Euclidean manifold, projection is identity
-    // More complex manifolds would use workspace for computation
-    result.copy_from(vector);
-    Ok(())
-}
+/// Workspace-aware tangent vector operations for general vectors.
+pub struct TangentVectorWorkspace;
 
-/// Project a vector onto the tangent space in-place using workspace.
-pub fn project_in_place<T, D>(
-    _point: &Point<T, D>,
-    _vector: &mut TangentVector<T, D>,
-    _workspace: &mut Workspace<T>,
-) -> Result<()>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    // For Euclidean manifold, projection is identity
-    // More complex manifolds would modify vector in-place using workspace
-    Ok(())
-}
-
-/// Compute the orthogonal projection matrix for the tangent space using workspace.
-pub fn projection_matrix<T>(
-    point: &DVector<T>,
-    _workspace: &mut Workspace<T>,
-    proj: &mut crate::types::DMatrix<T>,
-) -> Result<()>
-where
-    T: Scalar,
-{
-    let n = point.len();
-    assert_eq!(proj.nrows(), n, "Projection matrix must have correct dimensions");
-    assert_eq!(proj.ncols(), n, "Projection matrix must be square");
-    
-    // For Euclidean space, projection matrix is identity
-    proj.fill(T::zero());
-    proj.fill_diagonal(T::one());
-    
-    Ok(())
-}
-
-/// Orthogonalize a set of tangent vectors using workspace (Gram-Schmidt).
-pub fn orthogonalize<T>(
-    point: &DVector<T>,
-    vectors: &mut [DVector<T>],
-    workspace: &mut Workspace<T>,
-) -> Result<()>
-where
-    T: Scalar,
-{
-    let n = vectors.len();
-    if n == 0 {
-        return Ok(());
+impl TangentVectorWorkspace {
+    /// Projects a vector onto the tangent space of a sphere.
+    ///
+    /// For a sphere, the tangent space at point p consists of all vectors v
+    /// such that <p, v> = 0.
+    pub fn project_sphere<T: Scalar>(
+        point: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        let n = point.len();
+        assert_eq!(vector.len(), n, "Vector dimensions must match");
+        assert_eq!(result.len(), n, "Result dimensions must match");
+        
+        // Compute projection: v - <v, p> * p
+        let inner = point.dot(vector);
+        
+        // Use workspace for temporary storage
+        let temp = workspace.get_or_create_vector(BufferId::Temp1, n);
+        temp.copy_from(point);
+        temp.scale_mut(inner);
+        
+        result.copy_from(vector);
+        result.axpy(-T::one(), &*temp, T::one());
+        
+        Ok(())
     }
     
-    // Use workspace for temporary storage
-    let temp = workspace.get_or_create_vector(BufferId::Temp3, point.len());
+    /// Normalizes a tangent vector in-place.
+    pub fn normalize_in_place<T: Scalar>(
+        vector: &mut DVector<T>,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        let norm = vector.norm();
+        if norm > T::epsilon() {
+            *vector /= norm;
+        }
+        Ok(())
+    }
     
-    for i in 1..n {
-        // Copy current vector to temp
-        temp.copy_from(&vectors[i]);
+    /// Computes the parallel transport of a vector along a geodesic on the sphere.
+    ///
+    /// This is a simplified version that assumes we're on a sphere manifold.
+    pub fn parallel_transport_sphere<T: Scalar>(
+        from_point: &DVector<T>,
+        to_point: &DVector<T>,
+        vector: &DVector<T>,
+        result: &mut DVector<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        let n = from_point.len();
+        assert_eq!(to_point.len(), n, "Point dimensions must match");
+        assert_eq!(vector.len(), n, "Vector dimensions must match");
+        assert_eq!(result.len(), n, "Result dimensions must match");
         
-        // Project out components in directions of previous vectors
-        for j in 0..i {
-            let dot = temp.dot(&vectors[j]);
-            let norm_sq = vectors[j].dot(&vectors[j]);
-            
-            if norm_sq > T::epsilon() {
-                let scale = dot / norm_sq;
-                // Update vectors[i] using temp value, not its own value
-                temp.axpy(-scale, &vectors[j], T::one());
-            }
+        // For the sphere, parallel transport along a geodesic from p to q
+        // of a tangent vector v at p is given by:
+        // PT(v) = v - 2 * <v, q> / (1 + <p, q>) * (p + q)
+        
+        let p_dot_q = from_point.dot(to_point);
+        let v_dot_q = vector.dot(to_point);
+        
+        if num_traits::Float::abs(T::one() + p_dot_q) < T::epsilon() {
+            // Points are antipodal, parallel transport is undefined
+            result.fill(T::zero());
+            return Ok(());
         }
         
-        // Copy result back
-        vectors[i].copy_from(&*temp);
+        let scale = <T as Scalar>::from_f64(2.0) * v_dot_q / (T::one() + p_dot_q);
+        
+        // Use workspace for p + q
+        let temp = workspace.get_or_create_vector(BufferId::Temp1, n);
+        temp.copy_from(from_point);
+        temp.axpy(T::one(), to_point, T::one());
+        
+        result.copy_from(vector);
+        result.axpy(-scale, &*temp, T::one());
+        
+        Ok(())
     }
     
-    Ok(())
-}
-
-/// Compute the parallel transport of a vector along a curve using workspace.
-pub fn parallel_transport<T, D>(
-    _from_point: &Point<T, D>,
-    _to_point: &Point<T, D>,
-    vector: &TangentVector<T, D>,
-    _workspace: &mut Workspace<T>,
-    result: &mut TangentVector<T, D>,
-) -> Result<()>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    // For Euclidean manifold, parallel transport is identity
-    // More complex manifolds would use workspace for computation
-    result.copy_from(vector);
-    Ok(())
-}
-
-/// Project a vector onto the tangent space (allocating version).
-pub fn project_alloc<T, D>(
-    point: &Point<T, D>,
-    vector: &TangentVector<T, D>,
-) -> Result<TangentVector<T, D>>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    let mut workspace = Workspace::new();
-    let mut result = vector.clone();
-    project(point, vector, &mut workspace, &mut result)?;
-    Ok(result)
-}
-
-/// Compute the orthogonal projection matrix (allocating version).
-pub fn projection_matrix_alloc<T>(
-    point: &DVector<T>,
-) -> Result<crate::types::DMatrix<T>>
-where
-    T: Scalar,
-{
-    let n = point.len();
-    let mut workspace = Workspace::new();
-    let mut proj = crate::types::DMatrix::zeros(n, n);
-    projection_matrix(point, &mut workspace, &mut proj)?;
-    Ok(proj)
-}
-
-/// Orthogonalize a set of tangent vectors (allocating version).
-pub fn orthogonalize_alloc<T>(
-    point: &DVector<T>,
-    vectors: Vec<DVector<T>>,
-) -> Result<Vec<DVector<T>>>
-where
-    T: Scalar,
-{
-    let mut workspace = Workspace::with_size(point.len());
-    let mut result = vectors;
-    orthogonalize(point, &mut result, &mut workspace)?;
-    Ok(result)
-}
-
-/// Compute the parallel transport (allocating version).
-pub fn parallel_transport_alloc<T, D>(
-    from_point: &Point<T, D>,
-    to_point: &Point<T, D>,
-    vector: &TangentVector<T, D>,
-) -> Result<TangentVector<T, D>>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    let mut workspace = Workspace::new();
-    let mut result = vector.clone();
-    parallel_transport(from_point, to_point, vector, &mut workspace, &mut result)?;
-    Ok(result)
-}
-
-/// Extension trait for tangent space operations with workspace.
-pub trait TangentWorkspace<T, D>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    /// Project onto tangent space with workspace.
-    fn project_workspace(
-        &self,
-        point: &Point<T, D>,
-        vector: &TangentVector<T, D>,
+    /// Computes a random tangent vector at a point on the sphere.
+    pub fn random_tangent_sphere<T: Scalar>(
+        point: &DVector<T>,
+        result: &mut DVector<T>,
         workspace: &mut Workspace<T>,
-        result: &mut TangentVector<T, D>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let n = point.len();
+        assert_eq!(result.len(), n, "Result dimensions must match");
+        
+        // Generate a random vector
+        // Note: This is a placeholder - proper random generation would be needed
+        for i in 0..n {
+            result[i] = <T as Scalar>::from_f64(((i + 1) as f64).sin());
+        }
+        
+        // Project onto tangent space
+        let temp_vector = {
+            let temp_result = workspace.get_or_create_vector(BufferId::Temp2, result.len());
+            temp_result.copy_from(result);
+            temp_result.clone_owned()
+        };
+        Self::project_sphere(point, &temp_vector, result, workspace)?;
+        
+        // Normalize
+        Self::normalize_in_place(result, workspace)?;
+        
+        Ok(())
+    }
+}
+
+/// Workspace-aware tangent operations for matrix manifolds.
+pub struct MatrixTangentWorkspace;
+
+impl MatrixTangentWorkspace {
+    /// Projects a matrix onto the tangent space of the Stiefel manifold.
+    ///
+    /// For the Stiefel manifold, the tangent space at X consists of matrices Z
+    /// such that X^T Z + Z^T X = 0 (skew-symmetric).
+    pub fn project_stiefel<T: Scalar>(
+        point: &DMatrix<T>,
+        vector: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        let n = point.nrows();
+        let p = point.ncols();
+        assert_eq!(vector.nrows(), n, "Vector row dimensions must match");
+        assert_eq!(vector.ncols(), p, "Vector column dimensions must match");
+        
+        // Compute projection: Z - X * (X^T * Z + Z^T * X) / 2
+        let mut temp1 = workspace.acquire_temp_matrix(p, p);
+        let mut temp2 = workspace.acquire_temp_matrix(p, p);
+        
+        // temp1 = X^T * Z
+        temp1.gemm(T::one(), &point.transpose(), vector, T::zero());
+        
+        // temp2 = Z^T * X
+        temp2.gemm(T::one(), &vector.transpose(), point, T::zero());
+        
+        // temp1 = (X^T * Z + Z^T * X) / 2
+        *temp1 += &*temp2;
+        *temp1 *= <T as Scalar>::from_f64(0.5);
+        
+        // result = Z - X * temp1
+        result.copy_from(vector);
+        result.gemm(-T::one(), point, &temp1, T::one());
+        
+        Ok(())
+    }
     
-    /// Parallel transport with workspace.
-    fn parallel_transport_workspace(
-        &self,
-        from: &Point<T, D>,
-        to: &Point<T, D>,
-        vector: &TangentVector<T, D>,
-        workspace: &mut Workspace<T>,
-        result: &mut TangentVector<T, D>,
-    ) -> Result<()>;
+    /// Normalizes a matrix tangent vector with respect to the Frobenius norm.
+    pub fn normalize_frobenius_in_place<T: Scalar>(
+        matrix: &mut DMatrix<T>,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        let norm = matrix.norm();
+        if norm > T::epsilon() {
+            *matrix /= norm;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -215,62 +183,69 @@ mod tests {
     use approx::assert_relative_eq;
     
     #[test]
-    fn test_project_workspace() {
-        let n = 5;
-        let point = DVector::<f64>::zeros(n);
-        let vector = DVector::from_element(n, 1.0);
-        let mut workspace = Workspace::with_size(n);
+    fn test_sphere_projection() {
+        let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+        let vector = DVector::from_vec(vec![1.0, 1.0, 0.0]);
+        let mut result = DVector::zeros(3);
+        let mut workspace = Workspace::new();
         
-        let mut projected = DVector::<f64>::zeros(n);
-        project(&point, &vector, &mut workspace, &mut projected).unwrap();
+        TangentVectorWorkspace::project_sphere(&point, &vector, &mut result, &mut workspace).unwrap();
         
-        // For Euclidean space, projection is identity
-        for i in 0..n {
-            assert_relative_eq!(projected[i], vector[i], epsilon = 1e-10);
-        }
+        // Result should be orthogonal to point
+        let inner = point.dot(&result);
+        assert_relative_eq!(inner, 0.0, epsilon = 1e-10);
+        
+        // Should be [0, 1, 0]
+        assert_relative_eq!(result[0], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(result[1], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(result[2], 0.0, epsilon = 1e-10);
     }
     
     #[test]
-    fn test_orthogonalize_workspace() {
-        let point = DVector::<f64>::zeros(3);
-        let mut vectors = vec![
-            DVector::from_vec(vec![1.0, 1.0, 0.0]),
-            DVector::from_vec(vec![1.0, 0.0, 1.0]),
-            DVector::from_vec(vec![0.0, 1.0, 1.0]),
-        ];
-        let mut workspace = Workspace::with_size(3);
+    fn test_parallel_transport_sphere() {
+        let sqrt2 = 2.0_f64.sqrt() / 2.0;
+        let from_point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+        let to_point = DVector::from_vec(vec![sqrt2, sqrt2, 0.0]);
+        let vector = DVector::from_vec(vec![0.0, 1.0, 0.0]);
+        let mut result = DVector::zeros(3);
+        let mut workspace = Workspace::new();
         
-        orthogonalize(&point, &mut vectors, &mut workspace).unwrap();
-        
-        // Check orthogonality
-        for i in 0..3 {
-            for j in 0..i {
-                let dot = vectors[i].dot(&vectors[j]);
-                assert!(dot.abs() < 1e-10, "Vectors {} and {} not orthogonal: dot = {}", i, j, dot);
-            }
-        }
-    }
-    
-    #[test]
-    fn test_parallel_transport_workspace() {
-        let n = 4;
-        let from_point = DVector::<f64>::zeros(n);
-        let to_point = DVector::from_element(n, 1.0);
-        let vector = DVector::from_element(n, 2.0);
-        let mut workspace = Workspace::with_size(n);
-        
-        let mut transported = DVector::<f64>::zeros(n);
-        parallel_transport(
+        TangentVectorWorkspace::parallel_transport_sphere(
             &from_point,
             &to_point,
             &vector,
+            &mut result,
             &mut workspace,
-            &mut transported
         ).unwrap();
         
-        // For Euclidean space, parallel transport is identity
-        for i in 0..n {
-            assert_relative_eq!(transported[i], vector[i], epsilon = 1e-10);
+        // Result should be in tangent space at to_point
+        let inner = to_point.dot(&result);
+        assert_relative_eq!(inner, 0.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_stiefel_projection() {
+        let point = DMatrix::from_row_slice(3, 2, &[
+            1.0, 0.0,
+            0.0, 1.0,
+            0.0, 0.0,
+        ]);
+        let vector = DMatrix::from_row_slice(3, 2, &[
+            0.1, 0.2,
+            0.3, 0.4,
+            0.5, 0.6,
+        ]);
+        let mut result = DMatrix::zeros(3, 2);
+        let mut workspace = Workspace::with_size(20);
+        
+        MatrixTangentWorkspace::project_stiefel(&point, &vector, &mut result, &mut workspace).unwrap();
+        
+        // Check that X^T * Z + Z^T * X ≈ 0
+        let check = point.transpose() * &result + result.transpose() * &point;
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_relative_eq!(check[(i, j)], 0.0, epsilon = 1e-10);
+            }
         }
     }
 }

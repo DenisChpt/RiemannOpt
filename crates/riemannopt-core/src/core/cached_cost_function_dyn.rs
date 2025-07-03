@@ -11,7 +11,7 @@ use crate::{
     types::{Scalar, constants},
     compute::cpu::{get_dispatcher, SimdBackend},
 };
-use nalgebra::{DVector, DMatrix, Dyn};
+use nalgebra::{DVector, DMatrix};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -78,7 +78,7 @@ impl<T: Scalar> LastPointCache<T> {
 /// floating-point precision issues.
 pub struct CachedDynamicCostFunction<F>
 where
-    F: CostFunction<f64, Dyn>,
+    F: CostFunction<f64>,
 {
     /// The underlying cost function
     inner: F,
@@ -115,7 +115,7 @@ impl Default for CacheConfig {
 
 impl<F> Debug for CachedDynamicCostFunction<F>
 where
-    F: CostFunction<f64, Dyn>,
+    F: CostFunction<f64>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CachedDynamicCostFunction")
@@ -127,7 +127,7 @@ where
 
 impl<F> CachedDynamicCostFunction<F>
 where
-    F: CostFunction<f64, Dyn>,
+    F: CostFunction<f64>,
 {
     /// Creates a new cached cost function with default configuration.
     pub fn new(inner: F) -> Self {
@@ -160,11 +160,14 @@ where
     }
 }
 
-impl<F> CostFunction<f64, Dyn> for CachedDynamicCostFunction<F>
+impl<F> CostFunction<f64> for CachedDynamicCostFunction<F>
 where
-    F: CostFunction<f64, Dyn>,
+    F: CostFunction<f64, Point = DVector<f64>, TangentVector = DVector<f64>>,
 {
-    fn cost(&self, point: &DVector<f64>) -> Result<f64> {
+    type Point = DVector<f64>;
+    type TangentVector = DVector<f64>;
+
+    fn cost(&self, point: &Self::Point) -> Result<f64> {
         if !self.config.cache_values {
             return self.inner.cost(point);
         }
@@ -206,9 +209,9 @@ where
 
     fn cost_and_gradient(
         &self,
-        point: &DVector<f64>,
+        point: &Self::Point,
         workspace: &mut Workspace<f64>,
-        gradient: &mut DVector<f64>,
+        gradient: &mut Self::TangentVector,
     ) -> Result<f64> {
         if !self.config.cache_values && !self.config.cache_gradients {
             return self.inner.cost_and_gradient(point, workspace, gradient);
@@ -242,7 +245,7 @@ where
         Ok(cost)
     }
 
-    fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
+    fn cost_and_gradient_alloc(&self, point: &Self::Point) -> Result<(f64, Self::TangentVector)> {
         if !self.config.cache_values && !self.config.cache_gradients {
             return self.inner.cost_and_gradient_alloc(point);
         }
@@ -274,7 +277,7 @@ where
         Ok((cost, gradient))
     }
 
-    fn gradient(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
+    fn gradient(&self, point: &Self::Point) -> Result<Self::TangentVector> {
         if !self.config.cache_gradients {
             return self.inner.gradient(point);
         }
@@ -324,16 +327,21 @@ where
         Ok(gradient)
     }
 
-    fn hessian(&self, point: &DVector<f64>) -> Result<DMatrix<f64>> {
+    fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
+        // Finite difference gradient is never cached since it's an approximation
+        self.inner.gradient_fd_alloc(point)
+    }
+
+    fn hessian(&self, point: &Self::Point) -> Result<DMatrix<f64>> {
         // Hessians are typically too large to cache effectively
         self.inner.hessian(point)
     }
 
     fn hessian_vector_product(
         &self,
-        point: &DVector<f64>,
-        vector: &DVector<f64>,
-    ) -> Result<DVector<f64>> {
+        point: &Self::Point,
+        vector: &Self::TangentVector,
+    ) -> Result<Self::TangentVector> {
         // HVP results depend on both point and vector, making caching complex
         self.inner.hessian_vector_product(point, vector)
     }
