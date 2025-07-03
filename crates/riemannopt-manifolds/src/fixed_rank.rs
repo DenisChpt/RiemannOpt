@@ -1,50 +1,140 @@
-//! Fixed-rank manifold
+//! # Fixed-Rank Manifold M_k(m,n)
 //!
-//! The manifold of m×n matrices with fixed rank k.
+//! The manifold M_k(m,n) of m×n matrices with fixed rank k forms a smooth
+//! submanifold of ℝ^{m×n}. It provides a geometric framework for low-rank
+//! matrix optimization problems.
+//!
+//! ## Mathematical Definition
+//!
+//! The fixed-rank manifold is formally defined as:
+//! ```text
+//! M_k(m,n) = {X ∈ ℝ^{m×n} : rank(X) = k}
+//! ```
+//!
+//! ## Parametrization via SVD
+//!
+//! Points are represented using the compact SVD:
+//! ```text
+//! X = UΣV^T
+//! ```
+//! where:
+//! - U ∈ St(m,k): Left singular vectors
+//! - Σ ∈ ℝ^{k×k}: Diagonal matrix of singular values
+//! - V ∈ St(n,k): Right singular vectors
+//!
+//! This gives the quotient structure:
+//! ```text
+//! M_k(m,n) ≅ (St(m,k) × ℝ₊^k × St(n,k)) / O(k)
+//! ```
+//!
+//! ## Tangent Space
+//!
+//! The tangent space at X = UΣV^T consists of matrices:
+//! ```text
+//! T_X M_k = {U_⊥MV^T + UNV_⊥^T + UΩV^T : M ∈ ℝ^{(m-k)×k}, N ∈ ℝ^{k×(n-k)}, Ω ∈ ℝ^{k×k}}
+//! ```
+//! where U_⊥ and V_⊥ are orthogonal complements.
+//!
+//! ## Riemannian Metric
+//!
+//! The standard metric is the Euclidean metric restricted to the tangent space:
+//! ```text
+//! g_X(ξ, η) = tr(ξ^T η)
+//! ```
+//!
+//! ## Retractions
+//!
+//! ### SVD-based Retraction
+//! ```text
+//! R_X(ξ) = best rank-k approximation of (X + ξ)
+//! ```
+//!
+//! ### Orthographic Retraction
+//! For X = UΣV^T and tangent ξ = UMV^T + U_⊥NV^T + UN^TV_⊥^T:
+//! ```text
+//! R_X(ξ) = (U + U_⊥NΣ⁻¹)(Σ + M)(V + V_⊥N^TΣ⁻¹)^T
+//! ```
+//!
+//! ## Geometric Properties
+//!
+//! - **Dimension**: dim(M_k) = k(m + n - k)
+//! - **Non-closed**: M_k is not closed in ℝ^{m×n}
+//! - **Embedded submanifold**: When viewed as subset of ℝ^{m×n}
+//! - **Quotient manifold**: Inherits structure from product of Stiefel manifolds
+//!
+//! ## Applications
+//!
+//! 1. **Matrix Completion**: Netflix problem, collaborative filtering
+//! 2. **System Identification**: Low-order dynamical systems
+//! 3. **Model Reduction**: Reduced-order modeling
+//! 4. **Computer Vision**: Structure from motion, face recognition
+//! 5. **Data Compression**: Low-rank approximation
+//! 6. **Machine Learning**: Low-rank neural networks
+//!
+//! ## Numerical Considerations
+//!
+//! This implementation ensures:
+//! - **Efficient storage** using factored form UΣV^T
+//! - **Numerical stability** in SVD computations
+//! - **Proper handling** of small singular values
+//! - **Orthogonality preservation** in U and V factors
+//!
+//! ## Example Usage
+//!
+//! ```rust,no_run
+//! use riemannopt_manifolds::FixedRank;
+//! use riemannopt_core::manifold::Manifold;
+//! use riemannopt_core::memory::workspace::Workspace;
+//! use nalgebra::DMatrix;
+//!
+//! // Create M_2(4,3) - 4×3 matrices of rank 2
+//! let manifold = FixedRank::new(4, 3, 2)?;
+//!
+//! // Random rank-2 matrix
+//! let x = manifold.random_point();
+//!
+//! // Convert to matrix form
+//! let x_mat = manifold.vector_to_matrix(&x);
+//! assert_eq!(x_mat.rank(1e-10), 2);
+//! # Ok::<(), riemannopt_core::error::ManifoldError>(())
+//! ```
 
-use nalgebra::{DMatrix, Dyn, SVD};
+use nalgebra::{DMatrix, DVector, SVD};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
-    types::{Scalar, DVector},
-    memory::Workspace,
+    memory::workspace::Workspace,
+    types::Scalar,
 };
 
-/// The fixed-rank manifold of m×n matrices with rank k.
+/// The fixed-rank manifold M_k(m,n) of m×n matrices with rank k.
 ///
-/// # Mathematical Definition
+/// This structure represents matrices of fixed rank using their SVD factorization,
+/// providing efficient storage and computation for low-rank matrix optimization.
 ///
-/// The fixed-rank manifold is defined as:
-/// ```text
-/// M_k(m,n) = {X ∈ ℝ^{m×n} : rank(X) = k}
-/// ```
+/// # Type Parameters
 ///
-/// This manifold is typically parametrized using the SVD decomposition:
-/// ```text
-/// X = USV^T
-/// ```
-/// where U ∈ St(m,k), S ∈ ℝ^{k×k} is diagonal, and V ∈ St(n,k).
+/// The manifold is generic over the scalar type T through the Manifold trait.
 ///
-/// # Properties
+/// # Invariants
 ///
-/// - **Dimension**: k(m + n - k)
-/// - **Tangent space**: Matrices of the form UMV^T + U_⊥NV^T + UN^TV_⊥^T
-/// - **Metric**: Euclidean metric restricted to tangent space
-///
-/// # Applications
-///
-/// - Low-rank matrix completion
-/// - Collaborative filtering
-/// - System identification
-/// - Model reduction
+/// - `m ≥ 1, n ≥ 1`: Matrix dimensions must be positive
+/// - `k ≥ 1`: Rank must be positive
+/// - `k ≤ min(m, n)`: Rank cannot exceed matrix dimensions
+/// - Points are stored as vectors containing U, Σ, V factors
 #[derive(Debug, Clone)]
 pub struct FixedRank {
+    /// Number of rows
     m: usize,
+    /// Number of columns
     n: usize,
+    /// Rank
     k: usize,
+    /// Numerical tolerance
+    tolerance: f64,
 }
 
 /// Representation of a point on the fixed-rank manifold
@@ -154,46 +244,96 @@ impl<T: Scalar> FixedRankPoint<T> {
 }
 
 impl FixedRank {
-    /// Create a new fixed-rank manifold.
+    /// Creates a new fixed-rank manifold M_k(m,n).
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - Number of rows (must be ≥ 1)
+    /// * `n` - Number of columns (must be ≥ 1)
+    /// * `k` - Rank (must satisfy 1 ≤ k ≤ min(m, n))
+    ///
+    /// # Returns
+    ///
+    /// A fixed-rank manifold with dimension k(m + n - k).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ManifoldError::InvalidParameter` if:
+    /// - Any dimension is zero
+    /// - k > min(m, n)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use riemannopt_manifolds::FixedRank;
+    /// // Create M_2(5,4) - 5×4 matrices of rank 2
+    /// let manifold = FixedRank::new(5, 4, 2)?;
+    /// assert_eq!(manifold.matrix_dimensions(), (5, 4, 2));
+    /// assert_eq!(manifold.manifold_dim(), 2*(5+4-2)); // 14
+    /// # Ok::<(), riemannopt_core::error::ManifoldError>(())
+    /// ```
+    pub fn new(m: usize, n: usize, k: usize) -> Result<Self> {
+        if m == 0 || n == 0 || k == 0 {
+            return Err(ManifoldError::invalid_parameter(
+                "Fixed-rank manifold requires m ≥ 1, n ≥ 1, and k ≥ 1"
+            ));
+        }
+        
+        if k > m.min(n) {
+            return Err(ManifoldError::invalid_parameter(
+                format!("Rank k={} cannot exceed min(m={}, n={})", k, m, n)
+            ));
+        }
+        
+        Ok(Self { m, n, k, tolerance: 1e-12 })
+    }
+
+    /// Creates a fixed-rank manifold with custom tolerance.
     ///
     /// # Arguments
     ///
     /// * `m` - Number of rows
     /// * `n` - Number of columns
-    /// * `k` - Rank (must satisfy k ≤ min(m, n))
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if k > min(m, n) or if any dimension is zero.
-    pub fn new(m: usize, n: usize, k: usize) -> Result<Self> {
+    /// * `k` - Rank
+    /// * `tolerance` - Numerical tolerance for rank checks
+    pub fn with_tolerance(m: usize, n: usize, k: usize, tolerance: f64) -> Result<Self> {
         if m == 0 || n == 0 || k == 0 {
-            return Err(ManifoldError::invalid_point(
-                "Fixed-rank manifold requires m > 0, n > 0, and k > 0"
+            return Err(ManifoldError::invalid_parameter(
+                "Fixed-rank manifold requires m ≥ 1, n ≥ 1, and k ≥ 1"
             ));
         }
         
         if k > m.min(n) {
-            return Err(ManifoldError::invalid_point(
+            return Err(ManifoldError::invalid_parameter(
                 format!("Rank k={} cannot exceed min(m={}, n={})", k, m, n)
             ));
         }
         
-        Ok(Self { m, n, k })
+        if tolerance <= 0.0 || tolerance >= 1.0 {
+            return Err(ManifoldError::invalid_parameter(
+                "Tolerance must be in (0, 1)"
+            ));
+        }
+        
+        Ok(Self { m, n, k, tolerance })
     }
 
-    /// Get the number of rows
-    pub fn m(&self) -> usize {
-        self.m
+    /// Returns the matrix dimensions (m, n, k).
+    #[inline]
+    pub fn matrix_dimensions(&self) -> (usize, usize, usize) {
+        (self.m, self.n, self.k)
     }
 
-    /// Get the number of columns
-    pub fn n(&self) -> usize {
-        self.n
+    /// Returns the manifold dimension k(m + n - k).
+    #[inline]
+    pub fn manifold_dim(&self) -> usize {
+        self.k * (self.m + self.n - self.k)
     }
 
-    /// Get the rank
-    pub fn k(&self) -> usize {
-        self.k
+    /// Returns the size of the vectorized representation.
+    #[inline]
+    fn vector_size(&self) -> usize {
+        self.m * self.k + self.k + self.n * self.k
     }
 
     /// Project the U and V factors onto the Stiefel manifold
@@ -206,9 +346,75 @@ impl FixedRank {
         let qr_v = v.clone().qr();
         *v = qr_v.q();
     }
+
+    /// Validates that a matrix has the correct fixed rank.
+    ///
+    /// # Mathematical Check
+    ///
+    /// Verifies that rank(X) = k using SVD.
+    ///
+    /// # Errors
+    ///
+    /// - `DimensionMismatch`: If matrix dimensions don't match (m,n)
+    /// - `InvalidPoint`: If rank(X) ≠ k
+    pub fn check_matrix<T: Scalar>(&self, x: &DMatrix<T>) -> Result<()> {
+        if x.nrows() != self.m || x.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                self.m * self.n,
+                x.nrows() * x.ncols()
+            ));
+        }
+
+        // Check rank using SVD
+        let svd = x.clone().svd(true, true);
+        let s = &svd.singular_values;
+        
+        // Count non-zero singular values
+        let mut rank = 0;
+        for i in 0..s.len().min(self.m).min(self.n) {
+            if s[i] > <T as Scalar>::from_f64(self.tolerance) {
+                rank += 1;
+            }
+        }
+        
+        if rank != self.k {
+            return Err(ManifoldError::invalid_point(format!(
+                "Matrix rank {} ≠ required rank {}",
+                rank, self.k
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Validates that a matrix is a valid tangent vector at X.
+    ///
+    /// For now this is a placeholder that accepts all vectors.
+    ///
+    /// # Errors
+    ///
+    /// - `DimensionMismatch`: If dimensions don't match
+    pub fn check_tangent<T: Scalar>(&self, x: &DMatrix<T>, z: &DMatrix<T>) -> Result<()> {
+        self.check_matrix(x)?;
+
+        if z.nrows() != self.m || z.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                self.m * self.n,
+                z.nrows() * z.ncols()
+            ));
+        }
+
+        // Check tangent space constraint
+        // For fixed-rank, tangent vectors have specific structure
+
+        Ok(())
+    }
 }
 
-impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
+impl<T: Scalar> Manifold<T> for FixedRank {
+    type Point = DVector<T>;
+    type TangentVector = DVector<T>;
+
     fn name(&self) -> &str {
         "FixedRank"
     }
@@ -217,12 +423,8 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         self.k * (self.m + self.n - self.k)
     }
 
-    fn ambient_dimension(&self) -> usize {
-        self.m * self.k + self.k + self.n * self.k
-    }
-
-    fn is_point_on_manifold(&self, point: &DVector<T>, tol: T) -> bool {
-        if point.len() != <Self as Manifold<T, Dyn>>::ambient_dimension(self) {
+    fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
+        if point.len() != self.vector_size() {
             return false;
         }
         
@@ -238,7 +440,7 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
                 let u_val = if i == j { u_gram[(i, j)] - T::one() } else { u_gram[(i, j)] };
                 let v_val = if i == j { v_gram[(i, j)] - T::one() } else { v_gram[(i, j)] };
                 
-                if Float::abs(u_val) > tol || Float::abs(v_val) > tol {
+                if <T as Float>::abs(u_val) > tol || <T as Float>::abs(v_val) > tol {
                     return false;
                 }
             }
@@ -254,12 +456,12 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         true
     }
 
-    fn project_point(&self, point: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) {
-        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+        let vec_size = self.vector_size();
         
         // Ensure result has correct size
-        if result.len() != ambient_dim {
-            *result = DVector::zeros(ambient_dim);
+        if result.len() != vec_size {
+            *result = DVector::zeros(vec_size);
         }
         
         let mut pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
@@ -280,22 +482,22 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn project_tangent(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
-        result: &mut DVector<T>,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
+        result: &mut Self::TangentVector,
         _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
-        if point.len() != ambient_dim || vector.len() != ambient_dim {
+        let vec_size = self.vector_size();
+        if point.len() != vec_size || vector.len() != vec_size {
             return Err(ManifoldError::dimension_mismatch(
-                "Point and vector must have correct dimensions",
-                format!("expected: {}, got point: {}, vector: {}", ambient_dim, point.len(), vector.len()),
+                vec_size,
+                point.len().max(vector.len())
             ));
         }
         
         // Ensure result has correct size
-        if result.len() != ambient_dim {
-            *result = DVector::zeros(ambient_dim);
+        if result.len() != vec_size {
+            *result = DVector::zeros(vec_size);
         }
         
         let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
@@ -314,9 +516,9 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn inner_product(
         &self,
-        point: &DVector<T>,
-        u: &DVector<T>,
-        v: &DVector<T>,
+        point: &Self::Point,
+        u: &Self::TangentVector,
+        v: &Self::TangentVector,
     ) -> Result<T> {
         let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
         let u_tan = FixedRankPoint::from_vector(u, self.m, self.n, self.k);
@@ -349,22 +551,22 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn retract(
         &self,
-        point: &DVector<T>,
-        tangent: &DVector<T>,
-        result: &mut DVector<T>,
+        point: &Self::Point,
+        tangent: &Self::TangentVector,
+        result: &mut Self::Point,
         _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
-        if point.len() != ambient_dim || tangent.len() != ambient_dim {
+        let vec_size = self.vector_size();
+        if point.len() != vec_size || tangent.len() != vec_size {
             return Err(ManifoldError::dimension_mismatch(
-                "Point and tangent must have correct dimensions",
-                format!("expected: {}, got point: {}, tangent: {}", ambient_dim, point.len(), tangent.len()),
+                vec_size,
+                point.len().max(tangent.len())
             ));
         }
         
         // Ensure result has correct size
-        if result.len() != ambient_dim {
-            *result = DVector::zeros(ambient_dim);
+        if result.len() != vec_size {
+            *result = DVector::zeros(vec_size);
         }
         
         let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
@@ -394,16 +596,16 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn euclidean_to_riemannian_gradient(
         &self,
-        point: &DVector<T>,
-        euclidean_grad: &DVector<T>,
-        result: &mut DVector<T>,
+        point: &Self::Point,
+        euclidean_grad: &Self::TangentVector,
+        result: &mut Self::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // For the canonical metric, just project to tangent space
         self.project_tangent(point, euclidean_grad, result, workspace)
     }
 
-    fn random_point(&self) -> DVector<T> {
+    fn random_point(&self) -> Self::Point {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -438,18 +640,18 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         pt.to_vector()
     }
 
-    fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>, _workspace: &mut Workspace<T>) -> Result<()> {
-        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
-        if point.len() != ambient_dim {
+    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector, _workspace: &mut Workspace<T>) -> Result<()> {
+        let vec_size = self.vector_size();
+        if point.len() != vec_size {
             return Err(ManifoldError::dimension_mismatch(
-                "Point must have correct dimension",
-                format!("expected: {}, got: {}", ambient_dim, point.len()),
+                vec_size,
+                point.len()
             ));
         }
         
         // Ensure result has correct size
-        if result.len() != ambient_dim {
-            *result = DVector::zeros(ambient_dim);
+        if result.len() != vec_size {
+            *result = DVector::zeros(vec_size);
         }
         
         let mut rng = rand::thread_rng();
@@ -484,15 +686,15 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn is_vector_in_tangent_space(
         &self,
-        point: &DVector<T>,
-        vector: &DVector<T>,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
         tol: T,
     ) -> bool {
         if !self.is_point_on_manifold(point, tol) {
             return false;
         }
         
-        if vector.len() != <Self as Manifold<T, Dyn>>::ambient_dimension(self) {
+        if vector.len() != self.vector_size() {
             return false;
         }
         
@@ -506,10 +708,10 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
         // Check that projections are skew-symmetric
         for i in 0..self.k {
             for j in 0..self.k {
-                if Float::abs(u_proj[(i, j)] + u_proj[(j, i)]) > tol {
+                if <T as Float>::abs(u_proj[(i, j)] + u_proj[(j, i)]) > tol {
                     return false;
                 }
-                if Float::abs(v_proj[(i, j)] + v_proj[(j, i)]) > tol {
+                if <T as Float>::abs(v_proj[(i, j)] + v_proj[(j, i)]) > tol {
                     return false;
                 }
             }
@@ -520,22 +722,22 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn inverse_retract(
         &self,
-        point: &DVector<T>,
-        other: &DVector<T>,
-        result: &mut DVector<T>,
+        point: &Self::Point,
+        other: &Self::Point,
+        result: &mut Self::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
-        if point.len() != ambient_dim || other.len() != ambient_dim {
+        let vec_size = self.vector_size();
+        if point.len() != vec_size || other.len() != vec_size {
             return Err(ManifoldError::dimension_mismatch(
-                "Points must have correct dimensions",
-                format!("expected: {}, got point: {}, other: {}", ambient_dim, point.len(), other.len()),
+                vec_size,
+                point.len().max(other.len())
             ));
         }
         
         // Ensure result has correct size
-        if result.len() != ambient_dim {
-            *result = DVector::zeros(ambient_dim);
+        if result.len() != vec_size {
+            *result = DVector::zeros(vec_size);
         }
         
         // Simple approximation: project the difference
@@ -545,31 +747,147 @@ impl<T: Scalar> Manifold<T, Dyn> for FixedRank {
 
     fn parallel_transport(
         &self,
-        from: &DVector<T>,
-        to: &DVector<T>,
-        vector: &DVector<T>,
-        result: &mut DVector<T>,
+        from: &Self::Point,
+        to: &Self::Point,
+        vector: &Self::TangentVector,
+        result: &mut Self::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let ambient_dim = <Self as Manifold<T, Dyn>>::ambient_dimension(self);
-        if from.len() != ambient_dim || to.len() != ambient_dim || vector.len() != ambient_dim {
+        let vec_size = self.vector_size();
+        if from.len() != vec_size || to.len() != vec_size || vector.len() != vec_size {
             return Err(ManifoldError::dimension_mismatch(
-                "All vectors must have correct dimensions",
-                format!("expected: {}", ambient_dim),
+                vec_size,
+                from.len().max(to.len()).max(vector.len())
             ));
         }
         
         // Ensure result has correct size
-        if result.len() != ambient_dim {
-            *result = DVector::zeros(ambient_dim);
+        if result.len() != vec_size {
+            *result = DVector::zeros(vec_size);
         }
         
-        // Simple approximation: project vector to tangent space at destination
+        // For fixed-rank manifold, we use projection to tangent space at destination
+        // This is an approximation; exact parallel transport requires more computation
         self.project_tangent(to, vector, result, workspace)
+    }
+    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+        if x.len() != self.vector_size() || y.len() != self.vector_size() {
+            return Err(ManifoldError::dimension_mismatch(
+                self.vector_size(),
+                x.len().max(y.len())
+            ));
+        }
+        
+        // Use Frobenius distance in the embedded space
+        let diff = y - x;
+        Ok(<T as Float>::sqrt(diff.dot(&diff)))
+    }
+
+    fn has_exact_exp_log(&self) -> bool {
+        false // Fixed-rank doesn't have closed-form exp/log
+    }
+
+    fn is_flat(&self) -> bool {
+        false // Fixed-rank is curved
     }
 }
 
-// MatrixManifold implementation for efficient matrix operations
+impl FixedRank {
+    /// Creates a random rank-k matrix using Gaussian sampling.
+    ///
+    /// # Returns
+    /// 
+    /// A random m×n matrix of rank k.
+    pub fn random_matrix<T: Scalar>(&self) -> DMatrix<T> {
+        let point = <Self as Manifold<T>>::random_point(self);
+        let pt = FixedRankPoint::<T>::from_vector(&point, self.m, self.n, self.k);
+        pt.to_matrix()
+    }
+
+    /// Computes the best rank-k approximation of a matrix.
+    ///
+    /// Uses SVD to compute the best rank-k approximation in Frobenius norm.
+    ///
+    /// # Arguments
+    ///
+    /// * `mat` - Input matrix
+    ///
+    /// # Returns
+    ///
+    /// The best rank-k approximation.
+    pub fn approximate<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<DMatrix<T>> {
+        if mat.nrows() != self.m || mat.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                self.m * self.n,
+                mat.nrows() * mat.ncols()
+            ));
+        }
+        
+        let pt = FixedRankPoint::<T>::from_matrix(mat, self.k)?;
+        Ok(pt.to_matrix())
+    }
+
+    /// Computes the approximation error for a given matrix.
+    ///
+    /// # Mathematical Formula
+    ///
+    /// For a matrix A and its rank-k approximation A_k:
+    /// ```text
+    /// error = ‖A - A_k‖_F = √(σ_{k+1}² + ... + σ_{min(m,n)}²)
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `mat` - Input matrix
+    ///
+    /// # Returns
+    ///
+    /// The Frobenius norm of the approximation error.
+    pub fn approximation_error<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<T> {
+        if mat.nrows() != self.m || mat.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                self.m * self.n,
+                mat.nrows() * mat.ncols()
+            ));
+        }
+        
+        let svd = mat.clone().svd(true, true);
+        let s = &svd.singular_values;
+        
+        // Sum of squared singular values beyond rank k
+        let mut error_sq = T::zero();
+        for i in self.k..s.len().min(self.m).min(self.n) {
+            error_sq = error_sq + s[i] * s[i];
+        }
+        
+        Ok(<T as Float>::sqrt(error_sq))
+    }
+
+    /// Projects a general matrix to the fixed-rank manifold.
+    ///
+    /// # Mathematical Operation
+    ///
+    /// Computes the best rank-k approximation using SVD.
+    ///
+    /// # Arguments
+    ///
+    /// * `mat` - Input matrix of size m×n
+    ///
+    /// # Returns
+    ///
+    /// The projected fixed-rank matrix as a vector.
+    pub fn project_matrix<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<DVector<T>> {
+        if mat.nrows() != self.m || mat.ncols() != self.n {
+            return Err(ManifoldError::dimension_mismatch(
+                self.m * self.n,
+                mat.nrows() * mat.ncols()
+            ));
+        }
+        
+        let pt = FixedRankPoint::<T>::from_matrix(mat, self.k)?;
+        Ok(pt.to_vector())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -584,10 +902,17 @@ mod tests {
     #[test]
     fn test_fixed_rank_creation() {
         let manifold = create_test_manifold();
-        assert_eq!(manifold.m(), 6);
-        assert_eq!(manifold.n(), 4);
-        assert_eq!(manifold.k(), 2);
-        assert_eq!(<FixedRank as Manifold<f64, Dyn>>::dimension(&manifold), 16); // 2*(6+4-2)
+        let (m, n, k) = manifold.matrix_dimensions();
+        assert_eq!(m, 6);
+        assert_eq!(n, 4);
+        assert_eq!(k, 2);
+        assert_eq!(manifold.dimension(), 16); // 2*(6+4-2)
+        
+        // Test invalid creation
+        assert!(FixedRank::new(0, 4, 2).is_err());
+        assert!(FixedRank::new(4, 0, 2).is_err());
+        assert!(FixedRank::new(4, 4, 0).is_err());
+        assert!(FixedRank::new(4, 4, 5).is_err()); // k > min(m,n)
     }
 
     #[test]
@@ -612,28 +937,28 @@ mod tests {
     fn test_fixed_rank_projection() {
         let manifold = create_test_manifold();
         
-        let point = <FixedRank as Manifold<f64, Dyn>>::random_point(&manifold);
-        let mut projected = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        let point = manifold.random_point();
+        let mut projected = DVector::zeros(manifold.vector_size());
         let mut workspace = Workspace::new();
-        <FixedRank as Manifold<f64, Dyn>>::project_point(&manifold, &point, &mut projected, &mut workspace);
+        manifold.project_point(&point, &mut projected, &mut workspace);
         
-        assert!(<FixedRank as Manifold<f64, Dyn>>::is_point_on_manifold(&manifold, &projected, 1e-6));
+        assert!(manifold.is_point_on_manifold(&projected, 1e-6));
     }
 
     #[test]
     fn test_fixed_rank_tangent_projection() {
         let manifold = create_test_manifold();
         
-        let point = <FixedRank as Manifold<f64, Dyn>>::random_point(&manifold);
-        let vector = DVector::<f64>::from_vec(vec![0.1; <FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold)]);
-        let mut tangent = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        let point = manifold.random_point();
+        let vector = DVector::<f64>::from_vec(vec![0.1; manifold.vector_size()]);
+        let mut tangent = DVector::zeros(manifold.vector_size());
         let mut workspace = Workspace::new();
-        <FixedRank as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &vector, &mut tangent, &mut workspace).unwrap();
+        manifold.project_tangent(&point, &vector, &mut tangent, &mut workspace).unwrap();
         
         // Check that projection is idempotent
-        let mut tangent2 = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        let mut tangent2 = DVector::zeros(manifold.vector_size());
         let mut workspace = Workspace::new();
-        <FixedRank as Manifold<f64, Dyn>>::project_tangent(&manifold, &point, &tangent, &mut tangent2, &mut workspace).unwrap();
+        manifold.project_tangent(&point, &tangent, &mut tangent2, &mut workspace).unwrap();
         assert_relative_eq!(&tangent, &tangent2, epsilon = 1e-10);
     }
 
@@ -641,15 +966,103 @@ mod tests {
     fn test_fixed_rank_retraction() {
         let manifold = create_test_manifold();
         
-        let point = <FixedRank as Manifold<f64, Dyn>>::random_point(&manifold);
-        let mut tangent = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        let point = manifold.random_point();
+        let mut tangent = DVector::zeros(manifold.vector_size());
         let mut workspace = Workspace::new();
-        <FixedRank as Manifold<f64, Dyn>>::random_tangent(&manifold, &point, &mut tangent, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
         let scaled_tangent = 0.1 * &tangent;
-        let mut retracted = DVector::zeros(<FixedRank as Manifold<f64, Dyn>>::ambient_dimension(&manifold));
+        let mut retracted = DVector::zeros(manifold.vector_size());
         let mut workspace = Workspace::new();
-        <FixedRank as Manifold<f64, Dyn>>::retract(&manifold, &point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
+        manifold.retract(&point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
         
-        assert!(<FixedRank as Manifold<f64, Dyn>>::is_point_on_manifold(&manifold, &retracted, 1e-6));
+        assert!(manifold.is_point_on_manifold(&retracted, 1e-6));
+    }
+
+    #[test]
+    fn test_fixed_rank_properties() {
+        let manifold = create_test_manifold();
+        
+        assert_eq!(manifold.name(), "FixedRank");
+        assert!(!manifold.has_exact_exp_log());
+        assert!(!manifold.is_flat());
+    }
+
+    #[test]
+    fn test_fixed_rank_inner_product() {
+        let manifold = create_test_manifold();
+        
+        let point = manifold.random_point();
+        let mut u = DVector::zeros(manifold.vector_size());
+        let mut v = DVector::zeros(manifold.vector_size());
+        let mut workspace = Workspace::new();
+        manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
+        
+        let ip_uv = manifold.inner_product(&point, &u, &v).unwrap();
+        let ip_vu = manifold.inner_product(&point, &v, &u).unwrap();
+        
+        // Check symmetry
+        assert_relative_eq!(ip_uv, ip_vu, epsilon = 1e-10);
+        
+        // Check positive definiteness
+        let ip_uu = manifold.inner_product(&point, &u, &u).unwrap();
+        assert!(ip_uu >= 0.0);
+    }
+
+    #[test]
+    fn test_fixed_rank_matrix_operations() {
+        let manifold = FixedRank::new(5, 4, 2).unwrap();
+        
+        // Test random matrix generation
+        let mat = manifold.random_matrix::<f64>();
+        assert_eq!(mat.nrows(), 5);
+        assert_eq!(mat.ncols(), 4);
+        assert!(mat.rank(1e-10) <= 2);
+        
+        // Test approximation
+        let full_rank_mat = DMatrix::from_fn(5, 4, |i, j| ((i + j) as f64).sin());
+        let approx = manifold.approximate(&full_rank_mat).unwrap();
+        assert_eq!(approx.nrows(), 5);
+        assert_eq!(approx.ncols(), 4);
+        assert!(approx.rank(1e-10) <= 2);
+        
+        // Test approximation error
+        let error = manifold.approximation_error(&full_rank_mat).unwrap();
+        assert!(error >= 0.0);
+        
+        // Test projection
+        let proj_vec = manifold.project_matrix(&full_rank_mat).unwrap();
+        assert_eq!(proj_vec.len(), manifold.vector_size());
+    }
+
+    #[test]
+    fn test_fixed_rank_with_tolerance() {
+        let manifold = FixedRank::with_tolerance(4, 3, 2, 1e-8).unwrap();
+        assert_eq!(manifold.tolerance, 1e-8);
+        
+        // Test invalid tolerance
+        assert!(FixedRank::with_tolerance(4, 3, 2, 0.0).is_err());
+        assert!(FixedRank::with_tolerance(4, 3, 2, 1.0).is_err());
+    }
+
+    #[test]
+    fn test_fixed_rank_distance() {
+        let manifold = create_test_manifold();
+        let mut workspace = Workspace::new();
+        
+        let x = manifold.random_point();
+        let y = manifold.random_point();
+        
+        // Distance to self should be zero
+        let d_xx = manifold.distance(&x, &x, &mut workspace).unwrap();
+        assert_relative_eq!(d_xx, 0.0, epsilon = 1e-10);
+        
+        // Distance should be symmetric
+        let d_xy = manifold.distance(&x, &y, &mut workspace).unwrap();
+        let d_yx = manifold.distance(&y, &x, &mut workspace).unwrap();
+        assert_relative_eq!(d_xy, d_yx, epsilon = 1e-10);
+        
+        // Distance should be non-negative
+        assert!(d_xy >= 0.0);
     }
 }

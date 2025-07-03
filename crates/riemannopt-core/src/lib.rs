@@ -81,7 +81,7 @@ pub mod prelude {
         // From error
         ManifoldError, OptimizerError, OptimizerResult, Result,
         // From manifold
-        Manifold, Point, TangentVector as TangentVectorType,
+        Manifold,
         // From types
         constants, DMatrix, DSquareMatrix, DVector, Dimension, Matrix, SMatrix, SSquareMatrix,
         SVector, Scalar, Vector,
@@ -103,14 +103,19 @@ pub mod prelude {
     // Manifold operations
     pub use crate::manifold_ops::{
         // From metric
-        CanonicalMetric, ChristoffelSymbols, MetricTensor, MetricUtils, WeightedMetric,
+        VectorMetricTensor, MatrixMetricTensor, MatrixMetricType, MetricUtils,
+        // From metric_workspace
+        VectorMetricWorkspace, MatrixMetricWorkspace, MetricOps,
         // From retraction
-        CayleyRetraction, DefaultRetraction, DifferentialRetraction, ExponentialRetraction,
-        ParallelTransport, PolarRetraction, ProjectionRetraction, ProjectionTransport,
-        QRRetraction, Retraction, RetractionOrder, RetractionVerifier, SchildLadder,
-        VectorTransport,
+        CayleyRetraction, DefaultRetraction, ExponentialRetraction,
+        PolarRetraction, ProjectionRetraction,
+        QRRetraction, Retraction, RetractionOrder,
+        // From retraction_workspace
+        VectorRetractionWorkspace, MatrixRetractionWorkspace, RetractionOps,
         // From tangent
-        RiemannianMetric, TangentBundle, TangentSpace, TangentVector,
+        TangentSpace, VectorTangentSpace,
+        // From tangent_workspace
+        TangentVectorWorkspace,
     };
     
     // Compute components

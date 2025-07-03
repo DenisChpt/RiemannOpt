@@ -13,7 +13,7 @@ pub mod types;
 
 // Re-export core types
 pub use cost_function::*;
-pub use cost_function_simd::*;
+pub use cost_function_simd::{gradient_fd_dvec};
 pub use cost_function_workspace::*;
 pub use cached_cost_function::*;
 pub use cached_cost_function_dyn::*;

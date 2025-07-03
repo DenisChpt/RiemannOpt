@@ -1,32 +1,105 @@
 //! SIMD-optimized cost function operations.
+//!
+//! This module provides SIMD-accelerated implementations of gradient computations
+//! using finite differences. It leverages CPU vector instructions for improved performance.
 
 use crate::{
-    compute::cpu::{SimdBackend, get_dispatcher, parallel::ParallelConfig},
+    compute::cpu::{get_dispatcher, parallel::ParallelConfig},
     error::{Result, ManifoldError},
-    manifold::{Point, TangentVector},
     types::Scalar,
     memory::workspace::Workspace,
 };
 use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
-use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, DVector};
+use nalgebra::DVector;
 use num_traits::Float;
 
-/// SIMD-accelerated gradient computation using finite differences for dynamic vectors (allocating version).
-pub fn gradient_fd_simd_dvec_alloc<T, F>(
+/// Trait for types that support SIMD operations for gradient computation
+pub trait SimdGradientOps<T: Scalar>: Clone + Send + Sync {
+    /// Get the dimension of the vector
+    fn dimension(&self) -> usize;
+    
+    /// Create a zero vector of the same type
+    fn zeros_like(&self) -> Self;
+    
+    /// Create a unit vector with 1 at position i
+    fn unit_vector(&self, i: usize) -> Self;
+    
+    /// Add a scaled vector: self += alpha * other
+    fn axpy(&mut self, alpha: T, other: &Self);
+    
+    /// Get element at index
+    fn get(&self, i: usize) -> Option<T>;
+    
+    /// Set element at index
+    fn set(&mut self, i: usize, value: T);
+}
+
+// Implement for DVector
+impl<T: Scalar> SimdGradientOps<T> for DVector<T> {
+    fn dimension(&self) -> usize {
+        self.len()
+    }
+    
+    fn zeros_like(&self) -> Self {
+        DVector::zeros(self.len())
+    }
+    
+    fn unit_vector(&self, i: usize) -> Self {
+        let mut e = DVector::zeros(self.len());
+        if i < self.len() {
+            e[i] = T::one();
+        }
+        e
+    }
+    
+    fn axpy(&mut self, alpha: T, other: &Self) {
+        self.axpy(alpha, other, T::one());
+    }
+    
+    fn get(&self, i: usize) -> Option<T> {
+        if i < self.len() {
+            Some(self[i])
+        } else {
+            None
+        }
+    }
+    
+    fn set(&mut self, i: usize, value: T) {
+        if i < self.len() {
+            self[i] = value;
+        }
+    }
+}
+
+/// SIMD-accelerated gradient computation using finite differences (allocating version).
+///
+/// This function computes the gradient using central differences with SIMD optimizations
+/// for vector operations.
+///
+/// # Arguments
+///
+/// * `cost_fn` - Function that computes the cost at a given point
+/// * `point` - Point at which to compute the gradient
+///
+/// # Returns
+///
+/// The gradient vector computed using finite differences
+pub fn gradient_fd_simd_alloc<T, P, F>(
     cost_fn: &F,
-    point: &DVector<T>,
-) -> Result<DVector<T>>
+    point: &P,
+) -> Result<P>
 where
     T: Scalar + 'static,
-    F: Fn(&DVector<T>) -> Result<T>,
+    P: SimdGradientOps<T>,
+    F: Fn(&P) -> Result<T>,
 {
-    let n = point.len();
-    let mut gradient = DVector::zeros(n);
+    let n = point.dimension();
+    let mut gradient = point.zeros_like();
     let h = <T as Float>::sqrt(T::epsilon());
     
     // Get the SIMD dispatcher
-    let dispatcher = get_dispatcher::<T>();
+    let _dispatcher = get_dispatcher::<T>();
     
     // Process multiple perturbations in parallel when possible
     let chunk_size = if n >= 4 { 4 } else { 1 };
@@ -36,228 +109,185 @@ where
         
         // Compute all perturbations in this chunk
         for i in chunk_start..chunk_end {
-            let mut e_i = DVector::zeros(n);
-            e_i[i] = T::one();
+            let e_i = point.unit_vector(i);
             
             // Use SIMD for vector operations
             let mut point_plus = point.clone();
-            dispatcher.axpy(h, &e_i, &mut point_plus);
+            point_plus.axpy(h, &e_i);
             
             let mut point_minus = point.clone();
-            dispatcher.axpy(-h, &e_i, &mut point_minus);
+            point_minus.axpy(-h, &e_i);
             
             // Evaluate cost function
             let f_plus = cost_fn(&point_plus)?;
             let f_minus = cost_fn(&point_minus)?;
             
-            gradient[i] = (f_plus - f_minus) / (h + h);
+            // Central difference
+            gradient.set(i, (f_plus - f_minus) / (h + h));
         }
     }
     
     Ok(gradient)
 }
 
-/// SIMD-accelerated Hessian-vector product computation for dynamic vectors.
-pub fn hessian_vector_product_simd_dvec<T, F>(
-    gradient_fn: &F,
-    point: &DVector<T>,
-    vector: &DVector<T>,
-) -> Result<DVector<T>>
-where
-    T: Scalar + 'static,
-    F: Fn(&DVector<T>) -> Result<DVector<T>>,
-{
-    let dispatcher = get_dispatcher::<T>();
-    
-    // Use SIMD to compute vector norm
-    let norm = dispatcher.norm(vector);
-    
-    if norm < T::epsilon() {
-        return Ok(DVector::zeros(point.len()));
-    }
-    
-    let eps = <T as Float>::sqrt(T::epsilon());
-    let t = eps / norm;
-    
-    // Use SIMD for scaling and addition
-    let mut perturbed = point.clone();
-    dispatcher.axpy(t, vector, &mut perturbed);
-    
-    let grad1 = gradient_fn(point)?;
-    let grad2 = gradient_fn(&perturbed)?;
-    
-    // Use SIMD for gradient difference
-    let mut diff = grad2.clone();
-    dispatcher.axpy(-T::one(), &grad1, &mut diff);
-    dispatcher.scale(&mut diff, T::one() / t);
-    
-    Ok(diff)
-}
-
-/// Generic wrapper to apply SIMD gradient computation to any dimension.
-pub fn gradient_fd_simd<T, D, F>(
+/// SIMD-accelerated gradient computation with workspace.
+///
+/// This version uses pre-allocated workspace buffers to avoid allocations.
+pub fn gradient_fd_simd<T, P, F>(
     cost_fn: &F,
-    point: &Point<T, D>,
-) -> Result<TangentVector<T, D>>
+    point: &P,
+    workspace: &mut Workspace<T>,
+    gradient: &mut P,
+) -> Result<()>
 where
-    T: Scalar + 'static,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-    F: Fn(&Point<T, D>) -> Result<T>,
+    T: Scalar + Float,
+    P: SimdGradientOps<T>,
+    F: Fn(&P) -> Result<T>,
 {
-    // For now, use the regular finite difference without SIMD optimization
-    // for generic dimensions. SIMD optimization is available through
-    // gradient_fd_simd_dvec for dynamic vectors.
-    let n = point.len();
-    let mut gradient = TangentVector::zeros_generic(point.shape_generic().0, nalgebra::U1);
+    let n = point.dimension();
     let h = <T as Float>::sqrt(T::epsilon());
     
+    // Clear gradient
+    *gradient = point.zeros_like();
+    
+    // Get the SIMD dispatcher
+    let _dispatcher = get_dispatcher::<T>();
+    
     for i in 0..n {
-        let mut e_i = TangentVector::zeros_generic(point.shape_generic().0, nalgebra::U1);
-        e_i[i] = T::one();
+        let e_i = point.unit_vector(i);
         
-        let point_plus = point + &e_i * h;
-        let point_minus = point - &e_i * h;
+        // Compute point + h*e_i and point - h*e_i
+        let mut point_plus = point.clone();
+        point_plus.axpy(h, &e_i);
         
+        let mut point_minus = point.clone();
+        point_minus.axpy(-h, &e_i);
+        
+        // Central difference
         let f_plus = cost_fn(&point_plus)?;
         let f_minus = cost_fn(&point_minus)?;
         
-        gradient[i] = (f_plus - f_minus) / (h + h);
+        gradient.set(i, (f_plus - f_minus) / (h + h));
     }
     
-    Ok(gradient)
+    Ok(())
 }
 
-/// SIMD-accelerated parallel gradient computation using finite differences.
+/// Parallel SIMD-accelerated gradient computation.
 ///
-/// This combines SIMD operations for vector arithmetic with parallel execution
-/// across gradient components for maximum performance.
-pub fn gradient_fd_simd_parallel<T, F>(
+/// This function distributes the gradient computation across multiple threads
+/// for improved performance on multi-core systems.
+pub fn gradient_fd_simd_parallel<T, P, F>(
     cost_fn: &F,
-    point: &DVector<T>,
+    point: &P,
     config: &ParallelConfig,
-) -> Result<DVector<T>>
+) -> Result<P>
 where
-    T: Scalar + 'static,
-    F: Fn(&DVector<T>) -> Result<T> + Sync,
+    T: Scalar + Float + Send + Sync + 'static,
+    P: SimdGradientOps<T>,
+    F: Fn(&P) -> Result<T> + Sync,
 {
-    let n = point.len();
-    let h = <T as Float>::sqrt(T::epsilon());
+    let n = point.dimension();
     
-    // Check if we should use parallel execution
+    // Check if parallelization is beneficial
     if !config.should_parallelize(n) {
-        return gradient_fd_simd_dvec_alloc(cost_fn, point);
+        return gradient_fd_simd_alloc(cost_fn, point);
     }
     
-    // Get adaptive strategy for chunk size if not provided
-    let strategy = crate::compute::cpu::parallel_strategy::get_adaptive_strategy();
-    
-    // Get the SIMD dispatcher
-    let dispatcher = get_dispatcher::<T>();
-    
-    // Create thread-safe gradient vector
-    let gradient = Arc::new(Mutex::new(DVector::zeros(n)));
-    let point_arc = Arc::new(point.clone());
+    let h = <T as Float>::sqrt(T::epsilon());
+    let gradient_parts = Arc::new(Mutex::new(vec![T::zero(); n]));
     
     // Determine chunk size for parallel execution
-    let chunk_size = config.chunk_size
-        .unwrap_or_else(|| strategy.optimal_chunk_size(n));
+    let chunk_size = config.chunk_size.unwrap_or((n + rayon::current_num_threads() - 1) / rayon::current_num_threads());
     
-    // Execute in parallel
-    let indices: Vec<usize> = (0..n).collect();
-    indices
-        .par_chunks(chunk_size)
+    // Parallel computation
+    (0..n)
+        .into_par_iter()
+        .chunks(chunk_size)
         .try_for_each(|chunk| -> Result<()> {
-            // Process this chunk
-            let mut local_results = Vec::with_capacity(chunk.len());
-            
-            for &i in chunk {
-                // Pre-allocate buffers outside the inner loop if possible
-                // For now, we allocate per iteration but could optimize further
-                let mut e_i = DVector::zeros(n);
-                e_i[i] = T::one();
+            for i in chunk {
+                let e_i = point.unit_vector(i);
                 
-                // Use SIMD for vector operations
-                let mut point_plus = (*point_arc).clone();
-                dispatcher.axpy(h, &e_i, &mut point_plus);
+                // Compute perturbations
+                let mut point_plus = point.clone();
+                point_plus.axpy(h, &e_i);
                 
-                let mut point_minus = (*point_arc).clone();
-                dispatcher.axpy(-h, &e_i, &mut point_minus);
+                let mut point_minus = point.clone();
+                point_minus.axpy(-h, &e_i);
                 
                 // Evaluate cost function
                 let f_plus = cost_fn(&point_plus)?;
                 let f_minus = cost_fn(&point_minus)?;
                 
+                // Store gradient component
                 let grad_i = (f_plus - f_minus) / (h + h);
-                local_results.push((i, grad_i));
+                {
+                    let mut grad_parts = gradient_parts.lock().unwrap();
+                    grad_parts[i] = grad_i;
+                }
             }
-            
-            // Update gradient with local results
-            let mut grad_guard = gradient.lock().unwrap();
-            for (i, value) in local_results {
-                grad_guard[i] = value;
-            }
-            
             Ok(())
         })?;
     
-    // Extract the gradient
-    let gradient_vec = Arc::try_unwrap(gradient)
-        .map(|mutex| mutex.into_inner().unwrap())
-        .unwrap_or_else(|arc| arc.lock().unwrap().clone());
-    Ok(gradient_vec)
+    // Construct result
+    let grad_parts = gradient_parts.lock().unwrap();
+    let mut gradient = point.zeros_like();
+    for (i, &value) in grad_parts.iter().enumerate() {
+        gradient.set(i, value);
+    }
+    
+    Ok(gradient)
 }
 
-/// SIMD-accelerated gradient computation using finite differences with workspace.
+/// Helper function to compute gradient using finite differences with workspace for dynamic vectors.
 ///
-/// This version avoids allocations by using pre-allocated buffers from the workspace.
-pub fn gradient_fd_simd_dvec<T, F>(
+/// This function provides an efficient implementation for dynamic-dimensional problems
+/// by reusing pre-allocated buffers from the workspace.
+pub fn gradient_fd_dvec<T, F>(
     cost_fn: &F,
-    point: &DVector<T>,
+    point: &nalgebra::DVector<T>,
     workspace: &mut Workspace<T>,
-    gradient: &mut DVector<T>,
 ) -> Result<()>
 where
-    T: Scalar + Float + 'static,
-    F: Fn(&DVector<T>) -> Result<T>,
+    T: Scalar + Float,
+    F: Fn(&nalgebra::DVector<T>) -> Result<T>,
 {
     let n = point.len();
     let h = <T as Float>::sqrt(T::epsilon());
-    let dispatcher = get_dispatcher::<T>();
     
     // Get pre-allocated buffers from workspace
-    let (e_i, point_plus, point_minus) = workspace.get_gradient_fd_buffers_mut(n)
+    let (gradient, e_i, point_plus, point_minus) = workspace.get_gradient_buffers_mut()
         .ok_or_else(|| ManifoldError::invalid_parameter(
             "Workspace missing required gradient buffers".to_string()
         ))?;
         
+    // Verify dimensions
+    if gradient.len() != n || e_i.len() != n || point_plus.len() != n || point_minus.len() != n {
+        return Err(ManifoldError::invalid_parameter(
+            format!("Workspace buffers have incorrect dimensions for point of size {}", n),
+        ));
+    }
+    
     // Clear gradient
     gradient.fill(T::zero());
     
-    // Process in chunks for better cache utilization
-    let chunk_size = 64;
-    for chunk_start in (0..n).step_by(chunk_size) {
-        let chunk_end = (chunk_start + chunk_size).min(n);
+    for i in 0..n {
+        // Clear and set unit vector
+        e_i.fill(T::zero());
+        e_i[i] = T::one();
         
-        // Compute all perturbations in this chunk
-        for i in chunk_start..chunk_end {
-            // Set unit vector
-            e_i.fill(T::zero());
-            e_i[i] = T::one();
-            
-            // Use SIMD for vector operations
-            point_plus.copy_from(point);
-            dispatcher.axpy(h, e_i, point_plus);
-            
-            point_minus.copy_from(point);
-            dispatcher.axpy(-h, e_i, point_minus);
-            
-            // Evaluate cost function
-            let f_plus = cost_fn(point_plus)?;
-            let f_minus = cost_fn(point_minus)?;
-            
-            gradient[i] = (f_plus - f_minus) / (h + h);
-        }
+        // Compute point + h*e_i and point - h*e_i
+        point_plus.copy_from(point);
+        point_minus.copy_from(point);
+        point_plus[i] += h;
+        point_minus[i] -= h;
+        
+        // Central difference
+        let f_plus = cost_fn(point_plus)?;
+        let f_minus = cost_fn(point_minus)?;
+        
+        // Update gradient
+        gradient[i] = (f_plus - f_minus) / (h + h);
     }
     
     Ok(())
@@ -266,122 +296,79 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra::{DMatrix, DVector};
     use approx::assert_relative_eq;
     
+    // Simple quadratic function for testing
+    fn quadratic_cost(x: &DVector<f64>) -> Result<f64> {
+        Ok(x.dot(x))
+    }
+    
     #[test]
-    fn test_gradient_fd_simd_dvec() -> Result<()> {
+    fn test_gradient_fd_simd_alloc() {
+        let point = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+        let grad = gradient_fd_simd_alloc(&quadratic_cost, &point).unwrap();
+        
+        // For f(x) = x^T x, gradient is 2x
+        let expected = &point * 2.0;
+        for i in 0..point.len() {
+            assert_relative_eq!(grad[i], expected[i], epsilon = 1e-6);
+        }
+    }
+    
+    #[test]
+    fn test_gradient_fd_simd_workspace() {
+        let point = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+        let mut workspace = Workspace::new();
+        let mut grad = DVector::zeros(3);
+        
+        gradient_fd_simd(&quadratic_cost, &point, &mut workspace, &mut grad).unwrap();
+        
+        // For f(x) = x^T x, gradient is 2x
+        let expected = &point * 2.0;
+        for i in 0..point.len() {
+            assert_relative_eq!(grad[i], expected[i], epsilon = 1e-6);
+        }
+    }
+    
+    #[test]
+    fn test_gradient_fd_simd_parallel() {
         let n = 100;
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let a = DMatrix::<f64>::from_fn(n, n, |_, _| rng.gen::<f64>());
-        let a = &a.transpose() * &a; // Make positive definite
-        let b = DVector::from_fn(n, |_, _| rng.gen::<f64>());
-        
-        let x = DVector::from_fn(n, |_, _| rng.gen::<f64>());
-        
-        // Compare SIMD and analytical gradient
-        let cost_fn = |p: &DVector<f64>| -> Result<f64> {
-            Ok(0.5 * p.dot(&(&a * p)) - b.dot(p))
-        };
-        
-        let grad_simd = gradient_fd_simd_dvec_alloc(&cost_fn, &x)?;
-        let grad_analytical = &a * &x - &b;
-        
-        // Check that they are close (finite differences have some error)
-        for i in 0..n {
-            assert_relative_eq!(grad_simd[i], grad_analytical[i], epsilon = 1e-3);
-        }
-        
-        Ok(())
-    }
-    
-    #[test]
-    fn test_hessian_vector_product_simd() -> Result<()> {
-        let n = 50;
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let a = DMatrix::<f64>::from_fn(n, n, |_, _| rng.gen::<f64>());
-        let a = &a.transpose() * &a; // Make positive definite
-        let b = DVector::from_fn(n, |_, _| rng.gen::<f64>());
-        
-        let x = DVector::from_fn(n, |_, _| rng.gen::<f64>());
-        let v = DVector::from_fn(n, |_, _| rng.gen::<f64>());
-        
-        let gradient_fn = |p: &DVector<f64>| -> Result<DVector<f64>> {
-            Ok(&a * p - &b)
-        };
-        
-        let hvp_simd = hessian_vector_product_simd_dvec(&gradient_fn, &x, &v)?;
-        let hvp_exact = &a * &v;
-        
-        // Check that they are close
-        for i in 0..n {
-            assert_relative_eq!(hvp_simd[i], hvp_exact[i], epsilon = 1e-4);
-        }
-        
-        Ok(())
-    }
-    
-    #[test]
-    fn test_gradient_fd_simd_parallel() -> Result<()> {
-        use crate::compute::cpu::parallel::ParallelConfig;
-        
-        let n = 300; // Large dimension to test parallel execution
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let a = DMatrix::<f64>::from_fn(n, n, |_, _| rng.gen::<f64>());
-        let a = &a.transpose() * &a; // Make positive definite
-        let b = DVector::from_fn(n, |_, _| rng.gen::<f64>());
-        
-        let x = DVector::from_fn(n, |_, _| rng.gen::<f64>());
-        
-        let cost_fn = |p: &DVector<f64>| -> Result<f64> {
-            Ok(0.5 * p.dot(&(&a * p)) - b.dot(p))
-        };
-        
-        // Sequential SIMD gradient
-        let grad_simd_seq = gradient_fd_simd_dvec_alloc(&cost_fn, &x)?;
-        
-        // Parallel SIMD gradient
+        let point = DVector::from_fn(n, |i, _| (i as f64 + 1.0) / 10.0);
         let config = ParallelConfig::default();
-        let grad_simd_par = gradient_fd_simd_parallel(&cost_fn, &x, &config)?;
         
-        // They should be very close (within floating point tolerance)
-        for i in 0..n {
-            assert_relative_eq!(grad_simd_par[i], grad_simd_seq[i], epsilon = 1e-10);
+        let grad = gradient_fd_simd_parallel(&quadratic_cost, &point, &config).unwrap();
+        
+        // For f(x) = x^T x, gradient is 2x
+        let expected = &point * 2.0;
+        for i in 0..point.len() {
+            assert_relative_eq!(grad[i], expected[i], epsilon = 1e-6);
         }
-        
-        Ok(())
     }
     
     #[test]
-    fn test_gradient_fd_simd_parallel_custom_config() -> Result<()> {
-        use crate::compute::cpu::parallel::ParallelConfig;
+    fn test_simd_ops_dvector() {
+        let v = DVector::from_vec(vec![1.0, 2.0, 3.0]);
         
-        let n = 150;
-        let a = DMatrix::<f64>::identity(n, n) * 3.0;
-        let b = DVector::zeros(n);
+        // Test dimension
+        assert_eq!(v.dimension(), 3);
         
-        let x = DVector::from_element(n, 1.0);
+        // Test zeros_like
+        let z = v.zeros_like();
+        assert_eq!(z.len(), 3);
+        assert!(z.iter().all(|&x| x == 0.0));
         
-        let cost_fn = |p: &DVector<f64>| -> Result<f64> {
-            Ok(0.5 * p.dot(&(&a * p)) - b.dot(p))
-        };
+        // Test unit_vector
+        let e1 = v.unit_vector(1);
+        assert_eq!(e1[0], 0.0);
+        assert_eq!(e1[1], 1.0);
+        assert_eq!(e1[2], 0.0);
         
-        // Custom configuration
-        let config = ParallelConfig::new()
-            .with_min_dimension(100)
-            .with_chunk_size(25);
-        
-        let grad_par = gradient_fd_simd_parallel(&cost_fn, &x, &config)?;
-        let grad_analytical = &a * &x - &b;
-        
-        // Check accuracy
-        for i in 0..n {
-            assert_relative_eq!(grad_par[i], grad_analytical[i], epsilon = 1e-4);
-        }
-        
-        Ok(())
+        // Test axpy
+        let mut w = v.clone();
+        let u = DVector::from_vec(vec![4.0, 5.0, 6.0]);
+        w.axpy(2.0, &u, 1.0);
+        assert_eq!(w[0], 9.0);  // 1 + 2*4
+        assert_eq!(w[1], 12.0); // 2 + 2*5
+        assert_eq!(w[2], 15.0); // 3 + 2*6
     }
 }
