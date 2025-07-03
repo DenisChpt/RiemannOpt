@@ -84,7 +84,7 @@ impl NumericalValidator {
         _cost_fn: F,
         gradient_fn: impl Fn(&M::Point) -> Result<M::TangentVector>,
         config: &NumericalValidationConfig<T>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<GradientCheckResult<T>>
     where
         T: Scalar,
@@ -142,7 +142,7 @@ impl NumericalValidator {
         point: &M::Point,
         tangent: &M::TangentVector,
         config: &NumericalValidationConfig<T>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<ConvergenceResult<T>>
     where
         T: Scalar + RealField,
@@ -194,7 +194,7 @@ impl NumericalValidator {
         test_points: &[M::Point],
         test_vectors: &[M::TangentVector],
         tol: T,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         T: Scalar,
@@ -228,10 +228,10 @@ impl NumericalValidator {
         // Check projection idempotence
         for point in test_points {
             let mut proj1 = point.clone();
-            manifold.project_point(point, &mut proj1, workspace);
+            manifold.project_point(point, &mut proj1, _workspace);
             
             let mut proj2 = proj1.clone();
-            manifold.project_point(&proj1, &mut proj2, workspace);
+            manifold.project_point(&proj1, &mut proj2, _workspace);
             
             // Check that proj2 ≈ proj1 (projection is idempotent)
             // Note: This would need a proper distance computation in a full implementation
@@ -244,10 +244,10 @@ impl NumericalValidator {
     pub fn test_stability<T, M>(
         manifold: &M,
         point: &M::Point,
-        tangent: &M::TangentVector,
+        _tangent: &M::TangentVector,
         num_trials: usize,
         perturbation_scale: T,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         T: Scalar,
@@ -263,7 +263,7 @@ impl NumericalValidator {
             // Add small perturbation (implementation-specific)
             
             let mut projected = perturbed.clone();
-            manifold.project_point(&perturbed, &mut projected, workspace);
+            manifold.project_point(&perturbed, &mut projected, _workspace);
             
             // Check that projection brings us back close to the manifold
             if !manifold.is_point_on_manifold(&projected, perturbation_scale * <T as Scalar>::from_f64(10.0)) {

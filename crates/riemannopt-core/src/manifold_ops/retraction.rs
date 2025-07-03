@@ -185,25 +185,25 @@ where
 #[derive(Debug, Clone)]
 pub struct ExponentialRetraction<T> {
     /// Number of integration steps for numerical geodesic computation
-    integration_steps: usize,
+    _integration_steps: usize,
     /// Tolerance for adaptive step size control
-    tolerance: T,
+    _tolerance: T,
 }
 
 impl<T: Scalar> ExponentialRetraction<T> {
     /// Creates a new exponential retraction with default parameters.
     pub fn new() -> Self {
         Self {
-            integration_steps: 10,
-            tolerance: <T as Scalar>::from_f64(1e-10),
+            _integration_steps: 10,
+            _tolerance: <T as Scalar>::from_f64(1e-10),
         }
     }
     
     /// Creates an exponential retraction with custom integration parameters.
     pub fn with_parameters(integration_steps: usize, tolerance: T) -> Self {
         Self {
-            integration_steps,
-            tolerance,
+            _integration_steps: integration_steps,
+            _tolerance: tolerance,
         }
     }
 }
@@ -327,20 +327,20 @@ where
 #[derive(Debug, Clone)]
 pub struct CayleyRetraction<T> {
     /// Scaling parameter (typically 1.0)
-    scaling: T,
+    _scaling: T,
 }
 
 impl<T: Scalar> CayleyRetraction<T> {
     /// Creates a new Cayley retraction with default scaling.
     pub fn new() -> Self {
         Self {
-            scaling: T::one(),
+            _scaling: T::one(),
         }
     }
     
     /// Creates a Cayley retraction with custom scaling parameter.
     pub fn with_scaling(scaling: T) -> Self {
-        Self { scaling }
+        Self { _scaling: scaling }
     }
 }
 
@@ -616,7 +616,7 @@ where
         manifold: &M,
         point: &M::Point,
         direction: &M::TangentVector,
-        vector: &M::TangentVector,
+        _vector: &M::TangentVector,
         result: &mut M::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<()> {
@@ -627,13 +627,13 @@ where
         // This requires numerical differentiation or manifold-specific implementation
         // For now, we'll use a finite difference approximation
         
-        let eps = <T as Scalar>::from_f64(1e-8);
+        let _eps = <T as Scalar>::from_f64(1e-8);
         
         // Compute R_p(direction + eps * vector) and R_p(direction - eps * vector)
-        let mut direction_plus = direction.clone();
+        let direction_plus = direction.clone();
         // direction_plus += eps * vector (requires proper trait bounds)
         
-        let mut direction_minus = direction.clone();
+        let direction_minus = direction.clone();
         // direction_minus -= eps * vector (requires proper trait bounds)
         
         // Retract both directions
@@ -662,25 +662,25 @@ where
 #[derive(Debug, Clone)]
 pub struct SchildLadder<T> {
     /// Number of subdivision steps
-    num_steps: usize,
+    _num_steps: usize,
     /// Tolerance for convergence
-    tolerance: T,
+    _tolerance: T,
 }
 
 impl<T: Scalar> SchildLadder<T> {
     /// Creates a new Schild's Ladder transport with default parameters.
     pub fn new() -> Self {
         Self {
-            num_steps: 1,
-            tolerance: <T as Scalar>::from_f64(1e-10),
+            _num_steps: 1,
+            _tolerance: <T as Scalar>::from_f64(1e-10),
         }
     }
     
     /// Creates a Schild's Ladder transport with custom parameters.
     pub fn with_parameters(num_steps: usize, tolerance: T) -> Self {
         Self {
-            num_steps,
-            tolerance,
+            _num_steps: num_steps,
+            _tolerance: tolerance,
         }
     }
 }
@@ -779,10 +779,7 @@ impl RetractionVerifier {
     {
         // Apply retraction with the small tangent vector
         let mut retracted_point = point.clone();
-        {
-            let mut workspace: Workspace<T> = Workspace::new();
-            retraction.retract(manifold, point, small_tangent, &mut retracted_point)?;
-        }
+        retraction.retract(manifold, point, small_tangent, &mut retracted_point)?;
 
         // Check if retracted point equals original point within tolerance
         let distance_squared = Self::compute_point_distance_squared(manifold, point, &retracted_point, small_tangent)?;
@@ -818,23 +815,18 @@ impl RetractionVerifier {
         // Test that d/dt R_p(t*v)|_{t=0} = v
         // We use finite differences to approximate the derivative
         
-        let eps = <T as Scalar>::from_f64(1e-8);
+        let _eps = <T as Scalar>::from_f64(1e-8);
         
         // Compute R_p(eps * tangent)
         let mut point_plus = point.clone();
-        {
-            // Scale tangent by eps (requires scalar multiplication)
-            // For now, we'll approximate this
-            let mut workspace: Workspace<T> = Workspace::new();
-            retraction.retract(manifold, point, tangent, &mut point_plus)?;
-        }
+        // Scale tangent by eps (requires scalar multiplication)
+        // For now, we'll approximate this
+        retraction.retract(manifold, point, tangent, &mut point_plus)?;
         
         // Compute (R_p(eps * tangent) - p) / eps
         let mut derivative_approx = tangent.clone();
-        {
-            let mut workspace: Workspace<T> = Workspace::new();
-            manifold.inverse_retract(point, &point_plus, &mut derivative_approx, &mut workspace)?;
-        }
+        let mut workspace: Workspace<T> = Workspace::new();
+        manifold.inverse_retract(point, &point_plus, &mut derivative_approx, &mut workspace)?;
         
         // Compare with the original tangent vector
         let difference_norm = Self::compute_tangent_difference_norm(manifold, point, tangent, &derivative_approx)?;
@@ -867,17 +859,11 @@ impl RetractionVerifier {
     {
         // Compute q = retract(p, v)
         let mut retracted_point = point.clone();
-        {
-            let mut workspace: Workspace<T> = Workspace::new();
-            retraction.retract(manifold, point, tangent, &mut retracted_point)?;
-        }
+        retraction.retract(manifold, point, tangent, &mut retracted_point)?;
 
         // Compute w = inverse_retract(p, q)
         let mut recovered_tangent = tangent.clone();
-        {
-            let mut workspace: Workspace<T> = Workspace::new();
-            retraction.inverse_retract(manifold, point, &retracted_point, &mut recovered_tangent)?;
-        }
+        retraction.inverse_retract(manifold, point, &retracted_point, &mut recovered_tangent)?;
 
         // Check if w ≈ v
         let difference_norm = Self::compute_tangent_difference_norm(manifold, point, tangent, &recovered_tangent)?;
@@ -908,8 +894,6 @@ impl RetractionVerifier {
         M: Manifold<T>,
         R: Retraction<T>,
     {
-        let mut workspace: Workspace<T> = Workspace::new();
-        
         for tangent in tangent_vectors {
             let mut retracted_point = point.clone();
             retraction.retract(manifold, point, tangent, &mut retracted_point)?;
@@ -950,21 +934,15 @@ impl RetractionVerifier {
     {
         // Compute base retraction
         let mut base_point = point.clone();
-        {
-            let mut workspace: Workspace<T> = Workspace::new();
-            retraction.retract(manifold, point, tangent, &mut base_point)?;
-        }
+        retraction.retract(manifold, point, tangent, &mut base_point)?;
 
         // Test with small perturbations
         // This is a simplified test - a full implementation would test multiple random perturbations
-        let mut perturbed_tangent = tangent.clone();
+        let perturbed_tangent = tangent.clone();
         // Add small perturbation (implementation-specific)
         
         let mut perturbed_point = point.clone();
-        {
-            let mut workspace: Workspace<T> = Workspace::new();
-            retraction.retract(manifold, point, &perturbed_tangent, &mut perturbed_point)?;
-        }
+        retraction.retract(manifold, point, &perturbed_tangent, &mut perturbed_point)?;
 
         // Check that the distance between retracted points is proportional to perturbation
         let distance_squared = Self::compute_point_distance_squared(manifold, &base_point, &perturbed_point, tangent)?;
@@ -990,10 +968,8 @@ impl RetractionVerifier {
     {
         // Compute inverse retraction to get tangent vector from point1 to point2
         let mut difference_vector = scratch_tangent.clone();
-        {
-            let mut workspace: Workspace<T> = Workspace::new();
-            manifold.inverse_retract(point1, point2, &mut difference_vector, &mut workspace)?;
-        }
+        let mut workspace: Workspace<T> = Workspace::new();
+        manifold.inverse_retract(point1, point2, &mut difference_vector, &mut workspace)?;
         
         // Compute squared norm using inner product
         manifold.inner_product(point1, &difference_vector, &difference_vector)

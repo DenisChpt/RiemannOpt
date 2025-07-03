@@ -110,7 +110,7 @@
 //! use nalgebra::DMatrix;
 //!
 //! // Create Stiefel manifold St(5,2)
-//! let stiefel = Stiefel::new(5, 2)?;
+//! let stiefel = Stiefel::<f64>::new(5, 2)?;
 //!
 //! // Random point on manifold
 //! let x = stiefel.random_point();
@@ -122,7 +122,7 @@
 //! // Project gradient to tangent space
 //! let grad = DMatrix::from_fn(5, 2, |i, j| (i + j) as f64);
 //! let mut rgrad = grad.clone();
-//! let mut workspace = Workspace::new();
+//! let mut workspace = Workspace::<f64>::new();
 //! stiefel.euclidean_to_riemannian_gradient(&x, &grad, &mut rgrad, &mut workspace)?;
 //!
 //! // Verify tangent space constraint
@@ -463,7 +463,7 @@ impl<T: Scalar> Stiefel<T> {
         x: &DMatrix<T>,
         y: &DMatrix<T>,
         v: &DMatrix<T>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<DMatrix<T>> {
         self.check_tangent(x, v)?;
         self.check_point(y)?;
@@ -726,6 +726,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DMatrix;
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_stiefel_creation() {
@@ -745,7 +746,7 @@ mod tests {
 
     #[test]
     fn test_point_validation() {
-        let stiefel = Stiefel::new(4, 2).unwrap();
+        let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
         
         // Create orthonormal matrix
         let a = DMatrix::from_row_slice(4, 2, &[
@@ -770,8 +771,8 @@ mod tests {
 
     #[test]
     fn test_tangent_projection() {
-        let stiefel = Stiefel::new(3, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let stiefel = Stiefel::<f64>::new(3, 2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         // Point on manifold
         let x = DMatrix::from_row_slice(3, 2, &[
@@ -798,7 +799,7 @@ mod tests {
 
     #[test]
     fn test_qr_retraction() {
-        let stiefel = Stiefel::new(4, 2).unwrap();
+        let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
         
         let x = stiefel.random_point();
         assert!(stiefel.check_point(&x).is_ok());
@@ -806,7 +807,7 @@ mod tests {
         // Small tangent vector
         let z = DMatrix::from_fn(4, 2, |i, j| 0.1 * ((i + j) as f64));
         let mut z_tangent = z.clone();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         stiefel.project_tangent(&x, &z, &mut z_tangent, &mut workspace).unwrap();
         
         // Retract
@@ -823,10 +824,10 @@ mod tests {
 
     #[test]
     fn test_inner_product() {
-        let stiefel = Stiefel::new(3, 2).unwrap();
+        let stiefel = Stiefel::<f64>::new(3, 2).unwrap();
         
         let x = stiefel.random_point();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         // Generate two tangent vectors
         let u = DMatrix::from_fn(3, 2, |i, j| (i as f64) * 0.1 + (j as f64) * 0.2);
@@ -847,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_random_point() {
-        let stiefel = Stiefel::new(10, 3).unwrap();
+        let stiefel = Stiefel::<f64>::new(10, 3).unwrap();
         
         for _ in 0..10 {
             let x = stiefel.random_point();
@@ -862,8 +863,8 @@ mod tests {
 
     #[test]
     fn test_euclidean_to_riemannian_gradient() {
-        let stiefel = Stiefel::new(4, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         let x = stiefel.random_point();
         
@@ -878,7 +879,7 @@ mod tests {
         
         // Check projection formula
         let xtg = x.transpose() * &grad;
-        let sym_xtg = (xtg + xtg.transpose()) * 0.5;
+        let sym_xtg = (&xtg + &xtg.transpose()) * 0.5;
         let expected = &grad - &x * sym_xtg;
         assert_relative_eq!(rgrad, expected, epsilon = 1e-14);
     }
@@ -886,11 +887,11 @@ mod tests {
     #[test] 
     fn test_special_cases() {
         // St(n,1) should behave like sphere
-        let st31 = Stiefel::new(3, 1).unwrap();
+        let st31 = Stiefel::<f64>::new(3, 1).unwrap();
         assert_eq!(st31.dimension(), 2); // Same as S^2
         
         // St(n,n) is orthogonal group
-        let st33 = Stiefel::new(3, 3).unwrap();
+        let st33 = Stiefel::<f64>::new(3, 3).unwrap();
         assert_eq!(st33.dimension(), 3); // Dimension of SO(3)
     }
 }

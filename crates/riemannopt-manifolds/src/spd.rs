@@ -119,7 +119,7 @@
 //! use nalgebra::DMatrix;
 //!
 //! // Create SPD manifold S⁺⁺(3)
-//! let spd = SPD::new(3)?;
+//! let spd = SPD::<f64>::new(3)?;
 //!
 //! // Random SPD matrix
 //! let p = spd.random_point();
@@ -135,7 +135,7 @@
 //! });
 //!
 //! // Exponential map
-//! let mut workspace = Workspace::new();
+//! let mut workspace = Workspace::<f64>::new();
 //! let mut q = DMatrix::zeros(3, 3);
 //! spd.retract(&p, &v, &mut q, &mut workspace)?;
 //! 
@@ -146,7 +146,6 @@
 
 use nalgebra::{DMatrix, DVector};
 use num_traits::Float;
-use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
@@ -848,6 +847,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::{DMatrix, DVector};
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_spd_creation() {
@@ -861,17 +861,17 @@ mod tests {
         assert_eq!(spd33.dimension(), 6); // 3*(3+1)/2 = 6
         
         // With custom metric
-        let spd_le = SPD::with_metric(2, SPDMetric::LogEuclidean).unwrap();
+        let spd_le = SPD::<f64>::with_metric(2, SPDMetric::LogEuclidean).unwrap();
         assert_eq!(spd_le.metric_type(), SPDMetric::LogEuclidean);
         
         // Invalid cases
         assert!(SPD::<f64>::new(0).is_err());
-        assert!(SPD::with_parameters(2, -1.0, 1e-10, SPDMetric::AffineInvariant).is_err());
+        assert!(SPD::<f64>::with_parameters(2, -1.0, 1e-10, SPDMetric::AffineInvariant).is_err());
     }
 
     #[test]
     fn test_point_validation() {
-        let spd = SPD::new(2).unwrap();
+        let spd = SPD::<f64>::new(2).unwrap();
         
         // Identity is SPD
         let identity = DMatrix::<f64>::identity(2, 2);
@@ -892,8 +892,8 @@ mod tests {
 
     #[test]
     fn test_tangent_projection() {
-        let spd = SPD::new(3).unwrap();
-        let mut workspace = Workspace::new();
+        let spd = SPD::<f64>::new(3).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         let p = spd.random_point();
         
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_matrix_operations() {
-        let spd = SPD::new(2).unwrap();
+        let spd = SPD::<f64>::new(2).unwrap();
         
         // Test matrix square root
         let p = DMatrix::from_row_slice(2, 2, &[4.0, 0.0, 0.0, 9.0]);
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn test_exponential_logarithm() {
-        let spd = SPD::new(2).unwrap();
+        let spd = SPD::<f64>::new(2).unwrap();
         
         let p = DMatrix::<f64>::identity(2, 2) * 2.0;
         let v = DMatrix::from_row_slice(2, 2, &[0.1, 0.2, 0.2, 0.3]);
@@ -961,7 +961,7 @@ mod tests {
     #[test]
     fn test_inner_product_metrics() {
         let spd_ai = SPD::with_metric(2, SPDMetric::AffineInvariant).unwrap();
-        let spd_le = SPD::with_metric(2, SPDMetric::LogEuclidean).unwrap();
+        let spd_le = SPD::<f64>::with_metric(2, SPDMetric::LogEuclidean).unwrap();
         let spd_bw = SPD::with_metric(2, SPDMetric::BuresWasserstein).unwrap();
         
         let p = DMatrix::<f64>::identity(2, 2) * 2.0;
@@ -986,7 +986,7 @@ mod tests {
 
     #[test]
     fn test_distance_metrics() {
-        let spd = SPD::new(2).unwrap();
+        let spd = SPD::<f64>::new(2).unwrap();
         
         let p = DMatrix::<f64>::identity(2, 2);
         let q = DMatrix::<f64>::identity(2, 2) * 4.0;
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn test_random_point() {
-        let spd = SPD::new(3).unwrap();
+        let spd = SPD::<f64>::new(3).unwrap();
         
         for _ in 0..10 {
             let p = spd.random_point();
@@ -1023,8 +1023,8 @@ mod tests {
 
     #[test]
     fn test_euclidean_to_riemannian_gradient() {
-        let spd = SPD::new(2).unwrap();
-        let mut workspace = Workspace::new();
+        let spd = SPD::<f64>::new(2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         let p = DMatrix::<f64>::identity(2, 2) * 2.0;
         let grad = DMatrix::from_row_slice(2, 2, &[1.0, 0.5, 0.5, 2.0]);
@@ -1043,7 +1043,7 @@ mod tests {
 
     #[test]
     fn test_parallel_transport() {
-        let spd = SPD::new(2).unwrap();
+        let spd = SPD::<f64>::new(2).unwrap();
         
         let p = spd.random_point();
         let q = spd.random_point();
@@ -1065,7 +1065,7 @@ mod tests {
     #[test]
     fn test_special_cases() {
         // S⁺⁺(1) is the positive real line
-        let spd1 = SPD::new(1).unwrap();
+        let spd1 = SPD::<f64>::new(1).unwrap();
         assert_eq!(spd1.dimension(), 1); // 1*(1+1)/2 = 1
         
         let p = DMatrix::from_vec(1, 1, vec![2.0]);

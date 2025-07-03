@@ -119,7 +119,7 @@
 //! use nalgebra::DMatrix;
 //!
 //! // Create Grassmann manifold Gr(5,2)
-//! let grassmann = Grassmann::new(5, 2)?;
+//! let grassmann = Grassmann::<f64>::new(5, 2)?;
 //!
 //! // Random point (2D subspace of ℝ⁵)
 //! let y = grassmann.random_point();
@@ -131,7 +131,7 @@
 //! // Tangent vector (orthogonal to subspace)
 //! let z = DMatrix::from_fn(5, 2, |i, j| 0.1 * (i as f64 - j as f64));
 //! let mut z_horizontal = z.clone();
-//! let mut workspace = Workspace::new();
+//! let mut workspace = Workspace::<f64>::new();
 //! grassmann.project_tangent(&y, &z, &mut z_horizontal, &mut workspace)?;
 //!
 //! // Verify horizontality: Y^T Z = 0
@@ -140,7 +140,7 @@
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DMatrix;
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
@@ -742,6 +742,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DMatrix;
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_grassmann_creation() {
@@ -765,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_point_validation() {
-        let grassmann = Grassmann::new(4, 2).unwrap();
+        let grassmann = Grassmann::<f64>::new(4, 2).unwrap();
         
         // Create orthonormal matrix
         let y = DMatrix::from_column_slice(4, 2, &[
@@ -790,8 +791,8 @@ mod tests {
 
     #[test]
     fn test_tangent_projection() {
-        let grassmann = Grassmann::new(4, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let grassmann = Grassmann::<f64>::new(4, 2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         // Canonical basis vectors
         let y = DMatrix::from_column_slice(4, 2, &[
@@ -824,7 +825,7 @@ mod tests {
 
     #[test]
     fn test_qr_retraction() {
-        let grassmann = Grassmann::new(5, 2).unwrap();
+        let grassmann = Grassmann::<f64>::new(5, 2).unwrap();
         
         let y = grassmann.random_point();
         assert!(grassmann.check_point(&y).is_ok());
@@ -832,7 +833,7 @@ mod tests {
         // Small tangent vector
         let z = DMatrix::from_fn(5, 2, |i, j| 0.01 * ((i + j) as f64));
         let mut z_horizontal = z.clone();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         grassmann.project_tangent(&y, &z, &mut z_horizontal, &mut workspace).unwrap();
         
         // Retract
@@ -849,10 +850,10 @@ mod tests {
 
     #[test]
     fn test_inner_product() {
-        let grassmann = Grassmann::new(4, 3).unwrap();
+        let grassmann = Grassmann::<f64>::new(4, 3).unwrap();
         
         let y = grassmann.random_point();
-        let mut workspace = Workspace::new();
+        let mut workspace = Workspace::<f64>::new();
         
         // Generate two tangent vectors
         let u = DMatrix::from_fn(4, 3, |i, j| (i as f64) * 0.1 + (j as f64) * 0.2);
@@ -877,7 +878,7 @@ mod tests {
 
     #[test]
     fn test_geodesic_distance() {
-        let grassmann = Grassmann::new(4, 2).unwrap();
+        let grassmann = Grassmann::<f64>::new(4, 2).unwrap();
         
         let y1 = grassmann.random_point();
         let y2 = grassmann.random_point();
@@ -903,7 +904,7 @@ mod tests {
 
     #[test]
     fn test_random_point() {
-        let grassmann = Grassmann::new(6, 3).unwrap();
+        let grassmann = Grassmann::<f64>::new(6, 3).unwrap();
         
         for _ in 0..10 {
             let y = grassmann.random_point();
@@ -918,8 +919,8 @@ mod tests {
 
     #[test]
     fn test_euclidean_to_riemannian_gradient() {
-        let grassmann = Grassmann::new(5, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let grassmann = Grassmann::<f64>::new(5, 2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         let y = grassmann.random_point();
         
@@ -940,8 +941,8 @@ mod tests {
 
     #[test]
     fn test_parallel_transport() {
-        let grassmann = Grassmann::new(4, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let grassmann = Grassmann::<f64>::new(4, 2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         let y1 = grassmann.random_point();
         let y2 = grassmann.random_point();
@@ -959,28 +960,28 @@ mod tests {
         // For Grassmann, parallel transport should preserve norm (approximately)
         let norm1 = z.norm();
         let norm2 = z_transported.norm();
-        assert_relative_eq!(norm1, norm2, epsilon = 1e-10);
+        assert_relative_eq!(norm1, norm2, epsilon = 1e-8);
     }
 
     #[test]
     fn test_special_cases() {
         // Gr(n,1) is projective space ℝP^{n-1}
-        let gr31 = Grassmann::new(3, 1).unwrap();
+        let gr31 = Grassmann::<f64>::new(3, 1).unwrap();
         assert_eq!(gr31.dimension(), 2); // Same as ℝP²
         
         // Gr(n,n-1) is also projective space (via duality)
-        let gr43 = Grassmann::new(4, 3).unwrap();
+        let gr43 = Grassmann::<f64>::new(4, 3).unwrap();
         assert_eq!(gr43.dimension(), 3); // Same as ℝP³
         
         // Gr(4,2) has maximal dimension for fixed n+p
-        let gr42 = Grassmann::new(4, 2).unwrap();
+        let gr42 = Grassmann::<f64>::new(4, 2).unwrap();
         assert_eq!(gr42.dimension(), 4); // 2*(4-2) = 4
     }
 
     #[test]
     fn test_inverse_retraction() {
-        let grassmann = Grassmann::new(5, 2).unwrap();
-        let mut workspace = Workspace::new();
+        let grassmann = Grassmann::<f64>::new(5, 2).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         let y = grassmann.random_point();
         

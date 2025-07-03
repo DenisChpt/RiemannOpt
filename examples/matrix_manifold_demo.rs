@@ -1,19 +1,20 @@
-//! Example demonstrating the use of MatrixManifold trait.
+//! Example demonstrating the use of matrix-based manifolds.
 //!
-//! This example shows how matrix manifolds can be used directly with matrix
-//! operations, avoiding the overhead of vectorization.
+//! This example shows how matrix manifolds work directly with matrix
+//! operations in the new unified API.
 
 use nalgebra::DMatrix;
-use riemannopt_manifolds::{StiefelMatrix, SPDMatrix, GrassmannMatrix, ObliqueMatrix, MatrixManifold};
-use riemannopt_core::memory::Workspace;
+use riemannopt_manifolds::{Stiefel, SPD, Grassmann, Oblique};
+use riemannopt_core::manifold::Manifold;
+use riemannopt_core::memory::workspace::Workspace;
 
 fn main() {
-    println!("=== MatrixManifold Demo ===\n");
+    println!("=== Matrix Manifold Demo ===\n");
 
     // Example 1: Stiefel manifold with direct matrix operations
     println!("1. Stiefel Manifold St(5,3)");
-    let stiefel = StiefelMatrix::new(5, 3).unwrap();
-    let mut workspace = Workspace::new();
+    let stiefel = Stiefel::<f64>::new(5, 3).unwrap();
+    let mut workspace = Workspace::<f64>::new();
 
     // Generate a random point on the manifold
     let x = stiefel.random_point();
@@ -28,114 +29,61 @@ fn main() {
     println!("{:.4}", v);
     println!("V in tangent space? {}", stiefel.is_vector_in_tangent_space(&x, &v, 1e-10));
 
-    // Perform retraction
-    let mut y = DMatrix::zeros(5, 3);
-    stiefel.retract(&x, &v, &mut y, &mut workspace).unwrap();
-    println!("\nRetraction R_X(V):");
-    println!("{:.4}", y);
-    println!("Result on manifold? {}", stiefel.is_point_on_manifold(&y, 1e-10));
+    // Example 2: SPD manifold
+    println!("\n\n2. Symmetric Positive Definite Manifold S⁺⁺(3)");
+    let spd = SPD::<f64>::new(3).unwrap();
 
-    // Compute distance
-    let dist = stiefel.distance(&x, &y, &mut workspace).unwrap();
-    println!("\nDistance d(X, Y) = {:.6}", dist);
-
-    // Example 2: SPD manifold with direct matrix operations
-    println!("\n\n2. SPD Manifold SPD(3)");
-    let spd = SPDMatrix::new(3).unwrap();
-
-    // Generate a random SPD matrix
     let p = spd.random_point();
     println!("Random SPD matrix P:");
     println!("{:.4}", p);
-    println!("P is SPD? {}", spd.is_point_on_manifold(&p, 1e-10));
 
-    // Generate a random tangent vector (symmetric matrix)
-    let mut u = DMatrix::zeros(3, 3);
-    spd.random_tangent(&p, &mut u, &mut workspace).unwrap();
-    println!("\nRandom tangent vector U:");
-    println!("{:.4}", u);
+    // Compute Riemannian gradient from Euclidean gradient
+    let eucl_grad = DMatrix::from_fn(3, 3, |i, j| (i + j) as f64);
+    let mut riem_grad = eucl_grad.clone();
+    spd.euclidean_to_riemannian_gradient(&p, &eucl_grad, &mut riem_grad, &mut workspace).unwrap();
+    println!("\nEuclidean gradient:");
+    println!("{:.4}", eucl_grad);
+    println!("Riemannian gradient:");
+    println!("{:.4}", riem_grad);
 
-    // Compute inner product with affine-invariant metric
-    let inner = spd.inner_product(&p, &u, &u).unwrap();
-    println!("\nInner product <U,U>_P = {:.6}", inner);
-
-    // Perform retraction
-    let mut q = DMatrix::zeros(3, 3);
-    spd.retract(&p, &u, &mut q, &mut workspace).unwrap();
-    println!("\nRetraction R_P(U):");
-    println!("{:.4}", q);
-    println!("Result is SPD? {}", spd.is_point_on_manifold(&q, 1e-10));
-
-    // Example 3: Grassmann manifold with direct matrix operations
+    // Example 3: Grassmann manifold
     println!("\n\n3. Grassmann Manifold Gr(4,2)");
-    let grassmann = GrassmannMatrix::new(4, 2).unwrap();
-    
-    // Generate a random point on the manifold
-    let g = grassmann.random_point();
-    println!("Random point G on Gr(4,2):");
-    println!("{:.4}", g);
-    println!("G^T G = I_2? {}", grassmann.is_point_on_manifold(&g, 1e-10));
-    
-    // Generate a horizontal tangent vector
-    let mut h = DMatrix::zeros(4, 2);
-    grassmann.random_tangent(&g, &mut h, &mut workspace).unwrap();
-    println!("\nRandom tangent vector H:");
-    println!("{:.4}", h);
-    println!("G^T H = 0? {:.6}", (g.transpose() * &h).norm());
-    
-    // Example 4: Oblique manifold with direct matrix operations
+    let grassmann = Grassmann::<f64>::new(4, 2).unwrap();
+
+    let y = grassmann.random_point();
+    println!("Random point Y on Gr(4,2) (orthonormal basis):");
+    println!("{:.4}", y);
+
+    // Retraction example
+    let mut delta = DMatrix::zeros(4, 2);
+    grassmann.random_tangent(&y, &mut delta, &mut workspace).unwrap();
+    delta *= 0.1; // Small step
+
+    let mut y_new = DMatrix::zeros(4, 2);
+    grassmann.retract(&y, &delta, &mut y_new, &mut workspace).unwrap();
+    println!("\nAfter retraction with step 0.1:");
+    println!("{:.4}", y_new);
+    println!("Still on manifold? {}", grassmann.is_point_on_manifold(&y_new, 1e-10));
+
+    // Example 4: Oblique manifold
     println!("\n\n4. Oblique Manifold OB(3,4)");
-    let oblique = ObliqueMatrix::new(3, 4).unwrap();
-    
-    // Generate a random point
-    let o: DMatrix<f64> = oblique.random_point();
-    println!("Random point O on OB(3,4):");
-    println!("{:.4}", o);
-    
-    // Check column norms
+    let oblique = Oblique::new(3, 4).unwrap();
+
+    let z = oblique.random_point();
+    println!("Random point Z on OB(3,4) (unit-norm columns):");
+    println!("{:.4}", z);
+
+    // Verify column norms
     print!("Column norms: ");
     for j in 0..4 {
-        print!("{:.4} ", o.column(j).norm());
+        print!("{:.4} ", z.column(j).norm());
     }
     println!();
-    
-    // Example 5: Using MatrixManifold with optimization (conceptual)
-    println!("\n\n5. Optimization Example (Conceptual)");
-    
-    // Suppose we have a cost function f: St(n,p) -> R
-    let cost_fn = |x: &DMatrix<f64>| -> f64 {
-        // Example: minimize ||X - A||_F^2 for some target A
-        let a = DMatrix::from_fn(5, 3, |i, j| (i + j) as f64);
-        (x - a).norm_squared()
-    };
 
-    // Compute Euclidean gradient
-    let euclidean_grad = |x: &DMatrix<f64>| -> DMatrix<f64> {
-        let a = DMatrix::from_fn(5, 3, |i, j| (i + j) as f64);
-        2.0 * (x - a)
-    };
-
-    let x = stiefel.random_point();
-    let grad_e = euclidean_grad(&x);
-    
-    // Convert to Riemannian gradient
-    let mut grad_r = DMatrix::zeros(5, 3);
-    stiefel.euclidean_to_riemannian_gradient(&x, &grad_e, &mut grad_r, &mut workspace).unwrap();
-    
-    println!("At point X:");
-    println!("Cost = {:.6}", cost_fn(&x));
-    println!("Euclidean gradient norm = {:.6}", grad_e.norm());
-    println!("Riemannian gradient norm = {:.6}", grad_r.norm());
-
-    // Take a gradient descent step
-    let step_size = 0.1;
-    let tangent = -step_size * &grad_r;
-    let mut x_new = DMatrix::zeros(5, 3);
-    stiefel.retract(&x, &tangent, &mut x_new, &mut workspace).unwrap();
-    
-    println!("\nAfter gradient step:");
-    println!("New cost = {:.6}", cost_fn(&x_new));
-    println!("Cost decreased: {}", cost_fn(&x_new) < cost_fn(&x));
+    // Distance between two points
+    let z2 = oblique.random_point();
+    let dist = oblique.distance(&z, &z2, &mut workspace).unwrap();
+    println!("\nDistance to another random point: {:.4}", dist);
 
     println!("\n=== Demo Complete ===");
 }

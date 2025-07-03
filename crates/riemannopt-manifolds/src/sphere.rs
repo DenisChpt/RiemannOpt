@@ -103,7 +103,7 @@
 //! use nalgebra::DVector;
 //!
 //! // Create unit sphere in ℝ³
-//! let sphere = Sphere::new(3)?;
+//! let sphere = Sphere::<f64>::new(3)?;
 //! 
 //! // Random point on S²
 //! let x = sphere.random_point();
@@ -112,7 +112,7 @@
 //! // Tangent vector
 //! let v = DVector::from_vec(vec![0.0, 1.0, 0.0]);
 //! let mut v_tangent = v.clone();
-//! let mut workspace = Workspace::new();
+//! let mut workspace = Workspace::<f64>::new();
 //! sphere.project_tangent(&x, &v, &mut v_tangent, &mut workspace)?;
 //! assert!(x.dot(&v_tangent).abs() < 1e-14);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
@@ -663,6 +663,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DVector;
+    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_sphere_creation() {
@@ -681,8 +682,8 @@ mod tests {
 
     #[test]
     fn test_point_projection() {
-        let sphere = Sphere::new(3).unwrap();
-        let mut workspace = Workspace::new();
+        let sphere = Sphere::<f64>::new(3).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         // Project non-zero vector
         let point = DVector::from_vec(vec![3.0, 4.0, 0.0]);
@@ -702,8 +703,8 @@ mod tests {
 
     #[test]
     fn test_tangent_projection() {
-        let sphere = Sphere::new(3).unwrap();
-        let mut workspace = Workspace::new();
+        let sphere = Sphere::<f64>::new(3).unwrap();
+        let mut workspace = Workspace::<f64>::new();
         
         let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
         let v = DVector::from_vec(vec![0.5, 1.0, 2.0]);
@@ -721,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_exponential_logarithm() {
-        let sphere = Sphere::new(3).unwrap();
+        let sphere = Sphere::<f64>::new(3).unwrap();
         
         let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
         let v = DVector::from_vec(vec![0.0, 0.5, 0.0]);
@@ -740,7 +741,7 @@ mod tests {
 
     #[test]
     fn test_geodesic_distance() {
-        let sphere = Sphere::new(3).unwrap();
+        let sphere = Sphere::<f64>::new(3).unwrap();
         
         let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
         let y = DVector::from_vec(vec![0.0, 1.0, 0.0]);
@@ -760,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_parallel_transport() {
-        let sphere = Sphere::new(3).unwrap();
+        let sphere = Sphere::<f64>::new(3).unwrap();
         
         let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
         let y = DVector::from_vec(vec![0.0, 1.0, 0.0]);
@@ -777,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_random_point() {
-        let sphere = Sphere::new(10).unwrap();
+        let sphere = Sphere::<f64>::new(10).unwrap();
         
         for _ in 0..100 {
             let x = sphere.random_point();
@@ -787,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_manifold_properties() {
-        let sphere = Sphere::new(4).unwrap();
+        let sphere = Sphere::<f64>::new(4).unwrap();
         
         assert_eq!(sphere.name(), "Sphere");
         assert_eq!(sphere.dimension(), 3);

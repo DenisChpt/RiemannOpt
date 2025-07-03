@@ -570,7 +570,7 @@ where
         &self,
         gradient: &TV,
         _manifold: &M,
-        point: &P,
+        _point: &P,
     ) -> Result<TV> 
     where
         M: Manifold<T>,
