@@ -810,6 +810,36 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
     fn is_flat(&self) -> bool {
         false  // Hyperbolic space has constant negative curvature
     }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // In the Poincaré ball model, tangent vectors are just vectors in R^n
+        // Scaling preserves the tangent space property
+        result.copy_from(tangent);
+        *result *= scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        _point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // In the Poincaré ball model, tangent space at a point is just R^n
+        // So addition is standard vector addition
+        result.copy_from(v1);
+        *result += v2;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

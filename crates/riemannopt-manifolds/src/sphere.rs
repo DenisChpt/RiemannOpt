@@ -656,6 +656,42 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
     fn is_flat(&self) -> bool {
         false
     }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // For the sphere, tangent vectors are just vectors in the ambient space
+        // orthogonal to the point. Scaling preserves this orthogonality.
+        result.copy_from(tangent);
+        *result *= scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Add the vectors
+        result.copy_from(v1);
+        *result += v2;
+        
+        // The sum should already be in the tangent space if v1 and v2 are,
+        // but we project for numerical stability
+        // Create a temporary clone to avoid borrowing issues
+        let temp = result.clone();
+        self.project_tangent(point, &temp, result, workspace)?;
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]

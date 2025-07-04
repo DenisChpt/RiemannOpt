@@ -644,6 +644,73 @@ where
     fn is_flat(&self) -> bool {
         self.manifold1.is_flat() && self.manifold2.is_flat()
     }
+
+    fn scale_tangent(
+        &self,
+        point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if point.len() != self.total_dim || tangent.len() != self.total_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                self.total_dim,
+                point.len().max(tangent.len())
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.total_dim {
+            *result = DVector::zeros(self.total_dim);
+        }
+
+        let (p1, p2) = self.split_vector(point)?;
+        let (t1, t2) = self.split_vector(tangent)?;
+
+        let mut scaled1 = t1.clone();
+        let mut scaled2 = t2.clone();
+        
+        self.manifold1.scale_tangent(&p1, scalar, &t1, &mut scaled1, workspace)?;
+        self.manifold2.scale_tangent(&p2, scalar, &t2, &mut scaled2, workspace)?;
+        
+        self.combine_vectors_mut(&scaled1, &scaled2, result)?;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if point.len() != self.total_dim || v1.len() != self.total_dim || v2.len() != self.total_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                self.total_dim,
+                point.len().max(v1.len()).max(v2.len())
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.total_dim {
+            *result = DVector::zeros(self.total_dim);
+        }
+
+        let (p1, p2) = self.split_vector(point)?;
+        let (v1_1, v1_2) = self.split_vector(v1)?;
+        let (v2_1, v2_2) = self.split_vector(v2)?;
+
+        let mut sum1 = v1_1.clone();
+        let mut sum2 = v1_2.clone();
+        
+        self.manifold1.add_tangents(&p1, &v1_1, &v2_1, &mut sum1, workspace)?;
+        self.manifold2.add_tangents(&p2, &v1_2, &v2_2, &mut sum2, workspace)?;
+        
+        self.combine_vectors_mut(&sum1, &sum2, result)?;
+        Ok(())
+    }
 }
 
 /// Creates a static product manifold with type inference.

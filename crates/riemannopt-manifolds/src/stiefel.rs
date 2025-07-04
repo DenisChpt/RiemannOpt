@@ -719,6 +719,42 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
     fn is_flat(&self) -> bool {
         false
     }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // For Stiefel manifold, tangent vectors satisfy X^T Z + Z^T X = 0
+        // Scaling preserves this skew-symmetry constraint
+        result.copy_from(tangent);
+        *result *= scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Add the tangent vectors
+        result.copy_from(v1);
+        *result += v2;
+        
+        // The sum should already satisfy the tangent space constraint if v1 and v2 do,
+        // but we project for numerical stability
+        // Create a temporary clone to avoid borrowing issues
+        let temp = result.clone();
+        self.project_tangent(point, &temp, result, workspace)?;
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]
