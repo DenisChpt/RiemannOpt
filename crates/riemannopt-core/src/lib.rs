@@ -48,7 +48,7 @@ pub use core::{
 
 // Re-export other modules for backward compatibility
 pub use optimization::{
-    line_search, optimizer, optimizer_state, preconditioner, step_size,
+    line_search, optimizer, preconditioner, step_size,
 };
 pub use numerical::{
     stability as numerical_stability,
@@ -93,10 +93,8 @@ pub mod prelude {
         BacktrackingLineSearch, FixedStepSize, LineSearch, LineSearchParams, LineSearchResult,
         StrongWolfeLineSearch,
         // From optimizer
-        ConvergenceChecker, OptimizationResult, Optimizer, OptimizerState, StoppingCriterion,
+        OptimizationResult, Optimizer, StoppingCriterion,
         TerminationReason,
-        // From optimizer_state
-        OptimizerStateData, OptimizerStateWithData,
     };
     
     // Manifold operations

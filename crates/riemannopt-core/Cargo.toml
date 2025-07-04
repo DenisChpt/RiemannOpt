@@ -77,14 +77,3 @@ harness = false
 name = "parallel_gradient"
 harness = false
 
-[[example]]
-name = "parallel_optimization"
-
-[[example]]
-name = "cached_optimization"
-
-[[example]]
-name = "backend_selection"
-
-[[example]]
-name = "specialized_ops"
