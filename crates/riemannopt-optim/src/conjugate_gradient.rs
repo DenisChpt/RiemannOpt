@@ -40,17 +40,14 @@ use riemannopt_core::{
     },
     error::Result,
     types::Scalar,
-    memory::workspace::Workspace,
+    memory::workspace::{Workspace, BufferId},
     optimization::{
         optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
-        optimizer_state::{OptimizerStateData, OptimizerStateWithData},
         line_search::BacktrackingLineSearch,
     },
 };
-use std::marker::PhantomData;
 use std::time::Instant;
 use std::fmt::Debug;
-use std::collections::HashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use num_traits::Float;
@@ -69,136 +66,222 @@ pub enum ConjugateGradientMethod {
     DaiYuan,
 }
 
-/// State for conjugate gradient methods.
-#[derive(Debug, Clone)]
-#[cfg_attr(
-    feature = "serde",
-    derive(Serialize, Deserialize)
-)]
-pub struct ConjugateGradientState<T, P, TV>
+/// Internal state for Conjugate Gradient optimizer.
+#[derive(Debug)]
+struct CGInternalState<T, P, TV>
 where
     T: Scalar,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
 {
-    /// Previous search direction
-    pub previous_direction: Option<TV>,
-
-    /// Previous gradient
-    pub previous_gradient: Option<TV>,
-
-    /// Previous point
-    pub previous_point: Option<P>,
-
-    /// Method for computing beta (FR, PR, HS, DY)
-    pub method: ConjugateGradientMethod,
-
-    /// Number of iterations since last restart
-    pub iterations_since_restart: usize,
-
-    /// Restart period (0 means no periodic restart)
-    pub restart_period: usize,
+    workspace: Workspace<T>,
+    iteration: usize,
     
-    /// Phantom data to use the type parameter T
-    _phantom: PhantomData<T>,
+    /// Previous search direction
+    previous_direction: Option<TV>,
+    /// Previous gradient
+    previous_gradient: Option<TV>,
+    /// Previous point
+    previous_point: Option<P>,
+    /// Method for computing beta (FR, PR, HS, DY)
+    method: ConjugateGradientMethod,
+    /// Number of iterations since last restart
+    iterations_since_restart: usize,
+    /// Restart period (0 means no periodic restart)
+    restart_period: usize,
 }
 
-impl<T, P, TV> ConjugateGradientState<T, P, TV>
+impl<T, P, TV> CGInternalState<T, P, TV>
 where
     T: Scalar,
-    P: Clone,
-    TV: Clone,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
 {
     /// Creates a new conjugate gradient state.
-    pub fn new(method: ConjugateGradientMethod, restart_period: usize) -> Self {
+    fn new(n: usize, method: ConjugateGradientMethod, restart_period: usize) -> Self {
+        let mut workspace = Workspace::with_size(n);
+        
+        // Pre-allocate workspace buffers
+        workspace.get_or_create_vector(BufferId::Gradient, n);
+        workspace.get_or_create_vector(BufferId::Direction, n);
+        workspace.get_or_create_vector(BufferId::Temp1, n);
+        workspace.get_or_create_vector(BufferId::Temp2, n);
+        
         Self {
+            workspace,
+            iteration: 0,
             previous_direction: None,
             previous_gradient: None,
             previous_point: None,
             method,
             iterations_since_restart: 0,
             restart_period,
-            _phantom: PhantomData,
         }
     }
-
-    /// Computes the conjugate gradient direction.
-    /// 
-    /// For Phase 5, we provide a simplified implementation that works with the current type system.
-    pub fn compute_direction_simplified<M>(
-        &mut self,
-        gradient: &TV,
-        beta: T,
-    ) -> TV
-    where
-        TV: Clone,
-    {
+    
+    fn update_iteration(&mut self) {
+        self.iteration += 1;
         self.iterations_since_restart += 1;
+    }
 
-        // Check if we should restart
-        let should_restart =
-            self.restart_period > 0 && self.iterations_since_restart >= self.restart_period;
-
-        if should_restart || self.previous_direction.is_none() || beta < T::zero() || beta.is_nan() {
-            // Restart with steepest descent
-            self.iterations_since_restart = 0;
-            let direction = gradient.clone();
-            self.previous_direction = Some(direction.clone());
-            self.previous_gradient = Some(gradient.clone());
-            return direction;
+    /// Computes the beta coefficient for the conjugate gradient method.
+    fn compute_beta<M>(
+        &self,
+        manifold: &M,
+        point: &P,
+        gradient: &TV,
+        config: &CGConfig<T>,
+    ) -> Result<T>
+    where
+        M: Manifold<T, Point = P, TangentVector = TV>,
+    {
+        if self.previous_gradient.is_none() || self.previous_direction.is_none() {
+            return Ok(T::zero());
         }
-
-        // For simplified implementation, just return gradient
-        let direction = gradient.clone();
         
-        // Update state
-        self.previous_direction = Some(direction.clone());
-        self.previous_gradient = Some(gradient.clone());
-
-        direction
+        let prev_grad = self.previous_gradient.as_ref().unwrap();
+        let prev_dir = self.previous_direction.as_ref().unwrap();
+        
+        // Compute inner products needed for beta calculation
+        let grad_norm_sq = manifold.inner_product(point, gradient, gradient)?;
+        let prev_grad_norm_sq = manifold.inner_product(point, prev_grad, prev_grad)?;
+        
+        let beta = match self.method {
+            ConjugateGradientMethod::FletcherReeves => {
+                // β = ||g_k||² / ||g_{k-1}||²
+                if prev_grad_norm_sq > T::epsilon() {
+                    grad_norm_sq / prev_grad_norm_sq
+                } else {
+                    T::zero()
+                }
+            }
+            ConjugateGradientMethod::PolakRibiere => {
+                // β = <g_k, g_k - g_{k-1}> / ||g_{k-1}||²
+                let mut grad_diff = gradient.clone();
+                let mut transported_prev_grad = prev_grad.clone();
+                
+                // Transport previous gradient to current point if points differ
+                if let Some(ref prev_point) = self.previous_point {
+                    manifold.parallel_transport(prev_point, point, prev_grad, &mut transported_prev_grad, &mut self.workspace.clone())?;
+                }
+                
+                // Compute g_k - g_{k-1}
+                // First create -g_{k-1}
+                let mut neg_prev_grad = transported_prev_grad.clone();
+                manifold.scale_tangent(point, -T::one(), &transported_prev_grad, &mut neg_prev_grad, &mut self.workspace.clone())?;
+                // Then add g_k + (-g_{k-1})
+                manifold.add_tangents(point, gradient, &neg_prev_grad, &mut grad_diff, &mut self.workspace.clone())?;
+                
+                let numerator = manifold.inner_product(point, gradient, &grad_diff)?;
+                
+                if prev_grad_norm_sq > T::epsilon() {
+                    let beta = numerator / prev_grad_norm_sq;
+                    if config.use_pr_plus {
+                        <T as Float>::max(T::zero(), beta) // PR+
+                    } else {
+                        beta
+                    }
+                } else {
+                    T::zero()
+                }
+            }
+            ConjugateGradientMethod::HestenesStiefel => {
+                // β = <g_k, g_k - g_{k-1}> / <d_{k-1}, g_k - g_{k-1}>
+                let mut grad_diff = gradient.clone();
+                let mut transported_prev_grad = prev_grad.clone();
+                let mut transported_prev_dir = prev_dir.clone();
+                
+                // Transport previous values to current point if needed
+                if let Some(ref prev_point) = self.previous_point {
+                    manifold.parallel_transport(prev_point, point, prev_grad, &mut transported_prev_grad, &mut self.workspace.clone())?;
+                    manifold.parallel_transport(prev_point, point, prev_dir, &mut transported_prev_dir, &mut self.workspace.clone())?;
+                }
+                
+                // Compute g_k - g_{k-1}
+                // First create -g_{k-1}
+                let mut neg_prev_grad = transported_prev_grad.clone();
+                manifold.scale_tangent(point, -T::one(), &transported_prev_grad, &mut neg_prev_grad, &mut self.workspace.clone())?;
+                // Then add g_k + (-g_{k-1})
+                manifold.add_tangents(point, gradient, &neg_prev_grad, &mut grad_diff, &mut self.workspace.clone())?;
+                
+                let numerator = manifold.inner_product(point, gradient, &grad_diff)?;
+                let denominator = manifold.inner_product(point, &transported_prev_dir, &grad_diff)?;
+                
+                if <T as Float>::abs(denominator) > T::epsilon() {
+                    numerator / denominator
+                } else {
+                    T::zero()
+                }
+            }
+            ConjugateGradientMethod::DaiYuan => {
+                // β = ||g_k||² / <d_{k-1}, g_k - g_{k-1}>
+                let mut grad_diff = gradient.clone();
+                let mut transported_prev_grad = prev_grad.clone();
+                let mut transported_prev_dir = prev_dir.clone();
+                
+                // Transport previous values to current point if needed
+                if let Some(ref prev_point) = self.previous_point {
+                    manifold.parallel_transport(prev_point, point, prev_grad, &mut transported_prev_grad, &mut self.workspace.clone())?;
+                    manifold.parallel_transport(prev_point, point, prev_dir, &mut transported_prev_dir, &mut self.workspace.clone())?;
+                }
+                
+                // Compute g_k - g_{k-1}
+                // First create -g_{k-1}
+                let mut neg_prev_grad = transported_prev_grad.clone();
+                manifold.scale_tangent(point, -T::one(), &transported_prev_grad, &mut neg_prev_grad, &mut self.workspace.clone())?;
+                // Then add g_k + (-g_{k-1})
+                manifold.add_tangents(point, gradient, &neg_prev_grad, &mut grad_diff, &mut self.workspace.clone())?;
+                
+                let denominator = manifold.inner_product(point, &transported_prev_dir, &grad_diff)?;
+                
+                if <T as Float>::abs(denominator) > T::epsilon() {
+                    grad_norm_sq / denominator
+                } else {
+                    T::zero()
+                }
+            }
+        };
+        
+        // Apply beta bounds if configured
+        let mut beta_bounded = beta;
+        if let Some(min_beta) = config.min_beta {
+            if beta < min_beta {
+                beta_bounded = T::zero(); // Restart if beta too small
+            }
+        }
+        if let Some(max_beta) = config.max_beta {
+            beta_bounded = <T as Float>::min(beta_bounded, max_beta);
+        }
+        
+        Ok(beta_bounded)
     }
 }
 
-impl<T, P, TV> OptimizerStateData<T, TV> for ConjugateGradientState<T, P, TV>
+/// Public state for Conjugate Gradient optimizer (for compatibility).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ConjugateGradientState<T, P, TV>
 where
     T: Scalar,
-    P: Clone + Debug + Send + Sync + 'static,
-    TV: Clone + Debug + Send + Sync + 'static,
 {
-    fn clone_box(&self) -> Box<dyn OptimizerStateData<T, TV>> {
-        Box::new(self.clone())
-    }
-    
-    fn optimizer_name(&self) -> &str {
-        match self.method {
-            ConjugateGradientMethod::FletcherReeves => "CG-FR",
-            ConjugateGradientMethod::PolakRibiere => "CG-PR",
-            ConjugateGradientMethod::HestenesStiefel => "CG-HS",
-            ConjugateGradientMethod::DaiYuan => "CG-DY",
+    /// Method for computing beta (FR, PR, HS, DY)
+    pub method: ConjugateGradientMethod,
+    /// Restart period (0 means no periodic restart)
+    pub restart_period: usize,
+    _phantom: std::marker::PhantomData<(T, P, TV)>,
+}
+
+impl<T, P, TV> ConjugateGradientState<T, P, TV>
+where
+    T: Scalar,
+{
+    /// Creates a new conjugate gradient state.
+    pub fn new(method: ConjugateGradientMethod, restart_period: usize) -> Self {
+        Self {
+            method,
+            restart_period,
+            _phantom: std::marker::PhantomData,
         }
-    }
-
-    fn reset(&mut self) {
-        self.previous_direction = None;
-        self.previous_gradient = None;
-        self.previous_point = None;
-        self.iterations_since_restart = 0;
-    }
-
-    fn summary(&self) -> HashMap<String, String> {
-        let mut summary = HashMap::new();
-        summary.insert("method".to_string(), format!("{:?}", self.method));
-        summary.insert(
-            "restart_period".to_string(),
-            self.restart_period.to_string(),
-        );
-        summary.insert(
-            "iterations_since_restart".to_string(),
-            self.iterations_since_restart.to_string(),
-        );
-        summary
-    }
-
-    fn update_iteration(&mut self, _iteration: usize) {
-        // Iteration counting is handled in compute_direction
     }
 }
 
@@ -316,7 +399,7 @@ impl<T: Scalar> CGConfig<T> {
 /// use riemannopt_optim::{ConjugateGradient, CGConfig};
 /// 
 /// // Basic CG with Polak-Ribière method
-/// let cg: ConjugateGradient<f64, _> = ConjugateGradient::new(CGConfig::new());
+/// let cg: ConjugateGradient<f64> = ConjugateGradient::new(CGConfig::new());
 /// 
 /// // CG with Fletcher-Reeves and periodic restart
 /// let cg_fr = ConjugateGradient::new(
@@ -326,23 +409,15 @@ impl<T: Scalar> CGConfig<T> {
 /// );
 /// ```
 #[derive(Debug)]
-pub struct ConjugateGradient<T: Scalar, M: Manifold<T>> {
+pub struct ConjugateGradient<T: Scalar> {
     config: CGConfig<T>,
-    state: Option<OptimizerStateWithData<T, M::Point, M::TangentVector>>,
-    _phantom: PhantomData<M>,
 }
 
-impl<T: Scalar, M: Manifold<T>> ConjugateGradient<T, M> 
-where
-    M::TangentVector: 'static,
-    M::Point: 'static,
-{
+impl<T: Scalar> ConjugateGradient<T> {
     /// Creates a new Conjugate Gradient optimizer with the given configuration.
     pub fn new(config: CGConfig<T>) -> Self {
         Self {
             config,
-            state: None,
-            _phantom: PhantomData,
         }
     }
 
@@ -372,25 +447,9 @@ where
         }
     }
     
-    /// Initializes the optimizer state if needed.
-    fn ensure_state_initialized(&mut self, manifold: &M) {
-        if self.state.is_none() {
-            let n = manifold.dimension();
-            let workspace = Workspace::with_size(n);
-            
-            // Create CG state
-            let state_data: Box<dyn OptimizerStateData<T, M::TangentVector>> = 
-                Box::new(ConjugateGradientState::<T, M::Point, M::TangentVector>::new(
-                    self.config.method,
-                    self.config.restart_period,
-                ));
-            
-            self.state = Some(OptimizerStateWithData::new(workspace, state_data));
-        }
-    }
 
     /// Optimizes the given cost function on the manifold.
-    pub fn optimize<C>(
+    pub fn optimize<C, M>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
@@ -399,17 +458,23 @@ where
     ) -> Result<OptimizationResult<T, M::Point>>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
         let start_time = Instant::now();
-        
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
         
         // Initialize optimization state
         let initial_cost = cost_fn.cost(initial_point)?;
         let mut state = OptimizerState::new(
             initial_point.clone(),
             initial_cost
+        );
+        
+        // Create internal state
+        let n = manifold.dimension();
+        let mut internal_state = CGInternalState::<T, M::Point, M::TangentVector>::new(
+            n,
+            self.config.method,
+            self.config.restart_period,
         );
         
         // Main optimization loop
@@ -429,12 +494,145 @@ where
             }
             
             // Perform one optimization step
-            self.step(cost_fn, manifold, &mut state)?;
+            self.step_with_state(cost_fn, manifold, &mut state, &mut internal_state)?;
         }
     }
 
+    /// Performs a single optimization step with internal state.
+    fn step_with_state<C, M>(
+        &self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
+        internal_state: &mut CGInternalState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
+    {
+        // Initialize buffers for gradients
+        let mut euclidean_grad = if let Some(ref g) = state.gradient {
+            // Reuse existing gradient vector
+            g.clone()
+        } else {
+            // Create a gradient by calling gradient_fd_alloc first time
+            cost_fn.gradient_fd_alloc(&state.point)?
+        };
+        let mut riemannian_grad = euclidean_grad.clone();
+        let mut new_point = state.point.clone();
+        
+        // Compute gradient
+        {
+            let workspace = &mut internal_state.workspace;
+            let _cost = cost_fn.cost_and_gradient(&state.point, workspace, &mut euclidean_grad)?;
+            state.function_evaluations += 1;
+            state.gradient_evaluations += 1;
+            
+            // Convert to Riemannian gradient
+            manifold.euclidean_to_riemannian_gradient(&state.point, &euclidean_grad, &mut riemannian_grad, workspace)?;
+        }
+        
+        // Compute gradient norm
+        let grad_norm_squared = manifold.inner_product(&state.point, &riemannian_grad, &riemannian_grad)?;
+        let grad_norm = <T as Float>::sqrt(grad_norm_squared);
+        state.gradient_norm = Some(grad_norm);
+        
+        // Store gradient in state
+        state.gradient = Some(riemannian_grad.clone());
+        
+        // Compute beta coefficient
+        let beta = internal_state.compute_beta(manifold, &state.point, &riemannian_grad, &self.config)?;
+        
+        // Compute conjugate gradient direction
+        let mut direction = riemannian_grad.clone();
+        {
+            let workspace = &mut internal_state.workspace;
+            
+            // Check if we should restart
+            let should_restart = (internal_state.iterations_since_restart > 0 && 
+                                 internal_state.restart_period > 0 && 
+                                 internal_state.iterations_since_restart >= internal_state.restart_period) ||
+                                beta < T::zero() || beta.is_nan();
+            
+            if should_restart || internal_state.previous_direction.is_none() {
+                // Restart with steepest descent: d = -g
+                manifold.scale_tangent(&state.point, -T::one(), &riemannian_grad, &mut direction, workspace)?;
+                internal_state.iterations_since_restart = 0;
+            } else {
+                // Compute conjugate direction: d = -g + beta * d_{k-1}
+                let prev_dir = internal_state.previous_direction.as_ref().unwrap();
+                let mut transported_prev_dir = prev_dir.clone();
+                
+                // Transport previous direction to current point if needed
+                if let Some(ref prev_point) = internal_state.previous_point {
+                    manifold.parallel_transport(prev_point, &state.point, prev_dir, &mut transported_prev_dir, workspace)?;
+                }
+                
+                // d = beta * d_{k-1}
+                manifold.scale_tangent(&state.point, beta, &transported_prev_dir, &mut direction, workspace)?;
+                // d = -g + beta * d_{k-1}
+                let mut neg_grad = riemannian_grad.clone();
+                manifold.scale_tangent(&state.point, -T::one(), &riemannian_grad, &mut neg_grad, workspace)?;
+                let mut new_direction = direction.clone();
+                manifold.add_tangents(&state.point, &neg_grad, &direction, &mut new_direction, workspace)?;
+                direction = new_direction;
+                
+                // CRITICAL: Project the direction back to the tangent space
+                // This ensures the direction is truly tangent at the current point
+                let mut projected_direction = direction.clone();
+                manifold.project_tangent(&state.point, &direction, &mut projected_direction, workspace)?;
+                direction = projected_direction;
+            }
+        }
+        
+        // Perform line search
+        let step_size = if let Some(ref _line_search) = self.config.line_search {
+            let workspace = &mut internal_state.workspace;
+            self.perform_line_search(
+                cost_fn,
+                manifold,
+                &state.point,
+                &direction,
+                state.value,
+                &riemannian_grad,
+                workspace,
+            )?
+        } else {
+            // Use fixed step size
+            T::one()
+        };
+        
+        // Take the step
+        {
+            let workspace = &mut internal_state.workspace;
+            // Scale direction by step size
+            let mut scaled_direction = direction.clone();
+            manifold.scale_tangent(&state.point, step_size, &direction, &mut scaled_direction, workspace)?;
+            
+            // Take the step using retraction
+            manifold.retract(&state.point, &scaled_direction, &mut new_point, workspace)?;
+        }
+        
+        // Evaluate cost at new point
+        let new_cost = cost_fn.cost(&new_point)?;
+        state.function_evaluations += 1;
+        
+        // Update internal state for next iteration
+        internal_state.previous_direction = Some(direction);
+        internal_state.previous_gradient = Some(riemannian_grad);
+        internal_state.previous_point = Some(state.point.clone());
+        internal_state.update_iteration();
+        
+        // Update optimization state
+        state.point = new_point;
+        state.value = new_cost;
+        state.iteration += 1;
+        
+        Ok(())
+    }
+    
     /// Performs a single optimization step.
-    pub fn step<C>(
+    pub fn step<C, M>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
@@ -442,142 +640,34 @@ where
     ) -> Result<()>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
+        // Create temporary internal state
+        let n = manifold.dimension();
+        let mut internal_state = CGInternalState::<T, M::Point, M::TangentVector>::new(
+            n,
+            self.config.method,
+            self.config.restart_period,
+        );
         
-        // Compute gradient
-        let gradient = cost_fn.gradient(&state.point)?;
-        state.gradient_evaluations += 1;
-        
-        // Compute gradient norm
-        let grad_norm_squared = manifold.inner_product(&state.point, &gradient, &gradient)?;
-        let grad_norm = <T as Float>::sqrt(grad_norm_squared);
-        state.gradient_norm = Some(grad_norm);
-        
-        // Store gradient in state
-        state.gradient = Some(gradient.clone());
-        
-        // Compute conjugate gradient direction
-        let direction = {
-            let opt_state = self.state.as_mut().unwrap();
-            let workspace = opt_state.workspace_mut();
-            Self::compute_cg_direction(
-                manifold,
-                &state.point,
-                &gradient,
-                workspace,
-            )?
-        };
-        
-        // Perform line search and take step
-        let (_step_size, new_point) = {
-            let opt_state = self.state.as_mut().unwrap();
-            let workspace = opt_state.workspace_mut();
-            
-            let step_size = if let Some(ref _line_search) = self.config.line_search {
-                // Perform backtracking line search
-                Self::perform_line_search(
-                    cost_fn,
-                    manifold,
-                    &state.point,
-                    &direction,
-                    state.value,
-                    grad_norm,
-                    workspace,
-                )?
-            } else {
-                // Use fixed step size
-                T::one()
-            };
-            
-            // Scale direction by step size
-            let mut scaled_direction = direction.clone();
-            manifold.scale_tangent(
-                &state.point,
-                step_size,
-                &direction,
-                &mut scaled_direction,
-                workspace,
-            )?;
-            
-            // Take the step using retraction
-            let mut new_point = state.point.clone();
-            manifold.retract(&state.point, &scaled_direction, &mut new_point, workspace)?;
-            
-            (step_size, new_point)
-        };
-        
-        // Evaluate cost at new point
-        let new_cost = cost_fn.cost(&new_point)?;
-        state.function_evaluations += 1;
-        
-        // Update CG state before updating the optimization state
-        {
-            let opt_state = self.state.as_mut().unwrap();
-            let workspace = opt_state.workspace_mut();
-            Self::update_cg_state(
-                manifold,
-                &state.point,
-                &new_point,
-                &gradient,
-                &direction,
-                workspace,
-            )?;
-        }
-        
-        // Update state
-        state.update(new_point, new_cost);
-        
-        // Update optimizer state iteration count
-        if let Some(opt_state) = self.state.as_mut() {
-            opt_state.update_iteration();
-        }
-        
-        Ok(())
-    }
-    
-    /// Computes the conjugate gradient direction.
-    fn compute_cg_direction(
-        manifold: &M,
-        point: &M::Point,
-        gradient: &M::TangentVector,
-        workspace: &mut Workspace<T>,
-    ) -> Result<M::TangentVector> {
-        // For Phase 5, we implement a simplified version
-        // In a full implementation, we would:
-        // 1. Access the ConjugateGradientState from self.state
-        // 2. Use the state's compute_direction method
-        // 3. Apply beta bounds and PR+ modification if configured
-        
-        // For now, return scaled negative gradient
-        let mut direction = gradient.clone();
-        manifold.scale_tangent(point, -T::one(), gradient, &mut direction, workspace)?;
-        
-        // Apply simple preconditioning based on gradient norm
-        let grad_norm_squared = manifold.inner_product(point, gradient, gradient)?;
-        if grad_norm_squared > T::zero() && grad_norm_squared < T::infinity() {
-            let scale = T::one() / <T as Float>::sqrt(grad_norm_squared);
-            let mut scaled_direction = direction.clone();
-            manifold.scale_tangent(point, scale, &direction, &mut scaled_direction, workspace)?;
-            direction = scaled_direction;
-        }
-        
-        Ok(direction)
+        // Delegate to internal implementation
+        self.step_with_state(cost_fn, manifold, state, &mut internal_state)
     }
     
     /// Performs line search to find an appropriate step size.
-    fn perform_line_search<C>(
+    fn perform_line_search<C, M>(
+        &self,
         cost_fn: &C,
         manifold: &M,
         point: &M::Point,
         direction: &M::TangentVector,
         current_cost: T,
-        _grad_norm: T,
+        _gradient: &M::TangentVector,
         workspace: &mut Workspace<T>,
     ) -> Result<T>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
         // Backtracking line search with Armijo condition
         let c1 = <T as Scalar>::from_f64(1e-4);
@@ -585,9 +675,8 @@ where
         let mut alpha = T::one();
         let max_iterations = 20;
         
-        // Compute directional derivative
-        let gradient = cost_fn.gradient(point)?;
-        let directional_derivative = manifold.inner_product(point, &gradient, direction)?;
+        // Compute directional derivative using the gradient we already have
+        let directional_derivative = manifold.inner_product(point, _gradient, direction)?;
         
         for _ in 0..max_iterations {
             // Try the step
@@ -612,81 +701,45 @@ where
         
         Ok(alpha)
     }
-    
-    /// Updates the CG state after a step.
-    fn update_cg_state(
-        _manifold: &M,
-        _old_point: &M::Point,
-        _new_point: &M::Point,
-        _gradient: &M::TangentVector,
-        _direction: &M::TangentVector,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        // For Phase 5, we implement a simplified version
-        // In a full implementation, we would:
-        // 1. Access the ConjugateGradientState from self.state
-        // 2. Update the state's previous values
-        // 3. Handle parallel transport if needed
-        
-        Ok(())
-    }
-    
 }
 
 // Implementation of the Optimizer trait from core
-impl<T: Scalar, M: Manifold<T>> Optimizer<T> for ConjugateGradient<T, M> {
+impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
     fn name(&self) -> &str {
-        match self.config.method {
-            ConjugateGradientMethod::FletcherReeves => "Riemannian CG-FR",
-            ConjugateGradientMethod::PolakRibiere => {
-                if self.config.use_pr_plus {
-                    "Riemannian CG-PR+"
-                } else {
-                    "Riemannian CG-PR"
-                }
-            }
-            ConjugateGradientMethod::HestenesStiefel => "Riemannian CG-HS",
-            ConjugateGradientMethod::DaiYuan => "Riemannian CG-DY",
-        }
+        self.name()
     }
     
-    fn optimize<C, MF>(
+    fn optimize<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _initial_point: &MF::Point,
-        _stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, MF::Point>>
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &M::Point,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, M::Point>>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // This is a limitation of the current design
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold optimization not yet implemented"
-        ))
+        self.optimize(cost_fn, manifold, initial_point, stopping_criterion)
     }
     
-    fn step<C, MF>(
+    fn step<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _state: &mut OptimizerState<T, MF::Point, MF::TangentVector>,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
     ) -> Result<()>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold step not yet implemented"
-        ))
+        self.step(cost_fn, manifold, state)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use riemannopt_core::types::DVector;
 
     #[test]
     fn test_cg_config() {
@@ -712,22 +765,6 @@ mod tests {
         assert_eq!(pr_config.method, ConjugateGradientMethod::PolakRibiere);
         assert_eq!(hs_config.method, ConjugateGradientMethod::HestenesStiefel);
         assert_eq!(dy_config.method, ConjugateGradientMethod::DaiYuan);
-    }
-    
-    #[test]
-    fn test_conjugate_gradient_state() {
-        let mut state = ConjugateGradientState::<f64, DVector<f64>, DVector<f64>>::new(
-            ConjugateGradientMethod::FletcherReeves, 
-            10
-        );
-        assert_eq!(state.optimizer_name(), "CG-FR");
-
-        let summary = state.summary();
-        assert_eq!(summary.get("method").unwrap(), "FletcherReeves");
-        assert_eq!(summary.get("restart_period").unwrap(), "10");
-
-        state.reset();
-        assert_eq!(state.iterations_since_restart, 0);
     }
 
     // Tests involving manifolds are temporarily disabled

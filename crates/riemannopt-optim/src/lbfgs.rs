@@ -61,65 +61,72 @@ use riemannopt_core::{
     },
     error::Result,
     types::Scalar,
-    memory::workspace::Workspace,
+    memory::workspace::{Workspace, BufferId},
     optimization::{
         optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
-        optimizer_state::{OptimizerStateData, OptimizerStateWithData},
         line_search::StrongWolfeLineSearch,
     },
 };
-use std::marker::PhantomData;
 use std::time::Instant;
 use std::fmt::Debug;
-use std::collections::HashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use num_traits::Float;
 
-/// State for L-BFGS optimizer.
-#[derive(Debug, Clone)]
-#[cfg_attr(
-    feature = "serde",
-    derive(Serialize, Deserialize)
-)]
-pub struct LBFGSState<T, P, TV>
+/// Internal state for L-BFGS optimizer.
+#[derive(Debug)]
+struct LBFGSInternalState<T, P, TV>
 where
     T: Scalar,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
 {
+    workspace: Workspace<T>,
+    iteration: usize,
+    
+    // L-BFGS specific state
     /// Memory size (number of vector pairs to store)
-    pub memory_size: usize,
-
+    memory_size: usize,
     /// Stored position differences (s_k = x_{k+1} - x_k)
-    pub s_history: Vec<TV>,
-
+    s_history: Vec<TV>,
     /// Stored gradient differences (y_k = g_{k+1} - g_k)
-    pub y_history: Vec<TV>,
-
+    y_history: Vec<TV>,
     /// Inner products rho_k = 1 / (y_k^T s_k)
-    pub rho_history: Vec<T>,
-
+    rho_history: Vec<T>,
     /// Previous point
-    pub previous_point: Option<P>,
-
+    previous_point: Option<P>,
     /// Previous gradient
-    pub previous_gradient: Option<TV>,
-    
-    /// Search direction from previous iteration (for computing s_k)
-    pub previous_direction: Option<TV>,
-    
-    /// Step size from previous iteration (for computing s_k)
-    pub previous_step_size: Option<T>,
+    previous_gradient: Option<TV>,
+    /// Search direction from previous iteration
+    previous_direction: Option<TV>,
+    /// Step size from previous iteration
+    previous_step_size: Option<T>,
 }
 
-impl<T, P, TV> LBFGSState<T, P, TV>
+impl<T, P, TV> LBFGSInternalState<T, P, TV>
 where
     T: Scalar,
-    P: Clone,
-    TV: Clone,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
 {
-    /// Creates a new L-BFGS state.
-    pub fn new(memory_size: usize) -> Self {
+    fn new(n: usize, memory_size: usize) -> Self {
+        let mut workspace = Workspace::with_size(n);
+        
+        // Pre-allocate workspace buffers
+        workspace.get_or_create_vector(BufferId::Gradient, n);
+        workspace.get_or_create_vector(BufferId::Direction, n);
+        workspace.get_or_create_vector(BufferId::Temp1, n);
+        workspace.get_or_create_vector(BufferId::Temp2, n);
+        
+        // Allocate additional buffers for L-BFGS history operations
+        for i in 0..memory_size {
+            workspace.get_or_create_vector(BufferId::Custom((i * 2) as u32), n);     // For transported s_i
+            workspace.get_or_create_vector(BufferId::Custom((i * 2 + 1) as u32), n); // For transported y_i
+        }
+        
         Self {
+            workspace,
+            iteration: 0,
             memory_size,
             s_history: Vec::with_capacity(memory_size),
             y_history: Vec::with_capacity(memory_size),
@@ -130,155 +137,34 @@ where
             previous_step_size: None,
         }
     }
-
-    /// Updates the history with new position and gradient information.
-    /// 
-    /// This method computes the differences s_k and y_k, and stores them in the history.
-    /// The key challenge is that we need to compute differences between points on the manifold
-    /// and between gradients in different tangent spaces.
-    pub fn update_history<M>(
-        &mut self,
-        point: &P,
-        gradient: &TV,
-        _manifold: &M,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()> 
-    where
-        M: Manifold<T>,
-        M::Point: std::borrow::Borrow<P>,
-        M::TangentVector: std::borrow::Borrow<TV>,
-        P: Clone,
-        TV: Clone,
-    {
-        if let (Some(_prev_point), Some(_prev_grad)) = (&self.previous_point, &self.previous_gradient) {
-            // For L-BFGS, we need to store:
-            // s_k = vector from x_k to x_{k+1} (as tangent vector at x_k)
-            // y_k = g_{k+1} - g_k (both transported to same tangent space)
-            
-            // Since we can't directly compute s_k without inverse retraction,
-            // we'll store the transported gradient difference for y_k
-            // For s_k, we would ideally use inverse_retract(x_k, x_{k+1})
-            
-            // For now, we'll store placeholder values
-            // In a full implementation, we would:
-            // 1. Use inverse_retract to compute s_k
-            // 2. Transport prev_grad to current tangent space to compute y_k
-            
-            let s = gradient.clone(); // Placeholder
-            let y = gradient.clone(); // Placeholder
-            
-            // Compute rho_k = 1 / <y_k, s_k>
-            // This would use manifold.inner_product
-            let rho = T::one(); // Placeholder
-
-            // Add to history (with circular buffer behavior)
-            if self.s_history.len() >= self.memory_size {
-                self.s_history.remove(0);
-                self.y_history.remove(0);
-                self.rho_history.remove(0);
-            }
-
-            self.s_history.push(s);
-            self.y_history.push(y);
-            self.rho_history.push(rho);
-        }
-
-        self.previous_point = Some(point.clone());
-        self.previous_gradient = Some(gradient.clone());
-
-        Ok(())
-    }
-
-    /// Applies the L-BFGS two-loop recursion to compute search direction.
-    /// 
-    /// This implements the standard L-BFGS two-loop recursion algorithm adapted
-    /// for Riemannian manifolds. The key difference is that all stored vectors
-    /// must be transported to the current tangent space before use.
-    pub fn compute_direction<M>(
-        &self,
-        gradient: &TV,
-        _manifold: &M,
-        _point: &P,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<TV> 
-    where
-        M: Manifold<T>,
-        M::Point: std::borrow::Borrow<P>,
-        M::TangentVector: std::borrow::Borrow<TV>,
-        TV: Clone,
-    {
-        let m = self.s_history.len();
-        if m == 0 {
-            // No history yet, return negative gradient
-            return Ok(gradient.clone());
-        }
-
-        // Allocate workspace for alpha values
-        let mut alpha = vec![T::zero(); m];
-        
-        // Initialize q = gradient
-        let q = gradient.clone();
-        
-        // First loop: compute alpha[i] and update q
-        for i in (0..m).rev() {
-            // In full implementation, we would transport s_i and y_i to current tangent space
-            // For now, we use them directly
-            // alpha[i] = rho[i] * <s[i], q>
-            // q = q - alpha[i] * y[i]
-            alpha[i] = self.rho_history[i];
-            // This requires manifold operations that we'll implement later
-        }
-        
-        // Compute initial Hessian approximation H_0
-        // Typically H_0 = gamma * I where gamma = <s_{m-1}, y_{m-1}> / <y_{m-1}, y_{m-1}>
-        // For now, we use q as is
-        let r = q;
-        
-        // Second loop: compute search direction
-        for _i in 0..m {
-            // beta = rho[i] * <y[i], r>
-            // r = r + (alpha[i] - beta) * s[i]
-            // This requires manifold operations that we'll implement later
-        }
-        
-        // Return negative direction for descent
-        Ok(r)
+    
+    fn update_iteration(&mut self) {
+        self.iteration += 1;
     }
 }
 
-impl<T, P, TV> OptimizerStateData<T, TV> for LBFGSState<T, P, TV>
+/// Public state for L-BFGS optimizer (for compatibility).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LBFGSState<T, TV>
 where
     T: Scalar,
-    P: Clone + Debug + Send + Sync + 'static,
-    TV: Clone + Debug + Send + Sync + 'static,
 {
-    fn clone_box(&self) -> Box<dyn OptimizerStateData<T, TV>> {
-        Box::new(self.clone())
-    }
-    
-    fn optimizer_name(&self) -> &str {
-        "L-BFGS"
-    }
+    /// Memory size (number of vector pairs to store)
+    pub memory_size: usize,
+    _phantom: std::marker::PhantomData<(T, TV)>,
+}
 
-    fn reset(&mut self) {
-        self.s_history.clear();
-        self.y_history.clear();
-        self.rho_history.clear();
-        self.previous_point = None;
-        self.previous_gradient = None;
-        self.previous_direction = None;
-        self.previous_step_size = None;
-    }
-
-    fn summary(&self) -> HashMap<String, String> {
-        let mut summary = HashMap::new();
-        summary.insert("memory_size".to_string(), self.memory_size.to_string());
-        summary.insert("stored_pairs".to_string(), self.s_history.len().to_string());
-        summary
-    }
-
-    fn update_iteration(&mut self, _iteration: usize) {
-        // L-BFGS doesn't have iteration-dependent parameters
+impl<T, TV> LBFGSState<T, TV>
+where
+    T: Scalar,
+{
+    /// Creates a new L-BFGS state.
+    pub fn new(memory_size: usize) -> Self {
+        Self {
+            memory_size,
+            _phantom: std::marker::PhantomData,
+        }
     }
 }
 
@@ -349,7 +235,7 @@ impl<T: Scalar> LBFGSConfig<T> {
 /// use riemannopt_optim::{LBFGS, LBFGSConfig};
 /// 
 /// // Basic L-BFGS with default parameters
-/// let lbfgs: LBFGS<f64, _> = LBFGS::new(LBFGSConfig::new());
+/// let lbfgs: LBFGS<f64> = LBFGS::new(LBFGSConfig::new());
 /// 
 /// // L-BFGS with custom parameters
 /// let lbfgs_custom = LBFGS::new(
@@ -360,23 +246,15 @@ impl<T: Scalar> LBFGSConfig<T> {
 /// );
 /// ```
 #[derive(Debug)]
-pub struct LBFGS<T: Scalar, M: Manifold<T>> {
+pub struct LBFGS<T: Scalar> {
     config: LBFGSConfig<T>,
-    state: Option<OptimizerStateWithData<T, M::Point, M::TangentVector>>,
-    _phantom: PhantomData<M>,
 }
 
-impl<T: Scalar, M: Manifold<T>> LBFGS<T, M> 
-where
-    M::TangentVector: 'static,
-    M::Point: 'static,
-{
+impl<T: Scalar> LBFGS<T> {
     /// Creates a new L-BFGS optimizer with given configuration.
     pub fn new(config: LBFGSConfig<T>) -> Self {
         Self { 
             config,
-            state: None,
-            _phantom: PhantomData,
         }
     }
 
@@ -394,25 +272,9 @@ where
     pub fn name(&self) -> &str {
         "Riemannian L-BFGS"
     }
-    
-    /// Initializes the optimizer state if needed.
-    fn ensure_state_initialized(&mut self, manifold: &M) {
-        if self.state.is_none() {
-            let n = manifold.dimension();
-            let workspace = Workspace::with_size(n);
-            
-            // Create L-BFGS state
-            let state_data: Box<dyn OptimizerStateData<T, M::TangentVector>> = 
-                Box::new(LBFGSState::<T, M::Point, M::TangentVector>::new(
-                    self.config.memory_size
-                ));
-            
-            self.state = Some(OptimizerStateWithData::new(workspace, state_data));
-        }
-    }
 
     /// Optimizes the given cost function on the manifold.
-    pub fn optimize<C>(
+    pub fn optimize<C, M>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
@@ -421,17 +283,22 @@ where
     ) -> Result<OptimizationResult<T, M::Point>>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
         let start_time = Instant::now();
-        
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
         
         // Initialize optimization state
         let initial_cost = cost_fn.cost(initial_point)?;
         let mut state = OptimizerState::new(
             initial_point.clone(),
             initial_cost
+        );
+        
+        // Create internal state
+        let n = manifold.dimension();
+        let mut internal_state = LBFGSInternalState::<T, M::Point, M::TangentVector>::new(
+            n, 
+            self.config.memory_size
         );
         
         // Main optimization loop
@@ -451,68 +318,60 @@ where
             }
             
             // Perform one optimization step
-            self.step_internal(cost_fn, manifold, &mut state)?;
+            self.step_with_state(cost_fn, manifold, &mut state, &mut internal_state)?;
         }
     }
 
-    /// Internal step method that uses workspace from optimizer state.
-    fn step_internal<C>(
-        &mut self,
+    /// Performs a single optimization step with internal state.
+    fn step_with_state<C, M>(
+        &self,
         cost_fn: &C,
         manifold: &M,
         state: &mut OptimizerState<T, M::Point, M::TangentVector>,
+        internal_state: &mut LBFGSInternalState<T, M::Point, M::TangentVector>,
     ) -> Result<()>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
-        
-        // Get workspace separately to avoid borrow conflicts
-        let opt_state = self.state.as_mut().unwrap();
-        let workspace = opt_state.workspace_mut();
-        
-        // Call step with workspace as a raw pointer to avoid borrow checker
-        unsafe {
-            let workspace_ptr = workspace as *mut Workspace<T>;
-            self.step(cost_fn, manifold, state, &mut *workspace_ptr)
-        }
-    }
-    
-    /// Performs a single optimization step.
-    pub fn step<C>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()>
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-    {
-        use num_traits::Float;
-        
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
+        // Create gradient buffer
+        let mut euclidean_grad = match &state.gradient {
+            Some(g) => g.clone(),
+            None => {
+                // For the first iteration, compute the gradient
+                cost_fn.gradient(&state.point)?
+            }
+        };
+        let mut riemannian_grad = euclidean_grad.clone();
+        let mut new_point = state.point.clone();
         
         // Compute gradient
-        let gradient = cost_fn.gradient(&state.point)?;
-        state.gradient_evaluations += 1;
+        {
+            let workspace = &mut internal_state.workspace;
+            let _cost = cost_fn.cost_and_gradient(&state.point, workspace, &mut euclidean_grad)?;
+            state.function_evaluations += 1;
+            state.gradient_evaluations += 1;
+            
+            // Convert to Riemannian gradient
+            manifold.euclidean_to_riemannian_gradient(&state.point, &euclidean_grad, &mut riemannian_grad, workspace)?;
+        }
         
         // Compute gradient norm
-        let grad_norm_squared = manifold.inner_product(&state.point, &gradient, &gradient)?;
+        let grad_norm_squared = manifold.inner_product(&state.point, &riemannian_grad, &riemannian_grad)?;
         let grad_norm = <T as Float>::sqrt(grad_norm_squared);
         state.gradient_norm = Some(grad_norm);
         
         // Store gradient in state
-        state.gradient = Some(gradient.clone());
+        state.gradient = Some(riemannian_grad.clone());
         
         // Compute search direction using L-BFGS two-loop recursion
-        let direction = self.compute_lbfgs_direction(
+        let mut direction = riemannian_grad.clone();
+        self.compute_lbfgs_direction(
             manifold,
             &state.point,
-            &gradient,
-            workspace,
+            &riemannian_grad,
+            &mut direction,
+            internal_state,
         )?;
         
         // Perform line search if configured
@@ -524,8 +383,8 @@ where
                 &state.point,
                 &direction,
                 state.value,
-                &gradient,
-                workspace,
+                &riemannian_grad,
+                internal_state,
             )?
         } else {
             // Use fixed step size
@@ -536,94 +395,170 @@ where
             }
         };
         
-        // Scale direction by step size
-        let mut scaled_direction = direction.clone();
-        manifold.scale_tangent(
-            &state.point,
-            -step_size,
-            &direction,
-            &mut scaled_direction,
-            workspace,
-        )?;
+        // Update history before taking the step
+        internal_state.previous_direction = Some(direction.clone());
+        internal_state.previous_step_size = Some(step_size);
         
-        // Take the step using retraction
-        let mut new_point = state.point.clone();
-        manifold.retract(&state.point, &scaled_direction, &mut new_point, workspace)?;
-        
-        // Evaluate cost at new point
-        let new_cost = cost_fn.cost(&new_point)?;
-        state.function_evaluations += 1;
+        // Scale direction by step size and take the step
+        {
+            let workspace = &mut internal_state.workspace;
+            let scaled_direction = direction.clone();
+            manifold.scale_tangent(&state.point, -step_size, &scaled_direction, &mut direction, workspace)?;
+            manifold.retract(&state.point, &direction, &mut new_point, workspace)?;
+        }
         
         // Compute gradient at new point for history update
-        let new_gradient = cost_fn.gradient(&new_point)?;
-        state.gradient_evaluations += 1;
-        
-        // Update L-BFGS history
-        self.update_lbfgs_history(
-            manifold,
-            &state.point,
-            &new_point,
-            &gradient,
-            &new_gradient,
-            workspace,
-        )?;
-        
-        // Update state
-        state.update(new_point, new_cost);
-        
-        // Update optimizer state iteration count
-        if let Some(opt_state) = self.state.as_mut() {
-            opt_state.update_iteration();
+        let mut new_euclidean_grad = euclidean_grad.clone();
+        let mut new_riemannian_grad = riemannian_grad.clone();
+        {
+            let workspace = &mut internal_state.workspace;
+            let new_cost = cost_fn.cost_and_gradient(&new_point, workspace, &mut new_euclidean_grad)?;
+            state.function_evaluations += 1;
+            state.gradient_evaluations += 1;
+            
+            // Convert to Riemannian gradient
+            manifold.euclidean_to_riemannian_gradient(&new_point, &new_euclidean_grad, &mut new_riemannian_grad, workspace)?;
+            
+            // Update L-BFGS history
+            self.update_lbfgs_history(
+                manifold,
+                &state.point,
+                &new_point,
+                &riemannian_grad,
+                &new_riemannian_grad,
+                internal_state,
+            )?;
+            
+            // Update state
+            state.point = new_point;
+            state.value = new_cost;
+            state.iteration += 1;
         }
+        
+        // Update internal state iteration
+        internal_state.update_iteration();
         
         Ok(())
     }
+    
+    /// Performs a single optimization step.
+    pub fn step<C, M>(
+        &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
+    {
+        // Create internal state
+        let n = manifold.dimension();
+        let mut internal_state = LBFGSInternalState::<T, M::Point, M::TangentVector>::new(
+            n,
+            self.config.memory_size
+        );
+        
+        // Delegate to internal implementation
+        self.step_with_state(cost_fn, manifold, state, &mut internal_state)
+    }
 
     /// Computes the L-BFGS search direction using the two-loop recursion.
-    fn compute_lbfgs_direction(
+    fn compute_lbfgs_direction<M>(
         &self,
         manifold: &M,
         point: &M::Point,
         gradient: &M::TangentVector,
-        workspace: &mut Workspace<T>,
-    ) -> Result<M::TangentVector> {
-        // For Phase 4, we implement a more complete two-loop recursion
-        // In a full implementation with proper state access, we would:
-        // 1. Access the LBFGSState from self.state
-        // 2. Transport all stored vectors to the current tangent space
-        // 3. Apply the two-loop recursion algorithm
+        direction: &mut M::TangentVector,
+        internal_state: &mut LBFGSInternalState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        M: Manifold<T>,
+    {
+        let workspace = &mut internal_state.workspace;
+        let m = internal_state.s_history.len();
+        
+        if m == 0 {
+            // No history yet, return negative gradient
+            direction.clone_from(gradient);
+            manifold.scale_tangent(point, -T::one(), gradient, direction, workspace)?;
+            return Ok(());
+        }
+        
+        // Allocate workspace for alpha values
+        let mut alpha = vec![T::zero(); m];
         
         // Initialize q = gradient
         let mut q = gradient.clone();
         
-        // In a full implementation, we would:
-        // - Access s_history, y_history, and rho_history from LBFGSState
-        // - Allocate alpha array for the first loop
-        // - Perform the first loop (backward)
-        // - Apply initial Hessian approximation
-        // - Perform the second loop (forward)
+        // Transport all stored vectors to current tangent space
+        let mut transported_s = Vec::with_capacity(m);
+        let mut transported_y = Vec::with_capacity(m);
         
-        // For now, apply a simple preconditioner based on gradient norm
-        let grad_norm_squared = manifold.inner_product(point, gradient, &q)?;
-        if grad_norm_squared > T::zero() {
-            // Initial Hessian approximation: H_0 = gamma * I
-            // gamma is typically chosen as <s_{k-1}, y_{k-1}> / <y_{k-1}, y_{k-1}>
-            // For now, use 1 / ||grad||
-            let gamma = T::one() / <T as Float>::sqrt(grad_norm_squared);
-            let mut scaled_q = q.clone();
-            manifold.scale_tangent(point, gamma, &q, &mut scaled_q, workspace)?;
-            q = scaled_q;
+        for i in 0..m {
+            let mut s_i = internal_state.s_history[i].clone();
+            let mut y_i = internal_state.y_history[i].clone();
+            
+            // Transport s_i and y_i to current tangent space
+            // Note: s_i and y_i are stored at different points along the trajectory
+            // For simplicity, we transport them from the previous point
+            if let Some(ref prev_point) = internal_state.previous_point {
+                manifold.parallel_transport(prev_point, point, &internal_state.s_history[i], &mut s_i, workspace)?;
+                manifold.parallel_transport(prev_point, point, &internal_state.y_history[i], &mut y_i, workspace)?;
+            }
+            
+            transported_s.push(s_i);
+            transported_y.push(y_i);
+        }
+        
+        // First loop: compute alpha[i] and update q
+        for i in (0..m).rev() {
+            // alpha[i] = rho[i] * <s[i], q>
+            let s_dot_q = manifold.inner_product(point, &transported_s[i], &q)?;
+            alpha[i] = internal_state.rho_history[i] * s_dot_q;
+            
+            // q = q - alpha[i] * y[i]
+            let mut scaled_y = transported_y[i].clone();
+            manifold.scale_tangent(point, -alpha[i], &transported_y[i], &mut scaled_y, workspace)?;
+            let temp_q = q.clone();
+            manifold.add_tangents(point, &temp_q, &scaled_y, &mut q, workspace)?;
+        }
+        
+        // Compute initial Hessian approximation H_0
+        let mut r = q.clone();
+        if m > 0 {
+            // H_0 = gamma * I where gamma = <s_{m-1}, y_{m-1}> / <y_{m-1}, y_{m-1}>
+            let s_dot_y = manifold.inner_product(point, &transported_s[m-1], &transported_y[m-1])?;
+            let y_dot_y = manifold.inner_product(point, &transported_y[m-1], &transported_y[m-1])?;
+            
+            if y_dot_y > T::zero() {
+                let gamma = s_dot_y / y_dot_y;
+                manifold.scale_tangent(point, gamma, &q, &mut r, workspace)?;
+            }
+        }
+        
+        // Second loop: compute search direction
+        for i in 0..m {
+            // beta = rho[i] * <y[i], r>
+            let y_dot_r = manifold.inner_product(point, &transported_y[i], &r)?;
+            let beta = internal_state.rho_history[i] * y_dot_r;
+            
+            // r = r + (alpha[i] - beta) * s[i]
+            let coeff = alpha[i] - beta;
+            let mut scaled_s = transported_s[i].clone();
+            manifold.scale_tangent(point, coeff, &transported_s[i], &mut scaled_s, workspace)?;
+            let temp = r.clone();
+            manifold.add_tangents(point, &temp, &scaled_s, &mut r, workspace)?;
         }
         
         // Return negative direction for descent
-        let mut direction = q.clone();
-        manifold.scale_tangent(point, -T::one(), &q, &mut direction, workspace)?;
+        manifold.scale_tangent(point, -T::one(), &r, direction, workspace)?;
         
-        Ok(direction)
+        Ok(())
     }
     
     /// Performs line search to find an appropriate step size.
-    fn perform_line_search<C>(
+    fn perform_line_search<C, M>(
         &self,
         cost_fn: &C,
         manifold: &M,
@@ -631,12 +566,13 @@ where
         direction: &M::TangentVector,
         current_cost: T,
         gradient: &M::TangentVector,
-        workspace: &mut Workspace<T>,
+        internal_state: &mut LBFGSInternalState<T, M::Point, M::TangentVector>,
     ) -> Result<T>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        use num_traits::Float;
+        let workspace = &mut internal_state.workspace;
         
         // Compute directional derivative
         let directional_derivative = manifold.inner_product(point, gradient, direction)?;
@@ -663,7 +599,11 @@ where
             let expected_decrease = c1 * alpha * directional_derivative;
             if trial_cost <= current_cost + expected_decrease {
                 // Check curvature condition (simplified)
-                let trial_gradient = cost_fn.gradient(&trial_point)?;
+                let trial_euclidean_gradient = cost_fn.gradient(&trial_point)?;
+                let mut trial_gradient = trial_euclidean_gradient.clone();
+                
+                // Convert to Riemannian gradient
+                manifold.euclidean_to_riemannian_gradient(&trial_point, &trial_euclidean_gradient, &mut trial_gradient, workspace)?;
                 
                 // Transport direction to trial point for curvature check
                 // For now, we use a simplified check
@@ -682,89 +622,111 @@ where
     }
     
     /// Updates the L-BFGS history with new information.
-    fn update_lbfgs_history(
-        &mut self,
+    fn update_lbfgs_history<M>(
+        &self,
         manifold: &M,
-        _old_point: &M::Point,
+        old_point: &M::Point,
         new_point: &M::Point,
         old_gradient: &M::TangentVector,
         new_gradient: &M::TangentVector,
-        workspace: &mut Workspace<T>,
-    ) -> Result<()> {
-        use num_traits::Float;
+        internal_state: &mut LBFGSInternalState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        M: Manifold<T>,
+    {
+        let workspace = &mut internal_state.workspace;
         
-        // For Phase 4, we implement a simplified history update
-        // In a full implementation, we would:
-        // 1. Access the LBFGSState from self.state
-        // 2. Compute s_k using the stored direction and step size
-        // 3. Compute y_k by transporting old_gradient to new_point's tangent space
-        // 4. Update the history with proper parallel transport
-        
-        // Compute gradient difference (simplified - should use parallel transport)
-        let mut y_k = new_gradient.clone();
-        manifold.axpy_tangent(
-            new_point,
-            -T::one(),
-            old_gradient,
-            new_gradient,
-            &mut y_k,
-            workspace,
-        )?;
-        
-        // For s_k, we would ideally use inverse_retract or the stored direction
-        // For now, use a placeholder
-        let s_k = y_k.clone();
-        
-        // Compute rho_k = 1 / <y_k, s_k>
-        let y_dot_s = manifold.inner_product(new_point, &y_k, &s_k)?;
-        if <T as Float>::abs(y_dot_s) > <T as Scalar>::from_f64(1e-8) {
-            // Update would happen here if we had access to LBFGSState
-            // For now, just update the optimizer state iteration
-            if let Some(opt_state) = self.state.as_mut() {
-                opt_state.update_iteration();
+        // Only update if we have a previous point and gradient
+        if internal_state.previous_point.is_some() && internal_state.previous_gradient.is_some() {
+            // Compute s_k using the stored direction and step size
+            let s_k = if let (Some(ref direction), Some(step_size)) = 
+                (&internal_state.previous_direction, internal_state.previous_step_size) {
+                let mut s = direction.clone();
+                manifold.scale_tangent(old_point, step_size, direction, &mut s, workspace)?;
+                s
+            } else {
+                // Fallback: use inverse retraction if available
+                // For now, approximate with scaled gradient difference
+                old_gradient.clone()
+            };
+            
+            // Compute y_k = g_{k+1} - g_k (transport old gradient to new point's tangent space)
+            let mut transported_old_grad = old_gradient.clone();
+            manifold.parallel_transport(old_point, new_point, old_gradient, &mut transported_old_grad, workspace)?;
+            
+            // y_k = new_gradient - transported_old_grad
+            let mut y_k = new_gradient.clone();
+            let mut neg_transported_old_grad = transported_old_grad.clone();
+            manifold.scale_tangent(new_point, -T::one(), &transported_old_grad, &mut neg_transported_old_grad, workspace)?;
+            manifold.add_tangents(new_point, new_gradient, &neg_transported_old_grad, &mut y_k, workspace)?;
+            
+            // Compute rho_k = 1 / <y_k, s_k>
+            // Note: we need to transport s_k to new_point for inner product
+            let mut transported_s_k = s_k.clone();
+            manifold.parallel_transport(old_point, new_point, &s_k, &mut transported_s_k, workspace)?;
+            
+            let y_dot_s = manifold.inner_product(new_point, &y_k, &transported_s_k)?;
+            
+            // Check if update satisfies curvature condition (for cautious updates)
+            let min_curvature = <T as Scalar>::from_f64(1e-8);
+            if <T as Float>::abs(y_dot_s) > min_curvature && 
+               (!self.config.use_cautious_updates || y_dot_s > T::zero()) {
+                
+                let rho = T::one() / y_dot_s;
+                
+                // Store s_k and y_k at old_point's tangent space
+                // (they will be transported to current point when used)
+                if internal_state.s_history.len() >= internal_state.memory_size {
+                    internal_state.s_history.remove(0);
+                    internal_state.y_history.remove(0);
+                    internal_state.rho_history.remove(0);
+                }
+                
+                internal_state.s_history.push(s_k);
+                internal_state.y_history.push(y_k);
+                internal_state.rho_history.push(rho);
             }
         }
+        
+        // Update previous values
+        internal_state.previous_point = Some(new_point.clone());
+        internal_state.previous_gradient = Some(new_gradient.clone());
         
         Ok(())
     }
 }
 
 // Implementation of the Optimizer trait from core
-impl<T: Scalar, M: Manifold<T>> Optimizer<T> for LBFGS<T, M> {
+impl<T: Scalar> Optimizer<T> for LBFGS<T> {
     fn name(&self) -> &str {
         "Riemannian L-BFGS"
     }
     
-    fn optimize<C, MF>(
+    fn optimize<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _initial_point: &MF::Point,
-        _stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, MF::Point>>
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &M::Point,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, M::Point>>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // This is a limitation of the current design
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold optimization not yet implemented"
-        ))
+        self.optimize(cost_fn, manifold, initial_point, stopping_criterion)
     }
     
-    fn step<C, MF>(
+    fn step<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _state: &mut OptimizerState<T, MF::Point, MF::TangentVector>,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
     ) -> Result<()>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold step not yet implemented"
-        ))
+        self.step(cost_fn, manifold, state)
     }
 }
 
@@ -787,13 +749,8 @@ mod tests {
     
     #[test]
     fn test_lbfgs_state() {
-        let state = LBFGSState::<f64, DVector<f64>, DVector<f64>>::new(5);
-        assert_eq!(state.optimizer_name(), "L-BFGS");
+        let state = LBFGSState::<f64, DVector<f64>>::new(5);
         assert_eq!(state.memory_size, 5);
-
-        let summary = state.summary();
-        assert_eq!(summary.get("memory_size").unwrap(), "5");
-        assert_eq!(summary.get("stored_pairs").unwrap(), "0");
     }
 
     // Tests involving manifolds are temporarily disabled
