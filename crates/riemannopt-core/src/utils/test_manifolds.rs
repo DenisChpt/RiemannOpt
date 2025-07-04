@@ -107,6 +107,30 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
     fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
         Ok((y - x).norm())
     }
+    
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        result.copy_from(&(tangent * scalar));
+        Ok(())
+    }
+    
+    fn add_tangents(
+        &self,
+        _point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        result.copy_from(&(v1 + v2));
+        Ok(())
+    }
 }
 
 /// A simple sphere manifold for testing.
@@ -225,6 +249,32 @@ impl<T: Scalar> Manifold<T> for TestSphereManifold {
         let inner = <T as num_traits::Float>::min(inner, T::one());
         Ok(<T as num_traits::Float>::acos(inner))
     }
+    
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // For sphere, scaling in tangent space is just scalar multiplication
+        result.copy_from(&(tangent * scalar));
+        Ok(())
+    }
+    
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Add vectors and project to ensure result is in tangent space
+        let sum = v1 + v2;
+        self.project_tangent(point, &sum, result, workspace)
+    }
 }
 
 /// A minimal manifold implementation for basic testing.
@@ -315,5 +365,29 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 
     fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
         Ok((y - x).norm())
+    }
+    
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        result.copy_from(&(tangent * scalar));
+        Ok(())
+    }
+    
+    fn add_tangents(
+        &self,
+        _point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        result.copy_from(&(v1 + v2));
+        Ok(())
     }
 }

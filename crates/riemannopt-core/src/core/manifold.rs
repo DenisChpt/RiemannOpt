@@ -501,6 +501,105 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
         false
     }
 
+    // ============================================================================
+    // Vector Operations for Optimization
+    // ============================================================================
+    
+    /// Scales a tangent vector by a scalar.
+    ///
+    /// Computes: result = scalar * tangent
+    ///
+    /// This operation is fundamental for optimization algorithms that need to
+    /// scale gradients or search directions. For most manifolds, this is simply
+    /// scalar multiplication, but some manifolds may require special handling.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point on the manifold (for manifolds where metric depends on position)
+    /// * `scalar` - The scalar factor
+    /// * `tangent` - The tangent vector to scale
+    /// * `result` - Pre-allocated output buffer for the scaled vector
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tangent vector is not in the tangent space.
+    fn scale_tangent(
+        &self,
+        point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>;
+
+    /// Adds two tangent vectors.
+    ///
+    /// Computes: result = v1 + v2
+    ///
+    /// For most manifolds embedded in Euclidean space, this is standard vector
+    /// addition. However, the result must be in the tangent space, so projection
+    /// may be necessary for numerical stability.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point on the manifold
+    /// * `v1` - First tangent vector
+    /// * `v2` - Second tangent vector  
+    /// * `result` - Pre-allocated output buffer for the sum
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vector is not in the tangent space.
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>;
+
+    /// Computes a linear combination of tangent vectors (axpy operation).
+    ///
+    /// Computes: result = y + alpha * x
+    ///
+    /// This is a fundamental operation for many optimization algorithms,
+    /// combining scaling and addition in a single step for efficiency.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - A point on the manifold
+    /// * `alpha` - Scalar coefficient
+    /// * `x` - Tangent vector to scale
+    /// * `y` - Tangent vector to add
+    /// * `result` - Pre-allocated output buffer for the result
+    /// * `workspace` - Pre-allocated workspace for temporary computations
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation uses scale_tangent and add_tangents, but
+    /// specific manifolds may provide more efficient implementations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vector is not in the tangent space.
+    fn axpy_tangent(
+        &self,
+        point: &Self::Point,
+        alpha: T,
+        x: &Self::TangentVector,
+        y: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        // Default implementation: compute alpha * x, then add y
+        let mut scaled_x = x.clone(); // Temporary, will use workspace buffer in optimized version
+        self.scale_tangent(point, alpha, x, &mut scaled_x, workspace)?;
+        self.add_tangents(point, &scaled_x, y, result, workspace)
+    }
+
 }
 
 #[cfg(test)]

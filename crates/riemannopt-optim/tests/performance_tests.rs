@@ -5,27 +5,28 @@
 
 use riemannopt_optim::{SGD, SGDConfig, Adam, AdamConfig, LBFGS, LBFGSConfig};
 use riemannopt_core::{
-    optimizer::{Optimizer, StoppingCriterion},
-    manifold::Manifold,
-    cost_function::CostFunction,
+    optimization::optimizer::StoppingCriterion,
+    core::{
+        manifold::Manifold,
+        cost_function::CostFunction,
+    },
     error::Result,
+    memory::workspace::Workspace,
 };
 use riemannopt_manifolds::Sphere;
 use nalgebra::DVector;
 use std::time::Instant;
 
-/// Helper to measure optimization time
-fn time_optimization<O, C, M>(
-    optimizer: &mut O,
+/// Helper to measure optimization time for SGD
+fn time_sgd_optimization<C>(
+    optimizer: &mut SGD<f64, Sphere>,
     cost_fn: &C,
-    manifold: &M,
+    manifold: &Sphere,
     x0: &DVector<f64>,
     max_iter: usize,
 ) -> (std::time::Duration, usize)
 where
-    O: Optimizer<f64, nalgebra::Dyn>,
-    C: CostFunction<f64, nalgebra::Dyn>,
-    M: Manifold<f64, nalgebra::Dyn>,
+    C: CostFunction<f64, Point = DVector<f64>, TangentVector = DVector<f64>>,
 {
     let stopping_criterion = StoppingCriterion::new()
         .with_max_iterations(max_iter)
@@ -36,6 +37,60 @@ where
         Ok(res) => res,
         Err(_) => {
             // If optimization fails, return max iterations
+            return (start.elapsed(), max_iter);
+        }
+    };
+    let duration = start.elapsed();
+    
+    (duration, result.iterations)
+}
+
+/// Helper to measure optimization time for Adam
+fn time_adam_optimization<C>(
+    optimizer: &mut Adam<f64, Sphere>,
+    cost_fn: &C,
+    manifold: &Sphere,
+    x0: &DVector<f64>,
+    max_iter: usize,
+) -> (std::time::Duration, usize)
+where
+    C: CostFunction<f64, Point = DVector<f64>, TangentVector = DVector<f64>>,
+{
+    let stopping_criterion = StoppingCriterion::new()
+        .with_max_iterations(max_iter)
+        .with_gradient_tolerance(1e-8);
+    
+    let start = Instant::now();
+    let result = match optimizer.optimize(cost_fn, manifold, x0, &stopping_criterion) {
+        Ok(res) => res,
+        Err(_) => {
+            return (start.elapsed(), max_iter);
+        }
+    };
+    let duration = start.elapsed();
+    
+    (duration, result.iterations)
+}
+
+/// Helper to measure optimization time for L-BFGS
+fn time_lbfgs_optimization<C>(
+    optimizer: &mut LBFGS<f64, Sphere>,
+    cost_fn: &C,
+    manifold: &Sphere,
+    x0: &DVector<f64>,
+    max_iter: usize,
+) -> (std::time::Duration, usize)
+where
+    C: CostFunction<f64, Point = DVector<f64>, TangentVector = DVector<f64>>,
+{
+    let stopping_criterion = StoppingCriterion::new()
+        .with_max_iterations(max_iter)
+        .with_gradient_tolerance(1e-8);
+    
+    let start = Instant::now();
+    let result = match optimizer.optimize(cost_fn, manifold, x0, &stopping_criterion) {
+        Ok(res) => res,
+        Err(_) => {
             return (start.elapsed(), max_iter);
         }
     };
@@ -55,7 +110,10 @@ impl RastriginOnSphere {
     }
 }
 
-impl CostFunction<f64, nalgebra::Dyn> for RastriginOnSphere {
+impl CostFunction<f64> for RastriginOnSphere {
+    type Point = DVector<f64>;
+    type TangentVector = DVector<f64>;
+    
     fn cost(&self, x: &DVector<f64>) -> Result<f64> {
         // Rastrigin function adapted for sphere
         let a = 10.0;
@@ -69,12 +127,56 @@ impl CostFunction<f64, nalgebra::Dyn> for RastriginOnSphere {
     fn gradient(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
         let a = 10.0;
         
-        Ok(DVector::from_iterator(
+        // Compute Euclidean gradient
+        let euclidean_grad = DVector::from_iterator(
             self.dimension,
             x.iter().map(|&xi| {
                 2.0 * xi + 2.0 * a * std::f64::consts::PI * (2.0 * std::f64::consts::PI * xi).sin()
             })
+        );
+        
+        // Project onto tangent space of sphere
+        let inner = euclidean_grad.dot(x);
+        Ok(euclidean_grad - inner * x)
+    }
+    
+    fn hessian_vector_product(&self, x: &DVector<f64>, v: &DVector<f64>) -> Result<DVector<f64>> {
+        let a = 10.0;
+        let pi = std::f64::consts::PI;
+        
+        Ok(DVector::from_iterator(
+            self.dimension,
+            x.iter().zip(v.iter())
+                .map(|(&xi, &vi)| {
+                    let h = 2.0 + 4.0 * a * pi * pi * (2.0 * pi * xi).cos();
+                    h * vi
+                })
         ))
+    }
+    
+    fn cost_and_gradient(
+        &self,
+        x: &DVector<f64>,
+        _workspace: &mut Workspace<f64>,
+        gradient: &mut DVector<f64>,
+    ) -> Result<f64> {
+        let cost = self.cost(x)?;
+        let a = 10.0;
+        
+        // Compute Euclidean gradient
+        for (i, &xi) in x.iter().enumerate() {
+            gradient[i] = 2.0 * xi + 2.0 * a * std::f64::consts::PI * (2.0 * std::f64::consts::PI * xi).sin();
+        }
+        
+        // Project onto tangent space of sphere
+        let inner = gradient.dot(x);
+        *gradient -= inner * x;
+        
+        Ok(cost)
+    }
+    
+    fn gradient_fd_alloc(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
+        self.gradient(x)
     }
 }
 
@@ -89,9 +191,9 @@ fn test_sgd_performance_scaling() {
         let cost_fn = RastriginOnSphere::new(dim);
         let x0 = sphere.random_point();
         
-        let mut sgd = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
+        let mut sgd: SGD<f64, Sphere> = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
         
-        let (duration, iterations) = time_optimization(&mut sgd, &cost_fn, &sphere, &x0, 100);
+        let (duration, iterations) = time_sgd_optimization(&mut sgd, &cost_fn, &sphere, &x0, 100);
         
         let time_per_iter = duration.as_micros() as f64 / iterations as f64;
         times.push((dim, time_per_iter));
@@ -114,11 +216,11 @@ fn test_adam_performance() {
     let x0 = sphere.random_point();
     
     // Warm up
-    let mut adam = Adam::new(AdamConfig::new().with_learning_rate(0.01));
-    let _ = time_optimization(&mut adam, &cost_fn, &sphere, &x0, 10);
+    let mut adam: Adam<f64, Sphere> = Adam::new(AdamConfig::new().with_learning_rate(0.01));
+    let _ = time_adam_optimization(&mut adam, &cost_fn, &sphere, &x0, 10);
     
     // Actual test
-    let (duration, iterations) = time_optimization(&mut adam, &cost_fn, &sphere, &x0, 100);
+    let (duration, iterations) = time_adam_optimization(&mut adam, &cost_fn, &sphere, &x0, 100);
     let time_per_iter = duration.as_micros() as f64 / iterations as f64;
     
     println!("Adam - 50D: {:.2} μs/iteration", time_per_iter);
@@ -137,8 +239,8 @@ fn test_lbfgs_performance() {
     let memory_sizes = vec![5, 10, 20];
     
     for &m in &memory_sizes {
-        let mut lbfgs = LBFGS::new(LBFGSConfig::new().with_memory_size(m));
-        let (duration, iterations) = time_optimization(&mut lbfgs, &cost_fn, &sphere, &x0, 50);
+        let mut lbfgs: LBFGS<f64, Sphere> = LBFGS::new(LBFGSConfig::new().with_memory_size(m));
+        let (duration, iterations) = time_lbfgs_optimization(&mut lbfgs, &cost_fn, &sphere, &x0, 50);
         let time_per_iter = duration.as_micros() as f64 / iterations as f64;
         
         println!("L-BFGS - Memory {}: {:.2} μs/iteration", m, time_per_iter);
@@ -159,13 +261,39 @@ fn test_optimizer_comparison() {
         target: DVector<f64>,
     }
     
-    impl CostFunction<f64, nalgebra::Dyn> for SimpleQuadratic {
+    impl CostFunction<f64> for SimpleQuadratic {
+        type Point = DVector<f64>;
+        type TangentVector = DVector<f64>;
+        
         fn cost(&self, x: &DVector<f64>) -> Result<f64> {
             Ok((x - &self.target).norm_squared())
         }
         
         fn gradient(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
-            Ok(2.0 * (x - &self.target))
+            let euclidean_grad = 2.0 * (x - &self.target);
+            let inner = euclidean_grad.dot(x);
+            Ok(euclidean_grad - inner * x)
+        }
+        
+        fn hessian_vector_product(&self, _x: &DVector<f64>, v: &DVector<f64>) -> Result<DVector<f64>> {
+            Ok(2.0 * v)
+        }
+        
+        fn cost_and_gradient(
+            &self,
+            x: &DVector<f64>,
+            _workspace: &mut Workspace<f64>,
+            gradient: &mut DVector<f64>,
+        ) -> Result<f64> {
+            let cost = self.cost(x)?;
+            let euclidean_grad = 2.0 * (x - &self.target);
+            let inner = euclidean_grad.dot(x);
+            *gradient = euclidean_grad - inner * x;
+            Ok(cost)
+        }
+        
+        fn gradient_fd_alloc(&self, x: &DVector<f64>) -> Result<DVector<f64>> {
+            self.gradient(x)
         }
     }
     
@@ -173,16 +301,16 @@ fn test_optimizer_comparison() {
     let x0 = sphere.random_point();
     
     // Test SGD
-    let mut sgd = SGD::new(SGDConfig::new().with_constant_step_size(0.1));
-    let (sgd_time, sgd_iter) = time_optimization(&mut sgd, &cost_fn, &sphere, &x0, 1000);
+    let mut sgd: SGD<f64, Sphere> = SGD::new(SGDConfig::new().with_constant_step_size(0.1));
+    let (sgd_time, sgd_iter) = time_sgd_optimization(&mut sgd, &cost_fn, &sphere, &x0, 1000);
     
     // Test Adam
-    let mut adam = Adam::new(AdamConfig::new().with_learning_rate(0.1));
-    let (adam_time, adam_iter) = time_optimization(&mut adam, &cost_fn, &sphere, &x0, 1000);
+    let mut adam: Adam<f64, Sphere> = Adam::new(AdamConfig::new().with_learning_rate(0.1));
+    let (adam_time, adam_iter) = time_adam_optimization(&mut adam, &cost_fn, &sphere, &x0, 1000);
     
     // Test L-BFGS
-    let mut lbfgs = LBFGS::new(LBFGSConfig::new().with_memory_size(10));
-    let (lbfgs_time, lbfgs_iter) = time_optimization(&mut lbfgs, &cost_fn, &sphere, &x0, 1000);
+    let mut lbfgs: LBFGS<f64, Sphere> = LBFGS::new(LBFGSConfig::new().with_memory_size(10));
+    let (lbfgs_time, lbfgs_iter) = time_lbfgs_optimization(&mut lbfgs, &cost_fn, &sphere, &x0, 1000);
     
     println!("\nOptimizer Comparison (30D quadratic):");
     println!("SGD:    {} iterations in {:.2} ms", sgd_iter, sgd_time.as_secs_f64() * 1000.0);
@@ -206,7 +334,7 @@ fn stress_test_large_scale_optimization() {
     let cost_fn = RastriginOnSphere::new(1000);
     let x0 = sphere.random_point();
     
-    let mut sgd = SGD::new(
+    let mut sgd: SGD<f64, Sphere> = SGD::new(
         SGDConfig::new()
             .with_constant_step_size(0.001)
             .with_classical_momentum(0.9)

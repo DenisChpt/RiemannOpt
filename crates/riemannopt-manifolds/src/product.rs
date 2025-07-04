@@ -715,6 +715,96 @@ impl<T: Scalar> Manifold<T> for Product {
     fn is_flat(&self) -> bool {
         self.manifolds.iter().all(|m| m.is_flat())
     }
+
+    fn scale_tangent(
+        &self,
+        point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if point.len() != self.total_dim || tangent.len() != self.total_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                self.total_dim,
+                point.len().max(tangent.len())
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.total_dim {
+            *result = DVector::zeros(self.total_dim);
+        }
+
+        let point_f64 = Self::convert_scalar::<T, f64>(point);
+        let tangent_f64 = Self::convert_scalar::<T, f64>(tangent);
+        let scalar_f64 = scalar.to_f64();
+
+        let point_comps = self.split_vector(&point_f64, None)?;
+        let tangent_comps = self.split_vector(&tangent_f64, None)?;
+
+        let mut scaled_components = Vec::with_capacity(self.manifolds.len());
+        let mut workspace_f64 = Workspace::<f64>::new();
+
+        for ((p, t), manifold) in point_comps.iter()
+            .zip(tangent_comps.iter())
+            .zip(self.manifolds.iter())
+        {
+            let mut scaled = t.clone();
+            manifold.scale_tangent(p, scalar_f64, t, &mut scaled, &mut workspace_f64)?;
+            scaled_components.push(scaled);
+        }
+
+        let combined = self.combine_vectors(&scaled_components)?;
+        *result = Self::convert_scalar::<f64, T>(&combined);
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<T>,
+    ) -> Result<()> {
+        if point.len() != self.total_dim || v1.len() != self.total_dim || v2.len() != self.total_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                self.total_dim,
+                point.len().max(v1.len()).max(v2.len())
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.total_dim {
+            *result = DVector::zeros(self.total_dim);
+        }
+
+        let point_f64 = Self::convert_scalar::<T, f64>(point);
+        let v1_f64 = Self::convert_scalar::<T, f64>(v1);
+        let v2_f64 = Self::convert_scalar::<T, f64>(v2);
+
+        let point_comps = self.split_vector(&point_f64, None)?;
+        let v1_comps = self.split_vector(&v1_f64, None)?;
+        let v2_comps = self.split_vector(&v2_f64, None)?;
+
+        let mut sum_components = Vec::with_capacity(self.manifolds.len());
+        let mut workspace_f64 = Workspace::<f64>::new();
+
+        for (((p, v1_i), v2_i), manifold) in point_comps.iter()
+            .zip(v1_comps.iter())
+            .zip(v2_comps.iter())
+            .zip(self.manifolds.iter())
+        {
+            let mut sum = v1_i.clone();
+            manifold.add_tangents(p, v1_i, v2_i, &mut sum, &mut workspace_f64)?;
+            sum_components.push(sum);
+        }
+
+        let combined = self.combine_vectors(&sum_components)?;
+        *result = Self::convert_scalar::<f64, T>(&combined);
+        Ok(())
+    }
 }
 
 // Alias for backward compatibility

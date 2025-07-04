@@ -96,8 +96,7 @@ pub mod prelude {
         ConvergenceChecker, OptimizationResult, Optimizer, OptimizerState, StoppingCriterion,
         TerminationReason,
         // From optimizer_state
-        AdamState, ConjugateGradientMethod, ConjugateGradientState, LBFGSState, MomentumState,
-        OptimizerStateData,
+        OptimizerStateData, OptimizerStateWithData,
     };
     
     // Manifold operations

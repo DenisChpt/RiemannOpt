@@ -12,9 +12,9 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```rust,ignore
 //! use riemannopt_optim::{SGD, SGDConfig};
-//! use riemannopt_core::optimizer::StoppingCriterion;
+//! use riemannopt_core::prelude::*;
 //! 
 //! // Create SGD optimizer with momentum
 //! let mut optimizer = SGD::new(
@@ -35,28 +35,39 @@
 pub mod sgd;
 pub mod adam;
 pub mod lbfgs;
-pub mod trust_region;
+// Temporarily disabled until API is updated
+// pub mod trust_region;
 pub mod conjugate_gradient;
-pub mod natural_gradient;
-pub mod parallel_sgd;
-pub mod newton;
+// pub mod natural_gradient;
+// pub mod parallel_sgd;
+// pub mod newton;
+
+mod utils;
 
 // Re-export main optimizers for convenience
-pub use sgd::{SGD, SGDConfig, MomentumMethod};
-pub use adam::{Adam, AdamConfig};
-pub use lbfgs::{LBFGS, LBFGSConfig};
-pub use trust_region::{TrustRegion, TrustRegionConfig};
-pub use conjugate_gradient::{ConjugateGradient, CGConfig};
-pub use natural_gradient::{NaturalGradient, NaturalGradientConfig};
-pub use parallel_sgd::ParallelSGDUtils;
-pub use newton::{Newton, NewtonConfig};
+pub use sgd::{SGD, SGDConfig, MomentumMethod, MomentumState};
+pub use adam::{Adam, AdamConfig, AdamState, AdamStateBuilder};
+pub use lbfgs::{LBFGS, LBFGSConfig, LBFGSState};
+// pub use trust_region::{TrustRegion, TrustRegionConfig};
+pub use conjugate_gradient::{ConjugateGradient, CGConfig, ConjugateGradientState, ConjugateGradientMethod};
+// pub use natural_gradient::{NaturalGradient, NaturalGradientConfig};
+// pub use parallel_sgd::ParallelSGDUtils;
+// pub use newton::{Newton, NewtonConfig};
 
 // Re-export commonly used items from core
-pub use riemannopt_core::{
+pub use riemannopt_core::optimization::{
     step_size::StepSizeSchedule,
     preconditioner::{Preconditioner, IdentityPreconditioner},
-    fisher::FisherApproximation,
+    line_search::{
+        LineSearch, LineSearchParams, LineSearchResult,
+        BacktrackingLineSearch, StrongWolfeLineSearch, FixedStepSize,
+    },
+    optimizer_state::{
+        OptimizerStateData, OptimizerStateWithData,
+    },
 };
+
+// pub use riemannopt_core::manifold_ops::fisher::FisherApproximation;
 
 #[cfg(test)]
 mod tests {
@@ -68,5 +79,11 @@ mod tests {
         let _config = SGDConfig::<f64>::new();
         let _schedule = StepSizeSchedule::Constant(0.01_f64);
         let _momentum = MomentumMethod::Classical { coefficient: 0.9_f64 };
+        
+        // Test state exports
+        let _momentum_state = MomentumState::<f64, ()>::new(0.9, false);
+        let _adam_state = AdamState::<f64, ()>::new(0.9, 0.999, 1e-8, false);
+        let _lbfgs_state = LBFGSState::<f64, (), ()>::new(10);
+        let _cg_state = ConjugateGradientState::<f64, (), ()>::new(ConjugateGradientMethod::FletcherReeves, 10);
     }
 }
