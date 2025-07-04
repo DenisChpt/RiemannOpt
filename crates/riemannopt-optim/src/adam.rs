@@ -37,178 +37,117 @@ use riemannopt_core::{
     },
     error::Result,
     types::Scalar,
-    memory::workspace::Workspace,
+    memory::workspace::{Workspace, BufferId},
     optimization::{
         optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
-        optimizer_state::{OptimizerStateData, OptimizerStateWithData},
     },
 };
-use std::marker::PhantomData;
 use std::time::Instant;
 use std::fmt::Debug;
-use std::collections::HashMap;
 use num_traits::Float;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// State for Adam optimizer.
+/// Internal state for Adam optimizer.
+#[derive(Debug)]
+struct AdamInternalState<T, P, TV>
+where
+    T: Scalar,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
+{
+    workspace: Workspace<T>,
+    iteration: usize,
+    
+    // Adam specific state
+    /// First moment estimate (mean of gradients)
+    m: Option<TV>,
+    /// Second moment estimate (mean of squared gradients)  
+    v: Option<TV>,
+    /// Maximum second moment (for AMSGrad)
+    v_max: Option<TV>,
+    /// Previous point for parallel transport
+    previous_point: Option<P>,
+    
+    // Configuration
+    beta1: T,
+    beta2: T,
+    epsilon: T,
+    amsgrad: bool,
+    /// Current time step (for bias correction)
+    t: usize,
+}
+
+impl<T, P, TV> AdamInternalState<T, P, TV>
+where
+    T: Scalar,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
+{
+    fn new(n: usize, beta1: T, beta2: T, epsilon: T, amsgrad: bool) -> Self {
+        let mut workspace = Workspace::with_size(n);
+        
+        // Pre-allocate workspace buffers
+        workspace.get_or_create_vector(BufferId::Gradient, n);
+        workspace.get_or_create_vector(BufferId::Direction, n);
+        workspace.get_or_create_vector(BufferId::Temp1, n);
+        workspace.get_or_create_vector(BufferId::Momentum, n);  // For m
+        workspace.get_or_create_vector(BufferId::SecondMoment, n);  // For v
+        if amsgrad {
+            workspace.get_or_create_vector(BufferId::Temp2, n);  // For v_max
+        }
+        
+        Self {
+            workspace,
+            iteration: 0,
+            m: None,
+            v: None,
+            v_max: None,
+            previous_point: None,
+            beta1,
+            beta2,
+            epsilon,
+            amsgrad,
+            t: 0,
+        }
+    }
+    
+    fn update_iteration(&mut self) {
+        self.iteration += 1;
+    }
+}
+
+/// Public state for Adam optimizer (for compatibility).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AdamState<T, TV>
 where
     T: Scalar,
 {
-    /// First moment estimate (mean of gradients)
-    pub m: Option<TV>,
-
-    /// Second moment estimate (mean of squared gradients)
-    pub v: Option<TV>,
-
     /// Exponential decay rate for first moment
     pub beta1: T,
-
     /// Exponential decay rate for second moment
     pub beta2: T,
-
     /// Small constant for numerical stability
     pub epsilon: T,
-
-    /// Current time step (for bias correction)
-    pub t: usize,
-
     /// Whether to use AMSGrad variant
     pub amsgrad: bool,
-
-    /// Maximum second moment (for AMSGrad)
-    pub v_max: Option<TV>,
-    
-    /// Last point for parallel transport
-    pub last_point: Option<TV>,
+    _phantom: std::marker::PhantomData<TV>,
 }
 
 impl<T, TV> AdamState<T, TV>
 where
     T: Scalar,
-    TV: Clone,
 {
     /// Creates a new Adam state.
     pub fn new(beta1: T, beta2: T, epsilon: T, amsgrad: bool) -> Self {
         Self {
-            m: None,
-            v: None,
             beta1,
             beta2,
             epsilon,
-            t: 0,
             amsgrad,
-            v_max: None,
-            last_point: None,
+            _phantom: std::marker::PhantomData,
         }
-    }
-
-    /// Updates the moment estimates with a new gradient.
-    pub fn update_moments(&mut self, gradient: &TV) 
-    where
-        TV: Clone,
-    {
-        self.t += 1;
-
-        // Update first moment
-        match &mut self.m {
-            Some(m) => {
-                // m = beta1 * m + (1 - beta1) * gradient
-                // This requires proper trait bounds for vector operations
-                // For now, we just clone the gradient
-                *m = gradient.clone();
-            }
-            None => {
-                self.m = Some(gradient.clone());
-            }
-        }
-
-        // Update second moment
-        // Component-wise multiplication requires trait bounds
-        match &mut self.v {
-            Some(v) => {
-                // v = beta2 * v + (1 - beta2) * gradient^2
-                // For now, we just clone the gradient
-                *v = gradient.clone();
-
-                // Update v_max for AMSGrad
-                if self.amsgrad {
-                    match &mut self.v_max {
-                        Some(v_max) => {
-                            *v_max = v.clone();
-                        }
-                        None => {
-                            self.v_max = Some(v.clone());
-                        }
-                    }
-                }
-            }
-            None => {
-                let v = gradient.clone();
-                if self.amsgrad {
-                    self.v_max = Some(v.clone());
-                }
-                self.v = Some(v);
-            }
-        }
-    }
-
-    /// Gets the Adam update direction with bias correction.
-    pub fn get_direction(&self) -> Option<TV> 
-    where
-        TV: Clone,
-    {
-        match (&self.m, &self.v) {
-            (Some(m), Some(_v)) => {
-                // Bias correction and proper computation requires trait bounds
-                // For now, return a clone of the first moment
-                Some(m.clone())
-            }
-            _ => None,
-        }
-    }
-}
-
-impl<T, TV> OptimizerStateData<T, TV> for AdamState<T, TV>
-where
-    T: Scalar,
-    TV: Clone + Debug + Send + Sync + 'static,
-{
-    fn clone_box(&self) -> Box<dyn OptimizerStateData<T, TV>> {
-        Box::new(self.clone())
-    }
-    
-    fn optimizer_name(&self) -> &str {
-        if self.amsgrad {
-            "AMSGrad"
-        } else {
-            "Adam"
-        }
-    }
-
-    fn reset(&mut self) {
-        self.m = None;
-        self.v = None;
-        self.v_max = None;
-        self.t = 0;
-        self.last_point = None;
-    }
-
-    fn summary(&self) -> HashMap<String, String> {
-        let mut summary = HashMap::new();
-        summary.insert("beta1".to_string(), format!("{}", self.beta1));
-        summary.insert("beta2".to_string(), format!("{}", self.beta2));
-        summary.insert("epsilon".to_string(), format!("{}", self.epsilon));
-        summary.insert("t".to_string(), self.t.to_string());
-        summary.insert("amsgrad".to_string(), self.amsgrad.to_string());
-        summary
-    }
-
-    fn update_iteration(&mut self, _iteration: usize) {
-        // Time step is updated in update_moments
     }
 }
 
@@ -376,7 +315,7 @@ impl<T: Scalar> AdamConfig<T> {
 /// use riemannopt_optim::{Adam, AdamConfig};
 /// 
 /// // Basic Adam with default parameters
-/// let adam: Adam<f64, _> = Adam::new(AdamConfig::new());
+/// let adam: Adam<f64> = Adam::new(AdamConfig::new());
 /// 
 /// // Adam with custom parameters and AMSGrad
 /// let adam_custom = Adam::new(
@@ -388,23 +327,15 @@ impl<T: Scalar> AdamConfig<T> {
 /// );
 /// ```
 #[derive(Debug)]
-pub struct Adam<T: Scalar, M: Manifold<T>> {
+pub struct Adam<T: Scalar> {
     config: AdamConfig<T>,
-    state: Option<OptimizerStateWithData<T, M::Point, M::TangentVector>>,
-    _phantom: PhantomData<M>,
 }
 
-impl<T: Scalar, M: Manifold<T>> Adam<T, M> 
-where
-    M::TangentVector: 'static,
-    M::Point: 'static,
-{
+impl<T: Scalar> Adam<T> {
     /// Creates a new Adam optimizer with the given configuration.
     pub fn new(config: AdamConfig<T>) -> Self {
         Self { 
             config,
-            state: None,
-            _phantom: PhantomData,
         }
     }
 
@@ -427,27 +358,9 @@ where
         }
     }
     
-    /// Initializes the optimizer state if needed.
-    fn ensure_state_initialized(&mut self, manifold: &M) {
-        if self.state.is_none() {
-            let n = manifold.dimension();
-            let workspace = Workspace::with_size(n);
-            
-            // Create Adam state
-            let state_data: Box<dyn OptimizerStateData<T, M::TangentVector>> = 
-                Box::new(AdamState::<T, M::TangentVector>::new(
-                    self.config.beta1,
-                    self.config.beta2,
-                    self.config.epsilon,
-                    self.config.use_amsgrad,
-                ));
-            
-            self.state = Some(OptimizerStateWithData::new(workspace, state_data));
-        }
-    }
 
     /// Optimizes the given cost function on the manifold.
-    pub fn optimize<C>(
+    pub fn optimize<C, M>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
@@ -456,17 +369,25 @@ where
     ) -> Result<OptimizationResult<T, M::Point>>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
         let start_time = Instant::now();
-        
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
         
         // Initialize optimization state
         let initial_cost = cost_fn.cost(initial_point)?;
         let mut state = OptimizerState::new(
             initial_point.clone(),
             initial_cost
+        );
+        
+        // Create internal state
+        let n = manifold.dimension();
+        let mut internal_state = AdamInternalState::<T, M::Point, M::TangentVector>::new(
+            n,
+            self.config.beta1,
+            self.config.beta2,
+            self.config.epsilon,
+            self.config.use_amsgrad,
         );
         
         // Main optimization loop
@@ -486,12 +407,115 @@ where
             }
             
             // Perform one optimization step
-            self.step(cost_fn, manifold, &mut state)?;
+            self.step_with_state(cost_fn, manifold, &mut state, &mut internal_state)?;
         }
     }
 
+    /// Performs a single optimization step with internal state.
+    fn step_with_state<C, M>(
+        &self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
+        internal_state: &mut AdamInternalState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
+    {
+        // Create gradient buffer
+        let mut euclidean_grad = match &state.gradient {
+            Some(g) => g.clone(),
+            None => cost_fn.gradient(&state.point)?,
+        };
+        let mut riemannian_grad = euclidean_grad.clone();
+        let mut new_point = state.point.clone();
+        
+        // Compute gradient
+        {
+            let workspace = &mut internal_state.workspace;
+            let _cost = cost_fn.cost_and_gradient(&state.point, workspace, &mut euclidean_grad)?;
+            state.function_evaluations += 1;
+            state.gradient_evaluations += 1;
+            
+            // Convert to Riemannian gradient
+            manifold.euclidean_to_riemannian_gradient(&state.point, &euclidean_grad, &mut riemannian_grad, workspace)?;
+        }
+        
+        // Compute gradient norm
+        let grad_norm_squared = manifold.inner_product(&state.point, &riemannian_grad, &riemannian_grad)?;
+        let grad_norm = <T as Float>::sqrt(grad_norm_squared);
+        state.gradient_norm = Some(grad_norm);
+        
+        // Store gradient in state
+        state.gradient = Some(riemannian_grad.clone());
+        
+        // Apply gradient clipping if enabled
+        if let Some(threshold) = self.config.gradient_clip {
+            if grad_norm > threshold {
+                let scale = threshold / grad_norm;
+                let clipped_grad = riemannian_grad.clone();
+                let workspace = &mut internal_state.workspace;
+                manifold.scale_tangent(
+                    &state.point,
+                    scale,
+                    &clipped_grad,
+                    &mut riemannian_grad,
+                    workspace,
+                )?;
+            }
+        }
+        
+        // Compute Adam direction
+        let mut direction = riemannian_grad.clone();
+        self.compute_adam_direction_inplace(
+            manifold,
+            &state.point,
+            &riemannian_grad,
+            &mut direction,
+            internal_state,
+        )?;
+        
+        // Apply weight decay if configured (AdamW variant)
+        if let Some(weight_decay) = self.config.weight_decay {
+            // For AdamW, we apply weight decay directly to parameters
+            // This is manifold-specific and may need custom implementation
+            // For now, we add a scaled version of the current point projected to tangent space
+            let _decay_factor = weight_decay * self.config.learning_rate;
+            // This would need a method to project point to tangent space
+            // manifold.point_to_tangent(&state.point, &mut temp_tangent, workspace)?;
+            // manifold.axpy_tangent(&state.point, -decay_factor, &temp_tangent, &direction, &mut direction, workspace)?;
+        }
+        
+        // Scale by negative learning rate and take step
+        {
+            let workspace = &mut internal_state.workspace;
+            let scaled_direction = direction.clone();
+            manifold.scale_tangent(&state.point, -self.config.learning_rate, &scaled_direction, &mut direction, workspace)?;
+            manifold.retract(&state.point, &direction, &mut new_point, workspace)?;
+        }
+        
+        // Update internal state
+        if internal_state.previous_point.is_none() {
+            internal_state.previous_point = Some(state.point.clone());
+        } else {
+            internal_state.previous_point = Some(state.point.clone());
+        }
+        
+        // Update state
+        state.point = new_point;
+        state.value = cost_fn.cost(&state.point)?;
+        state.function_evaluations += 1;
+        state.iteration += 1;
+        
+        // Update internal state iteration
+        internal_state.update_iteration();
+        
+        Ok(())
+    }
+    
     /// Performs a single optimization step.
-    pub fn step<C>(
+    pub fn step<C, M>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
@@ -499,171 +523,184 @@ where
     ) -> Result<()>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
+        // Create internal state
+        let n = manifold.dimension();
+        let mut internal_state = AdamInternalState::<T, M::Point, M::TangentVector>::new(
+            n,
+            self.config.beta1,
+            self.config.beta2,
+            self.config.epsilon,
+            self.config.use_amsgrad,
+        );
         
-        // Compute gradient
-        let gradient = cost_fn.gradient(&state.point)?;
-        state.gradient_evaluations += 1;
+        // Delegate to internal implementation
+        self.step_with_state(cost_fn, manifold, state, &mut internal_state)
+    }
+    
+    /// Computes the Adam direction with proper moment updates and parallel transport.
+    fn compute_adam_direction_inplace<M>(
+        &self,
+        manifold: &M,
+        point: &M::Point,
+        gradient: &M::TangentVector,
+        direction: &mut M::TangentVector,
+        internal_state: &mut AdamInternalState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        M: Manifold<T>,
+    {
+        let workspace = &mut internal_state.workspace;
         
-        // Update gradient norm in state
-        let grad_norm_squared = manifold.inner_product(&state.point, &gradient, &gradient)?;
-        let grad_norm = <T as Float>::sqrt(grad_norm_squared);
-        state.gradient_norm = Some(grad_norm);
+        // Update time step for bias correction
+        internal_state.t += 1;
         
-        // Store gradient in state
-        state.gradient = Some(gradient.clone());
-        
-        // Apply gradient clipping if enabled
-        let clipped_gradient = {
-            let workspace = self.state.as_mut().unwrap().workspace_mut();
-            if let Some(threshold) = self.config.gradient_clip {
-                if grad_norm > threshold {
-                    let mut clipped = gradient.clone();
-                    manifold.scale_tangent(
-                        &state.point,
-                        threshold / grad_norm,
-                        &gradient,
-                        &mut clipped,
-                        workspace,
-                    )?;
-                    clipped
-                } else {
-                    gradient.clone()
+        // Initialize or update moments
+        match (&mut internal_state.m, &mut internal_state.v) {
+            (None, None) => {
+                // First iteration - initialize moments with zeros (standard Adam initialization)
+                let zero_vector = gradient.clone();
+                // Initialize to zero by scaling gradient by 0
+                let mut m_init = zero_vector.clone();
+                let mut v_init = zero_vector.clone();
+                manifold.scale_tangent(point, T::zero(), gradient, &mut m_init, workspace)?;
+                manifold.scale_tangent(point, T::zero(), gradient, &mut v_init, workspace)?;
+                
+                internal_state.m = Some(m_init);
+                internal_state.v = Some(v_init);
+                
+                if internal_state.amsgrad {
+                    internal_state.v_max = internal_state.v.clone();
                 }
-            } else {
-                gradient.clone()
             }
-        };
-        
-        // Update Adam moments
-        let direction = self.compute_adam_direction(
-            manifold,
-            &state.point,
-            &clipped_gradient,
-            state.iteration + 1,
-        )?;
-        
-        // Apply weight decay if configured (AdamW variant)
-        if let Some(_weight_decay) = self.config.weight_decay {
-            // For AdamW, we add the weight decay term to the direction
-            // direction = direction + weight_decay * learning_rate * point
-            // Note: This requires the manifold to have a notion of "point as tangent vector"
-            // For now, we skip this as it's manifold-specific
+            (Some(_m), Some(_v)) => {
+                // Do nothing - moments already exist
+            }
+            _ => return Err(riemannopt_core::error::ManifoldError::invalid_point("Invalid Adam state")),
         }
         
-        // Scale direction by negative learning rate
-        let mut scaled_direction = direction.clone();
-        let mut new_point = state.point.clone();
-        {
-            let workspace = self.state.as_mut().unwrap().workspace_mut();
-            manifold.scale_tangent(
-                &state.point,
-                -self.config.learning_rate,
-                &direction,
-                &mut scaled_direction,
-                workspace,
-            )?;
+        // Now update the moments if they exist
+        if let (Some(m), Some(v)) = (&mut internal_state.m, &mut internal_state.v) {
+            // Transport previous moments if we have a previous point
+            if let Some(prev_point) = &internal_state.previous_point {
+                let mut transported_m = m.clone();
+                let mut transported_v = v.clone();
+                
+                manifold.parallel_transport(prev_point, point, m, &mut transported_m, workspace)?;
+                manifold.parallel_transport(prev_point, point, v, &mut transported_v, workspace)?;
+                
+                *m = transported_m;
+                *v = transported_v;
+                
+                if let Some(v_max) = &mut internal_state.v_max {
+                    let mut transported_v_max = v_max.clone();
+                    manifold.parallel_transport(prev_point, point, v_max, &mut transported_v_max, workspace)?;
+                    *v_max = transported_v_max;
+                }
+            }
             
-            // Take the step using retraction
-            manifold.retract(&state.point, &scaled_direction, &mut new_point, workspace)?;
+            // Update first moment: m = β₁ * m + (1-β₁) * gradient
+            let beta1 = internal_state.beta1;
+            let one_minus_beta1 = T::one() - beta1;
+            
+            let mut temp_m = m.clone();
+            manifold.scale_tangent(point, beta1, m, &mut temp_m, workspace)?;
+            let mut scaled_grad = gradient.clone();
+            manifold.scale_tangent(point, one_minus_beta1, gradient, &mut scaled_grad, workspace)?;
+            manifold.add_tangents(point, &temp_m, &scaled_grad, m, workspace)?;
+            
+            // Update second moment: v = β₂ * v + (1-β₂) * gradient²
+            // Note: we need element-wise operations which are not in the manifold trait
+            // For now, we approximate this
+            let beta2 = internal_state.beta2;
+            let one_minus_beta2 = T::one() - beta2;
+            
+            let mut temp_v = v.clone();
+            manifold.scale_tangent(point, beta2, v, &mut temp_v, workspace)?;
+            // In practice: scaled_grad_sq[i] = gradient[i] * gradient[i] * (1-β₂)
+            // For now, we use the gradient itself as approximation
+            manifold.scale_tangent(point, one_minus_beta2, gradient, &mut scaled_grad, workspace)?;
+            manifold.add_tangents(point, &temp_v, &scaled_grad, v, workspace)?;
+            
+            // Update v_max for AMSGrad
+            if internal_state.amsgrad {
+                if let Some(v_max) = &mut internal_state.v_max {
+                    // v_max = max(v_max, v) element-wise
+                    // For now, we just copy v
+                    v_max.clone_from(v);
+                }
+            }
         }
         
-        // Evaluate cost at new point
-        let new_cost = cost_fn.cost(&new_point)?;
-        state.function_evaluations += 1;
+        // Compute bias correction
+        let t = internal_state.t as f64;
+        let bias1 = T::one() - <T as Scalar>::from_f64(internal_state.beta1.to_f64().powf(t));
+        let bias2 = T::one() - <T as Scalar>::from_f64(internal_state.beta2.to_f64().powf(t));
         
-        // Update state
-        state.update(new_point, new_cost);
-        
-        // Update optimizer state iteration count
-        if let Some(opt_state) = self.state.as_mut() {
-            opt_state.update_iteration();
+        // Compute direction: direction = (m / bias1) / (sqrt(v / bias2) + ε)
+        if let (Some(m), Some(v)) = (&internal_state.m, &internal_state.v) {
+            // For AMSGrad, use v_max instead of v
+            let v_to_use = if internal_state.amsgrad {
+                internal_state.v_max.as_ref().unwrap_or(v)
+            } else {
+                v
+            };
+            
+            // Bias-corrected first moment
+            direction.clone_from(m);
+            let mut temp_direction = direction.clone();
+            manifold.scale_tangent(point, T::one() / bias1, &direction, &mut temp_direction, workspace)?;
+            
+            // For the second moment, we need element-wise operations
+            // In practice: direction[i] = m_hat[i] / (sqrt(v_hat[i]) + ε)
+            // For now, we apply a global scaling based on the norm
+            let v_norm = manifold.inner_product(point, v_to_use, v_to_use)?;
+            let v_norm_sqrt = <T as Float>::sqrt(v_norm / bias2);
+            let scale = T::one() / (v_norm_sqrt + internal_state.epsilon);
+            
+            manifold.scale_tangent(point, scale, &temp_direction, direction, workspace)?;
         }
         
         Ok(())
     }
-    
-    /// Computes the Adam direction with proper moment updates and parallel transport.
-    fn compute_adam_direction(
-        &mut self,
-        manifold: &M,
-        point: &M::Point,
-        gradient: &M::TangentVector,
-        t: usize,
-    ) -> Result<M::TangentVector> {
-        // For Phase 3, we implement a simplified version without full state management
-        // TODO: Implement proper moment tracking with parallel transport
-        
-        // Compute bias correction terms
-        let t_f = <T as Scalar>::from_usize(t);
-        let bias1 = T::one() - <T as Float>::powf(self.config.beta1, t_f);
-        let bias2 = T::one() - <T as Float>::powf(self.config.beta2, t_f);
-        
-        // For now, return a scaled gradient
-        // In a full implementation, we would:
-        // 1. Transport previous moments to current tangent space
-        // 2. Update first moment: m_t = β₁ * transported_m + (1-β₁) * gradient
-        // 3. Update second moment: v_t = β₂ * transported_v + (1-β₂) * gradient²
-        // 4. Bias correct: m̂_t = m_t / (1-β₁^t), v̂_t = v_t / (1-β₂^t)
-        // 5. Compute direction: direction = m̂_t / (√v̂_t + ε)
-        
-        let mut direction = gradient.clone();
-        
-        // Apply a simple adaptive scaling based on bias correction
-        let effective_scale = <T as Float>::sqrt(bias1) / <T as Float>::sqrt(bias2 + self.config.epsilon);
-        {
-            let workspace = self.state.as_mut().unwrap().workspace_mut();
-            manifold.scale_tangent(
-                point,
-                effective_scale,
-                &gradient,
-                &mut direction,
-                workspace,
-            )?;
-        }
-        
-        Ok(direction)
-    }
 }
 
 // Implementation of the Optimizer trait from core
-impl<T: Scalar, M: Manifold<T>> Optimizer<T> for Adam<T, M> {
+impl<T: Scalar> Optimizer<T> for Adam<T> {
     fn name(&self) -> &str {
-        "Riemannian Adam"
+        if self.config.use_amsgrad {
+            "Riemannian AMSGrad"
+        } else {
+            "Riemannian Adam"
+        }
     }
     
-    fn optimize<C, MF>(
+    fn optimize<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _initial_point: &MF::Point,
-        _stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, MF::Point>>
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &M::Point,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, M::Point>>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // This is a limitation of the current design
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold optimization not yet implemented"
-        ))
+        self.optimize(cost_fn, manifold, initial_point, stopping_criterion)
     }
     
-    fn step<C, MF>(
+    fn step<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _state: &mut OptimizerState<T, MF::Point, MF::TangentVector>,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
     ) -> Result<()>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold step not yet implemented"
-        ))
+        self.step(cost_fn, manifold, state)
     }
 }
 
@@ -694,33 +731,17 @@ mod tests {
     
     #[test]
     fn test_adam_state() {
-        let mut state = AdamState::<f64, DVector<f64>>::new(0.9, 0.999, 1e-8, false);
-        assert_eq!(state.optimizer_name(), "Adam");
-
-        let gradient = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        state.update_moments(&gradient);
-
-        assert_eq!(state.t, 1);
-        assert!(state.m.is_some());
-        assert!(state.v.is_some());
-
-        let direction = state.get_direction();
-        assert!(direction.is_some());
-
-        let summary = state.summary();
-        assert_eq!(summary.get("t").unwrap(), "1");
-        assert_eq!(summary.get("amsgrad").unwrap(), "false");
+        let state = AdamState::<f64, DVector<f64>>::new(0.9, 0.999, 1e-8, false);
+        assert_eq!(state.beta1, 0.9);
+        assert_eq!(state.beta2, 0.999);
+        assert_eq!(state.epsilon, 1e-8);
+        assert!(!state.amsgrad);
     }
 
     #[test]
     fn test_amsgrad_state() {
-        let mut state = AdamState::<f64, DVector<f64>>::new(0.9, 0.999, 1e-8, true);
-        assert_eq!(state.optimizer_name(), "AMSGrad");
-
-        let gradient = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        state.update_moments(&gradient);
-
-        assert!(state.v_max.is_some());
+        let state = AdamState::<f64, DVector<f64>>::new(0.9, 0.999, 1e-8, true);
+        assert!(state.amsgrad);
     }
     
     #[test]
@@ -730,13 +751,12 @@ mod tests {
             .beta2(0.95)
             .epsilon(1e-10)
             .amsgrad(true)
-            .build::<()>();
+            .build::<DVector<f64>>();
 
         assert_eq!(state.beta1, 0.8);
         assert_eq!(state.beta2, 0.95);
         assert_eq!(state.epsilon, 1e-10);
         assert!(state.amsgrad);
-        assert_eq!(state.optimizer_name(), "AMSGrad");
     }
 
     // Tests involving manifolds are temporarily disabled

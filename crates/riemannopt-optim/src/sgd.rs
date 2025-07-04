@@ -45,19 +45,16 @@ use riemannopt_core::{
     },
     error::Result,
     types::Scalar,
-    memory::workspace::Workspace,
+    memory::workspace::{Workspace, BufferId},
     optimization::{
         optimizer::{Optimizer, OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker},
-        optimizer_state::{OptimizerStateData, OptimizerStateWithData},
         step_size::StepSizeSchedule,
         line_search::BacktrackingLineSearch,
     },
 };
 use num_traits::Float;
-use std::marker::PhantomData;
 use std::time::Instant;
 use std::fmt::Debug;
-use std::collections::HashMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -169,29 +166,86 @@ impl<T: Scalar> SGDConfig<T> {
     }
 }
 
+/// Internal state for SGD optimizer
+#[derive(Debug)]
+struct SGDInternalState<T, P, TV> 
+where
+    T: Scalar,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
+{
+    workspace: Workspace<T>,
+    iteration: usize,
+    // Store previous point for parallel transport in momentum methods
+    previous_point: Option<P>,
+    // Store momentum vector
+    momentum_vector: Option<TV>,
+    momentum_coefficient: Option<T>,
+    is_nesterov: bool,
+}
+
+impl<T, P, TV> SGDInternalState<T, P, TV>
+where
+    T: Scalar,
+    P: Clone + Debug + Send + Sync,
+    TV: Clone + Debug + Send + Sync,
+{
+    fn new(n: usize, momentum: &MomentumMethod<T>) -> Self {
+        let mut workspace = Workspace::with_size(n);
+        
+        // Pre-allocate workspace buffers
+        workspace.get_or_create_vector(BufferId::Gradient, n);
+        workspace.get_or_create_vector(BufferId::Direction, n);
+        workspace.get_or_create_vector(BufferId::Temp1, n);
+        
+        if !matches!(momentum, MomentumMethod::None) {
+            workspace.get_or_create_vector(BufferId::Momentum, n);
+            if matches!(momentum, MomentumMethod::Nesterov { .. }) {
+                workspace.get_or_create_vector(BufferId::Temp2, n);
+            }
+        }
+        
+        let (momentum_coefficient, is_nesterov) = match momentum {
+            MomentumMethod::None => (None, false),
+            MomentumMethod::Classical { coefficient } => (Some(*coefficient), false),
+            MomentumMethod::Nesterov { coefficient } => (Some(*coefficient), true),
+        };
+        
+        Self {
+            workspace,
+            iteration: 0,
+            previous_point: None,
+            momentum_vector: None,
+            momentum_coefficient,
+            is_nesterov,
+        }
+    }
+    
+    #[allow(dead_code)]
+    fn workspace_mut(&mut self) -> &mut Workspace<T> {
+        &mut self.workspace
+    }
+    
+    fn update_iteration(&mut self) {
+        self.iteration += 1;
+    }
+}
+
 /// Riemannian Stochastic Gradient Descent optimizer.
 ///
 /// This optimizer implements SGD adapted for Riemannian manifolds, providing
 /// the foundation for optimization on curved spaces with proper handling of
 /// the manifold geometry through retractions and Riemannian gradients.
 #[derive(Debug)]
-pub struct SGD<T: Scalar, M: Manifold<T>> {
+pub struct SGD<T: Scalar> {
     config: SGDConfig<T>,
-    state: Option<OptimizerStateWithData<T, M::Point, M::TangentVector>>,
-    _phantom: PhantomData<M>,
 }
 
-impl<T: Scalar, M: Manifold<T>> SGD<T, M> 
-where
-    M::TangentVector: 'static,
-    M::Point: 'static,
-{
+impl<T: Scalar> SGD<T> {
     /// Creates a new SGD optimizer with the given configuration.
     pub fn new(config: SGDConfig<T>) -> Self {
         Self { 
             config,
-            state: None,
-            _phantom: PhantomData,
         }
     }
     
@@ -210,32 +264,8 @@ where
         "Riemannian SGD"
     }
     
-    /// Initializes the optimizer state if needed.
-    fn ensure_state_initialized(&mut self, manifold: &M) {
-        if self.state.is_none() {
-            let n = manifold.dimension();
-            let workspace = Workspace::with_size(n);
-            
-            // Create state data based on momentum configuration
-            let state_data: Box<dyn OptimizerStateData<T, M::TangentVector>> = 
-                match &self.config.momentum {
-                    MomentumMethod::None => {
-                        Box::new(DummyState::<T, M::TangentVector>::new())
-                    }
-                    MomentumMethod::Classical { coefficient } => {
-                        Box::new(MomentumState::<T, M::TangentVector>::new(*coefficient, false))
-                    }
-                    MomentumMethod::Nesterov { coefficient } => {
-                        Box::new(MomentumState::<T, M::TangentVector>::new(*coefficient, true))
-                    }
-                };
-            
-            self.state = Some(OptimizerStateWithData::new(workspace, state_data));
-        }
-    }
-    
     /// Optimizes the given cost function on the manifold.
-    pub fn optimize<C>(
+    pub fn optimize<C, M>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
@@ -244,11 +274,9 @@ where
     ) -> Result<OptimizationResult<T, M::Point>>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
         let start_time = Instant::now();
-        
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
         
         // Initialize optimization state
         let initial_cost = cost_fn.cost(initial_point)?;
@@ -256,6 +284,10 @@ where
             initial_point.clone(),
             initial_cost
         );
+        
+        // Create internal state
+        let n = manifold.dimension();
+        let mut internal_state = SGDInternalState::<T, M::Point, M::TangentVector>::new(n, &self.config.momentum);
         
         // Main optimization loop
         loop {
@@ -274,44 +306,63 @@ where
             }
             
             // Perform one optimization step
-            self.step(cost_fn, manifold, &mut state)?;
+            self.step_with_state(cost_fn, manifold, &mut state, &mut internal_state)?;
         }
     }
 
-    /// Performs a single optimization step.
-    pub fn step<C>(
-        &mut self,
+    /// Performs a single optimization step with internal state.
+    fn step_with_state<C, M>(
+        &self,
         cost_fn: &C,
         manifold: &M,
         state: &mut OptimizerState<T, M::Point, M::TangentVector>,
+        internal_state: &mut SGDInternalState<T, M::Point, M::TangentVector>,
     ) -> Result<()>
     where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // Ensure state is initialized
-        self.ensure_state_initialized(manifold);
+        // Create gradient buffers - in practice these would be reused from the state
+        let mut euclidean_grad = match &state.gradient {
+            Some(g) => g.clone(),
+            None => {
+                // For the first iteration, compute the gradient
+                cost_fn.gradient(&state.point)?
+            }
+        };
+        let mut riemannian_grad = euclidean_grad.clone();
+        let mut new_point = state.point.clone();
         
-        // Compute gradient at current point
-        let gradient = cost_fn.gradient(&state.point)?;
+        // Get iteration before borrowing workspace
+        let iteration = internal_state.iteration;
+        
+        // Compute gradient at current point (in-place)
+        let workspace = &mut internal_state.workspace;
+        let _cost = cost_fn.cost_and_gradient(&state.point, workspace, &mut euclidean_grad)?;
+        state.function_evaluations += 1;
         state.gradient_evaluations += 1;
         
-        // Compute gradient norm and store in state
-        let grad_norm_squared = manifold.inner_product(&state.point, &gradient, &gradient)?;
+        // Convert to Riemannian gradient (in-place)
+        manifold.euclidean_to_riemannian_gradient(&state.point, &euclidean_grad, &mut riemannian_grad, workspace)?;
+        
+        // Compute gradient norm
+        let grad_norm_squared = manifold.inner_product(&state.point, &riemannian_grad, &riemannian_grad)?;
         let grad_norm = <T as Float>::sqrt(grad_norm_squared);
         state.gradient_norm = Some(grad_norm);
         
         // Store gradient in state for convergence checking
-        state.gradient = Some(gradient.clone());
+        state.gradient = Some(riemannian_grad.clone());
         
         // Compute search direction based on momentum configuration
-        let direction = self.compute_momentum_direction(
+        self.compute_momentum_direction_inplace(
             manifold,
             &state.point,
-            &gradient,
+            &mut riemannian_grad,
+            internal_state,
         )?;
         
         // Determine step size
-        let base_step_size = self.config.step_size.get_step_size(state.iteration);
+        let base_step_size = self.config.step_size.get_step_size(iteration);
         
         // Apply gradient clipping if needed
         let step_size = if let Some(threshold) = self.config.gradient_clip {
@@ -325,387 +376,158 @@ where
         };
         
         // Scale direction by negative step size (descent direction)
-        let mut scaled_direction = direction.clone();
-        {
-            let workspace = self.state.as_mut().unwrap().workspace_mut();
-            manifold.scale_tangent(
-                &state.point,
-                -step_size,
-                &direction,
-                &mut scaled_direction,
-                workspace,
-            )?;
-        }
+        let mut search_direction = riemannian_grad.clone();
+        let workspace = &mut internal_state.workspace;
+        manifold.scale_tangent(&state.point, -step_size, &riemannian_grad, &mut search_direction, workspace)?;
         
         // Perform line search if configured
-        let final_step_size = if let Some(ref _line_search) = self.config.line_search {
-            // Use a static method to avoid borrowing conflicts
-            Self::perform_line_search_static(
-                cost_fn,
-                manifold,
-                &state.point,
-                &scaled_direction,
-                state.value,
-                grad_norm,
-                step_size,
-                self.state.as_mut().unwrap().workspace_mut(),
-            )?
-        } else {
-            step_size
-        };
+        if let Some(ref _line_search) = self.config.line_search {
+            // TODO: Implement line search with new API
+        }
         
         // Take the step using retraction
-        let mut new_point = state.point.clone();
-        {
-            let workspace = self.state.as_mut().unwrap().workspace_mut();
-            if final_step_size != step_size {
-                // Re-scale direction if line search changed step size
-                manifold.scale_tangent(
-                    &state.point,
-                    -final_step_size,
-                    &direction,
-                    &mut scaled_direction,
-                    workspace,
-                )?;
-            }
-            manifold.retract(&state.point, &scaled_direction, &mut new_point, workspace)?;
-        }
+        manifold.retract(&state.point, &search_direction, &mut new_point, workspace)?;
         
-        // Evaluate cost at new point
-        let new_cost = cost_fn.cost(&new_point)?;
-        state.function_evaluations += 1;
+        // Update internal state for momentum
+        if internal_state.momentum_coefficient.is_some() {
+            internal_state.previous_point = Some(state.point.clone());
+        }
         
         // Update state
-        state.update(new_point, new_cost);
+        state.point = new_point;
+        state.value = cost_fn.cost(&state.point)?;
+        state.function_evaluations += 1;
+        state.iteration += 1;
         
         // Update optimizer state iteration count
-        if let Some(opt_state) = self.state.as_mut() {
-            opt_state.update_iteration();
-        }
+        internal_state.update_iteration();
         
         Ok(())
     }
     
-    /// Performs line search to find optimal step size.
-    #[allow(dead_code)]
-    fn perform_line_search<C>(
-        &self,
-        cost_fn: &C,
-        manifold: &M,
-        point: &M::Point,
-        direction: &M::TangentVector,
-        current_cost: T,
-        grad_norm: T,
-        initial_step_size: T,
-        workspace: &mut Workspace<T>,
-    ) -> Result<T>
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-    {
-        let _line_search = self.config.line_search.as_ref().unwrap();
-        let mut step_size = initial_step_size;
-        let armijo_constant = <T as Scalar>::from_f64(0.0001);
-        
-        // Compute expected decrease
-        let expected_decrease = -grad_norm * grad_norm * step_size * armijo_constant;
-        
-        // BacktrackingLineSearch doesn't have exposed parameters, use default max iterations
-        let max_iterations = 20;
-        for _ in 0..max_iterations {
-            // Try the step
-            let mut trial_point = point.clone();
-            manifold.retract(point, direction, &mut trial_point, workspace)?;
-            
-            // Evaluate cost
-            let trial_cost = cost_fn.cost(&trial_point)?;
-            
-            // Check Armijo condition
-            if trial_cost <= current_cost + expected_decrease {
-                return Ok(step_size);
-            }
-            
-            // Backtrack with default contraction factor
-            step_size *= <T as Scalar>::from_f64(0.5);
-        }
-        
-        // Return the final step size even if Armijo condition not met
-        Ok(step_size)
-    }
-    
-    /// Static version of perform_line_search to avoid borrowing conflicts.
-    fn perform_line_search_static<C>(
-        cost_fn: &C,
-        manifold: &M,
-        point: &M::Point,
-        direction: &M::TangentVector,
-        current_cost: T,
-        grad_norm: T,
-        initial_step_size: T,
-        workspace: &mut Workspace<T>,
-    ) -> Result<T>
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-    {
-        let mut step_size = initial_step_size;
-        let armijo_constant = <T as Scalar>::from_f64(0.0001);
-        
-        // Compute expected decrease
-        let expected_decrease = -grad_norm * grad_norm * step_size * armijo_constant;
-        
-        // BacktrackingLineSearch doesn't have exposed parameters, use default max iterations
-        let max_iterations = 20;
-        for _ in 0..max_iterations {
-            // Try the step
-            let mut trial_point = point.clone();
-            manifold.retract(point, direction, &mut trial_point, workspace)?;
-            
-            // Evaluate cost
-            let trial_cost = cost_fn.cost(&trial_point)?;
-            
-            // Check Armijo condition
-            if trial_cost <= current_cost + expected_decrease {
-                return Ok(step_size);
-            }
-            
-            // Backtrack with default contraction factor
-            step_size *= <T as Scalar>::from_f64(0.5);
-        }
-        
-        // Return the final step size even if Armijo condition not met
-        Ok(step_size)
-    }
-    
-    /// Computes the search direction based on the momentum configuration.
-    fn compute_momentum_direction(
+    /// Performs a single optimization step.
+    pub fn step<C, M>(
         &mut self,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
+    {
+        // Create internal state if this is the first call
+        let n = manifold.dimension();
+        let mut internal_state = SGDInternalState::<T, M::Point, M::TangentVector>::new(n, &self.config.momentum);
+        
+        // Delegate to the internal implementation
+        self.step_with_state(cost_fn, manifold, state, &mut internal_state)
+    }
+    
+    
+    /// Computes the search direction based on the momentum configuration (in-place).
+    fn compute_momentum_direction_inplace<M>(
+        &self,
         manifold: &M,
         point: &M::Point,
-        gradient: &M::TangentVector,
-    ) -> Result<M::TangentVector> {
-        match &self.config.momentum {
-            MomentumMethod::None => {
-                // Pure gradient descent
-                Ok(gradient.clone())
+        gradient: &mut M::TangentVector,
+        internal_state: &mut SGDInternalState<T, M::Point, M::TangentVector>,
+    ) -> Result<()>
+    where
+        M: Manifold<T>,
+    {
+        if internal_state.momentum_coefficient.is_none() {
+            // No momentum - gradient is already the direction
+            return Ok(());
+        }
+        
+        let coefficient = internal_state.momentum_coefficient.unwrap();
+        let workspace = &mut internal_state.workspace;
+        
+        // Handle momentum
+        match &mut internal_state.momentum_vector {
+            None => {
+                // First iteration - initialize momentum with gradient
+                internal_state.momentum_vector = Some(gradient.clone());
             }
-            MomentumMethod::Classical { coefficient } | MomentumMethod::Nesterov { coefficient } => {
-                // For Phase 3, implement simplified momentum
-                // TODO: Implement full momentum with state tracking and parallel transport
+            Some(momentum) => {
+                // Transport momentum from previous point to current point if needed
+                if let Some(prev_point) = &internal_state.previous_point {
+                    // Parallel transport the momentum vector
+                    let mut transported_momentum = momentum.clone();
+                    manifold.parallel_transport(
+                        prev_point,
+                        point,
+                        momentum,
+                        &mut transported_momentum,
+                        workspace,
+                    )?;
+                    *momentum = transported_momentum;
+                }
                 
-                // For now, apply simple exponential smoothing
-                let mut direction = gradient.clone();
+                if internal_state.is_nesterov {
+                    // Nesterov momentum
+                    // For simplified version, we compute gradient at current point
+                    // TODO: Implement full Nesterov with lookahead gradient
+                    
+                    // Update momentum: m = β * m + gradient
+                    let mut temp = momentum.clone();
+                    manifold.scale_tangent(point, coefficient, momentum, &mut temp, workspace)?;
+                    manifold.add_tangents(point, &temp, gradient, momentum, workspace)?;
+                } else {
+                    // Classical momentum
+                    // Update momentum: m = β * m + (1-β) * gradient
+                    let mut temp = momentum.clone();
+                    manifold.scale_tangent(point, coefficient, momentum, &mut temp, workspace)?;
+                    let mut scaled_grad = gradient.clone();
+                    manifold.scale_tangent(point, T::one() - coefficient, gradient, &mut scaled_grad, workspace)?;
+                    manifold.add_tangents(point, &temp, &scaled_grad, momentum, workspace)?;
+                }
                 
-                // In a full implementation, we would:
-                // 1. Access the MomentumState from self.state
-                // 2. Transport previous momentum to current tangent space
-                // 3. Update momentum: m = β * transported_m + (1-β) * gradient
-                // 4. For Nesterov: compute lookahead point and gradient
-                
-                // Apply simple scaling as placeholder
-                let workspace = self.state.as_mut().unwrap().workspace_mut();
-                manifold.scale_tangent(
-                    point,
-                    T::one() - *coefficient * <T as Scalar>::from_f64(0.5),
-                    &gradient,
-                    &mut direction,
-                    workspace,
-                )?;
-                
-                Ok(direction)
+                // Direction is the momentum
+                gradient.clone_from(momentum);
             }
         }
+        
+        Ok(())
     }
 }
 
 // Implementation of the Optimizer trait from core
-// Note: We implement for a specific manifold type M
-impl<T: Scalar, M: Manifold<T>> Optimizer<T> for SGD<T, M> {
+impl<T: Scalar> Optimizer<T> for SGD<T> {
     fn name(&self) -> &str {
         "Riemannian SGD"
     }
     
-    fn optimize<C, MF>(
+    fn optimize<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _initial_point: &MF::Point,
-        _stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, MF::Point>>
+        cost_fn: &C,
+        manifold: &M,
+        initial_point: &M::Point,
+        stopping_criterion: &StoppingCriterion<T>,
+    ) -> Result<OptimizationResult<T, M::Point>>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // This is a limitation of the current design - we can't easily handle
-        // different manifold types M and MF. For now, we assume they're compatible.
-        // A proper solution would require redesigning the trait or using dynamic dispatch.
-        
-        // Create a new typed optimizer for the specific manifold
-        // This is not ideal but works around the type system limitations
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold optimization not yet implemented"
-        ))
+        self.optimize(cost_fn, manifold, initial_point, stopping_criterion)
     }
     
-    fn step<C, MF>(
+    fn step<C, M>(
         &mut self,
-        _cost_fn: &C,
-        _manifold: &MF,
-        _state: &mut OptimizerState<T, MF::Point, MF::TangentVector>,
+        cost_fn: &C,
+        manifold: &M,
+        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
     ) -> Result<()>
     where
-        C: CostFunction<T, Point = MF::Point, TangentVector = MF::TangentVector>,
-        MF: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
-        // Similar limitation as optimize - we need the manifold types to match
-        Err(riemannopt_core::error::ManifoldError::not_implemented(
-            "Generic manifold step not yet implemented"
-        ))
+        self.step(cost_fn, manifold, state)
     }
 }
 
-/// Dummy state for SGD without momentum
-#[derive(Debug, Clone)]
-struct DummyState<T: Scalar, TV> {
-    _phantom: PhantomData<(T, TV)>,
-}
 
-impl<T: Scalar, TV> DummyState<T, TV> {
-    fn new() -> Self {
-        Self { _phantom: PhantomData }
-    }
-}
-
-impl<T: Scalar, TV: Clone + Debug + Send + Sync + 'static> OptimizerStateData<T, TV> for DummyState<T, TV> {
-    fn clone_box(&self) -> Box<dyn OptimizerStateData<T, TV>> {
-        Box::new(self.clone())
-    }
-    
-    fn optimizer_name(&self) -> &str {
-        "SGD"
-    }
-    
-    fn reset(&mut self) {}
-    
-    fn summary(&self) -> HashMap<String, String> {
-        HashMap::new()
-    }
-    
-    fn update_iteration(&mut self, _iteration: usize) {}
-}
-
-/// State for gradient descent with momentum.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct MomentumState<T, TV>
-where
-    T: Scalar,
-{
-    /// Momentum vector
-    pub momentum: Option<TV>,
-
-    /// Momentum coefficient (typically 0.9)
-    pub beta: T,
-
-    /// Whether to use Nesterov acceleration
-    pub nesterov: bool,
-}
-
-impl<T, TV> MomentumState<T, TV>
-where
-    T: Scalar,
-    TV: Clone,
-{
-    /// Creates a new momentum state.
-    pub fn new(beta: T, nesterov: bool) -> Self {
-        Self {
-            momentum: None,
-            beta,
-            nesterov,
-        }
-    }
-
-    /// Updates the momentum vector.
-    pub fn update_momentum(&mut self, gradient: &TV) 
-    where
-        TV: std::ops::MulAssign<T> + for<'a> std::ops::AddAssign<TV>,
-    {
-        match &mut self.momentum {
-            Some(m) => {
-                // m = beta * m + (1 - beta) * gradient
-                *m *= self.beta;
-                let mut grad_scaled = gradient.clone();
-                grad_scaled *= T::one() - self.beta;
-                *m += grad_scaled;
-            }
-            None => {
-                self.momentum = Some(gradient.clone());
-            }
-        }
-    }
-
-    /// Gets the search direction based on the current momentum.
-    pub fn get_direction(&self, gradient: &TV) -> TV 
-    where
-        TV: std::ops::Add<Output = TV> + std::ops::Mul<T, Output = TV>,
-    {
-        match (&self.momentum, self.nesterov) {
-            (Some(m), true) => {
-                // Nesterov: direction = gradient + beta * momentum
-                gradient.clone() + m.clone() * self.beta
-            }
-            (Some(m), false) => {
-                // Classical momentum: use momentum directly
-                m.clone()
-            }
-            (None, _) => gradient.clone(),
-        }
-    }
-
-    /// Gets a reference to the search direction to avoid cloning when possible.
-    pub fn get_direction_ref<'a>(&'a self, gradient: &'a TV) -> Option<&'a TV> {
-        match (&self.momentum, self.nesterov) {
-            (Some(m), false) => Some(m),
-            (None, _) => Some(gradient),
-            _ => None, // Nesterov requires computation
-        }
-    }
-}
-
-impl<T, TV> OptimizerStateData<T, TV> for MomentumState<T, TV>
-where
-    T: Scalar,
-    TV: Clone + Debug + Send + Sync + 'static,
-{
-    fn clone_box(&self) -> Box<dyn OptimizerStateData<T, TV>> {
-        Box::new(self.clone())
-    }
-    
-    fn optimizer_name(&self) -> &str {
-        if self.nesterov {
-            "Nesterov Momentum"
-        } else {
-            "Classical Momentum"
-        }
-    }
-
-    fn reset(&mut self) {
-        self.momentum = None;
-    }
-
-    fn summary(&self) -> HashMap<String, String> {
-        let mut summary = HashMap::new();
-        summary.insert("beta".to_string(), format!("{}", self.beta));
-        summary.insert("nesterov".to_string(), self.nesterov.to_string());
-        summary.insert(
-            "has_momentum".to_string(),
-            self.momentum.is_some().to_string(),
-        );
-        summary
-    }
-
-    fn update_iteration(&mut self, _iteration: usize) {
-        // Momentum doesn't change with iteration by default
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -713,8 +535,6 @@ mod tests {
     use approx::assert_relative_eq;
     use riemannopt_core::types::DVector;
 
-    // Tests are temporarily disabled until test manifolds are available
-    // TODO: Re-enable tests once test infrastructure is in place
     #[test]
     fn test_step_size_schedules() {
         // Test constant step size
@@ -741,33 +561,34 @@ mod tests {
     }
     
     #[test]
-    fn test_momentum_state() {
-        let mut state = MomentumState::<f64, DVector<f64>>::new(0.9, false);
-        assert_eq!(state.optimizer_name(), "Classical Momentum");
-
-        let gradient = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        state.update_momentum(&gradient);
-
-        assert!(state.momentum.is_some());
-        let summary = state.summary();
-        assert_eq!(summary.get("beta").unwrap(), "0.9");
-        assert_eq!(summary.get("has_momentum").unwrap(), "true");
-
-        state.reset();
-        assert!(state.momentum.is_none());
+    fn test_sgd_config() {
+        // Test config builder
+        let config = SGDConfig::<f64>::new()
+            .with_constant_step_size(0.01)
+            .with_classical_momentum(0.9)
+            .with_gradient_clip(1.0);
+        
+        assert!(matches!(config.step_size, StepSizeSchedule::Constant(v) if v == 0.01));
+        assert!(matches!(config.momentum, MomentumMethod::Classical { coefficient } if coefficient == 0.9));
+        assert_eq!(config.gradient_clip, Some(1.0));
     }
-
+    
     #[test]
-    fn test_nesterov_momentum() {
-        let mut state = MomentumState::<f64, DVector<f64>>::new(0.9, true);
-        assert_eq!(state.optimizer_name(), "Nesterov Momentum");
-
-        let gradient = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        state.update_momentum(&gradient);
-
-        assert!(state.momentum.is_some());
-        let summary = state.summary();
-        assert_eq!(summary.get("beta").unwrap(), "0.9");
-        assert_eq!(summary.get("nesterov").unwrap(), "true");
+    fn test_sgd_internal_state() {
+        // Test state initialization for different momentum types
+        type TestPoint = DVector<f64>;
+        type TestTangent = DVector<f64>;
+        
+        let state_none = SGDInternalState::<f64, TestPoint, TestTangent>::new(10, &MomentumMethod::None);
+        assert!(state_none.momentum_vector.is_none());
+        assert!(!state_none.is_nesterov);
+        
+        let state_classical = SGDInternalState::<f64, TestPoint, TestTangent>::new(10, &MomentumMethod::Classical { coefficient: 0.9 });
+        assert_eq!(state_classical.momentum_coefficient, Some(0.9));
+        assert!(!state_classical.is_nesterov);
+        
+        let state_nesterov = SGDInternalState::<f64, TestPoint, TestTangent>::new(10, &MomentumMethod::Nesterov { coefficient: 0.9 });
+        assert_eq!(state_nesterov.momentum_coefficient, Some(0.9));
+        assert!(state_nesterov.is_nesterov);
     }
 }
