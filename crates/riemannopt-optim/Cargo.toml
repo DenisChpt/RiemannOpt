@@ -31,6 +31,3 @@ proptest = { workspace = true }
 criterion = { workspace = true }
 pretty_assertions = { workspace = true }
 
-[[bench]]
-name = "optimizer_comparison"
-harness = false

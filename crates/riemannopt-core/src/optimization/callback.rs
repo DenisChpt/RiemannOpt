@@ -3,7 +3,6 @@
 //! This module provides traits and types for implementing callbacks that can
 //! monitor and control the optimization process.
 
-use crate::optimization::OptimizerState;
 use crate::error::Result;
 use crate::types::Scalar;
 use std::time::Duration;
@@ -16,8 +15,20 @@ where
     P: Clone + Debug,
     TV: Clone + Debug,
 {
-    /// Current optimization state
-    pub state: OptimizerState<T, P, TV>,
+    /// Current point
+    pub point: P,
+    
+    /// Current objective value
+    pub value: T,
+    
+    /// Current gradient (if computed)
+    pub gradient: Option<TV>,
+    
+    /// Gradient norm (if computed)
+    pub gradient_norm: Option<T>,
+    
+    /// Current iteration
+    pub iteration: usize,
     
     /// Elapsed time since optimization start
     pub elapsed: Duration,
@@ -85,12 +96,12 @@ where
     }
     
     fn on_iteration_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<bool> {
-        if info.state.iteration % self.print_every == 0 {
+        if info.iteration % self.print_every == 0 {
             println!(
                 "Iteration {}: cost = {}, gradient norm = {:?}",
-                info.state.iteration,
-                info.state.value,
-                info.state.gradient_norm
+                info.iteration,
+                info.value,
+                info.gradient_norm
             );
         }
         Ok(true)
@@ -99,8 +110,8 @@ where
     fn on_optimization_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<()> {
         println!(
             "Optimization complete after {} iterations. Final cost: {}",
-            info.state.iteration,
-            info.state.value
+            info.iteration,
+            info.value
         );
         Ok(())
     }

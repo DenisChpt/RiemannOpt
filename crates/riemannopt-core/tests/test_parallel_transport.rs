@@ -3,15 +3,14 @@
 //! This test module verifies that parallel transport satisfies its
 //! mathematical properties, including isometry and consistency.
 
-use nalgebra::Dyn;
 use riemannopt_core::{
+    core::manifold::Manifold,
     error::Result,
-    manifold::Manifold,
     memory::workspace::Workspace,
     types::DVector,
 };
 
-/// Test manifold with parallel transport
+/// Test manifold with parallel transport (Euclidean space)
 #[derive(Debug)]
 struct TransportTestManifold {
     dim: usize,
@@ -23,7 +22,10 @@ impl TransportTestManifold {
     }
 }
 
-impl Manifold<f64, Dyn> for TransportTestManifold {
+impl Manifold<f64> for TransportTestManifold {
+    type Point = DVector<f64>;
+    type TangentVector = DVector<f64>;
+
     fn name(&self) -> &str {
         "Transport Test Manifold"
     }
@@ -113,6 +115,34 @@ impl Manifold<f64, Dyn> for TransportTestManifold {
         *result = vector.clone();
         Ok(())
     }
+
+    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<f64>) -> Result<f64> {
+        Ok((y - x).norm())
+    }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: f64,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        *result = tangent * scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        _point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        *result = v1 + v2;
+        Ok(())
+    }
 }
 
 /// Sphere manifold with proper parallel transport
@@ -127,7 +157,10 @@ impl SphereWithTransport {
     }
 }
 
-impl Manifold<f64, Dyn> for SphereWithTransport {
+impl Manifold<f64> for SphereWithTransport {
+    type Point = DVector<f64>;
+    type TangentVector = DVector<f64>;
+
     fn name(&self) -> &str {
         "Sphere with Transport"
     }
@@ -246,6 +279,36 @@ impl Manifold<f64, Dyn> for SphereWithTransport {
         let transported = vector - from * from.dot(vector);
         self.project_tangent(to, &transported, result, workspace)
     }
+
+    fn distance(&self, x: &Self::Point, y: &Self::Point, workspace: &mut Workspace<f64>) -> Result<f64> {
+        let mut tangent = DVector::zeros(x.len());
+        self.inverse_retract(x, y, &mut tangent, workspace)?;
+        self.norm(x, &tangent)
+    }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: f64,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        *result = tangent * scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        _point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        *result = v1 + v2;
+        Ok(())
+    }
 }
 
 #[test]
@@ -287,9 +350,10 @@ fn test_transport_preserves_norm() {
         let from = sphere.random_point();
         let mut direction = DVector::zeros(from.len());
         sphere.random_tangent(&from, &mut direction, &mut workspace).unwrap();
-        direction *= 0.1;
+        let mut scaled_direction = direction.clone();
+        sphere.scale_tangent(&from, 0.1, &direction, &mut scaled_direction, &mut workspace).unwrap();
         let mut to = DVector::zeros(from.len());
-        sphere.retract(&from, &direction, &mut to, &mut workspace).unwrap();
+        sphere.retract(&from, &scaled_direction, &mut to, &mut workspace).unwrap();
 
         let mut tangent = DVector::zeros(from.len());
         sphere.random_tangent(&from, &mut tangent, &mut workspace).unwrap();
@@ -325,9 +389,10 @@ fn test_transport_preserves_inner_products() {
         let from = sphere.random_point();
         let mut direction = DVector::zeros(from.len());
         sphere.random_tangent(&from, &mut direction, &mut workspace).unwrap();
-        direction *= 0.1;
+        let mut scaled_direction = direction.clone();
+        sphere.scale_tangent(&from, 0.1, &direction, &mut scaled_direction, &mut workspace).unwrap();
         let mut to = DVector::zeros(from.len());
-        sphere.retract(&from, &direction, &mut to, &mut workspace).unwrap();
+        sphere.retract(&from, &scaled_direction, &mut to, &mut workspace).unwrap();
 
         let mut u = DVector::zeros(from.len());
         sphere.random_tangent(&from, &mut u, &mut workspace).unwrap();
@@ -363,9 +428,10 @@ fn test_transport_linearity() {
     let from = manifold.random_point();
     let mut direction = DVector::zeros(from.len());
     manifold.random_tangent(&from, &mut direction, &mut workspace).unwrap();
-    direction *= 0.1;
+    let mut scaled_direction = direction.clone();
+    manifold.scale_tangent(&from, 0.1, &direction, &mut scaled_direction, &mut workspace).unwrap();
     let mut to = DVector::zeros(from.len());
-    manifold.retract(&from, &direction, &mut to, &mut workspace).unwrap();
+    manifold.retract(&from, &scaled_direction, &mut to, &mut workspace).unwrap();
 
     let mut u = DVector::zeros(from.len());
     manifold.random_tangent(&from, &mut u, &mut workspace).unwrap();
@@ -406,9 +472,10 @@ fn test_transport_preserves_tangent_space() {
         let from = sphere.random_point();
         let mut direction = DVector::zeros(from.len());
         sphere.random_tangent(&from, &mut direction, &mut workspace).unwrap();
-        direction *= 0.05;
+        let mut scaled_direction = direction.clone();
+        sphere.scale_tangent(&from, 0.05, &direction, &mut scaled_direction, &mut workspace).unwrap();
         let mut to = DVector::zeros(from.len());
-        sphere.retract(&from, &direction, &mut to, &mut workspace).unwrap();
+        sphere.retract(&from, &scaled_direction, &mut to, &mut workspace).unwrap();
 
         let mut tangent = DVector::zeros(from.len());
         sphere.random_tangent(&from, &mut tangent, &mut workspace).unwrap();
@@ -431,9 +498,10 @@ fn test_transport_zero_vector() {
     let from = manifold.random_point();
     let mut direction = DVector::zeros(from.len());
     manifold.random_tangent(&from, &mut direction, &mut workspace).unwrap();
-    direction *= 0.1;
+    let mut scaled_direction = direction.clone();
+    manifold.scale_tangent(&from, 0.1, &direction, &mut scaled_direction, &mut workspace).unwrap();
     let mut to = DVector::zeros(from.len());
-    manifold.retract(&from, &direction, &mut to, &mut workspace).unwrap();
+    manifold.retract(&from, &scaled_direction, &mut to, &mut workspace).unwrap();
 
     let zero = DVector::zeros(3);
     let mut transported = DVector::zeros(from.len());
@@ -457,9 +525,10 @@ fn test_transport_inverse_consistency() {
         let point_a = sphere.random_point();
         let mut direction = DVector::zeros(point_a.len());
         sphere.random_tangent(&point_a, &mut direction, &mut workspace).unwrap();
-        direction *= 0.05;
+        let mut scaled_direction = direction.clone();
+        sphere.scale_tangent(&point_a, 0.05, &direction, &mut scaled_direction, &mut workspace).unwrap();
         let mut point_b = DVector::zeros(point_a.len());
-        sphere.retract(&point_a, &direction, &mut point_b, &mut workspace).unwrap();
+        sphere.retract(&point_a, &scaled_direction, &mut point_b, &mut workspace).unwrap();
 
         let mut tangent = DVector::zeros(point_a.len());
         sphere.random_tangent(&point_a, &mut tangent, &mut workspace).unwrap();
@@ -496,9 +565,10 @@ fn test_transport_along_geodesic() {
     let from = sphere.random_point();
     let mut geodesic_tangent = DVector::zeros(from.len());
     sphere.random_tangent(&from, &mut geodesic_tangent, &mut workspace).unwrap();
-    geodesic_tangent *= 0.1;
+    let mut scaled_tangent = geodesic_tangent.clone();
+    sphere.scale_tangent(&from, 0.1, &geodesic_tangent, &mut scaled_tangent, &mut workspace).unwrap();
     let mut to = DVector::zeros(from.len());
-    sphere.retract(&from, &geodesic_tangent, &mut to, &mut workspace).unwrap();
+    sphere.retract(&from, &scaled_tangent, &mut to, &mut workspace).unwrap();
 
     // Transport the geodesic tangent itself
     let mut transported_tangent = DVector::zeros(from.len());
@@ -512,8 +582,4 @@ fn test_transport_along_geodesic() {
         sphere.is_vector_in_tangent_space(&to, &transported_tangent, tolerance),
         "Transported geodesic tangent not in tangent space"
     );
-}
-
-fn main() {
-    test_transport_identity();
 }
