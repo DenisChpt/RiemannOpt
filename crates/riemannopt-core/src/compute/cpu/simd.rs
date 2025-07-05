@@ -74,6 +74,9 @@ pub trait SimdVector: Copy {
     
     /// Horizontal maximum (maximum of all elements)
     fn horizontal_max(self) -> Self::Scalar;
+
+    /// Absolute value
+    fn abs(self) -> Self;
 }
 
 // Implement for f32x8
@@ -129,6 +132,10 @@ impl SimdVector for f32x8 {
         let arr = self.to_array();
         arr.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
     }
+
+    fn abs(self) -> Self {
+        self.abs()
+    }
 }
 
 // Implement for f64x4
@@ -181,6 +188,10 @@ impl SimdVector for f64x4 {
         let arr = self.to_array();
         arr.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
+
+    fn abs(self) -> Self {
+        self.abs()
+    }
 }
 
 impl SimdOps for f32 {
@@ -229,28 +240,48 @@ impl SimdVectorOps {
     
     /// Compute vector norm using SIMD
     pub fn norm<T: SimdOps>(v: DVectorView<T>) -> T {
-        let n = v.len();
-        let simd_width = T::SIMD_WIDTH;
-        let simd_end = n - (n % simd_width);
-        
-        let v_slice = v.as_slice();
-        
-        // SIMD part
-        let mut sum = T::SimdVector::splat(T::zero());
-        for i in (0..simd_end).step_by(simd_width) {
-            let vv = T::SimdVector::from_slice(&v_slice[i..]);
-            // mul_add(a, b, c) = a * b + c, so we want vv * vv + sum
-            sum = vv.mul_add(vv, sum);
+        use num_traits::Float;
+
+        let n         = v.len();
+        let w         = T::SIMD_WIDTH;
+        let simd_end  = n - (n % w);
+        let slice     = v.as_slice();
+
+        // Find maximum absolute value
+        let mut max_abs = T::zero();
+        for i in (0..simd_end).step_by(w) {
+            let vv      = T::SimdVector::from_slice(&slice[i..]);
+            let abs_vv  = vv.abs();
+            let chunk_m = abs_vv.horizontal_max();
+            max_abs    = <T as Float>::max(max_abs, chunk_m);
         }
-        
-        let mut result = sum.horizontal_sum();
-        
-        // Scalar remainder
-        for i in simd_end..n {
-            result = result + v_slice[i] * v_slice[i];
+        // scalar remainder
+        for &x in &slice[simd_end..] {
+            max_abs = <T as Float>::max(max_abs, <T as Float>::abs(x));
         }
-        
-        <T as num_traits::Float>::sqrt(result)
+        // if max_abs is zero, return zero norm
+        if max_abs == T::zero() {
+            return T::zero();
+        }
+
+        // normalize the vector and compute the norm
+        let inv_max = T::one() / max_abs;
+        let inv_vv  = T::SimdVector::splat(inv_max);
+
+        let mut sum_vec = T::SimdVector::splat(T::zero());
+        for i in (0..simd_end).step_by(w) {
+            let y     = T::SimdVector::from_slice(&slice[i..]).mul(inv_vv);
+            sum_vec   = y.mul_add(y, sum_vec);
+        }
+        let mut sum = sum_vec.horizontal_sum();
+        // scalar remainder
+        for &x in &slice[simd_end..] {
+            let y = x * inv_max;
+            sum += y * y;
+        }
+
+        // Return the norm
+        max_abs * Float::sqrt(sum)
     }
     
     /// Element-wise vector addition using SIMD
@@ -347,7 +378,7 @@ impl SimdMatrixOps {
         let mut sum = T::SimdVector::splat(T::zero());
         for i in (0..simd_end).step_by(simd_width) {
             let v = T::SimdVector::from_slice(&data[i..]);
-            sum = sum.mul_add(v, v);
+            sum = v.mul_add(v, sum);
         }
         
         let mut result = sum.horizontal_sum();
