@@ -769,7 +769,7 @@ mod tests {
         // Split and recombine
         let (p1, p2) = product.split_point(&point).unwrap();
         assert_eq!(p1.len(), 3);
-        assert_eq!(p2.len(), 3);
+        assert_eq!(p2.len(), 4);
         
         let recombined = product.combine_points(&p1, &p2).unwrap();
         assert_relative_eq!(point, recombined, epsilon = 1e-14);

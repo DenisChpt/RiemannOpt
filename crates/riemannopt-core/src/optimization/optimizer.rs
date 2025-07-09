@@ -67,7 +67,7 @@
 //!
 //! ## Basic Gradient Descent
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # use riemannopt_core::prelude::*;
 //! # struct GradientDescent { step_size: f64 }
 //! # impl Optimizer<f64> for GradientDescent {

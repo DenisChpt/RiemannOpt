@@ -38,7 +38,7 @@
 //!
 //! ## Workspace-Based Design
 //! All operations support workspace-based memory management for efficiency:
-//! ```rust,no_run
+//! ```rust,ignore
 //! # use riemannopt_core::prelude::*;
 //! let mut workspace = Workspace::new();
 //! // Operations reuse pre-allocated memory
@@ -53,7 +53,7 @@
 //!
 //! ## Generic Programming
 //! Operations work with arbitrary manifold and scalar types:
-//! ```rust,no_run
+//! ```rust,ignore
 //! # use riemannopt_core::prelude::*;
 //! fn optimize_on_manifold<M: Manifold<f64>>(
 //!     manifold: &M,

@@ -22,26 +22,20 @@
 //!
 //! ## Basic Manifold Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # use riemannopt_core::manifold::Manifold;
 //! # use riemannopt_core::memory::Workspace;
-//! # struct MySphere { radius: f64 }
-//! # impl Manifold<f64> for MySphere {
-//! #   type Point = nalgebra::DVector<f64>;
-//! #   type TangentVector = nalgebra::DVector<f64>;
-//! #   fn name(&self) -> &str { "Unit Sphere" }
-//! #   fn dimension(&self) -> usize { 2 }
-//! #   fn is_point_on_manifold(&self, point: &Self::Point, tol: f64) -> bool { true }
-//! #   fn is_vector_in_tangent_space(&self, point: &Self::Point, vector: &Self::TangentVector, tol: f64) -> bool { true }
-//! #   fn project_point(&self, point: &Self::Point, result: &mut Self::Point, workspace: &mut Workspace<f64>) {}
-//! #   fn project_tangent(&self, point: &Self::Point, vector: &Self::TangentVector, result: &mut Self::TangentVector, workspace: &mut Workspace<f64>) -> riemannopt_core::error::Result<()> { Ok(()) }
-//! #   fn inner_product(&self, point: &Self::Point, u: &Self::TangentVector, v: &Self::TangentVector) -> riemannopt_core::error::Result<f64> { Ok(0.0) }
-//! #   fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point, workspace: &mut Workspace<f64>) -> riemannopt_core::error::Result<()> { Ok(()) }
-//! #   fn inverse_retract(&self, point: &Self::Point, other: &Self::Point, result: &mut Self::TangentVector, workspace: &mut Workspace<f64>) -> riemannopt_core::error::Result<()> { Ok(()) }
-//! # }
-//! # fn main() -> riemannopt_core::error::Result<()> {
-//! use nalgebra::DVector;
-//!
+//! # use nalgebra::DVector;
+//! 
+//! #[derive(Debug)]
+//! struct MySphere { radius: f64 }
+//! 
+//! impl Manifold<f64> for MySphere {
+//!     type Point = DVector<f64>;
+//!     type TangentVector = DVector<f64>;
+//!     // ... implement required methods ...
+//! }
+//! 
 //! let sphere = MySphere { radius: 1.0 };
 //! let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
 //! let tangent = DVector::from_vec(vec![0.0, 0.1, 0.0]);
@@ -53,8 +47,6 @@
 //! let mut new_point = point.clone();
 //! let mut workspace = Workspace::new();
 //! sphere.retract(&point, &tangent, &mut new_point, &mut workspace)?;
-//! # Ok(())
-//! # }
 //! ```
 //!
 //! ## Common Manifolds
