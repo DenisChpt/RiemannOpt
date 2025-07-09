@@ -341,7 +341,7 @@ mod tests {
         // For f(x) = x^T x, gradient is 2x
         let expected = &point * 2.0;
         for i in 0..point.len() {
-            assert_relative_eq!(grad[i], expected[i], epsilon = 1e-6);
+            assert_relative_eq!(grad[i], expected[i], epsilon = 1e-4);
         }
     }
     

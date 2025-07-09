@@ -12,25 +12,35 @@ use approx::assert_relative_eq;
 
 #[test]
 fn test_sphere_gradient_descent() {
-    // Simple sphere manifold operations
+    // Test gradient descent on the unit sphere with a quadratic cost function
+    // This verifies the correctness of Riemannian gradient computation and retraction
     let dim = 5;
     
-    // Create a random point and normalize it to be on the sphere
+    // Create a random point and normalize it to be on the unit sphere S^{n-1}
     let mut point = DVector::<f64>::from_fn(dim, |i, _| ((i as f64) * 0.3).sin());
     let norm = point.norm();
     point /= norm;
     
+    // Verify the point is on the sphere
+    assert_relative_eq!(point.norm(), 1.0, epsilon = 1e-12);
+    
     // Create a simple quadratic cost function matrix (diagonal)
+    // f(x) = x^T A x where A is positive definite
     let mut matrix_a = DMatrix::<f64>::zeros(dim, dim);
     for i in 0..dim {
-        matrix_a[(i, i)] = (i + 1) as f64;
+        matrix_a[(i, i)] = (i + 1) as f64; // Eigenvalues: 1, 2, 3, 4, 5
     }
+    
+    // The minimum of f(x) on the sphere is achieved at the eigenvector
+    // corresponding to the smallest eigenvalue (which is e_0 with eigenvalue 1)
+    let expected_minimum_cost = 1.0;
     
     // Gradient descent parameters
     let step_size = 0.1;
     let max_iterations = 100;
+    let tolerance = 1e-6;
     
-    // Workspace for computations (not used in this simple test)
+    // Workspace for computations (demonstrates proper memory management)
     let _workspace = WorkspaceBuilder::<f64>::new()
         .with_standard_buffers(dim)
         .build();
@@ -52,7 +62,7 @@ fn test_sphere_gradient_descent() {
         
         // Check gradient norm for convergence
         let grad_norm = riemannian_grad.norm();
-        if grad_norm < 1e-6 {
+        if grad_norm < tolerance {
             println!("Converged at iteration {} with gradient norm {}", iteration, grad_norm);
             break;
         }
@@ -72,13 +82,46 @@ fn test_sphere_gradient_descent() {
     // Verify optimization worked (cost should decrease)
     let initial_cost = cost_history[0];
     let final_cost = cost_history[cost_history.len() - 1];
-    assert!(final_cost < initial_cost);
-    println!("Initial cost: {}, Final cost: {}", initial_cost, final_cost);
+    assert!(final_cost < initial_cost, "Cost should decrease: initial = {}, final = {}", initial_cost, final_cost);
+    
+    // Verify monotonic decrease (with small tolerance for numerical errors)
+    for i in 1..cost_history.len() {
+        assert!(cost_history[i] <= cost_history[i-1] * 1.01, 
+                "Cost should be non-increasing: cost[{}] = {} > cost[{}] = {}", 
+                i, cost_history[i], i-1, cost_history[i-1]);
+    }
     
     // The final cost should be close to the minimum eigenvalue (1.0)
-    // but with a random starting point, it might not reach exactly there
-    assert!(final_cost < initial_cost * 0.9); // At least 10% improvement
-    assert!(final_cost < 3.0); // Should be reasonably close to minimum
+    assert!(final_cost >= expected_minimum_cost * 0.99, 
+            "Final cost {} should be >= theoretical minimum {}", 
+            final_cost, expected_minimum_cost);
+    
+    // Verify the final point is close to an eigenvector
+    // Since we minimize x^T A x with A = diag(1,2,3,4,5), the minimum is at e_1
+    // However, gradient descent might converge to a local minimum if started near another eigenvector
+    
+    // Check that the point is close to one of the canonical basis vectors
+    let mut max_component_squared = 0.0;
+    let mut dominant_index = 0;
+    for i in 0..dim {
+        let component_squared = point[i] * point[i];
+        if component_squared > max_component_squared {
+            max_component_squared = component_squared;
+            dominant_index = i;
+        }
+    }
+    
+    // The point should be close to a standard basis vector
+    assert!(max_component_squared > 0.95, 
+            "Point should be close to a basis vector, but max component squared is {} (point = {:?})", 
+            max_component_squared, point);
+    
+    // Verify that the final cost matches the eigenvalue
+    let eigenvalue = (dominant_index + 1) as f64;
+    assert_relative_eq!(final_cost, eigenvalue, epsilon = 1e-3);
+    
+    println!("Initial cost: {:.6}, Final cost: {:.6}, Iterations: {}", 
+             initial_cost, final_cost, cost_history.len());
 }
 
 #[test]

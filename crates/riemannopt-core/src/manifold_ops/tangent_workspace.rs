@@ -70,7 +70,7 @@ impl TangentVectorWorkspace {
         
         // For the sphere, parallel transport along a geodesic from p to q
         // of a tangent vector v at p is given by:
-        // PT(v) = v - 2 * <v, q> / (1 + <p, q>) * (p + q)
+        // PT(v) = v - <v, q> / (1 + <p, q>) * (p + q)
         
         let p_dot_q = from_point.dot(to_point);
         let v_dot_q = vector.dot(to_point);
@@ -81,7 +81,7 @@ impl TangentVectorWorkspace {
             return Ok(());
         }
         
-        let scale = <T as Scalar>::from_f64(2.0) * v_dot_q / (T::one() + p_dot_q);
+        let scale = v_dot_q / (T::one() + p_dot_q);
         
         // Use workspace for p + q
         let temp = workspace.get_or_create_vector(BufferId::Temp1, n);

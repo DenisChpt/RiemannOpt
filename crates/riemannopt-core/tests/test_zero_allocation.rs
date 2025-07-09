@@ -176,6 +176,8 @@ fn test_workspace_buffer_management() {
         .build();
     
     // Test that we can get and use buffers without allocations
+    // In a real zero-allocation test, we would use a custom allocator to verify
+    // no allocations occur, but this test at least verifies the API works correctly
     {
         let v1 = workspace.get_vector_mut(BufferId::Gradient).unwrap();
         for i in 0..dim {
@@ -264,6 +266,51 @@ fn test_manifold_operations_with_workspace() {
     // Verify final result is still a tangent vector (not necessarily a point)
     // The tangent variable has been used to store results from operations
     // It's not guaranteed to be a point on the manifold after multiple operations
+}
+
+#[test]
+fn test_zero_allocation_critical_path() {
+    // This test verifies that the critical optimization path can run without allocations
+    let dim = 50;
+    let sphere = UnitSphere { dim };
+    
+    // Pre-allocate everything needed for a complete optimization step
+    let mut workspace = WorkspaceBuilder::new()
+        .with_standard_buffers(dim)
+        .with_vector(BufferId::Custom(0), dim)  // For temporary calculations
+        .with_vector(BufferId::Custom(1), dim)  // For previous state
+        .build();
+    
+    // Pre-allocate all vectors we'll need
+    let mut point = sphere.random_point();
+    let mut new_point = DVector::zeros(dim);
+    let euclidean_grad = DVector::from_fn(dim, |i, _| (i as f64).sin());
+    let mut riemannian_grad = DVector::zeros(dim);
+    let mut search_direction = DVector::zeros(dim);
+    let mut temp_tangent = DVector::zeros(dim);
+    
+    // Simulate 10 optimization steps
+    for _step in 0..10 {
+        // 1. Convert Euclidean gradient to Riemannian gradient
+        sphere.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad, &mut workspace).unwrap();
+        
+        // 2. Compute search direction (negative gradient for gradient descent)
+        for i in 0..dim {
+            search_direction[i] = -0.1 * riemannian_grad[i];  // step size = 0.1
+        }
+        
+        // 3. Retract to get new point
+        sphere.retract(&point, &search_direction, &mut new_point, &mut workspace).unwrap();
+        
+        // 4. Transport gradient to new point (for momentum methods)
+        sphere.parallel_transport(&point, &new_point, &riemannian_grad, &mut temp_tangent, &mut workspace).unwrap();
+        
+        // 5. Update point for next iteration
+        std::mem::swap(&mut point, &mut new_point);
+    }
+    
+    // Verify final point is still on manifold
+    assert!(sphere.is_point_on_manifold(&point, 1e-10));
 }
 
 #[test]
