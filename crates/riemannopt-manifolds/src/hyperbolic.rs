@@ -275,7 +275,9 @@ impl<T: Scalar> Hyperbolic<T> {
         }
 
         let norm_squared = x.norm_squared();
-        let boundary = T::one() - self.boundary_tolerance;
+        let neg_curv = -self.curvature;
+        let ball_radius = <T as Float>::sqrt(neg_curv);
+        let boundary = ball_radius - self.boundary_tolerance;
         
         if norm_squared >= boundary * boundary {
             return Err(ManifoldError::invalid_point(format!(
@@ -390,24 +392,28 @@ impl<T: Scalar> Hyperbolic<T> {
         Ok(self.parallel_transport_vector(x, y, v))
     }
 
-    /// Checks if a point is in the Poincare ball (||x|| < 1).
+    /// Checks if a point is in the Poincare ball (||x|| < √(-1/K)).
     fn is_in_poincare_ball(&self, point: &DVector<T>, tolerance: T) -> bool {
         if point.len() != self.n {
             return false;
         }
         
         let norm_squared = point.norm_squared();
-        let boundary = T::one() - tolerance;
+        let neg_curv = -self.curvature;
+        let boundary = neg_curv - tolerance;
         norm_squared < boundary
     }
 
     /// Projects a point to the Poincare ball.
     ///
-    /// If the point is outside the unit ball, project it to a point
+    /// For general curvature K < 0, the ball has radius √(-1/K).
+    /// If the point is outside the ball, project it to a point
     /// slightly inside the boundary for numerical stability.
     fn project_to_poincare_ball(&self, point: &DVector<T>) -> DVector<T> {
         let norm = point.norm();
-        let max_norm = T::one() - self.boundary_tolerance;
+        let neg_curv = -self.curvature;
+        let ball_radius = <T as Float>::sqrt(neg_curv);
+        let max_norm = ball_radius - self.boundary_tolerance;
         
         if norm > max_norm {
             // Project to boundary with tolerance (slightly inside)
@@ -418,31 +424,38 @@ impl<T: Scalar> Hyperbolic<T> {
         }
     }
 
-    /// Computes the conformal factor lambda(x) = 2 / (1 - ||x||^2).
+    /// Computes the conformal factor lambda(x) for general curvature K.
+    /// For K = -1: lambda(x) = 2 / (1 - ||x||^2)
+    /// For general K < 0: lambda(x) = 2/√(-K) / (1 - ||x||²/(-K))
     fn conformal_factor(&self, point: &DVector<T>) -> T {
         let norm_squared = point.norm_squared();
+        let neg_curv = -self.curvature;
+        let sqrt_neg_curv = <T as Float>::sqrt(neg_curv);
         let two = <T as Scalar>::from_f64(2.0);
-        two / (T::one() - norm_squared)
+        (two / sqrt_neg_curv) / (T::one() - norm_squared / neg_curv)
     }
 
     /// Computes the hyperbolic distance between two points in the Poincare ball.
     ///
-    /// Distance formula: d(x,y) = arcosh(1 + 2||x-y||^2 / ((1-||x||^2)(1-||y||^2)))
+    /// For curvature K < 0:
+    /// d(x,y) = 1/√(-K) * arcosh(1 + 2||x-y||^2 / ((1-||x||^2/(-K))(1-||y||^2/(-K))))
     fn hyperbolic_distance(&self, x: &DVector<T>, y: &DVector<T>) -> T {
         let diff = x - y;
         let diff_norm_sq = diff.norm_squared();
         
         let x_norm_sq = x.norm_squared();
         let y_norm_sq = y.norm_squared();
+        let neg_curv = -self.curvature;
         
-        let denominator = (T::one() - x_norm_sq) * (T::one() - y_norm_sq);
+        let denominator = (T::one() - x_norm_sq / neg_curv) * (T::one() - y_norm_sq / neg_curv);
         let two = <T as Scalar>::from_f64(2.0);
         
         let argument = T::one() + two * diff_norm_sq / denominator;
         
         // Clamp argument to avoid numerical issues with acosh
         let clamped = <T as Float>::max(argument, T::one());
-        <T as Float>::acosh(clamped)
+        let sqrt_neg_curv = <T as Float>::sqrt(neg_curv);
+        <T as Float>::acosh(clamped) / sqrt_neg_curv
     }
 
     /// Computes the exponential map in the Poincare ball model.
@@ -519,7 +532,9 @@ impl<T: Scalar> Hyperbolic<T> {
             // Random radius with appropriate distribution for uniform distribution in ball
             let u: f64 = rand::random();
             let radius = u.powf(1.0 / self.n as f64);
-            let max_radius = 1.0 - self.boundary_tolerance.to_f64();
+            let neg_curv = -self.curvature;
+            let ball_radius = <T as Float>::sqrt(neg_curv).to_f64();
+            let max_radius = ball_radius - self.boundary_tolerance.to_f64();
             let scaled_radius = radius * max_radius;
             
             point * <T as Scalar>::from_f64(scaled_radius)

@@ -19,10 +19,12 @@
 
 use crate::{
     core::manifold::Manifold,
+    core::matrix_manifold::MatrixManifold,
     error::Result,
     memory::workspace::Workspace,
     types::Scalar,
 };
+use nalgebra::DMatrix;
 use std::fmt::Debug;
 
 // Temporary type aliases removed - VectorTransport traits below need complete rewrite
@@ -156,10 +158,28 @@ where
         tangent: &M::TangentVector,
         result: &mut M::Point,
     ) -> Result<()> {
-        // For projection retraction, we delegate to the manifold's retract method
-        // since we cannot assume the point type supports addition with tangent vectors
+        // Projection retraction: move in ambient space then project back
+        // This implementation assumes that Point and TangentVector support addition
+        // For manifolds where this doesn't make sense, they should use a different retraction
         let mut workspace: Workspace<T> = Workspace::new();
-        manifold.retract(point, tangent, result, &mut workspace)
+        
+        // Since we can't generically add point + tangent without trait bounds,
+        // we need to clone the point and use a temporary approach
+        result.clone_from(point);
+        
+        // For now, we'll use a simple approach: project the tangent to ensure it's valid,
+        // then use the manifold's retract method, and finally project the result
+        let mut proj_tangent = tangent.clone();
+        manifold.project_tangent(point, tangent, &mut proj_tangent, &mut workspace)?;
+        
+        // Use manifold's retract with the projected tangent
+        manifold.retract(point, &proj_tangent, result, &mut workspace)?;
+        
+        // Project the result back onto the manifold to ensure all constraints are satisfied
+        let temp = result.clone();
+        manifold.project_point(&temp, result, &mut workspace);
+        
+        Ok(())
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -295,9 +315,8 @@ where
         tangent: &M::TangentVector,
         result: &mut M::Point,
     ) -> Result<()> {
-        // For general manifolds, QR retraction doesn't make sense
-        // This should be specialized for matrix manifolds
-        // For now, fall back to manifold's default retraction
+        // QR retraction only makes sense for matrix manifolds
+        // For general manifolds, we fall back to the default retraction
         let mut workspace: Workspace<T> = Workspace::new();
         manifold.retract(point, tangent, result, &mut workspace)
     }
@@ -310,9 +329,30 @@ where
         result: &mut M::TangentVector,
     ) -> Result<()> {
         // Approximate inverse using manifold's method
-        // Specific manifolds should override this
         let mut workspace: Workspace<T> = Workspace::new();
         manifold.inverse_retract(point, other, result, &mut workspace)
+    }
+}
+
+// Specialized implementation for matrix manifolds
+impl QRRetraction {
+    /// Perform QR retraction specifically for matrix manifolds
+    pub fn retract_matrix<T, M>(
+        &self,
+        _manifold: &M,
+        point: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+    ) -> Result<()>
+    where
+        T: Scalar,
+        M: MatrixManifold<T>,
+    {
+        // QR retraction: R_X(V) = qf(X + V)
+        let temp = point + tangent;
+        let qr = temp.qr();
+        *result = qr.q();
+        Ok(())
     }
 }
 
@@ -369,9 +409,8 @@ where
         tangent: &M::TangentVector,
         result: &mut M::Point,
     ) -> Result<()> {
-        // For general manifolds, Cayley transform doesn't apply
-        // This should be overridden by specific matrix manifolds (SO(n), etc.)
-        // For now, fall back to manifold's retract
+        // Cayley transform only applies to specific matrix manifolds
+        // For general manifolds, fall back to default
         let mut workspace: Workspace<T> = Workspace::new();
         manifold.retract(point, tangent, result, &mut workspace)
     }
@@ -384,9 +423,44 @@ where
         result: &mut M::TangentVector,
     ) -> Result<()> {
         // Approximate inverse using manifold's method
-        // Specific manifolds should override this
         let mut workspace: Workspace<T> = Workspace::new();
         manifold.inverse_retract(point, other, result, &mut workspace)
+    }
+}
+
+// Specialized implementation for matrix manifolds
+impl<T: Scalar> CayleyRetraction<T> {
+    /// Perform Cayley retraction specifically for matrix manifolds
+    pub fn retract_matrix<M>(
+        &self,
+        _manifold: &M,
+        point: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+    ) -> Result<()>
+    where
+        M: MatrixManifold<T>,
+    {
+        // Cayley retraction: R_X(V) = X * cay(X^T * V)
+        // where cay(W) = (I - W/2)^{-1}(I + W/2)
+        let n = point.ncols();
+        let w = point.transpose() * tangent;
+        
+        // Compute (I - W/2)
+        let mut i_minus_half_w = DMatrix::<T>::identity(n, n);
+        i_minus_half_w -= &w * <T as Scalar>::from_f64(0.5);
+        
+        // Compute (I + W/2)
+        let mut i_plus_half_w = DMatrix::<T>::identity(n, n);
+        i_plus_half_w += &w * <T as Scalar>::from_f64(0.5);
+        
+        // Compute cay(W) = (I - W/2)^{-1}(I + W/2)
+        let cay_w = i_minus_half_w.try_inverse()
+            .ok_or_else(|| crate::error::ManifoldError::numerical_error("Cayley transform singular"))?
+            * i_plus_half_w;
+        
+        *result = point * cay_w;
+        Ok(())
     }
 }
 
@@ -449,9 +523,8 @@ where
         tangent: &M::TangentVector,
         result: &mut M::Point,
     ) -> Result<()> {
-        // For general manifolds, polar retraction doesn't apply
-        // This should be overridden by specific matrix manifolds
-        // For now, fall back to manifold's retract
+        // Polar retraction only applies to matrix manifolds
+        // For general manifolds, fall back to default
         let mut workspace: Workspace<T> = Workspace::new();
         manifold.retract(point, tangent, result, &mut workspace)
     }
@@ -464,9 +537,42 @@ where
         result: &mut M::TangentVector,
     ) -> Result<()> {
         // Approximate inverse using manifold's method
-        // Specific manifolds should override this with proper implementation
         let mut workspace: Workspace<T> = Workspace::new();
         manifold.inverse_retract(point, other, result, &mut workspace)
+    }
+}
+
+// Specialized implementation for matrix manifolds
+impl<T> PolarRetraction<T>
+where
+    T: Scalar,
+{
+    /// Perform polar retraction specifically for matrix manifolds
+    pub fn retract_matrix<M>(
+        &self,
+        _manifold: &M,
+        point: &DMatrix<T>,
+        tangent: &DMatrix<T>,
+        result: &mut DMatrix<T>,
+    ) -> Result<()>
+    where
+        M: MatrixManifold<T>,
+    {
+        // Polar retraction: R_X(V) = (X + V)M
+        // where M is the orthogonal polar factor
+        let temp = point + tangent;
+        
+        // Compute polar decomposition using SVD
+        let svd = temp.svd(true, true);
+        
+        if let (Some(u), Some(v_t)) = (svd.u, svd.v_t) {
+            *result = u * v_t;
+            Ok(())
+        } else {
+            Err(crate::error::ManifoldError::numerical_error(
+                "Polar decomposition failed"
+            ))
+        }
     }
 }
 
