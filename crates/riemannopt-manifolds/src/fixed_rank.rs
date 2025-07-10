@@ -94,7 +94,7 @@
 //! let x = manifold.random_point();
 //!
 //! // Convert to matrix form
-//! let x_mat = manifold.vector_to_matrix(&x);
+//! let x_mat = x.to_matrix();
 //! assert_eq!(x_mat.rank(1e-10), 2);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
@@ -175,71 +175,62 @@ impl<T: Scalar> FixedRankPoint<T> {
         
         Ok(Self::new(u_k, s_k, v_k))
     }
+}
 
-    /// Convert to vector representation for manifold operations
-    pub fn to_vector(&self) -> DVector<T> {
-        let m = self.u.nrows();
-        let n = self.v.nrows();
-        let k = self.s.len();
-        
-        let mut vec = DVector::zeros(m * k + k + n * k);
-        let mut idx = 0;
-        
-        // Pack U
-        for j in 0..k {
-            for i in 0..m {
-                vec[idx] = self.u[(i, j)];
-                idx += 1;
-            }
-        }
-        
-        // Pack S
-        for i in 0..k {
-            vec[idx] = self.s[i];
-            idx += 1;
-        }
-        
-        // Pack V
-        for j in 0..k {
-            for i in 0..n {
-                vec[idx] = self.v[(i, j)];
-                idx += 1;
-            }
-        }
-        
-        vec
+/// Representation of a tangent vector on the fixed-rank manifold
+#[derive(Debug, Clone)]
+pub struct FixedRankTangent<T: Scalar> {
+    /// Component U_perp * M * V^T (m × k)
+    pub u_perp_m: DMatrix<T>,
+    /// Component U * S_dot * V^T (k × k)
+    pub s_dot: DVector<T>,
+    /// Component U * N * V_perp^T (n × k)  
+    pub v_perp_n: DMatrix<T>,
+}
+
+impl<T: Scalar> FixedRankTangent<T> {
+    /// Create a new fixed-rank tangent vector from components
+    pub fn new(u_perp_m: DMatrix<T>, s_dot: DVector<T>, v_perp_n: DMatrix<T>) -> Self {
+        Self { u_perp_m, s_dot, v_perp_n }
     }
-
-    /// Create from vector representation
-    pub fn from_vector(vec: &DVector<T>, m: usize, n: usize, k: usize) -> Self {
-        let mut idx = 0;
+    
+    /// Convert to full matrix representation given a base point
+    pub fn to_matrix(&self, point: &FixedRankPoint<T>) -> DMatrix<T> {
+        let s_dot_mat = DMatrix::from_diagonal(&self.s_dot);
         
-        // Unpack U
-        let mut u = DMatrix::zeros(m, k);
-        for j in 0..k {
-            for i in 0..m {
-                u[(i, j)] = vec[idx];
-                idx += 1;
-            }
+        // Compute U_perp and V_perp using QR decomposition
+        let (u_perp, _) = Self::compute_orthogonal_complement(&point.u);
+        let (v_perp, _) = Self::compute_orthogonal_complement(&point.v);
+        
+        // Combine the three components
+        &u_perp * &self.u_perp_m * point.v.transpose() +
+        &point.u * s_dot_mat * point.v.transpose() +
+        &point.u * &self.v_perp_n * v_perp.transpose()
+    }
+    
+    /// Compute orthogonal complement of a matrix with orthonormal columns
+    fn compute_orthogonal_complement(mat: &DMatrix<T>) -> (DMatrix<T>, DMatrix<T>) {
+        let m = mat.nrows();
+        let k = mat.ncols();
+        
+        if k >= m {
+            // No orthogonal complement
+            return (DMatrix::zeros(m, 0), DMatrix::zeros(0, 0));
         }
         
-        // Unpack S
-        let mut s = DVector::zeros(k);
-        for i in 0..k {
-            s[i] = vec[idx];
-            idx += 1;
-        }
+        // Create identity and project out the columns of mat
+        let mut q = DMatrix::identity(m, m);
+        q -= mat * mat.transpose();
         
-        // Unpack V
-        let mut v = DMatrix::zeros(n, k);
-        for j in 0..k {
-            for i in 0..n {
-                v[(i, j)] = vec[idx];
-                idx += 1;
-            }
-        }
+        // Use QR to get orthonormal basis for the complement
+        let qr = q.qr();
+        let q_full = qr.q();
         
-        Self::new(u, s, v)
+        // Extract the last m-k columns
+        let u_perp = q_full.columns(k, m - k).into();
+        let r_perp = DMatrix::zeros(m - k, m - k); // Placeholder
+        
+        (u_perp, r_perp)
     }
 }
 
@@ -330,12 +321,6 @@ impl FixedRank {
         self.k * (self.m + self.n - self.k)
     }
 
-    /// Returns the size of the vectorized representation.
-    #[inline]
-    fn vector_size(&self) -> usize {
-        self.m * self.k + self.k + self.n * self.k
-    }
-
     /// Project the U and V factors onto the Stiefel manifold
     fn project_factors<T: Scalar>(&self, u: &mut DMatrix<T>, v: &mut DMatrix<T>) {
         // QR decomposition for U
@@ -412,8 +397,8 @@ impl FixedRank {
 }
 
 impl<T: Scalar> Manifold<T> for FixedRank {
-    type Point = DVector<T>;
-    type TangentVector = DVector<T>;
+    type Point = FixedRankPoint<T>;
+    type TangentVector = FixedRankTangent<T>;
 
     fn name(&self) -> &str {
         "FixedRank"
@@ -424,15 +409,9 @@ impl<T: Scalar> Manifold<T> for FixedRank {
     }
 
     fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-        if point.len() != self.vector_size() {
-            return false;
-        }
-        
-        let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
-        
         // Check that U and V are on Stiefel manifolds
-        let u_gram = pt.u.transpose() * &pt.u;
-        let v_gram = pt.v.transpose() * &pt.v;
+        let u_gram = point.u.transpose() * &point.u;
+        let v_gram = point.v.transpose() * &point.v;
         
         // Check orthogonality
         for i in 0..self.k {
@@ -448,7 +427,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         
         // Check that singular values are positive
         for i in 0..self.k {
-            if pt.s[i] <= T::zero() {
+            if point.s[i] <= T::zero() {
                 return false;
             }
         }
@@ -457,94 +436,62 @@ impl<T: Scalar> Manifold<T> for FixedRank {
     }
 
     fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
-        let vec_size = self.vector_size();
-        
-        // Ensure result has correct size
-        if result.len() != vec_size {
-            *result = DVector::zeros(vec_size);
-        }
-        
-        let mut pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
+        // Copy the input point
+        result.u = point.u.clone();
+        result.s = point.s.clone();
+        result.v = point.v.clone();
         
         // Project U and V onto Stiefel manifolds
-        self.project_factors(&mut pt.u, &mut pt.v);
+        self.project_factors(&mut result.u, &mut result.v);
         
         // Ensure singular values are positive
         for i in 0..self.k {
-            if pt.s[i] < T::epsilon() {
-                pt.s[i] = T::epsilon();
+            if result.s[i] < T::epsilon() {
+                result.s[i] = T::epsilon();
             }
         }
-        
-        let projected = pt.to_vector();
-        result.copy_from(&projected);
     }
 
     fn project_tangent(
         &self,
-        point: &Self::Point,
+        _point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
         _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let vec_size = self.vector_size();
-        if point.len() != vec_size || vector.len() != vec_size {
-            return Err(ManifoldError::dimension_mismatch(
-                vec_size,
-                point.len().max(vector.len())
-            ));
-        }
-        
-        // Ensure result has correct size
-        if result.len() != vec_size {
-            *result = DVector::zeros(vec_size);
-        }
-        
-        let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
-        let tangent = FixedRankPoint::from_vector(vector, self.m, self.n, self.k);
-        
-        // Project U and V components to tangent spaces of Stiefel manifolds
-        let u_proj = &tangent.u - &pt.u * (pt.u.transpose() * &tangent.u);
-        let v_proj = &tangent.v - &pt.v * (pt.v.transpose() * &tangent.v);
-        
-        let proj_tangent = FixedRankPoint::new(u_proj, tangent.s.clone(), v_proj);
-        
-        let projected = proj_tangent.to_vector();
-        result.copy_from(&projected);
+        // For a tangent vector at point (U,S,V), the tangent space has the form:
+        // ξ = U_perp * M * V^T + U * S_dot * V^T + U * N * V_perp^T
+        // The input vector already has this structure, so we just copy it
+        result.u_perp_m = vector.u_perp_m.clone();
+        result.s_dot = vector.s_dot.clone();
+        result.v_perp_n = vector.v_perp_n.clone();
         Ok(())
     }
 
     fn inner_product(
         &self,
-        point: &Self::Point,
+        _point: &Self::Point,
         u: &Self::TangentVector,
         v: &Self::TangentVector,
     ) -> Result<T> {
-        let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
-        let u_tan = FixedRankPoint::from_vector(u, self.m, self.n, self.k);
-        let v_tan = FixedRankPoint::from_vector(v, self.m, self.n, self.k);
+        // The inner product is the Frobenius inner product of the matrix representations
+        // <u, v> = tr(u^T * v) = tr(U_perp*M_u*V^T + U*S_dot_u*V^T + U*N_u*V_perp^T)^T * 
+        //                           (U_perp*M_v*V^T + U*S_dot_v*V^T + U*N_v*V_perp^T)
+        // Since U, U_perp, V, V_perp are orthogonal, this simplifies to:
+        // <u, v> = tr(M_u^T * M_v) + tr(S_dot_u * S_dot_v) + tr(N_u^T * N_v)
         
-        // Compute the inner product with scaling by singular values
         let mut inner = T::zero();
         
-        // U component
-        for i in 0..self.m {
-            for j in 0..self.k {
-                inner += u_tan.u[(i, j)] * v_tan.u[(i, j)];
-            }
-        }
+        // U_perp component
+        inner += (u.u_perp_m.transpose() * &v.u_perp_m).trace();
         
-        // S component (scaled)
+        // S component
         for i in 0..self.k {
-            inner += u_tan.s[i] * v_tan.s[i] / pt.s[i];
+            inner += u.s_dot[i] * v.s_dot[i];
         }
         
-        // V component
-        for i in 0..self.n {
-            for j in 0..self.k {
-                inner += u_tan.v[(i, j)] * v_tan.v[(i, j)];
-            }
-        }
+        // V_perp component
+        inner += (u.v_perp_n.transpose() * &v.v_perp_n).trace();
         
         Ok(inner)
     }
@@ -556,41 +503,35 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         result: &mut Self::Point,
         _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let vec_size = self.vector_size();
-        if point.len() != vec_size || tangent.len() != vec_size {
-            return Err(ManifoldError::dimension_mismatch(
-                vec_size,
-                point.len().max(tangent.len())
-            ));
-        }
+        // Use the orthographic retraction for fixed-rank manifolds
+        // R_X(ξ) = (U + U_perp*M*S^{-1})(S + S_dot)(V + V_perp*N^T*S^{-1})^T
         
-        // Ensure result has correct size
-        if result.len() != vec_size {
-            *result = DVector::zeros(vec_size);
-        }
+        // Compute U_perp and V_perp
+        let (u_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.u);
+        let (v_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.v);
         
-        let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
-        let tan = FixedRankPoint::from_vector(tangent, self.m, self.n, self.k);
+        // Compute S^{-1}
+        let s_inv = DMatrix::from_diagonal(&point.s.map(|x| T::one() / x));
         
-        // Retract using projection
-        let new_u = &pt.u + &tan.u;
-        let new_s = &pt.s + &tan.s;
-        let new_v = &pt.v + &tan.v;
+        // Update U: U_new = U + U_perp * M * S^{-1}
+        result.u = &point.u + &u_perp * &tangent.u_perp_m * &s_inv;
         
-        let mut new_pt = FixedRankPoint::new(new_u, new_s, new_v);
+        // Update S: S_new = S + S_dot
+        result.s = &point.s + &tangent.s_dot;
+        
+        // Update V: V_new = V + V_perp * N^T * S^{-1}
+        result.v = &point.v + &v_perp * tangent.v_perp_n.transpose() * &s_inv;
         
         // Project factors back to Stiefel
-        self.project_factors(&mut new_pt.u, &mut new_pt.v);
+        self.project_factors(&mut result.u, &mut result.v);
         
         // Ensure singular values are positive
         for i in 0..self.k {
-            if new_pt.s[i] < T::epsilon() {
-                new_pt.s[i] = T::epsilon();
+            if result.s[i] < T::epsilon() {
+                result.s[i] = T::epsilon();
             }
         }
         
-        let retracted = new_pt.to_vector();
-        result.copy_from(&retracted);
         Ok(())
     }
 
@@ -636,51 +577,32 @@ impl<T: Scalar> Manifold<T> for FixedRank {
             s[i] = <T as Scalar>::from_f64(val.abs() + 1.0);
         }
         
-        let pt = FixedRankPoint::new(u_orth, s, v_orth);
-        pt.to_vector()
+        FixedRankPoint::new(u_orth, s, v_orth)
     }
 
-    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector, _workspace: &mut Workspace<T>) -> Result<()> {
-        let vec_size = self.vector_size();
-        if point.len() != vec_size {
-            return Err(ManifoldError::dimension_mismatch(
-                vec_size,
-                point.len()
-            ));
-        }
-        
-        // Ensure result has correct size
-        if result.len() != vec_size {
-            *result = DVector::zeros(vec_size);
-        }
-        
+    fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector, _workspace: &mut Workspace<T>) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
-        let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
+        // Generate random matrices for the tangent components
+        let mut u_perp_m = DMatrix::zeros(self.m - self.k, self.k);
+        let mut s_dot = DVector::zeros(self.k);
+        let mut v_perp_n = DMatrix::zeros(self.k, self.n - self.k);
         
-        // Generate random matrices
-        let mut u_tan = DMatrix::zeros(self.m, self.k);
-        let mut v_tan = DMatrix::zeros(self.n, self.k);
-        let mut s_tan = DVector::zeros(self.k);
-        
+        // Fill with random values
         for j in 0..self.k {
-            for i in 0..self.m {
-                u_tan[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+            for i in 0..(self.m - self.k) {
+                u_perp_m[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
             }
-            for i in 0..self.n {
-                v_tan[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+            s_dot[j] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+            for i in 0..(self.n - self.k) {
+                v_perp_n[(j, i)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
             }
-            s_tan[j] = <T as Scalar>::from_f64(normal.sample(&mut rng));
         }
         
-        // Project to tangent spaces of Stiefel manifolds
-        u_tan = &u_tan - &pt.u * (pt.u.transpose() * &u_tan);
-        v_tan = &v_tan - &pt.v * (pt.v.transpose() * &v_tan);
-        
-        let tangent = FixedRankPoint::new(u_tan, s_tan, v_tan);
-        let tangent_vec = tangent.to_vector();
-        result.copy_from(&tangent_vec);
+        result.u_perp_m = u_perp_m;
+        result.s_dot = s_dot;
+        result.v_perp_n = v_perp_n;
         Ok(())
     }
 
@@ -694,29 +616,18 @@ impl<T: Scalar> Manifold<T> for FixedRank {
             return false;
         }
         
-        if vector.len() != self.vector_size() {
+        // Check dimensions of tangent components
+        if vector.u_perp_m.nrows() != self.m - self.k || vector.u_perp_m.ncols() != self.k {
+            return false;
+        }
+        if vector.s_dot.len() != self.k {
+            return false;
+        }
+        if vector.v_perp_n.nrows() != self.k || vector.v_perp_n.ncols() != self.n - self.k {
             return false;
         }
         
-        let pt = FixedRankPoint::from_vector(point, self.m, self.n, self.k);
-        let vec = FixedRankPoint::from_vector(vector, self.m, self.n, self.k);
-        
-        // Check that U and V components are in tangent spaces of Stiefel manifolds
-        let u_proj = pt.u.transpose() * &vec.u;
-        let v_proj = pt.v.transpose() * &vec.v;
-        
-        // Check that projections are skew-symmetric
-        for i in 0..self.k {
-            for j in 0..self.k {
-                if <T as Float>::abs(u_proj[(i, j)] + u_proj[(j, i)]) > tol {
-                    return false;
-                }
-                if <T as Float>::abs(v_proj[(i, j)] + v_proj[(j, i)]) > tol {
-                    return false;
-                }
-            }
-        }
-        
+        // Tangent vectors have the specific structure, so as long as dimensions match, it's valid
         true
     }
 
@@ -725,62 +636,91 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let vec_size = self.vector_size();
-        if point.len() != vec_size || other.len() != vec_size {
-            return Err(ManifoldError::dimension_mismatch(
-                vec_size,
-                point.len().max(other.len())
-            ));
-        }
+        // For fixed-rank manifold, we use a simple approximation
+        // The inverse of the orthographic retraction is complex, so we approximate
+        // by computing the tangent that moves in the direction of other - point
         
-        // Ensure result has correct size
-        if result.len() != vec_size {
-            *result = DVector::zeros(vec_size);
-        }
+        // Compute the difference in matrix form
+        let point_mat = point.to_matrix();
+        let other_mat = other.to_matrix();
+        let diff = &other_mat - &point_mat;
         
-        // Simple approximation: project the difference
-        let diff = other - point;
-        self.project_tangent(point, &diff, result, workspace)
+        // Project onto the tangent space at point
+        // Compute U_perp and V_perp
+        let (u_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.u);
+        let (v_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.v);
+        
+        // Decompose the difference into tangent components
+        // M = U_perp^T * diff * V
+        result.u_perp_m = u_perp.transpose() * &diff * &point.v;
+        
+        // S_dot = U^T * diff * V (diagonal part)
+        let s_component = point.u.transpose() * &diff * &point.v;
+        result.s_dot = s_component.diagonal();
+        
+        // N = U^T * diff * V_perp
+        result.v_perp_n = point.u.transpose() * &diff * &v_perp;
+        
+        Ok(())
     }
 
     fn parallel_transport(
         &self,
-        from: &Self::Point,
+        _from: &Self::Point,
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let vec_size = self.vector_size();
-        if from.len() != vec_size || to.len() != vec_size || vector.len() != vec_size {
-            return Err(ManifoldError::dimension_mismatch(
-                vec_size,
-                from.len().max(to.len()).max(vector.len())
-            ));
+        // For fixed-rank manifold, parallel transport is complex
+        // We use a simple approximation: transport the tangent by adapting to the new basis
+        
+        // Compute U_perp and V_perp at the destination point
+        let (_u_perp_to, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&to.u);
+        let (_v_perp_to, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&to.v);
+        
+        // For simplicity, we project the tangent vector's matrix representation
+        // onto the tangent space at the destination
+        // This preserves the general direction but may not be exact parallel transport
+        
+        // The transported tangent has the same structure but adapted to the new point
+        result.u_perp_m = DMatrix::zeros(self.m - self.k, self.k);
+        result.s_dot = vector.s_dot.clone();
+        result.v_perp_n = DMatrix::zeros(self.k, self.n - self.k);
+        
+        // Fill with appropriate values (simplified transport)
+        for j in 0..self.k {
+            for i in 0..(self.m - self.k).min(vector.u_perp_m.nrows()) {
+                if i < result.u_perp_m.nrows() && j < vector.u_perp_m.ncols() {
+                    result.u_perp_m[(i, j)] = vector.u_perp_m[(i, j)];
+                }
+            }
+            for i in 0..(self.n - self.k).min(vector.v_perp_n.ncols()) {
+                if j < vector.v_perp_n.nrows() && i < result.v_perp_n.ncols() {
+                    result.v_perp_n[(j, i)] = vector.v_perp_n[(j, i)];
+                }
+            }
         }
         
-        // Ensure result has correct size
-        if result.len() != vec_size {
-            *result = DVector::zeros(vec_size);
-        }
-        
-        // For fixed-rank manifold, we use projection to tangent space at destination
-        // This is an approximation; exact parallel transport requires more computation
-        self.project_tangent(to, vector, result, workspace)
+        Ok(())
     }
     fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
-        if x.len() != self.vector_size() || y.len() != self.vector_size() {
-            return Err(ManifoldError::dimension_mismatch(
-                self.vector_size(),
-                x.len().max(y.len())
-            ));
+        // Use Frobenius distance in the embedded space
+        let x_mat = x.to_matrix();
+        let y_mat = y.to_matrix();
+        let diff = &y_mat - &x_mat;
+        
+        // Frobenius norm of the difference
+        let mut sum = T::zero();
+        for i in 0..diff.nrows() {
+            for j in 0..diff.ncols() {
+                sum = sum + diff[(i, j)] * diff[(i, j)];
+            }
         }
         
-        // Use Frobenius distance in the embedded space
-        let diff = y - x;
-        Ok(<T as Float>::sqrt(diff.dot(&diff)))
+        Ok(<T as Float>::sqrt(sum))
     }
 
     fn has_exact_exp_log(&self) -> bool {
@@ -799,31 +739,25 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         result: &mut Self::TangentVector,
         _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        // For fixed-rank manifold represented as vectorized (U, S, V),
-        // scaling preserves the tangent space constraints
-        result.copy_from(tangent);
-        *result *= scalar;
+        // Scale each component of the tangent vector
+        result.u_perp_m = &tangent.u_perp_m * scalar;
+        result.s_dot = &tangent.s_dot * scalar;
+        result.v_perp_n = &tangent.v_perp_n * scalar;
         Ok(())
     }
 
     fn add_tangents(
         &self,
-        point: &Self::Point,
+        _point: &Self::Point,
         v1: &Self::TangentVector,
         v2: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        // Add the tangent vectors
-        result.copy_from(v1);
-        *result += v2;
-        
-        // The sum should already satisfy the tangent space constraints if v1 and v2 do,
-        // but we project for numerical stability
-        // Create a temporary clone to avoid borrowing issues
-        let temp = result.clone();
-        self.project_tangent(point, &temp, result, workspace)?;
-        
+        // Add each component of the tangent vectors
+        result.u_perp_m = &v1.u_perp_m + &v2.u_perp_m;
+        result.s_dot = &v1.s_dot + &v2.s_dot;
+        result.v_perp_n = &v1.v_perp_n + &v2.v_perp_n;
         Ok(())
     }
 }
@@ -836,8 +770,7 @@ impl FixedRank {
     /// A random m×n matrix of rank k.
     pub fn random_matrix<T: Scalar>(&self) -> DMatrix<T> {
         let point = <Self as Manifold<T>>::random_point(self);
-        let pt = FixedRankPoint::<T>::from_vector(&point, self.m, self.n, self.k);
-        pt.to_matrix()
+        point.to_matrix()
     }
 
     /// Computes the best rank-k approximation of a matrix.
@@ -911,8 +844,8 @@ impl FixedRank {
     ///
     /// # Returns
     ///
-    /// The projected fixed-rank matrix as a vector.
-    pub fn project_matrix<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<DVector<T>> {
+    /// The projected fixed-rank matrix as a FixedRankPoint.
+    pub fn project_matrix<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<FixedRankPoint<T>> {
         if mat.nrows() != self.m || mat.ncols() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 self.m * self.n,
@@ -920,8 +853,7 @@ impl FixedRank {
             ));
         }
         
-        let pt = FixedRankPoint::<T>::from_matrix(mat, self.k)?;
-        Ok(pt.to_vector())
+        FixedRankPoint::<T>::from_matrix(mat, self.k)
     }
 }
 
@@ -929,7 +861,6 @@ impl FixedRank {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use nalgebra::DVector;
     use riemannopt_core::memory::workspace::Workspace;
 
     fn create_test_manifold() -> FixedRank {
@@ -961,13 +892,12 @@ mod tests {
         let v = DMatrix::from_fn(4, 2, |i, j| ((i * j) as f64).cos());
         
         let point = FixedRankPoint::new(u.clone(), s.clone(), v.clone());
-        let vec = point.to_vector();
-        let point2 = FixedRankPoint::<f64>::from_vector(&vec, 6, 4, 2);
+        let mat = point.to_matrix();
+        let point2 = FixedRankPoint::<f64>::from_matrix(&mat, 2).unwrap();
         
-        // Check reconstruction
-        assert_relative_eq!(point2.u, u, epsilon = 1e-10);
-        assert_relative_eq!(point2.s, s, epsilon = 1e-10);
-        assert_relative_eq!(point2.v, v, epsilon = 1e-10);
+        // Check that conversion preserves the matrix
+        let mat2 = point2.to_matrix();
+        assert_relative_eq!(mat, mat2, epsilon = 1e-10);
     }
 
     #[test]
@@ -975,7 +905,7 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = manifold.random_point();
-        let mut projected = DVector::zeros(manifold.vector_size());
+        let mut projected = point.clone();
         let mut workspace = Workspace::<f64>::new();
         manifold.project_point(&point, &mut projected, &mut workspace);
         
@@ -987,16 +917,22 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = manifold.random_point();
-        let vector = DVector::<f64>::from_vec(vec![0.1; manifold.vector_size()]);
-        let mut tangent = DVector::zeros(manifold.vector_size());
+        let tangent = FixedRankTangent::new(
+            DMatrix::from_element(manifold.m - manifold.k, manifold.k, 0.1),
+            DVector::from_element(manifold.k, 0.1),
+            DMatrix::from_element(manifold.k, manifold.n - manifold.k, 0.1)
+        );
         let mut workspace = Workspace::<f64>::new();
-        manifold.project_tangent(&point, &vector, &mut tangent, &mut workspace).unwrap();
+        
+        let mut tangent2 = tangent.clone();
+        manifold.project_tangent(&point, &tangent, &mut tangent2, &mut workspace).unwrap();
         
         // Check that projection is idempotent
-        let mut tangent2 = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::<f64>::new();
-        manifold.project_tangent(&point, &tangent, &mut tangent2, &mut workspace).unwrap();
-        assert_relative_eq!(&tangent, &tangent2, epsilon = 1e-10);
+        let mut tangent3 = tangent2.clone();
+        manifold.project_tangent(&point, &tangent2, &mut tangent3, &mut workspace).unwrap();
+        assert_relative_eq!(tangent2.u_perp_m, tangent3.u_perp_m, epsilon = 1e-10);
+        assert_relative_eq!(tangent2.s_dot, tangent3.s_dot, epsilon = 1e-10);
+        assert_relative_eq!(tangent2.v_perp_n, tangent3.v_perp_n, epsilon = 1e-10);
     }
 
     #[test]
@@ -1004,12 +940,19 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = manifold.random_point();
-        let mut tangent = DVector::zeros(manifold.vector_size());
+        let mut tangent = FixedRankTangent::new(
+            DMatrix::zeros(manifold.m - manifold.k, manifold.k),
+            DVector::zeros(manifold.k),
+            DMatrix::zeros(manifold.k, manifold.n - manifold.k)
+        );
         let mut workspace = Workspace::<f64>::new();
         manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
-        let scaled_tangent = 0.1 * &tangent;
-        let mut retracted = DVector::zeros(manifold.vector_size());
-        let mut workspace = Workspace::<f64>::new();
+        
+        // Scale the tangent
+        let mut scaled_tangent = tangent.clone();
+        manifold.scale_tangent(&point, 0.1, &tangent, &mut scaled_tangent, &mut workspace).unwrap();
+        
+        let mut retracted = point.clone();
         manifold.retract(&point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
         
         assert!(manifold.is_point_on_manifold(&retracted, 1e-6));
@@ -1029,8 +972,12 @@ mod tests {
         let manifold = create_test_manifold();
         
         let point = manifold.random_point();
-        let mut u = DVector::zeros(manifold.vector_size());
-        let mut v = DVector::zeros(manifold.vector_size());
+        let mut u = FixedRankTangent::new(
+            DMatrix::zeros(manifold.m - manifold.k, manifold.k),
+            DVector::zeros(manifold.k),
+            DMatrix::zeros(manifold.k, manifold.n - manifold.k)
+        );
+        let mut v = u.clone();
         let mut workspace = Workspace::<f64>::new();
         manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
         manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
@@ -1068,8 +1015,12 @@ mod tests {
         assert!(error >= 0.0);
         
         // Test projection
-        let proj_vec = manifold.project_matrix(&full_rank_mat).unwrap();
-        assert_eq!(proj_vec.len(), manifold.vector_size());
+        let proj_point = manifold.project_matrix(&full_rank_mat).unwrap();
+        assert_eq!(proj_point.u.nrows(), 5);
+        assert_eq!(proj_point.u.ncols(), 2);
+        assert_eq!(proj_point.s.len(), 2);
+        assert_eq!(proj_point.v.nrows(), 4);
+        assert_eq!(proj_point.v.ncols(), 2);
     }
 
     #[test]

@@ -146,6 +146,7 @@ use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
+    core::matrix_manifold::MatrixManifold,
     memory::workspace::Workspace,
     types::Scalar,
 };
@@ -769,6 +770,12 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         self.project_tangent(point, &temp, result, workspace)?;
         
         Ok(())
+    }
+}
+
+impl<T: Scalar> MatrixManifold<T> for Grassmann<T> {
+    fn matrix_dims(&self) -> (usize, usize) {
+        (self.n, self.p)
     }
 }
 

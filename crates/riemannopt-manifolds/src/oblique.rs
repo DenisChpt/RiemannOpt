@@ -125,6 +125,7 @@ use std::fmt::Debug;
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
+    core::matrix_manifold::MatrixManifold,
     memory::workspace::Workspace,
     types::Scalar,
 };
@@ -850,6 +851,12 @@ impl<T: Scalar> Manifold<T> for Oblique {
         self.project_tangent(point, &temp, result, workspace)?;
         
         Ok(())
+    }
+}
+
+impl<T: Scalar> MatrixManifold<T> for Oblique {
+    fn matrix_dims(&self) -> (usize, usize) {
+        (self.n, self.p)
     }
 }
 
