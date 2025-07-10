@@ -1,7 +1,7 @@
 //! # Hyperbolic Manifold ℍⁿ
 //!
 //! The hyperbolic manifold ℍⁿ is the n-dimensional hyperbolic space, a complete
-//! Riemannian manifold with constant negative sectional curvature -1. It provides
+//! Riemannian manifold with constant negative sectional curvature. It provides
 //! a natural geometry for hierarchical and tree-like data structures.
 //!
 //! ## Mathematical Definition
@@ -70,9 +70,9 @@
 //!
 //! ## Geometric Properties
 //!
-//! - **Sectional curvature**: K ≡ -1 (constant negative)
-//! - **Scalar curvature**: R = -n(n-1)
-//! - **Ricci curvature**: Ric = -(n-1)g
+//! - **Sectional curvature**: K < 0 (constant negative, default K = -1)
+//! - **Scalar curvature**: R = Kn(n-1)
+//! - **Ricci curvature**: Ric = K(n-1)g
 //! - **Injectivity radius**: ∞ (simply connected)
 //! - **Volume growth**: Exponential
 //! - **Isometry group**: SO⁺(n,1)

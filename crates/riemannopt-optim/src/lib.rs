@@ -9,6 +9,9 @@
 //! - **Adam**: Adaptive moment estimation for Riemannian manifolds
 //! - **L-BFGS**: Limited memory Broyden-Fletcher-Goldfarb-Shanno
 //! - **Trust Region**: Trust region methods with various subproblem solvers
+//! - **Conjugate Gradient**: Various CG methods (Fletcher-Reeves, Polak-Ribière, etc.)
+//! - **Newton**: Newton method with CG solver for Newton system
+//! - **Natural Gradient**: Natural gradient method with Fisher information matrix
 //!
 //! # Examples
 //!
@@ -37,9 +40,9 @@ pub mod adam;
 pub mod lbfgs;
 pub mod trust_region;
 pub mod conjugate_gradient;
-// pub mod natural_gradient;
+pub mod newton;
+pub mod natural_gradient;
 // pub mod parallel_sgd;
-// pub mod newton; // Temporarily disabled - needs refactoring to new architecture
 
 mod utils;
 
@@ -48,6 +51,8 @@ pub use sgd::{SGD, SGDConfig, MomentumMethod, MomentumState};
 pub use adam::{Adam, AdamConfig, AdamState, AdamStateBuilder};
 pub use lbfgs::{LBFGS, LBFGSConfig, LBFGSState};
 pub use trust_region::{TrustRegion, TrustRegionConfig};
+pub use newton::{Newton, NewtonConfig};
+pub use natural_gradient::{NaturalGradient, NaturalGradientConfig, FisherApproximation};
 pub use conjugate_gradient::{ConjugateGradient, CGConfig, ConjugateGradientState, ConjugateGradientMethod};
 // pub use natural_gradient::{NaturalGradient, NaturalGradientConfig};
 // pub use parallel_sgd::ParallelSGDUtils;
