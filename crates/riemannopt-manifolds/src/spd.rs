@@ -311,7 +311,9 @@ impl<T: Scalar> SPD<T> {
     /// Validates that a matrix is symmetric positive definite.
     ///
     /// # Mathematical Checks
-    ///\n    /// 1. Symmetry: ‖P - P^T‖ ≤ tolerance\n    /// 2. Positive definiteness: λᵢ(P) > min_eigenvalue ∀i
+    ///
+    /// 1. Symmetry: ‖P - P^T‖ ≤ tolerance
+    /// 2. Positive definiteness: λᵢ(P) > min_eigenvalue ∀i
     ///
     /// # Errors
     ///

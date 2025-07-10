@@ -1,7 +1,48 @@
-//! SIMD-optimized sphere operations.
+//! # SIMD-Optimized Sphere Operations
 //!
 //! This module provides SIMD-accelerated implementations for sphere operations
-//! when working with f32 or f64 types.
+//! when working with f32 or f64 types. These optimizations leverage CPU vector
+//! instructions (SSE, AVX, AVX-512) for significant performance improvements on
+//! large-dimensional spheres.
+//!
+//! ## Performance Characteristics
+//!
+//! - **f64**: SIMD enabled for vectors with ≥ 4 elements (4-way parallelism with AVX)
+//! - **f32**: SIMD enabled for vectors with ≥ 8 elements (8-way parallelism with AVX)
+//! - **Speedup**: Typically 2-8x faster for large dimensions (n > 100)
+//!
+//! ## Supported Operations
+//!
+//! 1. **Point projection**: Normalizing vectors to unit length
+//! 2. **Dot products**: Computing inner products of tangent vectors
+//!
+//! ## Example Usage
+//!
+//! ```rust,no_run
+//! use riemannopt_manifolds::{Sphere, sphere_simd::SphereSimdExt};
+//! use nalgebra::DVector;
+//!
+//! // Create a high-dimensional sphere
+//! let sphere = Sphere::<f64>::new(1000)?;
+//!
+//! // Project a point using SIMD
+//! let point = DVector::from_vec(vec![1.0; 1000]);
+//! let projected = sphere.project_point_simd_f64(&point);
+//! assert!((projected.norm() - 1.0).abs() < 1e-10);
+//!
+//! // Compute dot product using SIMD
+//! let v1 = DVector::from_vec(vec![1.0; 1000]);
+//! let v2 = DVector::from_vec(vec![2.0; 1000]);
+//! let dot = sphere.tangent_dot_simd_f64(&v1, &v2);
+//! # Ok::<(), riemannopt_core::error::ManifoldError>(())
+//! ```
+//!
+//! ## Implementation Notes
+//!
+//! - Automatically falls back to scalar operations for small vectors
+//! - Handles edge cases (zero vectors) correctly
+//! - Maintains numerical accuracy comparable to scalar implementation
+//! - Thread-safe and can be used in parallel algorithms
 
 use crate::Sphere;
 use riemannopt_core::{
@@ -12,17 +53,73 @@ use riemannopt_core::{
 use riemannopt_core::core::Manifold;
 
 /// Extension trait for SIMD-accelerated sphere operations.
+///
+/// This trait provides optimized implementations of common sphere operations
+/// using SIMD instructions when available. The implementations automatically
+/// select the best available instruction set at runtime.
 pub trait SphereSimdExt {
-    /// Project a point onto the sphere using SIMD operations.
+    /// Projects a point onto the sphere using SIMD operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - Vector to project onto the unit sphere
+    ///
+    /// # Returns
+    ///
+    /// Normalized vector with unit length
+    ///
+    /// # Performance
+    ///
+    /// Uses SIMD for vectors with ≥ 4 elements. Falls back to scalar
+    /// operations for smaller vectors.
     fn project_point_simd_f64(&self, point: &DVector<f64>) -> DVector<f64>;
     
-    /// Project a point onto the sphere using SIMD operations.
+    /// Projects a point onto the sphere using SIMD operations (f32 version).
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - Vector to project onto the unit sphere
+    ///
+    /// # Returns
+    ///
+    /// Normalized vector with unit length
+    ///
+    /// # Performance
+    ///
+    /// Uses SIMD for vectors with ≥ 8 elements. Falls back to scalar
+    /// operations for smaller vectors.
     fn project_point_simd_f32(&self, point: &DVector<f32>) -> DVector<f32>;
     
-    /// Compute dot product of tangent vectors using SIMD.
+    /// Computes dot product of tangent vectors using SIMD.
+    ///
+    /// # Arguments
+    ///
+    /// * `v1` - First tangent vector
+    /// * `v2` - Second tangent vector
+    ///
+    /// # Returns
+    ///
+    /// The Euclidean inner product v1^T v2
+    ///
+    /// # Performance
+    ///
+    /// Uses SIMD for vectors with ≥ 4 elements.
     fn tangent_dot_simd_f64(&self, v1: &DVector<f64>, v2: &DVector<f64>) -> f64;
     
-    /// Compute dot product of tangent vectors using SIMD.
+    /// Computes dot product of tangent vectors using SIMD (f32 version).
+    ///
+    /// # Arguments
+    ///
+    /// * `v1` - First tangent vector
+    /// * `v2` - Second tangent vector
+    ///
+    /// # Returns
+    ///
+    /// The Euclidean inner product v1^T v2
+    ///
+    /// # Performance
+    ///
+    /// Uses SIMD for vectors with ≥ 8 elements.
     fn tangent_dot_simd_f32(&self, v1: &DVector<f32>, v2: &DVector<f32>) -> f32;
 }
 
