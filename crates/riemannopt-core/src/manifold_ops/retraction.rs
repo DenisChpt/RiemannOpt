@@ -139,6 +139,32 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct ProjectionRetraction;
 
+impl ProjectionRetraction {
+    /// Helper method for manifolds where Point and TangentVector can be added.
+    /// This should be called from within a Manifold's retract implementation.
+    pub fn retract_with_addition<T, M, P>(
+        manifold: &M,
+        point: &P,
+        tangent: &P,
+        result: &mut P,
+    ) -> Result<()>
+    where
+        T: Scalar,
+        M: Manifold<T, Point = P, TangentVector = P>,
+        P: Clone + std::ops::Add<Output = P>,
+    {
+        let mut workspace: Workspace<T> = Workspace::new();
+        
+        // Step 1: Compute point + tangent in the ambient space
+        let ambient_point = point.clone() + tangent.clone();
+        
+        // Step 2: Project the result back onto the manifold
+        manifold.project_point(&ambient_point, result, &mut workspace);
+        
+        Ok(())
+    }
+}
+
 impl<T> Retraction<T> for ProjectionRetraction
 where
     T: Scalar,
@@ -159,27 +185,13 @@ where
         result: &mut M::Point,
     ) -> Result<()> {
         // Projection retraction: move in ambient space then project back
-        // This implementation assumes that Point and TangentVector support addition
-        // For manifolds where this doesn't make sense, they should use a different retraction
+        // Note: This implementation is specialized for manifolds where Point and TangentVector
+        // can be added. Manifolds should override their retract method to use this retraction.
         let mut workspace: Workspace<T> = Workspace::new();
         
-        // Since we can't generically add point + tangent without trait bounds,
-        // we need to clone the point and use a temporary approach
-        result.clone_from(point);
-        
-        // For now, we'll use a simple approach: project the tangent to ensure it's valid,
-        // then use the manifold's retract method, and finally project the result
-        let mut proj_tangent = tangent.clone();
-        manifold.project_tangent(point, tangent, &mut proj_tangent, &mut workspace)?;
-        
-        // Use manifold's retract with the projected tangent
-        manifold.retract(point, &proj_tangent, result, &mut workspace)?;
-        
-        // Project the result back onto the manifold to ensure all constraints are satisfied
-        let temp = result.clone();
-        manifold.project_point(&temp, result, &mut workspace);
-        
-        Ok(())
+        // For the general case, we delegate to the manifold's implementation
+        // The manifold can choose to use projection_retraction_impl if appropriate
+        manifold.retract(point, tangent, result, &mut workspace)
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -308,15 +320,17 @@ where
         RetractionOrder::Second
     }
 
-    fn retract<M: Manifold<T>>(
+    fn retract<M>(
         &self,
         manifold: &M,
         point: &M::Point,
         tangent: &M::TangentVector,
         result: &mut M::Point,
-    ) -> Result<()> {
-        // QR retraction only makes sense for matrix manifolds
-        // For general manifolds, we fall back to the default retraction
+    ) -> Result<()>
+    where
+        M: Manifold<T>,
+    {
+        // Check if this is a matrix manifold and delegate accordingly
         let mut workspace: Workspace<T> = Workspace::new();
         manifold.retract(point, tangent, result, &mut workspace)
     }
@@ -336,17 +350,16 @@ where
 
 // Specialized implementation for matrix manifolds
 impl QRRetraction {
-    /// Perform QR retraction specifically for matrix manifolds
-    pub fn retract_matrix<T, M>(
+    /// Perform QR retraction for matrix manifolds.
+    /// This method should be called from within a Manifold implementation that knows it's a MatrixManifold.
+    pub fn retract_matrix<T>(
         &self,
-        _manifold: &M,
         point: &DMatrix<T>,
         tangent: &DMatrix<T>,
         result: &mut DMatrix<T>,
     ) -> Result<()>
     where
         T: Scalar,
-        M: MatrixManifold<T>,
     {
         // QR retraction: R_X(V) = qf(X + V)
         let temp = point + tangent;
@@ -516,13 +529,16 @@ where
         RetractionOrder::Second
     }
 
-    fn retract<M: Manifold<T>>(
+    fn retract<M>(
         &self,
         manifold: &M,
         point: &M::Point,
         tangent: &M::TangentVector,
         result: &mut M::Point,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        M: Manifold<T>,
+    {
         // Polar retraction only applies to matrix manifolds
         // For general manifolds, fall back to default
         let mut workspace: Workspace<T> = Workspace::new();
@@ -547,16 +563,14 @@ impl<T> PolarRetraction<T>
 where
     T: Scalar,
 {
-    /// Perform polar retraction specifically for matrix manifolds
-    pub fn retract_matrix<M>(
+    /// Perform polar retraction for matrix manifolds.
+    /// This method should be called from within a Manifold implementation that knows it's a MatrixManifold.
+    pub fn retract_matrix(
         &self,
-        _manifold: &M,
         point: &DMatrix<T>,
         tangent: &DMatrix<T>,
         result: &mut DMatrix<T>,
     ) -> Result<()>
-    where
-        M: MatrixManifold<T>,
     {
         // Polar retraction: R_X(V) = (X + V)M
         // where M is the orthogonal polar factor
