@@ -84,7 +84,6 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::FixedRank;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::DMatrix;
 //!
 //! // Create M_2(4,3) - 4×3 matrices of rank 2
@@ -106,7 +105,6 @@ use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
-    memory::workspace::Workspace,
     types::Scalar,
 };
 
@@ -435,7 +433,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         true
     }
 
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
         // Copy the input point
         result.u = point.u.clone();
         result.s = point.s.clone();
@@ -457,7 +455,6 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         _point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // For a tangent vector at point (U,S,V), the tangent space has the form:
         // ξ = U_perp * M * V^T + U * S_dot * V^T + U * N * V_perp^T
@@ -501,7 +498,6 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         point: &Self::Point,
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Use the orthographic retraction for fixed-rank manifolds
         // R_X(ξ) = (U + U_perp*M*S^{-1})(S + S_dot)(V + V_perp*N^T*S^{-1})^T
@@ -540,10 +536,9 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // For the canonical metric, just project to tangent space
-        self.project_tangent(point, euclidean_grad, result, workspace)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn random_point(&self) -> Self::Point {
@@ -580,7 +575,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         FixedRankPoint::new(u_orth, s, v_orth)
     }
 
-    fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector, _workspace: &mut Workspace<T>) -> Result<()> {
+    fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -636,7 +631,6 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // For fixed-rank manifold, we use a simple approximation
         // The inverse of the orthographic retraction is complex, so we approximate
@@ -672,7 +666,6 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // For fixed-rank manifold, parallel transport is complex
         // We use a simple approximation: transport the tangent by adapting to the new basis
@@ -706,7 +699,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         
         Ok(())
     }
-    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
         // Use Frobenius distance in the embedded space
         let x_mat = x.to_matrix();
         let y_mat = y.to_matrix();
@@ -737,7 +730,6 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         scalar: T,
         tangent: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Scale each component of the tangent vector
         result.u_perp_m = &tangent.u_perp_m * scalar;
@@ -752,7 +744,8 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         v1: &Self::TangentVector,
         v2: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
+        // Temporary buffer for projection if needed
+        _temp: &mut Self::TangentVector,
     ) -> Result<()> {
         // Add each component of the tangent vectors
         result.u_perp_m = &v1.u_perp_m + &v2.u_perp_m;
@@ -861,7 +854,6 @@ impl FixedRank {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use riemannopt_core::memory::workspace::Workspace;
 
     fn create_test_manifold() -> FixedRank {
         FixedRank::new(6, 4, 2).unwrap()
@@ -906,8 +898,7 @@ mod tests {
         
         let point = manifold.random_point();
         let mut projected = point.clone();
-        let mut workspace = Workspace::<f64>::new();
-        manifold.project_point(&point, &mut projected, &mut workspace);
+        manifold.project_point(&point, &mut projected);
         
         assert!(manifold.is_point_on_manifold(&projected, 1e-6));
     }
@@ -922,14 +913,12 @@ mod tests {
             DVector::from_element(manifold.k, 0.1),
             DMatrix::from_element(manifold.k, manifold.n - manifold.k, 0.1)
         );
-        let mut workspace = Workspace::<f64>::new();
-        
         let mut tangent2 = tangent.clone();
-        manifold.project_tangent(&point, &tangent, &mut tangent2, &mut workspace).unwrap();
+        manifold.project_tangent(&point, &tangent, &mut tangent2).unwrap();
         
         // Check that projection is idempotent
         let mut tangent3 = tangent2.clone();
-        manifold.project_tangent(&point, &tangent2, &mut tangent3, &mut workspace).unwrap();
+        manifold.project_tangent(&point, &tangent2, &mut tangent3).unwrap();
         assert_relative_eq!(tangent2.u_perp_m, tangent3.u_perp_m, epsilon = 1e-10);
         assert_relative_eq!(tangent2.s_dot, tangent3.s_dot, epsilon = 1e-10);
         assert_relative_eq!(tangent2.v_perp_n, tangent3.v_perp_n, epsilon = 1e-10);
@@ -945,15 +934,14 @@ mod tests {
             DVector::zeros(manifold.k),
             DMatrix::zeros(manifold.k, manifold.n - manifold.k)
         );
-        let mut workspace = Workspace::<f64>::new();
-        manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut tangent).unwrap();
         
         // Scale the tangent
         let mut scaled_tangent = tangent.clone();
-        manifold.scale_tangent(&point, 0.1, &tangent, &mut scaled_tangent, &mut workspace).unwrap();
+        manifold.scale_tangent(&point, 0.1, &tangent, &mut scaled_tangent).unwrap();
         
         let mut retracted = point.clone();
-        manifold.retract(&point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
+        manifold.retract(&point, &scaled_tangent, &mut retracted).unwrap();
         
         assert!(manifold.is_point_on_manifold(&retracted, 1e-6));
     }
@@ -978,9 +966,8 @@ mod tests {
             DMatrix::zeros(manifold.k, manifold.n - manifold.k)
         );
         let mut v = u.clone();
-        let mut workspace = Workspace::<f64>::new();
-        manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
-        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut u).unwrap();
+        manifold.random_tangent(&point, &mut v).unwrap();
         
         let ip_uv = manifold.inner_product(&point, &u, &v).unwrap();
         let ip_vu = manifold.inner_product(&point, &v, &u).unwrap();
@@ -1036,18 +1023,16 @@ mod tests {
     #[test]
     fn test_fixed_rank_distance() {
         let manifold = create_test_manifold();
-        let mut workspace = Workspace::<f64>::new();
-        
         let x = manifold.random_point();
         let y = manifold.random_point();
         
         // Distance to self should be zero
-        let d_xx = manifold.distance(&x, &x, &mut workspace).unwrap();
+        let d_xx = manifold.distance(&x, &x).unwrap();
         assert_relative_eq!(d_xx, 0.0, epsilon = 1e-10);
         
         // Distance should be symmetric
-        let d_xy = manifold.distance(&x, &y, &mut workspace).unwrap();
-        let d_yx = manifold.distance(&y, &x, &mut workspace).unwrap();
+        let d_xy = manifold.distance(&x, &y).unwrap();
+        let d_yx = manifold.distance(&y, &x).unwrap();
         assert_relative_eq!(d_xy, d_yx, epsilon = 1e-10);
         
         // Distance should be non-negative

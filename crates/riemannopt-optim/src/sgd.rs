@@ -240,7 +240,7 @@ impl<T: Scalar> SGD<T> {
         gradient_norm: Option<T>,
         current_point: &M::Point,
         previous_point: &Option<M::Point>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         criterion: &StoppingCriterion<T>,
     ) -> Option<TerminationReason>
     where
@@ -286,7 +286,7 @@ impl<T: Scalar> SGD<T> {
             if let Some(ref prev_point) = previous_point {
                 if iteration > 0 {
                     // Compute distance using manifold metric
-                    if let Ok(distance) = manifold.distance(prev_point, current_point, workspace) {
+                    if let Ok(distance) = manifold.distance(prev_point, current_point) {
                         if distance < point_tol {
                             return Some(TerminationReason::Converged);
                         }
@@ -313,7 +313,7 @@ impl<T: Scalar> SGD<T> {
         previous_point: &Option<M::Point>,
         momentum_state: &mut MomentumState<T, M::TangentVector>,
         gradient: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         M: Manifold<T>,
@@ -341,7 +341,6 @@ impl<T: Scalar> SGD<T> {
                         current_point,
                         momentum,
                         &mut transported_momentum,
-                        workspace,
                     )?;
                     *momentum = transported_momentum;
                 }
@@ -350,16 +349,18 @@ impl<T: Scalar> SGD<T> {
                     // Nesterov momentum
                     // Update momentum: m = β * m + gradient
                     let mut temp = momentum.clone();
-                    manifold.scale_tangent(current_point, coefficient, momentum, &mut temp, workspace)?;
-                    manifold.add_tangents(current_point, &temp, gradient, momentum, workspace)?;
+                    let mut temp2 = momentum.clone(); // Additional temp for add_tangents
+                    manifold.scale_tangent(current_point, coefficient, momentum, &mut temp)?;
+                    manifold.add_tangents(current_point, &temp, gradient, momentum, &mut temp2)?;
                 } else {
                     // Classical momentum
                     // Update momentum: m = β * m + (1-β) * gradient
                     let mut temp = momentum.clone();
-                    manifold.scale_tangent(current_point, coefficient, momentum, &mut temp, workspace)?;
+                    let mut temp2 = momentum.clone(); // Additional temp for add_tangents
+                    manifold.scale_tangent(current_point, coefficient, momentum, &mut temp)?;
                     let mut scaled_grad = gradient.clone();
-                    manifold.scale_tangent(current_point, T::one() - coefficient, gradient, &mut scaled_grad, workspace)?;
-                    manifold.add_tangents(current_point, &temp, &scaled_grad, momentum, workspace)?;
+                    manifold.scale_tangent(current_point, T::one() - coefficient, gradient, &mut scaled_grad)?;
+                    manifold.add_tangents(current_point, &temp, &scaled_grad, momentum, &mut temp2)?;
                 }
                 
                 // Direction is the momentum
@@ -393,14 +394,14 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
         let mut workspace = Workspace::with_size(n);
         
         // Pre-allocate workspace buffers
-        workspace.get_or_create_vector(BufferId::Gradient, n);
-        workspace.get_or_create_vector(BufferId::Direction, n);
-        workspace.get_or_create_vector(BufferId::Temp1, n);
+        workspace.preallocate_vector(BufferId::Gradient, n);
+        workspace.preallocate_vector(BufferId::Direction, n);
+        workspace.preallocate_vector(BufferId::Temp1, n);
         
         if !matches!(self.config.momentum, MomentumMethod::None) {
-            workspace.get_or_create_vector(BufferId::Momentum, n);
+            workspace.preallocate_vector(BufferId::Momentum, n);
             if matches!(self.config.momentum, MomentumMethod::Nesterov { .. }) {
-                workspace.get_or_create_vector(BufferId::Temp2, n);
+                workspace.preallocate_vector(BufferId::Temp2, n);
             }
         }
         
@@ -466,7 +467,6 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
                 &current_point,
                 &euclidean_grad,
                 &mut riemannian_grad,
-                &mut workspace,
             )?;
             
             // Compute gradient norm
@@ -509,7 +509,6 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
                 -step_size,
                 &riemannian_grad,
                 &mut search_direction,
-                &mut workspace,
             )?;
             
             // TODO: Implement line search if configured
@@ -520,7 +519,6 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
                 &current_point,
                 &search_direction,
                 &mut new_point,
-                &mut workspace,
             )?;
             
             // Update state

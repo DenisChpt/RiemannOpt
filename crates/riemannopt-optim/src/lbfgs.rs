@@ -245,7 +245,7 @@ impl<T: Scalar> LBFGS<T> {
         gradient_norm: Option<T>,
         current_point: &M::Point,
         previous_point: &Option<M::Point>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         criterion: &StoppingCriterion<T>,
     ) -> Option<TerminationReason>
     where
@@ -291,7 +291,7 @@ impl<T: Scalar> LBFGS<T> {
             if let Some(ref prev_point) = previous_point {
                 if iteration > 0 {
                     // Compute distance using manifold metric
-                    if let Ok(distance) = manifold.distance(prev_point, current_point, workspace) {
+                    if let Ok(distance) = manifold.distance(prev_point, current_point) {
                         if distance < point_tol {
                             return Some(TerminationReason::Converged);
                         }
@@ -318,7 +318,7 @@ impl<T: Scalar> LBFGS<T> {
         gradient: &M::TangentVector,
         lbfgs_state: &LBFGSState<T, M::TangentVector>,
         direction: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         point_history: &Vec<M::Point>,
     ) -> Result<()>
     where
@@ -328,7 +328,7 @@ impl<T: Scalar> LBFGS<T> {
         
         if m == 0 {
             // No history yet, return negative gradient
-            manifold.scale_tangent(current_point, -T::one(), gradient, direction, workspace)?;
+            manifold.scale_tangent(current_point, -T::one(), gradient, direction)?;
             return Ok(());
         }
         
@@ -355,7 +355,6 @@ impl<T: Scalar> LBFGS<T> {
                     current_point,
                     &entry.s,
                     &mut transported_s,
-                    workspace,
                 )?;
                 
                 // y was in tangent space at x_{k+1}, transport to current point
@@ -364,7 +363,6 @@ impl<T: Scalar> LBFGS<T> {
                     current_point,
                     &entry.y,
                     &mut transported_y,
-                    workspace,
                 )?;
                 
                 // alpha[i] = rho[i] * <s[i], q>
@@ -373,18 +371,20 @@ impl<T: Scalar> LBFGS<T> {
                 
                 // q = q - alpha[i] * y[i]
                 let mut scaled_y = transported_y.clone();
-                manifold.scale_tangent(current_point, -alpha[i], &transported_y, &mut scaled_y, workspace)?;
+                manifold.scale_tangent(current_point, -alpha[i], &transported_y, &mut scaled_y)?;
                 let temp_q = q.clone();
-                manifold.add_tangents(current_point, &temp_q, &scaled_y, &mut q, workspace)?;
+                let mut temp_add = q.clone();
+                manifold.add_tangents(current_point, &temp_q, &scaled_y, &mut q, &mut temp_add)?;
             } else {
                 // For the most recent entry, vectors are already in current tangent space
                 let s_dot_q = manifold.inner_product(current_point, &entry.s, &q)?;
                 alpha[i] = entry.rho * s_dot_q;
                 
                 let mut scaled_y = entry.y.clone();
-                manifold.scale_tangent(current_point, -alpha[i], &entry.y, &mut scaled_y, workspace)?;
+                manifold.scale_tangent(current_point, -alpha[i], &entry.y, &mut scaled_y)?;
                 let temp_q = q.clone();
-                manifold.add_tangents(current_point, &temp_q, &scaled_y, &mut q, workspace)?;
+                let mut temp_add = q.clone();
+                manifold.add_tangents(current_point, &temp_q, &scaled_y, &mut q, &mut temp_add)?;
             }
         }
         
@@ -405,7 +405,6 @@ impl<T: Scalar> LBFGS<T> {
                     current_point,
                     &last_entry.s,
                     &mut transported_s,
-                    workspace,
                 )?;
                 
                 manifold.parallel_transport(
@@ -413,7 +412,6 @@ impl<T: Scalar> LBFGS<T> {
                     current_point,
                     &last_entry.y,
                     &mut transported_y,
-                    workspace,
                 )?;
                 
                 // H_0 = gamma * I where gamma = <s_{m-1}, y_{m-1}> / <y_{m-1}, y_{m-1}>
@@ -422,7 +420,7 @@ impl<T: Scalar> LBFGS<T> {
                 
                 if y_dot_y > T::zero() {
                     let gamma = s_dot_y / y_dot_y;
-                    manifold.scale_tangent(current_point, gamma, &q, &mut r, workspace)?;
+                    manifold.scale_tangent(current_point, gamma, &q, &mut r)?;
                 }
             } else {
                 // Use vectors as they are (already in current tangent space)
@@ -431,7 +429,7 @@ impl<T: Scalar> LBFGS<T> {
                 
                 if y_dot_y > T::zero() {
                     let gamma = s_dot_y / y_dot_y;
-                    manifold.scale_tangent(current_point, gamma, &q, &mut r, workspace)?;
+                    manifold.scale_tangent(current_point, gamma, &q, &mut r)?;
                 }
             }
         }
@@ -451,7 +449,6 @@ impl<T: Scalar> LBFGS<T> {
                     current_point,
                     &entry.s,
                     &mut transported_s,
-                    workspace,
                 )?;
                 
                 manifold.parallel_transport(
@@ -459,7 +456,6 @@ impl<T: Scalar> LBFGS<T> {
                     current_point,
                     &entry.y,
                     &mut transported_y,
-                    workspace,
                 )?;
                 
                 // beta = rho[i] * <y[i], r>
@@ -469,9 +465,10 @@ impl<T: Scalar> LBFGS<T> {
                 // r = r + (alpha[i] - beta) * s[i]
                 let coeff = alpha[i] - beta;
                 let mut scaled_s = transported_s.clone();
-                manifold.scale_tangent(current_point, coeff, &transported_s, &mut scaled_s, workspace)?;
+                manifold.scale_tangent(current_point, coeff, &transported_s, &mut scaled_s)?;
                 let temp_r = r.clone();
-                manifold.add_tangents(current_point, &temp_r, &scaled_s, &mut r, workspace)?;
+                let mut temp_add = r.clone();
+                manifold.add_tangents(current_point, &temp_r, &scaled_s, &mut r, &mut temp_add)?;
             } else {
                 // Use vectors as they are
                 let y_dot_r = manifold.inner_product(current_point, &entry.y, &r)?;
@@ -479,14 +476,15 @@ impl<T: Scalar> LBFGS<T> {
                 
                 let coeff = alpha[i] - beta;
                 let mut scaled_s = entry.s.clone();
-                manifold.scale_tangent(current_point, coeff, &entry.s, &mut scaled_s, workspace)?;
+                manifold.scale_tangent(current_point, coeff, &entry.s, &mut scaled_s)?;
                 let temp_r = r.clone();
-                manifold.add_tangents(current_point, &temp_r, &scaled_s, &mut r, workspace)?;
+                let mut temp_add = r.clone();
+                manifold.add_tangents(current_point, &temp_r, &scaled_s, &mut r, &mut temp_add)?;
             }
         }
         
         // Return negative direction for descent
-        manifold.scale_tangent(current_point, -T::one(), &r, direction, workspace)?;
+        manifold.scale_tangent(current_point, -T::one(), &r, direction)?;
         
         Ok(())
     }
@@ -500,7 +498,7 @@ impl<T: Scalar> LBFGS<T> {
         direction: &M::TangentVector,
         current_cost: T,
         gradient: &M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         function_evaluations: &mut usize,
         gradient_evaluations: &mut usize,
     ) -> Result<T>
@@ -523,10 +521,10 @@ impl<T: Scalar> LBFGS<T> {
         for _iter in 0..max_iterations {
             // Try the step
             let mut scaled_direction = direction.clone();
-            manifold.scale_tangent(point, alpha, direction, &mut scaled_direction, workspace)?;
+            manifold.scale_tangent(point, alpha, direction, &mut scaled_direction)?;
             
             let mut trial_point = point.clone();
-            manifold.retract(point, &scaled_direction, &mut trial_point, workspace)?;
+            manifold.retract(point, &scaled_direction, &mut trial_point)?;
             
             // Evaluate cost
             let trial_cost = cost_fn.cost(&trial_point)?;
@@ -537,7 +535,7 @@ impl<T: Scalar> LBFGS<T> {
             if trial_cost <= current_cost + expected_decrease {
                 // Check curvature condition
                 let mut euclidean_grad = gradient.clone();
-                let _trial_gradient_cost = cost_fn.cost_and_gradient(&trial_point, workspace, &mut euclidean_grad)?;
+                let _trial_gradient_cost = cost_fn.cost_and_gradient(&trial_point, _workspace, &mut euclidean_grad)?;
                 *function_evaluations += 1;
                 *gradient_evaluations += 1;
                 
@@ -546,12 +544,11 @@ impl<T: Scalar> LBFGS<T> {
                     &trial_point,
                     &euclidean_grad,
                     &mut trial_gradient,
-                    workspace,
                 )?;
                 
                 // Transport direction to trial point for curvature check
                 let mut transported_direction = direction.clone();
-                manifold.parallel_transport(point, &trial_point, direction, &mut transported_direction, workspace)?;
+                manifold.parallel_transport(point, &trial_point, direction, &mut transported_direction)?;
                 
                 let trial_directional = manifold.inner_product(&trial_point, &trial_gradient, &transported_direction)?;
                 
@@ -590,7 +587,7 @@ impl<T: Scalar> LBFGS<T> {
         direction: &M::TangentVector,
         step_size: T,
         lbfgs_state: &mut LBFGSState<T, M::TangentVector>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         iteration: usize,
     ) -> Result<()>
     where
@@ -598,21 +595,22 @@ impl<T: Scalar> LBFGS<T> {
     {
         // Compute s_k = step_size * direction (in tangent space at old_point)
         let mut s_k = direction.clone();
-        manifold.scale_tangent(old_point, step_size, direction, &mut s_k, workspace)?;
+        manifold.scale_tangent(old_point, step_size, direction, &mut s_k)?;
         
         // Transport old gradient to new point's tangent space
         let mut transported_old_grad = old_gradient.clone();
-        manifold.parallel_transport(old_point, new_point, old_gradient, &mut transported_old_grad, workspace)?;
+        manifold.parallel_transport(old_point, new_point, old_gradient, &mut transported_old_grad)?;
         
         // Compute y_k = new_gradient - transported_old_grad (in tangent space at new_point)
         let mut y_k = new_gradient.clone();
         let mut neg_transported_old_grad = transported_old_grad.clone();
-        manifold.scale_tangent(new_point, -T::one(), &transported_old_grad, &mut neg_transported_old_grad, workspace)?;
-        manifold.add_tangents(new_point, new_gradient, &neg_transported_old_grad, &mut y_k, workspace)?;
+        manifold.scale_tangent(new_point, -T::one(), &transported_old_grad, &mut neg_transported_old_grad)?;
+        let mut temp_add = y_k.clone();
+        manifold.add_tangents(new_point, new_gradient, &neg_transported_old_grad, &mut y_k, &mut temp_add)?;
         
         // Transport s_k to new_point for inner product computation
         let mut transported_s_k = s_k.clone();
-        manifold.parallel_transport(old_point, new_point, &s_k, &mut transported_s_k, workspace)?;
+        manifold.parallel_transport(old_point, new_point, &s_k, &mut transported_s_k)?;
         
         // Compute rho_k = 1 / <y_k, s_k>
         let y_dot_s = manifold.inner_product(new_point, &y_k, &transported_s_k)?;
@@ -654,15 +652,15 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
         let mut workspace = Workspace::with_size(n);
         
         // Pre-allocate workspace buffers
-        workspace.get_or_create_vector(BufferId::Gradient, n);
-        workspace.get_or_create_vector(BufferId::Direction, n);
-        workspace.get_or_create_vector(BufferId::Temp1, n);
-        workspace.get_or_create_vector(BufferId::Temp2, n);
+        workspace.preallocate_vector(BufferId::Gradient, n);
+        workspace.preallocate_vector(BufferId::Direction, n);
+        workspace.preallocate_vector(BufferId::Temp1, n);
+        workspace.preallocate_vector(BufferId::Temp2, n);
         
         // Additional buffers for L-BFGS operations
         for i in 0..self.config.memory_size {
-            workspace.get_or_create_vector(BufferId::Custom((i * 2) as u32), n);
-            workspace.get_or_create_vector(BufferId::Custom((i * 2 + 1) as u32), n);
+            workspace.preallocate_vector(BufferId::Custom((i * 2) as u32), n);
+            workspace.preallocate_vector(BufferId::Custom((i * 2 + 1) as u32), n);
         }
         
         // Initialize state
@@ -733,7 +731,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
                 &current_point,
                 &euclidean_grad,
                 &mut riemannian_grad,
-                &mut workspace,
             )?;
             
             // Compute gradient norm
@@ -777,7 +774,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
                 step_size,
                 &direction,
                 &mut scaled_direction,
-                &mut workspace,
             )?;
             
             let mut new_point = current_point.clone();
@@ -785,7 +781,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
                 &current_point,
                 &scaled_direction,
                 &mut new_point,
-                &mut workspace,
             )?;
             
             // Compute gradient at new point for history update
@@ -804,7 +799,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
                 &new_point,
                 &new_euclidean_grad,
                 &mut new_riemannian_grad,
-                &mut workspace,
             )?;
             
             // Update L-BFGS history

@@ -115,7 +115,6 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Grassmann;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::DMatrix;
 //!
 //! // Create Grassmann manifold Gr(5,2)
@@ -131,8 +130,7 @@
 //! // Tangent vector (orthogonal to subspace)
 //! let z = DMatrix::from_fn(5, 2, |i, j| 0.1 * (i as f64 - j as f64));
 //! let mut z_horizontal = z.clone();
-//! let mut workspace = Workspace::<f64>::new();
-//! grassmann.project_tangent(&y, &z, &mut z_horizontal, &mut workspace)?;
+//! grassmann.project_tangent(&y, &z, &mut z_horizontal)?;
 //!
 //! // Verify horizontality: Y^T Z = 0
 //! let ytz = y.transpose() * &z_horizontal;
@@ -147,7 +145,6 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     core::matrix_manifold::MatrixManifold,
-    memory::workspace::Workspace,
     types::Scalar,
 };
 use std::fmt::{self, Debug};
@@ -474,7 +471,6 @@ impl<T: Scalar> Grassmann<T> {
         y1: &DMatrix<T>,
         y2: &DMatrix<T>,
         z: &DMatrix<T>,
-        workspace: &mut Workspace<T>,
     ) -> Result<DMatrix<T>> {
         self.check_tangent(y1, z)?;
         self.check_point(y2)?;
@@ -491,7 +487,7 @@ impl<T: Scalar> Grassmann<T> {
         } else {
             // Fallback to simple projection
             let mut result = z.clone();
-            self.project_tangent(y2, z, &mut result, workspace)?;
+            self.project_tangent(y2, z, &mut result)?;
             Ok(result)
         }
     }
@@ -538,7 +534,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         ytz.norm() < tol
     }
 
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
         if point.nrows() != self.n || point.ncols() != self.p {
             *result = DMatrix::zeros(self.n, self.p);
             return;
@@ -571,7 +567,6 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.nrows() != self.n || point.ncols() != self.p ||
            vector.nrows() != self.n || vector.ncols() != self.p {
@@ -621,7 +616,6 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         point: &Self::Point,
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Use QR retraction by default
         let retracted = self.qr_retraction(point, tangent)?;
@@ -634,7 +628,6 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
         self.check_point(other)?;
@@ -642,7 +635,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         // Compute log map approximation using projection
         // For close points: log_Y(Ỹ) ≈ P_h(Ỹ - Y)
         let diff = other - point;
-        self.project_tangent(point, &diff, result, workspace)
+        self.project_tangent(point, &diff, result)
     }
 
     fn euclidean_to_riemannian_gradient(
@@ -650,10 +643,9 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Riemannian gradient is the horizontal projection of Euclidean gradient
-        self.project_tangent(point, euclidean_grad, result, workspace)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn parallel_transport(
@@ -662,9 +654,8 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let transported = self.parallel_transport(from, to, vector, workspace)?;
+        let transported = self.parallel_transport(from, to, vector)?;
         result.copy_from(&transported);
         Ok(())
     }
@@ -697,7 +688,6 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         &self,
         point: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
         
@@ -713,7 +703,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         }
         
         // Project to horizontal space
-        self.project_tangent(point, &z, result, workspace)?;
+        self.project_tangent(point, &z, result)?;
         
         // Normalize
         let norm = result.norm();
@@ -724,7 +714,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         Ok(())
     }
 
-    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
         self.geodesic_distance(x, y)
     }
 
@@ -742,7 +732,6 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         scalar: T,
         tangent: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // For Grassmann manifold, tangent vectors are in the horizontal space
         // Scaling preserves the horizontal space property
@@ -757,17 +746,16 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         v1: &Self::TangentVector,
         v2: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
+        // Temporary buffer for projection if needed
+        temp: &mut Self::TangentVector,
     ) -> Result<()> {
         // Add the tangent vectors
-        result.copy_from(v1);
-        *result += v2;
+        temp.copy_from(v1);
+        *temp += v2;
         
         // The sum should already be in the horizontal space if v1 and v2 are,
         // but we project for numerical stability
-        // Create a temporary clone to avoid borrowing issues
-        let temp = result.clone();
-        self.project_tangent(point, &temp, result, workspace)?;
+        self.project_tangent(point, temp, result)?;
         
         Ok(())
     }
@@ -785,7 +773,6 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DMatrix;
-    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_grassmann_creation() {
@@ -835,7 +822,6 @@ mod tests {
     #[test]
     fn test_tangent_projection() {
         let grassmann = Grassmann::<f64>::new(4, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         // Canonical basis vectors
         let y = DMatrix::from_column_slice(4, 2, &[
@@ -854,7 +840,7 @@ mod tests {
         ]);
         
         let mut z_horizontal = DMatrix::zeros(4, 2);
-        grassmann.project_tangent(&y, &z, &mut z_horizontal, &mut workspace).unwrap();
+        grassmann.project_tangent(&y, &z, &mut z_horizontal).unwrap();
         
         // Check horizontality: Y^T Z_h = 0
         let ytz = y.transpose() * &z_horizontal;
@@ -876,8 +862,7 @@ mod tests {
         // Small tangent vector
         let z = DMatrix::from_fn(5, 2, |i, j| 0.01 * ((i + j) as f64));
         let mut z_horizontal = z.clone();
-        let mut workspace = Workspace::<f64>::new();
-        grassmann.project_tangent(&y, &z, &mut z_horizontal, &mut workspace).unwrap();
+        grassmann.project_tangent(&y, &z, &mut z_horizontal).unwrap();
         
         // Retract
         let y_new = grassmann.qr_retraction(&y, &z_horizontal).unwrap();
@@ -896,7 +881,6 @@ mod tests {
         let grassmann = Grassmann::<f64>::new(4, 3).unwrap();
         
         let y = grassmann.random_point();
-        let mut workspace = Workspace::<f64>::new();
         
         // Generate two tangent vectors
         let u = DMatrix::from_fn(4, 3, |i, j| (i as f64) * 0.1 + (j as f64) * 0.2);
@@ -904,8 +888,8 @@ mod tests {
         
         let mut u_horizontal = u.clone();
         let mut v_horizontal = v.clone();
-        grassmann.project_tangent(&y, &u, &mut u_horizontal, &mut workspace).unwrap();
-        grassmann.project_tangent(&y, &v, &mut v_horizontal, &mut workspace).unwrap();
+        grassmann.project_tangent(&y, &u, &mut u_horizontal).unwrap();
+        grassmann.project_tangent(&y, &v, &mut v_horizontal).unwrap();
         
         // Compute inner product
         let inner = grassmann.inner_product(&y, &u_horizontal, &v_horizontal).unwrap();
@@ -963,7 +947,6 @@ mod tests {
     #[test]
     fn test_euclidean_to_riemannian_gradient() {
         let grassmann = Grassmann::<f64>::new(5, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let y = grassmann.random_point();
         
@@ -971,7 +954,7 @@ mod tests {
         let grad = DMatrix::from_fn(5, 2, |i, j| (i + j) as f64);
         
         let mut rgrad = grad.clone();
-        grassmann.euclidean_to_riemannian_gradient(&y, &grad, &mut rgrad, &mut workspace).unwrap();
+        grassmann.euclidean_to_riemannian_gradient(&y, &grad, &mut rgrad).unwrap();
         
         // Check it's in horizontal space
         assert!(grassmann.check_tangent(&y, &rgrad).is_ok());
@@ -985,17 +968,16 @@ mod tests {
     #[test]
     fn test_parallel_transport() {
         let grassmann = Grassmann::<f64>::new(4, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let y1 = grassmann.random_point();
         let y2 = grassmann.random_point();
         
         // Create tangent vector at y1
         let mut z = DMatrix::zeros(4, 2);
-        grassmann.random_tangent(&y1, &mut z, &mut workspace).unwrap();
+        grassmann.random_tangent(&y1, &mut z).unwrap();
         
         // Transport to y2
-        let z_transported = grassmann.parallel_transport(&y1, &y2, &z, &mut workspace).unwrap();
+        let z_transported = grassmann.parallel_transport(&y1, &y2, &z).unwrap();
         
         // Check it's in tangent space at y2
         assert!(grassmann.check_tangent(&y2, &z_transported).is_ok());
@@ -1024,21 +1006,20 @@ mod tests {
     #[test]
     fn test_inverse_retraction() {
         let grassmann = Grassmann::<f64>::new(5, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let y = grassmann.random_point();
         
         // Small tangent vector
         let mut z = DMatrix::zeros(5, 2);
-        grassmann.random_tangent(&y, &mut z, &mut workspace).unwrap();
+        grassmann.random_tangent(&y, &mut z).unwrap();
         z *= 0.01; // Scale down
         
         // Retract then inverse retract
         let mut y_new = DMatrix::zeros(5, 2);
-        grassmann.retract(&y, &z, &mut y_new, &mut workspace).unwrap();
+        grassmann.retract(&y, &z, &mut y_new).unwrap();
         
         let mut z_recovered = DMatrix::zeros(5, 2);
-        grassmann.inverse_retract(&y, &y_new, &mut z_recovered, &mut workspace).unwrap();
+        grassmann.inverse_retract(&y, &y_new, &mut z_recovered).unwrap();
         
         // Should approximately recover the tangent vector
         assert_relative_eq!(z, z_recovered, epsilon = 1e-6);

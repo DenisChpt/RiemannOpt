@@ -299,7 +299,7 @@ impl<T: Scalar> Adam<T> {
         gradient_norm: Option<T>,
         current_point: &M::Point,
         previous_point: &Option<M::Point>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         criterion: &StoppingCriterion<T>,
     ) -> Option<TerminationReason>
     where
@@ -345,7 +345,7 @@ impl<T: Scalar> Adam<T> {
             if let Some(ref prev_point) = previous_point {
                 if iteration > 0 {
                     // Compute distance using manifold metric
-                    if let Ok(distance) = manifold.distance(prev_point, current_point, workspace) {
+                    if let Ok(distance) = manifold.distance(prev_point, current_point) {
                         if distance < point_tol {
                             return Some(TerminationReason::Converged);
                         }
@@ -373,7 +373,7 @@ impl<T: Scalar> Adam<T> {
         gradient: &M::TangentVector,
         adam_state: &mut AdamState<T, M::TangentVector>,
         direction: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
         M: Manifold<T>,
@@ -387,7 +387,7 @@ impl<T: Scalar> Adam<T> {
                 // First iteration - initialize moments
                 // m_0 = (1-β₁) * g_0
                 let mut m_init = gradient.clone();
-                manifold.scale_tangent(current_point, T::one() - adam_state.beta1, gradient, &mut m_init, workspace)?;
+                manifold.scale_tangent(current_point, T::one() - adam_state.beta1, gradient, &mut m_init)?;
                 
                 // For second moment, we use gradient norm approximation
                 // v_0 = (1-β₂) * ||g_0||²
@@ -397,9 +397,9 @@ impl<T: Scalar> Adam<T> {
                 let grad_norm = <T as Float>::sqrt(grad_norm_sq);
                 if grad_norm > T::zero() {
                     let scale = <T as Float>::sqrt((T::one() - adam_state.beta2) * grad_norm_sq) / grad_norm;
-                    manifold.scale_tangent(current_point, scale, gradient, &mut v_init, workspace)?;
+                    manifold.scale_tangent(current_point, scale, gradient, &mut v_init)?;
                 } else {
-                    manifold.scale_tangent(current_point, T::zero(), gradient, &mut v_init, workspace)?;
+                    manifold.scale_tangent(current_point, T::zero(), gradient, &mut v_init)?;
                 }
                 
                 adam_state.m = Some(m_init);
@@ -422,15 +422,15 @@ impl<T: Scalar> Adam<T> {
                 let mut transported_m = m.clone();
                 let mut transported_v = v.clone();
                 
-                manifold.parallel_transport(prev_point, current_point, m, &mut transported_m, workspace)?;
-                manifold.parallel_transport(prev_point, current_point, v, &mut transported_v, workspace)?;
+                manifold.parallel_transport(prev_point, current_point, m, &mut transported_m)?;
+                manifold.parallel_transport(prev_point, current_point, v, &mut transported_v)?;
                 
                 *m = transported_m;
                 *v = transported_v;
                 
                 if let Some(v_max) = &mut adam_state.v_max {
                     let mut transported_v_max = v_max.clone();
-                    manifold.parallel_transport(prev_point, current_point, v_max, &mut transported_v_max, workspace)?;
+                    manifold.parallel_transport(prev_point, current_point, v_max, &mut transported_v_max)?;
                     *v_max = transported_v_max;
                 }
             }
@@ -440,10 +440,11 @@ impl<T: Scalar> Adam<T> {
             let one_minus_beta1 = T::one() - beta1;
             
             let mut temp_m = m.clone();
-            manifold.scale_tangent(current_point, beta1, m, &mut temp_m, workspace)?;
+            manifold.scale_tangent(current_point, beta1, m, &mut temp_m)?;
             let mut scaled_grad = gradient.clone();
-            manifold.scale_tangent(current_point, one_minus_beta1, gradient, &mut scaled_grad, workspace)?;
-            manifold.add_tangents(current_point, &temp_m, &scaled_grad, m, workspace)?;
+            manifold.scale_tangent(current_point, one_minus_beta1, gradient, &mut scaled_grad)?;
+            let mut temp_add = m.clone();
+            manifold.add_tangents(current_point, &temp_m, &scaled_grad, m, &mut temp_add)?;
             
             // Update second moment approximation
             // In standard Adam: v = β₂ * v + (1-β₂) * g²
@@ -464,11 +465,11 @@ impl<T: Scalar> Adam<T> {
             if current_v_norm > T::zero() {
                 let scale = new_v_norm / current_v_norm;
                 let temp_v = v.clone();
-                manifold.scale_tangent(current_point, scale, &temp_v, v, workspace)?;
+                manifold.scale_tangent(current_point, scale, &temp_v, v)?;
             } else {
                 // If v has zero norm, use gradient direction
                 if grad_norm_sq > T::zero() {
-                    manifold.scale_tangent(current_point, new_v_norm / <T as Float>::sqrt(grad_norm_sq), gradient, v, workspace)?;
+                    manifold.scale_tangent(current_point, new_v_norm / <T as Float>::sqrt(grad_norm_sq), gradient, v)?;
                 }
             }
             
@@ -500,7 +501,7 @@ impl<T: Scalar> Adam<T> {
             // Bias-corrected first moment: m̂ = m / (1 - β₁^t)
             direction.clone_from(m);
             let mut m_hat = direction.clone();
-            manifold.scale_tangent(current_point, T::one() / bias1, &direction, &mut m_hat, workspace)?;
+            manifold.scale_tangent(current_point, T::one() / bias1, &direction, &mut m_hat)?;
             
             // For second moment, compute effective learning rate adjustment
             // Standard Adam: direction = m̂ / (√v̂ + ε)
@@ -509,7 +510,7 @@ impl<T: Scalar> Adam<T> {
             let v_hat_norm = v_norm / <T as Float>::sqrt(bias2);
             let scale = T::one() / (v_hat_norm + adam_state.epsilon);
             
-            manifold.scale_tangent(current_point, scale, &m_hat, direction, workspace)?;
+            manifold.scale_tangent(current_point, scale, &m_hat, direction)?;
         }
         
         Ok(())
@@ -542,13 +543,13 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
         let mut workspace = Workspace::with_size(n);
         
         // Pre-allocate workspace buffers
-        workspace.get_or_create_vector(BufferId::Gradient, n);
-        workspace.get_or_create_vector(BufferId::Direction, n);
-        workspace.get_or_create_vector(BufferId::Temp1, n);
-        workspace.get_or_create_vector(BufferId::Momentum, n);  // For m
-        workspace.get_or_create_vector(BufferId::SecondMoment, n);  // For v
+        workspace.preallocate_vector(BufferId::Gradient, n);
+        workspace.preallocate_vector(BufferId::Direction, n);
+        workspace.preallocate_vector(BufferId::Temp1, n);
+        workspace.preallocate_vector(BufferId::Momentum, n);  // For m
+        workspace.preallocate_vector(BufferId::SecondMoment, n);  // For v
         if self.config.use_amsgrad {
-            workspace.get_or_create_vector(BufferId::Temp2, n);  // For v_max
+            workspace.preallocate_vector(BufferId::Temp2, n);  // For v_max
         }
         
         // Initialize state
@@ -618,7 +619,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
                 &current_point,
                 &euclidean_grad,
                 &mut riemannian_grad,
-                &mut workspace,
             )?;
             
             // Compute gradient norm
@@ -640,7 +640,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
                         scale,
                         &clipped_grad,
                         &mut riemannian_grad,
-                        &mut workspace,
                     )?;
                 }
             }
@@ -673,7 +672,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
                 -self.config.learning_rate,
                 &direction,
                 &mut search_direction,
-                &mut workspace,
             )?;
             
             // Take the step using retraction
@@ -682,7 +680,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
                 &current_point,
                 &search_direction,
                 &mut new_point,
-                &mut workspace,
             )?;
             
             // Update state

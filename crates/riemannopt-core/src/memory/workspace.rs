@@ -8,6 +8,28 @@ use crate::{
     types::{Scalar, DVector, DMatrix},
 };
 use std::collections::HashMap;
+use std::any::Any;
+
+/// Trait for buffers that can be stored in the workspace.
+///
+/// This trait serves as a contract for anything that can be stored in the workspace.
+/// It provides methods for memory management and type-safe access.
+pub trait WorkspaceBuffer<T: Scalar>: Any + Send + Sync {
+    /// Clear the buffer to a neutral state (e.g., fill with zeros).
+    fn clear(&mut self);
+
+    /// Calculate the memory usage of this buffer in bytes.
+    fn size_bytes(&self) -> usize;
+
+    /// Clone the buffer into a boxed trait object.
+    fn dyn_clone(&self) -> Box<dyn WorkspaceBuffer<T>>;
+
+    /// Get a mutable reference to the underlying Any type for downcasting.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Get a reference to the underlying Any type for downcasting.
+    fn as_any(&self) -> &dyn Any;
+}
 
 /// Identifier for workspace buffers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,28 +64,56 @@ pub enum BufferId {
     Custom(u32),
 }
 
-/// Type alias for gradient computation buffers
-type GradientBuffers<'a, T> = (
-    &'a mut DVector<T>,  // gradient
-    &'a mut DVector<T>,  // unit vector
-    &'a mut DVector<T>,  // point plus
-    &'a mut DVector<T>,  // point minus
-);
+/// Implementation of WorkspaceBuffer for DVector.
+impl<T: Scalar> WorkspaceBuffer<T> for DVector<T> {
+    fn clear(&mut self) {
+        self.fill(T::zero());
+    }
 
-/// Type alias for gradient FD buffers
-type GradientFDBuffers<'a, T> = (
-    &'a mut DVector<T>,  // unit vector
-    &'a mut DVector<T>,  // point plus  
-    &'a mut DVector<T>,  // point minus
-);
+    fn size_bytes(&self) -> usize {
+        self.len() * std::mem::size_of::<T>()
+    }
+
+    fn dyn_clone(&self) -> Box<dyn WorkspaceBuffer<T>> {
+        Box::new(self.clone())
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Implementation of WorkspaceBuffer for DMatrix.
+impl<T: Scalar> WorkspaceBuffer<T> for DMatrix<T> {
+    fn clear(&mut self) {
+        self.fill(T::zero());
+    }
+
+    fn size_bytes(&self) -> usize {
+        self.len() * std::mem::size_of::<T>()
+    }
+
+    fn dyn_clone(&self) -> Box<dyn WorkspaceBuffer<T>> {
+        Box::new(self.clone())
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 /// Pre-allocated workspace for optimization algorithms.
-#[derive(Debug, Clone)]
 pub struct Workspace<T: Scalar> {
-    /// Pre-allocated vectors indexed by buffer ID
-    vectors: HashMap<BufferId, DVector<T>>,
-    /// Pre-allocated matrices indexed by buffer ID
-    matrices: HashMap<BufferId, DMatrix<T>>,
+    /// Pre-allocated buffers indexed by buffer ID
+    buffers: HashMap<BufferId, Box<dyn WorkspaceBuffer<T>>>,
     /// Vector pool for dynamic allocations
     vector_pool: VectorPool<T>,
     /// Matrix pool for dynamic allocations
@@ -74,8 +124,7 @@ impl<T: Scalar> Workspace<T> {
     /// Create a new empty workspace.
     pub fn new() -> Self {
         Self {
-            vectors: HashMap::new(),
-            matrices: HashMap::new(),
+            buffers: HashMap::new(),
             vector_pool: VectorPool::new(8),
             matrix_pool: MatrixPool::new(4),
         }
@@ -86,56 +135,51 @@ impl<T: Scalar> Workspace<T> {
         let mut workspace = Self::new();
         
         // Pre-allocate common vector buffers
-        workspace.vectors.insert(BufferId::Gradient, DVector::zeros(n));
-        workspace.vectors.insert(BufferId::Direction, DVector::zeros(n));
-        workspace.vectors.insert(BufferId::PreviousGradient, DVector::zeros(n));
-        workspace.vectors.insert(BufferId::Temp1, DVector::zeros(n));
-        workspace.vectors.insert(BufferId::Temp2, DVector::zeros(n));
-        workspace.vectors.insert(BufferId::UnitVector, DVector::zeros(n));
-        workspace.vectors.insert(BufferId::PointPlus, DVector::zeros(n));
-        workspace.vectors.insert(BufferId::PointMinus, DVector::zeros(n));
+        workspace.buffers.insert(BufferId::Gradient, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
+        workspace.buffers.insert(BufferId::Direction, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
+        workspace.buffers.insert(BufferId::PreviousGradient, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
+        workspace.buffers.insert(BufferId::Temp1, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
+        workspace.buffers.insert(BufferId::Temp2, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
+        workspace.buffers.insert(BufferId::UnitVector, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
+        workspace.buffers.insert(BufferId::PointPlus, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
+        workspace.buffers.insert(BufferId::PointMinus, Box::new(DVector::<T>::zeros(n)) as Box<dyn WorkspaceBuffer<T>>);
         
         workspace
     }
     
+    /// Pre-allocate a generic buffer.
+    pub fn preallocate_buffer<B: WorkspaceBuffer<T> + 'static>(&mut self, id: BufferId, buffer: B) {
+        self.buffers.insert(id, Box::new(buffer));
+    }
+    
     /// Pre-allocate a vector buffer.
     pub fn preallocate_vector(&mut self, id: BufferId, size: usize) {
-        self.vectors.insert(id, DVector::zeros(size));
+        self.preallocate_buffer(id, DVector::<T>::zeros(size));
     }
     
     /// Pre-allocate a matrix buffer.
     pub fn preallocate_matrix(&mut self, id: BufferId, rows: usize, cols: usize) {
-        self.matrices.insert(id, DMatrix::zeros(rows, cols));
+        self.preallocate_buffer(id, DMatrix::<T>::zeros(rows, cols));
     }
     
-    /// Get a mutable reference to a pre-allocated vector buffer.
-    pub fn get_vector_mut(&mut self, id: BufferId) -> Option<&mut DVector<T>> {
-        self.vectors.get_mut(&id)
+    /// Get a mutable reference to a buffer.
+    pub fn get_buffer_mut<'a, B: 'static>(&'a mut self, id: BufferId) -> Option<&'a mut B> {
+        self.buffers.get_mut(&id)?.as_any_mut().downcast_mut::<B>()
     }
     
-    /// Get a reference to a pre-allocated vector buffer.
-    pub fn get_vector(&self, id: BufferId) -> Option<&DVector<T>> {
-        self.vectors.get(&id)
+    /// Get a reference to a buffer.
+    pub fn get_buffer<'a, B: 'static>(&'a self, id: BufferId) -> Option<&'a B> {
+        self.buffers.get(&id)?.as_any().downcast_ref::<B>()
     }
     
-    /// Get a mutable reference to a pre-allocated matrix buffer.
-    pub fn get_matrix_mut(&mut self, id: BufferId) -> Option<&mut DMatrix<T>> {
-        self.matrices.get_mut(&id)
-    }
-    
-    /// Get a reference to a pre-allocated matrix buffer.
-    pub fn get_matrix(&self, id: BufferId) -> Option<&DMatrix<T>> {
-        self.matrices.get(&id)
-    }
-    
-    /// Get or create a vector buffer of the specified size.
-    pub fn get_or_create_vector(&mut self, id: BufferId, size: usize) -> &mut DVector<T> {
-        self.vectors.entry(id).or_insert_with(|| DVector::zeros(size))
-    }
-    
-    /// Get or create a matrix buffer of the specified dimensions.
-    pub fn get_or_create_matrix(&mut self, id: BufferId, rows: usize, cols: usize) -> &mut DMatrix<T> {
-        self.matrices.entry(id).or_insert_with(|| DMatrix::zeros(rows, cols))
+    /// Get or create a buffer.
+    pub fn get_or_create_buffer<B: WorkspaceBuffer<T> + 'static>(&mut self, id: BufferId, default: impl FnOnce() -> B) -> &mut B {
+        self.buffers
+            .entry(id)
+            .or_insert_with(|| Box::new(default()))
+            .as_any_mut()
+            .downcast_mut::<B>()
+            .unwrap() // Panic if the type is incorrect, which is a logic error.
     }
     
     /// Acquire a temporary vector from the pool.
@@ -150,89 +194,42 @@ impl<T: Scalar> Workspace<T> {
     
     /// Clear all buffers (fill with zeros).
     pub fn clear(&mut self) {
-        for (_, vec) in self.vectors.iter_mut() {
-            vec.fill(T::zero());
-        }
-        for (_, mat) in self.matrices.iter_mut() {
-            mat.fill(T::zero());
+        for (_, buffer) in self.buffers.iter_mut() {
+            buffer.clear();
         }
     }
     
     /// Get the total memory usage in bytes.
     pub fn memory_usage(&self) -> usize {
-        let vector_bytes: usize = self.vectors.values()
-            .map(|v| v.len() * std::mem::size_of::<T>())
-            .sum();
-        let matrix_bytes: usize = self.matrices.values()
-            .map(|m| m.len() * std::mem::size_of::<T>())
-            .sum();
-        vector_bytes + matrix_bytes
+        let mut total_bytes = 0;
+        for (_, buffer) in self.buffers.iter() {
+            total_bytes += buffer.size_bytes();
+        }
+        total_bytes
     }
     
-    /// Get mutable references to multiple vector buffers for gradient computation.
-    ///
-    /// This method is specifically designed for finite difference gradient computation
-    /// to avoid multiple mutable borrows.
-    pub fn get_gradient_buffers_mut(&mut self) -> Option<GradientBuffers<T>> {
-        // Check if all required buffers exist
-        if !self.vectors.contains_key(&BufferId::Gradient) ||
-           !self.vectors.contains_key(&BufferId::UnitVector) ||
-           !self.vectors.contains_key(&BufferId::PointPlus) ||
-           !self.vectors.contains_key(&BufferId::PointMinus) {
-            return None;
-        }
-        
-        // Get raw pointers to avoid borrow checker issues
-        unsafe {
-            let gradient = self.vectors.get_mut(&BufferId::Gradient).unwrap() as *mut DVector<T>;
-            let unit = self.vectors.get_mut(&BufferId::UnitVector).unwrap() as *mut DVector<T>;
-            let plus = self.vectors.get_mut(&BufferId::PointPlus).unwrap() as *mut DVector<T>;
-            let minus = self.vectors.get_mut(&BufferId::PointMinus).unwrap() as *mut DVector<T>;
-            
-            Some((
-                &mut *gradient,
-                &mut *unit,
-                &mut *plus,
-                &mut *minus,
-            ))
-        }
-    }
-    
-    /// Get mutable references to buffers needed for finite difference gradient computation.
-    ///
-    /// Returns (unit_vector, point_plus, point_minus) if all buffers exist and have the correct size.
-    pub fn get_gradient_fd_buffers_mut(&mut self, size: usize) -> Option<GradientFDBuffers<T>> {
-        // Ensure buffers exist with correct size
-        if self.get_vector(BufferId::UnitVector).is_none_or(|v| v.len() != size) {
-            self.preallocate_vector(BufferId::UnitVector, size);
-        }
-        
-        if self.get_vector(BufferId::PointPlus).is_none_or(|v| v.len() != size) {
-            self.preallocate_vector(BufferId::PointPlus, size);
-        }
-        
-        if self.get_vector(BufferId::PointMinus).is_none_or(|v| v.len() != size) {
-            self.preallocate_vector(BufferId::PointMinus, size);
-        }
-        
-        // Get raw pointers to avoid borrow checker issues
-        unsafe {
-            let unit_ptr = self.vectors.get_mut(&BufferId::UnitVector).unwrap() as *mut DVector<T>;
-            let plus_ptr = self.vectors.get_mut(&BufferId::PointPlus).unwrap() as *mut DVector<T>;
-            let minus_ptr = self.vectors.get_mut(&BufferId::PointMinus).unwrap() as *mut DVector<T>;
-            
-            Some((
-                &mut *unit_ptr,
-                &mut *plus_ptr,
-                &mut *minus_ptr,
-            ))
-        }
-    }
 }
 
 impl<T: Scalar> Default for Workspace<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T: Scalar> Clone for Workspace<T> {
+    fn clone(&self) -> Self {
+        let mut new_workspace = Self {
+            buffers: HashMap::new(),
+            vector_pool: self.vector_pool.clone(),
+            matrix_pool: self.matrix_pool.clone(),
+        };
+        
+        // Clone all buffers using the dyn_clone method
+        for (id, buffer) in &self.buffers {
+            new_workspace.buffers.insert(*id, buffer.dyn_clone());
+        }
+        
+        new_workspace
     }
 }
 
@@ -249,46 +246,12 @@ impl<T: Scalar> WorkspaceBuilder<T> {
         }
     }
     
-    /// Add a vector buffer.
-    pub fn with_vector(mut self, id: BufferId, size: usize) -> Self {
-        self.workspace.preallocate_vector(id, size);
+    /// Add a generic buffer.
+    pub fn with_buffer<B: WorkspaceBuffer<T> + 'static>(mut self, id: BufferId, buffer: B) -> Self {
+        self.workspace.preallocate_buffer(id, buffer);
         self
     }
     
-    /// Add a matrix buffer.
-    pub fn with_matrix(mut self, id: BufferId, rows: usize, cols: usize) -> Self {
-        self.workspace.preallocate_matrix(id, rows, cols);
-        self
-    }
-    
-    /// Add standard optimization buffers for the given problem size.
-    pub fn with_standard_buffers(mut self, n: usize) -> Self {
-        self.workspace.preallocate_vector(BufferId::Gradient, n);
-        self.workspace.preallocate_vector(BufferId::Direction, n);
-        self.workspace.preallocate_vector(BufferId::PreviousGradient, n);
-        self.workspace.preallocate_vector(BufferId::Temp1, n);
-        self.workspace.preallocate_vector(BufferId::Temp2, n);
-        self
-    }
-    
-    /// Add momentum buffers for momentum-based methods.
-    pub fn with_momentum_buffers(mut self, n: usize) -> Self {
-        self.workspace.preallocate_vector(BufferId::Momentum, n);
-        self
-    }
-    
-    /// Add buffers for Adam optimizer.
-    pub fn with_adam_buffers(mut self, n: usize) -> Self {
-        self.workspace.preallocate_vector(BufferId::Momentum, n);
-        self.workspace.preallocate_vector(BufferId::SecondMoment, n);
-        self
-    }
-    
-    /// Add buffers for quasi-Newton methods.
-    pub fn with_quasi_newton_buffers(mut self, n: usize) -> Self {
-        self.workspace.preallocate_matrix(BufferId::Hessian, n, n);
-        self
-    }
     
     /// Build the workspace.
     pub fn build(self) -> Workspace<T> {
@@ -311,33 +274,37 @@ mod tests {
         let mut workspace = Workspace::<f64>::with_size(10);
         
         // Check pre-allocated buffers exist
-        assert!(workspace.get_vector(BufferId::Gradient).is_some());
-        assert!(workspace.get_vector(BufferId::Direction).is_some());
+        assert!(workspace.get_buffer::<DVector<f64>>(BufferId::Gradient).is_some());
+        assert!(workspace.get_buffer::<DVector<f64>>(BufferId::Direction).is_some());
         
         // Modify a buffer
-        if let Some(grad) = workspace.get_vector_mut(BufferId::Gradient) {
+        if let Some(grad) = workspace.get_buffer_mut::<DVector<f64>>(BufferId::Gradient) {
             grad[0] = 1.0;
         }
         
         // Verify modification
-        assert_eq!(workspace.get_vector(BufferId::Gradient).unwrap()[0], 1.0);
+        assert_eq!(workspace.get_buffer::<DVector<f64>>(BufferId::Gradient).unwrap()[0], 1.0);
         
         // Clear workspace
         workspace.clear();
-        assert_eq!(workspace.get_vector(BufferId::Gradient).unwrap()[0], 0.0);
+        assert_eq!(workspace.get_buffer::<DVector<f64>>(BufferId::Gradient).unwrap()[0], 0.0);
     }
     
     #[test]
     fn test_workspace_builder() {
         let workspace = WorkspaceBuilder::<f32>::new()
-            .with_standard_buffers(20)
-            .with_momentum_buffers(20)
-            .with_matrix(BufferId::Hessian, 20, 20)
+            .with_buffer(BufferId::Gradient, DVector::<f32>::zeros(20))
+            .with_buffer(BufferId::Direction, DVector::<f32>::zeros(20))
+            .with_buffer(BufferId::PreviousGradient, DVector::<f32>::zeros(20))
+            .with_buffer(BufferId::Temp1, DVector::<f32>::zeros(20))
+            .with_buffer(BufferId::Temp2, DVector::<f32>::zeros(20))
+            .with_buffer(BufferId::Momentum, DVector::<f32>::zeros(20))
+            .with_buffer(BufferId::Hessian, DMatrix::<f32>::zeros(20, 20))
             .build();
         
-        assert_eq!(workspace.get_vector(BufferId::Gradient).unwrap().len(), 20);
-        assert_eq!(workspace.get_vector(BufferId::Momentum).unwrap().len(), 20);
-        assert_eq!(workspace.get_matrix(BufferId::Hessian).unwrap().nrows(), 20);
+        assert_eq!(workspace.get_buffer::<DVector<f32>>(BufferId::Gradient).unwrap().len(), 20);
+        assert_eq!(workspace.get_buffer::<DVector<f32>>(BufferId::Momentum).unwrap().len(), 20);
+        assert_eq!(workspace.get_buffer::<DMatrix<f32>>(BufferId::Hessian).unwrap().nrows(), 20);
     }
     
     #[test]
@@ -345,14 +312,14 @@ mod tests {
         let mut workspace = Workspace::<f64>::new();
         
         // Buffer doesn't exist yet
-        assert!(workspace.get_vector(BufferId::Temp3).is_none());
+        assert!(workspace.get_buffer::<DVector<f64>>(BufferId::Temp3).is_none());
         
         // Get or create it
-        let temp = workspace.get_or_create_vector(BufferId::Temp3, 15);
+        let temp = workspace.get_or_create_buffer(BufferId::Temp3, || DVector::<f64>::zeros(15));
         temp[0] = 5.0;
         
         // Now it exists
-        assert_eq!(workspace.get_vector(BufferId::Temp3).unwrap()[0], 5.0);
+        assert_eq!(workspace.get_buffer::<DVector<f64>>(BufferId::Temp3).unwrap()[0], 5.0);
     }
     
     #[test]
@@ -378,8 +345,8 @@ mod tests {
     #[test]
     fn test_memory_usage() {
         let workspace = WorkspaceBuilder::<f64>::new()
-            .with_vector(BufferId::Gradient, 100)
-            .with_matrix(BufferId::Hessian, 10, 10)
+            .with_buffer(BufferId::Gradient, DVector::<f64>::zeros(100))
+            .with_buffer(BufferId::Hessian, DMatrix::<f64>::zeros(10, 10))
             .build();
         
         let expected = 100 * 8 + 100 * 8; // 100 f64s + 10x10 f64s

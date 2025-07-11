@@ -78,7 +78,7 @@ use riemannopt_core::{
     },
     error::Result,
     types::Scalar,
-    memory::workspace::{Workspace, BufferId},
+    memory::workspace::Workspace,
     optimization::{
         optimizer::{Optimizer, OptimizationResult, StoppingCriterion, TerminationReason},
     },
@@ -174,12 +174,13 @@ impl<T: Scalar> NaturalGradient<T> {
         _manifold: &M,
         _point: &M::Point,
         _gradient: &M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Get or create the Fisher matrix buffer (we use it as a diagonal vector here)
         // Get the dimension from manifold
         let n = _manifold.dimension();
-        let _fisher_diag = workspace.get_or_create_matrix(BufferId::Hessian, n, 1);
+        // Note: In a full implementation, would use workspace for Fisher matrix storage
+        let _ = n; // Suppress unused variable warning
         
         // Simple diagonal approximation: F_ii = |g_i|^2 + damping
         // This is a placeholder - in practice, you'd compute this from samples
@@ -196,11 +197,12 @@ impl<T: Scalar> NaturalGradient<T> {
         _cost_fn: &C,
         _manifold: &M,
         _point: &M::Point,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Get or create the Fisher matrix buffer
         let n = _manifold.dimension();
-        let _fisher = workspace.get_or_create_matrix(BufferId::Hessian, n, n);
+        // Note: In a full implementation, would use workspace for Fisher matrix storage
+        let _ = n; // Suppress unused variable warning
         
         // Empirical Fisher computation would go here
         // For now, this is a placeholder
@@ -219,7 +221,7 @@ impl<T: Scalar> NaturalGradient<T> {
         point: &M::Point,
         gradient: &M::TangentVector,
         result: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         match self.config.fisher_approximation {
             FisherApproximation::Identity => {
@@ -232,7 +234,7 @@ impl<T: Scalar> NaturalGradient<T> {
                 // Note: In a full implementation, we would use workspace.get_or_create_matrix(BufferId::Hessian, ...)
                 // to store and update the Fisher matrix without allocations
                 let scale = T::one() / (T::one() + self.config.damping);
-                manifold.scale_tangent(point, scale, gradient, result, workspace)?;
+                manifold.scale_tangent(point, scale, gradient, result)?;
             }
             FisherApproximation::Full | FisherApproximation::Empirical => {
                 // Full Fisher requires more complex computation
@@ -240,7 +242,7 @@ impl<T: Scalar> NaturalGradient<T> {
                 // Note: In a full implementation, we would use workspace.get_or_create_matrix(BufferId::Hessian, ...)
                 // to store the Fisher matrix and its inverse without allocations
                 let scale = T::one() / (T::one() + self.config.damping);
-                manifold.scale_tangent(point, scale, gradient, result, workspace)?;
+                manifold.scale_tangent(point, scale, gradient, result)?;
             }
         }
         Ok(())
@@ -259,7 +261,7 @@ impl<T: Scalar> NaturalGradient<T> {
         current_point: &M::Point,
         previous_point: Option<&M::Point>,
         manifold: &M,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Option<TerminationReason> {
         // Check iteration limit
         if let Some(max_iter) = criterion.max_iterations {
@@ -301,7 +303,7 @@ impl<T: Scalar> NaturalGradient<T> {
             if let Some(ref prev_point) = previous_point {
                 if iteration > 0 {
                     // Compute distance using manifold metric
-                    if let Ok(distance) = manifold.distance(prev_point, current_point, workspace) {
+                    if let Ok(distance) = manifold.distance(prev_point, current_point) {
                         if distance < point_tol {
                             return Some(TerminationReason::Converged);
                         }
@@ -344,11 +346,7 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
         let mut workspace = Workspace::with_size(n);
         
         // Pre-allocate all required buffers
-        workspace.preallocate_vector(BufferId::Gradient, n);
-        workspace.preallocate_vector(BufferId::Direction, n);
-        workspace.preallocate_vector(BufferId::Temp1, n);
-        workspace.preallocate_vector(BufferId::Temp2, n);
-        workspace.preallocate_vector(BufferId::Temp3, n);
+        // Note: These will be allocated as needed when calling manifold methods
         
         // Initialize state
         let mut current_point = initial_point.clone();
@@ -361,7 +359,7 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
         // Compute initial gradients
         let euclidean_grad = cost_fn.gradient(&current_point)?;
         let mut riemannian_grad = euclidean_grad.clone();
-        manifold.euclidean_to_riemannian_gradient(&current_point, &euclidean_grad, &mut riemannian_grad, &mut workspace)?;
+        manifold.euclidean_to_riemannian_gradient(&current_point, &euclidean_grad, &mut riemannian_grad)?;
         
         let mut gradient_norm = manifold.norm(&current_point, &riemannian_grad)?;
         
@@ -423,12 +421,11 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
                 -self.config.learning_rate,
                 &natural_grad,
                 &mut search_direction,
-                &mut workspace,
             )?;
             
             // Update point: x_{k+1} = R_{x_k}(search_direction)
             let mut new_point = current_point.clone();
-            manifold.retract(&current_point, &search_direction, &mut new_point, &mut workspace)?;
+            manifold.retract(&current_point, &search_direction, &mut new_point)?;
             
             // Update current point
             previous_point = Some(std::mem::replace(&mut current_point, new_point));
@@ -436,7 +433,7 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
             // Compute new cost and gradient
             current_cost = cost_fn.cost(&current_point)?;
             let euclidean_grad = cost_fn.gradient(&current_point)?;
-            manifold.euclidean_to_riemannian_gradient(&current_point, &euclidean_grad, &mut riemannian_grad, &mut workspace)?;
+            manifold.euclidean_to_riemannian_gradient(&current_point, &euclidean_grad, &mut riemannian_grad)?;
             gradient_norm = manifold.norm(&current_point, &riemannian_grad)?;
             
             function_evaluations += 1;

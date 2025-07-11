@@ -93,7 +93,6 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Oblique;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::DMatrix;
 //!
 //! // Create OB(3,2) - two unit vectors in ℝ³
@@ -107,8 +106,7 @@
 //!
 //! // Tangent vector
 //! let mut v = DMatrix::zeros(3, 2);
-//! let mut workspace = Workspace::<f64>::new();
-//! oblique.random_tangent(&x, &mut v, &mut workspace)?;
+//! oblique.random_tangent(&x, &mut v)?;
 //!
 //! // Verify orthogonality: x_j^T v_j = 0
 //! for j in 0..2 {
@@ -126,7 +124,6 @@ use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
     core::matrix_manifold::MatrixManifold,
-    memory::workspace::Workspace,
     types::Scalar,
 };
 
@@ -567,7 +564,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         &self,
         point: &Self::Point,
         result: &mut Self::Point,
-        _workspace: &mut Workspace<T>,
     ) {
         self.normalize_columns(point, result);
     }
@@ -577,7 +573,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         result.copy_from(vector);
         
@@ -613,7 +608,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         point: &Self::Point,
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Normalize each column of (X + V)
         result.copy_from(&(point + tangent));
@@ -634,7 +628,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         result.fill(T::zero());
         
@@ -666,7 +659,7 @@ impl<T: Scalar> Manifold<T> for Oblique {
         
         // Ensure result is in tangent space
         let result_clone = result.clone();
-        self.project_tangent(point, &result_clone, result, workspace)?;
+        self.project_tangent(point, &result_clone, result)?;
         
         Ok(())
     }
@@ -676,10 +669,9 @@ impl<T: Scalar> Manifold<T> for Oblique {
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Project to tangent space
-        self.project_tangent(point, euclidean_grad, result, workspace)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn random_point(&self) -> Self::Point {
@@ -708,7 +700,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         &self,
         point: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
@@ -722,7 +713,7 @@ impl<T: Scalar> Manifold<T> for Oblique {
         
         // Project to tangent space
         let result_clone = result.clone();
-        self.project_tangent(point, &result_clone, result, workspace)?;
+        self.project_tangent(point, &result_clone, result)?;
         
         Ok(())
     }
@@ -733,7 +724,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         result.fill(T::zero());
         
@@ -790,7 +780,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         &self,
         x: &Self::Point,
         y: &Self::Point,
-        _workspace: &mut Workspace<T>,
     ) -> Result<T> {
         let mut dist_squared = T::zero();
         
@@ -823,7 +812,6 @@ impl<T: Scalar> Manifold<T> for Oblique {
         scalar: T,
         tangent: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // For Oblique manifold, tangent vectors have orthogonal columns to the point columns
         // Scaling preserves this orthogonality
@@ -838,17 +826,16 @@ impl<T: Scalar> Manifold<T> for Oblique {
         v1: &Self::TangentVector,
         v2: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
+        // Temporary buffer for projection if needed
+        temp: &mut Self::TangentVector,
     ) -> Result<()> {
         // Add the tangent vectors
-        result.copy_from(v1);
-        *result += v2;
+        temp.copy_from(v1);
+        *temp += v2;
         
         // The sum should already satisfy the tangent space constraint if v1 and v2 do,
         // but we project for numerical stability
-        // Create a temporary clone to avoid borrowing issues
-        let temp = result.clone();
-        self.project_tangent(point, &temp, result, workspace)?;
+        self.project_tangent(point, temp, result)?;
         
         Ok(())
     }
@@ -865,7 +852,6 @@ impl<T: Scalar> MatrixManifold<T> for Oblique {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_oblique_creation() {
@@ -903,7 +889,6 @@ mod tests {
     #[test]
     fn test_projection() {
         let oblique = Oblique::new(3, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let matrix = DMatrix::from_column_slice(3, 2, &[
             3.0, 0.0, 0.0,
@@ -911,7 +896,7 @@ mod tests {
         ]);
         
         let mut projected = DMatrix::zeros(3, 2);
-        oblique.project_point(&matrix, &mut projected, &mut workspace);
+        oblique.project_point(&matrix, &mut projected);
         
         assert!(oblique.is_point_on_manifold(&projected, 1e-10));
         
@@ -943,17 +928,16 @@ mod tests {
     #[test]
     fn test_retraction() {
         let oblique = Oblique::new(3, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let point = oblique.random_point();
         let mut tangent = DMatrix::zeros(3, 2);
-        oblique.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
+        oblique.random_tangent(&point, &mut tangent).unwrap();
         
         // Scale for small step
         tangent *= 0.1;
         
         let mut new_point = DMatrix::zeros(3, 2);
-        oblique.retract(&point, &tangent, &mut new_point, &mut workspace).unwrap();
+        oblique.retract(&point, &tangent, &mut new_point).unwrap();
         
         assert!(oblique.is_point_on_manifold(&new_point, 1e-10));
     }
@@ -961,7 +945,6 @@ mod tests {
     #[test]
     fn test_distance() {
         let oblique = Oblique::new(3, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let x = DMatrix::from_column_slice(3, 2, &[
             1.0, 0.0, 0.0,
@@ -973,7 +956,7 @@ mod tests {
             1.0, 0.0, 0.0,
         ]);
         
-        let dist = oblique.distance(&x, &y, &mut workspace).unwrap();
+        let dist = oblique.distance(&x, &y).unwrap();
         
         // Distance should be sqrt(2) * pi/2 (90 degrees on each sphere)
         let expected = (2.0_f64).sqrt() * std::f64::consts::PI / 2.0;
@@ -1011,9 +994,8 @@ mod tests {
         let oblique = Oblique::new(3, 2).unwrap();
         
         let x = oblique.random_point();
-        let mut workspace = Workspace::<f64>::new();
         let mut v = DMatrix::zeros(3, 2);
-        oblique.random_tangent(&x, &mut v, &mut workspace).unwrap();
+        oblique.random_tangent(&x, &mut v).unwrap();
         v *= 0.5; // Small tangent vector
         
         // Test exp_map
@@ -1035,9 +1017,8 @@ mod tests {
         
         let x = oblique.random_point();
         let y = oblique.random_point();
-        let mut workspace = Workspace::<f64>::new();
         let mut v = DMatrix::zeros(4, 3);
-        oblique.random_tangent(&x, &mut v, &mut workspace).unwrap();
+        oblique.random_tangent(&x, &mut v).unwrap();
         
         // Test parallel transport
         let v_transported = oblique.parallel_transport(&x, &y, &v).unwrap();

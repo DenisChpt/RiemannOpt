@@ -228,10 +228,10 @@ impl NumericalValidator {
         // Check projection idempotence
         for point in test_points {
             let mut proj1 = point.clone();
-            manifold.project_point(point, &mut proj1, _workspace);
+            manifold.project_point(point, &mut proj1);
             
             let mut proj2 = proj1.clone();
-            manifold.project_point(&proj1, &mut proj2, _workspace);
+            manifold.project_point(&proj1, &mut proj2);
             
             // Check that proj2 ≈ proj1 (projection is idempotent)
             // Note: This would need a proper distance computation in a full implementation
@@ -263,7 +263,7 @@ impl NumericalValidator {
             // Add small perturbation (implementation-specific)
             
             let mut projected = perturbed.clone();
-            manifold.project_point(&perturbed, &mut projected, _workspace);
+            manifold.project_point(&perturbed, &mut projected);
             
             // Check that projection brings us back close to the manifold
             if !manifold.is_point_on_manifold(&projected, perturbation_scale * <T as Scalar>::from_f64(10.0)) {

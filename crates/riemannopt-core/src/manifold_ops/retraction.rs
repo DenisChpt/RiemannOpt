@@ -116,8 +116,7 @@ where
         tangent: &M::TangentVector,
         result: &mut M::Point,
     ) -> Result<()> {
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.retract(point, tangent, result, &mut workspace)
+        manifold.retract(point, tangent, result)
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -127,8 +126,7 @@ where
         other: &M::Point,
         result: &mut M::TangentVector,
     ) -> Result<()> {
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point, other, result, &mut workspace)
+        manifold.inverse_retract(point, other, result)
     }
 }
 
@@ -153,13 +151,12 @@ impl ProjectionRetraction {
         M: Manifold<T, Point = P, TangentVector = P>,
         P: Clone + std::ops::Add<Output = P>,
     {
-        let mut workspace: Workspace<T> = Workspace::new();
         
         // Step 1: Compute point + tangent in the ambient space
         let ambient_point = point.clone() + tangent.clone();
         
         // Step 2: Project the result back onto the manifold
-        manifold.project_point(&ambient_point, result, &mut workspace);
+        manifold.project_point(&ambient_point, result);
         
         Ok(())
     }
@@ -187,11 +184,10 @@ where
         // Projection retraction: move in ambient space then project back
         // Note: This implementation is specialized for manifolds where Point and TangentVector
         // can be added. Manifolds should override their retract method to use this retraction.
-        let mut workspace: Workspace<T> = Workspace::new();
         
         // For the general case, we delegate to the manifold's implementation
         // The manifold can choose to use projection_retraction_impl if appropriate
-        manifold.retract(point, tangent, result, &mut workspace)
+        manifold.retract(point, tangent, result)
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -202,8 +198,7 @@ where
         result: &mut M::TangentVector,
     ) -> Result<()> {
         // Delegate to the manifold's inverse_retract method
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point, other, result, &mut workspace)
+        manifold.inverse_retract(point, other, result)
     }
 }
 
@@ -267,8 +262,7 @@ where
     ) -> Result<()> {
         // For now, delegate to manifold's retract method
         // A full implementation would use numerical integration for geodesics
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.retract(point, tangent, result, &mut workspace)
+        manifold.retract(point, tangent, result)
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -280,8 +274,7 @@ where
     ) -> Result<()> {
         // For now, delegate to manifold's inverse_retract method
         // A full implementation would use iterative methods
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point, other, result, &mut workspace)
+        manifold.inverse_retract(point, other, result)
     }
 }
 
@@ -331,8 +324,7 @@ where
         M: Manifold<T>,
     {
         // Check if this is a matrix manifold and delegate accordingly
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.retract(point, tangent, result, &mut workspace)
+        manifold.retract(point, tangent, result)
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -343,8 +335,7 @@ where
         result: &mut M::TangentVector,
     ) -> Result<()> {
         // Approximate inverse using manifold's method
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point, other, result, &mut workspace)
+        manifold.inverse_retract(point, other, result)
     }
 }
 
@@ -424,8 +415,7 @@ where
     ) -> Result<()> {
         // Cayley transform only applies to specific matrix manifolds
         // For general manifolds, fall back to default
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.retract(point, tangent, result, &mut workspace)
+        manifold.retract(point, tangent, result)
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -436,8 +426,7 @@ where
         result: &mut M::TangentVector,
     ) -> Result<()> {
         // Approximate inverse using manifold's method
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point, other, result, &mut workspace)
+        manifold.inverse_retract(point, other, result)
     }
 }
 
@@ -541,8 +530,7 @@ where
     {
         // Polar retraction only applies to matrix manifolds
         // For general manifolds, fall back to default
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.retract(point, tangent, result, &mut workspace)
+        manifold.retract(point, tangent, result)
     }
 
     fn inverse_retract<M: Manifold<T>>(
@@ -553,8 +541,7 @@ where
         result: &mut M::TangentVector,
     ) -> Result<()> {
         // Approximate inverse using manifold's method
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point, other, result, &mut workspace)
+        manifold.inverse_retract(point, other, result)
     }
 }
 
@@ -640,7 +627,7 @@ where
         direction: &M::TangentVector,
         vector: &M::TangentVector,
         result: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Transports multiple vectors simultaneously (for efficiency).
@@ -654,7 +641,7 @@ where
         direction: &M::TangentVector,
         vectors: &[M::TangentVector],
         results: &mut [M::TangentVector],
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if vectors.len() != results.len() {
             return Err(crate::error::ManifoldError::invalid_parameter(
@@ -663,7 +650,7 @@ where
         }
 
         for (vector, result) in vectors.iter().zip(results.iter_mut()) {
-            self.transport(manifold, point, direction, vector, result, workspace)?;
+            self.transport(manifold, point, direction, vector, result, _workspace)?;
         }
 
         Ok(())
@@ -693,11 +680,11 @@ where
         direction: &M::TangentVector,
         vector: &M::TangentVector,
         result: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // First, retract to get the target point
         let mut target_point = point.clone();
-        manifold.retract(point, direction, &mut target_point, workspace)?;
+        manifold.retract(point, direction, &mut target_point)?;
 
         // For projection transport, we assume the vector can be "moved" to the target
         // In the most general case, this requires manifold-specific knowledge
@@ -709,7 +696,7 @@ where
         let temp_vector = vector.clone();
         
         // Project the result onto the tangent space at the target point
-        manifold.project_tangent(&target_point, &temp_vector, result, workspace)?;
+        manifold.project_tangent(&target_point, &temp_vector, result)?;
 
         Ok(())
     }
@@ -738,7 +725,7 @@ where
         direction: &M::TangentVector,
         _vector: &M::TangentVector,
         result: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // The differential retraction transport is computed as:
         // T_p(v, u) = DR_p(tv)|_{t=1}[u]
@@ -760,12 +747,12 @@ where
         let mut point_plus = point.clone();
         let mut point_minus = point.clone();
         
-        manifold.retract(point, &direction_plus, &mut point_plus, workspace)?;
-        manifold.retract(point, &direction_minus, &mut point_minus, workspace)?;
+        manifold.retract(point, &direction_plus, &mut point_plus)?;
+        manifold.retract(point, &direction_minus, &mut point_minus)?;
         
         // Compute (point_plus - point_minus) / (2 * eps)
         // This requires proper manifold logarithm/inverse retraction
-        manifold.inverse_retract(&point_minus, &point_plus, result, workspace)?;
+        manifold.inverse_retract(&point_minus, &point_plus, result)?;
         
         // Scale by 1/(2*eps) - this requires vector scaling operations
         // For now, return the computed result as-is
@@ -826,7 +813,7 @@ where
         direction: &M::TangentVector,
         vector: &M::TangentVector,
         result: &mut M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Schild's Ladder algorithm:
         // 1. Start at point P
@@ -839,15 +826,15 @@ where
         // The full algorithm would subdivide the transport for better accuracy
         
         let mut target_point = point.clone();
-        manifold.retract(point, direction, &mut target_point, workspace)?;
+        manifold.retract(point, direction, &mut target_point)?;
         
         let mut auxiliary_point = point.clone();
-        manifold.retract(point, vector, &mut auxiliary_point, workspace)?;
+        manifold.retract(point, vector, &mut auxiliary_point)?;
         
         // For the geodesic midpoint, we use a simple approximation
         // Real implementation would use geodesic subdivision
         let mut temp_vector = vector.clone();
-        manifold.inverse_retract(&target_point, &auxiliary_point, &mut temp_vector, workspace)?;
+        manifold.inverse_retract(&target_point, &auxiliary_point, &mut temp_vector)?;
         
         // Scale by 1/2 for midpoint (requires scalar multiplication)
         // For now, use the computed vector as the result
@@ -945,8 +932,7 @@ impl RetractionVerifier {
         
         // Compute (R_p(eps * tangent) - p) / eps
         let mut derivative_approx = tangent.clone();
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point, &point_plus, &mut derivative_approx, &mut workspace)?;
+        manifold.inverse_retract(point, &point_plus, &mut derivative_approx)?;
         
         // Compare with the original tangent vector
         let difference_norm = Self::compute_tangent_difference_norm(manifold, point, tangent, &derivative_approx)?;
@@ -1088,8 +1074,7 @@ impl RetractionVerifier {
     {
         // Compute inverse retraction to get tangent vector from point1 to point2
         let mut difference_vector = scratch_tangent.clone();
-        let mut workspace: Workspace<T> = Workspace::new();
-        manifold.inverse_retract(point1, point2, &mut difference_vector, &mut workspace)?;
+        manifold.inverse_retract(point1, point2, &mut difference_vector)?;
         
         // Compute squared norm using inner product
         manifold.inner_product(point1, &difference_vector, &difference_vector)
