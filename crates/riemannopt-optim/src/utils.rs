@@ -59,7 +59,8 @@ where
     T: Scalar,
     M: Manifold<T>,
 {
-    manifold.scale_tangent(point, scalar, tangent, result, workspace)
+    let _ = workspace; // Suppress unused warning
+    manifold.scale_tangent(point, scalar, tangent, result)
 }
 
 /// Performs retraction using workspace.
@@ -75,7 +76,8 @@ where
     T: Scalar,
     M: Manifold<T>,
 {
-    manifold.retract(point, tangent, result, workspace)
+    let _ = workspace; // Suppress unused warning
+    manifold.retract(point, tangent, result)
 }
 
 /// Transports a tangent vector from one point to another using workspace.
@@ -92,7 +94,8 @@ where
     T: Scalar,
     M: Manifold<T>,
 {
-    manifold.parallel_transport(from, to, tangent, result, workspace)
+    let _ = workspace; // Suppress unused warning
+    manifold.parallel_transport(from, to, tangent, result)
 }
 
 #[cfg(test)]

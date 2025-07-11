@@ -24,7 +24,6 @@
 //!
 //! ```rust,ignore
 //! # use riemannopt_core::manifold::Manifold;
-//! # use riemannopt_core::memory::Workspace;
 //! # use nalgebra::DVector;
 //! 
 //! #[derive(Debug)]
@@ -45,8 +44,7 @@
 //!
 //! // Perform retraction
 //! let mut new_point = point.clone();
-//! let mut workspace = Workspace::new();
-//! sphere.retract(&point, &tangent, &mut new_point, &mut workspace)?;
+//! sphere.retract(&point, &tangent, &mut new_point)?;
 //! ```
 //!
 //! ## Common Manifolds
@@ -59,7 +57,7 @@
 //! - **SPD(n)**: Symmetric positive definite matrices
 //! - **Euclidean ℝⁿ**: Flat space with identity metric
 
-use crate::{error::Result, types::Scalar, memory::workspace::Workspace};
+use crate::{error::Result, types::Scalar};
 use num_traits::Float;
 use std::fmt::Debug;
 
@@ -225,8 +223,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     ///
     /// * `point` - The point to project
     /// * `result` - Pre-allocated output buffer for the projected point
-    /// * `workspace` - Pre-allocated workspace for temporary computations
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, workspace: &mut Workspace<T>);
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point);
 
     /// Projects a vector onto the tangent space at a given point.
     ///
@@ -253,7 +250,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `point` - A point p ∈ ℳ on the manifold
     /// * `vector` - The ambient vector v ∈ ℝⁿ to project
     /// * `result` - Pre-allocated output buffer for the projected tangent vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Errors
     ///
@@ -263,7 +259,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Computes the Riemannian inner product between two tangent vectors.
@@ -356,7 +351,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `point` - A point p ∈ ℳ on the manifold
     /// * `tangent` - A tangent vector v ∈ T_p ℳ (direction and magnitude of step)
     /// * `result` - Pre-allocated output buffer for the retracted point
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Errors
     ///
@@ -364,7 +358,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// - `point` is not on the manifold
     /// - `tangent` is not in the tangent space at `point`
     /// - Numerical issues prevent computation (e.g., singularities)
-    fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point, workspace: &mut Workspace<T>) -> Result<()>;
+    fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point) -> Result<()>;
 
     /// Computes the inverse retraction (logarithmic map).
     ///
@@ -376,7 +370,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `point` - A point on the manifold
     /// * `other` - Another point on the manifold
     /// * `result` - Pre-allocated output buffer for the tangent vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Errors
     ///
@@ -387,7 +380,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Converts the Euclidean gradient to the Riemannian gradient.
@@ -401,13 +393,11 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `point` - A point on the manifold
     /// * `euclidean_grad` - The Euclidean gradient at `point`
     /// * `result` - Pre-allocated output buffer for the Riemannian gradient
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     fn euclidean_to_riemannian_gradient(
         &self,
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Performs parallel transport of a vector along a retraction.
@@ -421,7 +411,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `to` - Ending point on the manifold
     /// * `vector` - Tangent vector at `from` to transport
     /// * `result` - Pre-allocated output buffer for the transported vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Default Implementation
     ///
@@ -433,10 +422,9 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Default: vector transport by projection
-        self.project_tangent(to, vector, result, workspace)
+        self.project_tangent(to, vector, result)
     }
 
     /// Generates a random point on the manifold.
@@ -454,12 +442,11 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     ///
     /// * `point` - A point on the manifold
     /// * `result` - Pre-allocated output buffer for the random tangent vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Returns
     ///
     /// A random tangent vector at `point` with unit norm.
-    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector, workspace: &mut Workspace<T>) -> Result<()>;
+    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()>;
 
     /// Computes the geodesic distance between two points.
     ///
@@ -467,7 +454,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     ///
     /// * `x` - First point on the manifold
     /// * `y` - Second point on the manifold
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Returns
     ///
@@ -476,7 +462,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// # Default Implementation
     ///
     /// Uses the norm of the logarithmic map.
-    fn distance(&self, x: &Self::Point, y: &Self::Point, workspace: &mut Workspace<T>) -> Result<T>;
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T>;
 
     /// Checks if the manifold has a closed-form exponential map.
     ///
@@ -511,7 +497,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `scalar` - The scalar factor
     /// * `tangent` - The tangent vector to scale
     /// * `result` - Pre-allocated output buffer for the scaled vector
-    /// * `workspace` - Pre-allocated workspace for temporary computations
     ///
     /// # Errors
     ///
@@ -522,7 +507,6 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
         scalar: T,
         tangent: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()>;
 
     /// Adds two tangent vectors.
@@ -539,7 +523,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `v1` - First tangent vector
     /// * `v2` - Second tangent vector  
     /// * `result` - Pre-allocated output buffer for the sum
-    /// * `workspace` - Pre-allocated workspace for temporary computations
+    /// * `temp` - Temporary buffer for projection if needed
     ///
     /// # Errors
     ///
@@ -550,7 +534,8 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
         v1: &Self::TangentVector,
         v2: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
+        // Temporary buffer for projection if needed
+        temp: &mut Self::TangentVector,
     ) -> Result<()>;
 
     /// Computes a linear combination of tangent vectors (axpy operation).
@@ -567,7 +552,8 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// * `x` - Tangent vector to scale
     /// * `y` - Tangent vector to add
     /// * `result` - Pre-allocated output buffer for the result
-    /// * `workspace` - Pre-allocated workspace for temporary computations
+    /// * `temp1` - First temporary buffer for computation
+    /// * `temp2` - Second temporary buffer for computation
     ///
     /// # Default Implementation
     ///
@@ -584,12 +570,13 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
         x: &Self::TangentVector,
         y: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
+        // Temporary buffers for computation
+        temp1: &mut Self::TangentVector,
+        temp2: &mut Self::TangentVector,
     ) -> Result<()> {
         // Default implementation: compute alpha * x, then add y
-        let mut scaled_x = x.clone(); // Temporary, will use workspace buffer in optimized version
-        self.scale_tangent(point, alpha, x, &mut scaled_x, workspace)?;
-        self.add_tangents(point, &scaled_x, y, result, workspace)
+        self.scale_tangent(point, alpha, x, temp1)?;
+        self.add_tangents(point, temp1, y, result, temp2)
     }
 
 }
@@ -614,7 +601,6 @@ mod tests {
         let manifold = TestEuclideanManifold::new(3);
         let point = DVector::zeros(3);
         let vector = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let mut workspace = Workspace::new();
 
         // Test norm (uses inner_product)
         let norm = manifold.norm(&point, &vector).unwrap();
@@ -623,13 +609,13 @@ mod tests {
         // Test parallel transport (uses project_tangent by default)
         let mut transported = DVector::zeros(3);
         manifold
-            .parallel_transport(&point, &point, &vector, &mut transported, &mut workspace)
+            .parallel_transport(&point, &point, &vector, &mut transported)
             .unwrap();
         assert_eq!(transported, vector);
 
         // Test distance (uses inverse_retract and norm)
         let other_point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let dist = manifold.distance(&point, &other_point, &mut workspace).unwrap();
+        let dist = manifold.distance(&point, &other_point).unwrap();
         assert_eq!(dist, 1.0);
     }
 

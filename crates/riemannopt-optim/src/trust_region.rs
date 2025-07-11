@@ -35,7 +35,7 @@ use riemannopt_core::{
     },
     error::Result,
     types::Scalar,
-    memory::workspace::{Workspace, BufferId},
+    memory::workspace::Workspace,
     optimization::{
         optimizer::{Optimizer, OptimizationResult, StoppingCriterion, TerminationReason},
     },
@@ -237,7 +237,7 @@ impl<T: Scalar> TrustRegion<T> {
         gradient_norm: Option<T>,
         current_point: &M::Point,
         previous_point: &Option<M::Point>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         criterion: &StoppingCriterion<T>,
         trust_radius: T,
     ) -> Option<TerminationReason>
@@ -289,7 +289,7 @@ impl<T: Scalar> TrustRegion<T> {
             if let Some(ref prev_point) = previous_point {
                 if iteration > 0 {
                     // Compute distance using manifold metric
-                    if let Ok(distance) = manifold.distance(prev_point, current_point, workspace) {
+                    if let Ok(distance) = manifold.distance(prev_point, current_point) {
                         if distance < point_tol {
                             return Some(TerminationReason::Converged);
                         }
@@ -329,7 +329,7 @@ impl<T: Scalar> TrustRegion<T> {
         );
         
         if norm < T::epsilon() {
-            manifold.scale_tangent(point, T::zero(), gradient, result, workspace)?;
+            manifold.scale_tangent(point, T::zero(), gradient, result)?;
             return Ok(());
         }
         
@@ -337,29 +337,31 @@ impl<T: Scalar> TrustRegion<T> {
         
         // Create perturbation: t * direction
         let mut perturbation = direction.clone();
-        manifold.scale_tangent(point, t, direction, &mut perturbation, workspace)?;
+        manifold.scale_tangent(point, t, direction, &mut perturbation)?;
         
         // Compute perturbed point
         let mut perturbed_point = point.clone();
-        manifold.retract(point, &perturbation, &mut perturbed_point, workspace)?;
+        manifold.retract(point, &perturbation, &mut perturbed_point)?;
         
         // Compute gradient at perturbed point
         let mut perturbed_euclidean_grad = gradient.clone();
         let _cost = cost_fn.cost_and_gradient(&perturbed_point, workspace, &mut perturbed_euclidean_grad)?;
         
         let mut perturbed_grad = perturbed_euclidean_grad.clone();
-        manifold.euclidean_to_riemannian_gradient(&perturbed_point, &perturbed_euclidean_grad, &mut perturbed_grad, workspace)?;
+        manifold.euclidean_to_riemannian_gradient(&perturbed_point, &perturbed_euclidean_grad, &mut perturbed_grad)?;
         
         // Transport gradient back
         let mut transported_grad = perturbed_grad.clone();
-        manifold.parallel_transport(&perturbed_point, point, &perturbed_grad, &mut transported_grad, workspace)?;
+        manifold.parallel_transport(&perturbed_point, point, &perturbed_grad, &mut transported_grad)?;
         
         // result = (transported_grad - gradient) / t
         let mut neg_gradient = gradient.clone();
-        manifold.scale_tangent(point, -T::one(), gradient, &mut neg_gradient, workspace)?;
-        manifold.add_tangents(point, &transported_grad, &neg_gradient, result, workspace)?;
+        manifold.scale_tangent(point, -T::one(), gradient, &mut neg_gradient)?;
+        // Allocate temporary buffer for add_tangents
+        let mut temp = gradient.clone();
+        manifold.add_tangents(point, &transported_grad, &neg_gradient, result, &mut temp)?;
         let result_copy = result.clone();
-        manifold.scale_tangent(point, T::one() / t, &result_copy, result, workspace)?;
+        manifold.scale_tangent(point, T::one() / t, &result_copy, result)?;
         
         Ok(())
     }
@@ -418,10 +420,10 @@ impl<T: Scalar> TrustRegion<T> {
         let max_iter = self.config.max_cg_iterations.unwrap_or(manifold.dimension());
         
         // Reset CG vectors
-        manifold.scale_tangent(point, T::zero(), gradient, &mut cg_workspace.s, workspace)?;
+        manifold.scale_tangent(point, T::zero(), gradient, &mut cg_workspace.s)?;
         
         // r = -gradient
-        manifold.scale_tangent(point, -T::one(), gradient, &mut cg_workspace.r, workspace)?;
+        manifold.scale_tangent(point, -T::one(), gradient, &mut cg_workspace.r)?;
         // d = r  
         cg_workspace.d = cg_workspace.r.clone();
         
@@ -461,7 +463,10 @@ impl<T: Scalar> TrustRegion<T> {
                 
                 // s += tau * d
                 let s_copy = cg_workspace.s.clone();
-                manifold.axpy_tangent(point, tau, &cg_workspace.d, &s_copy, &mut cg_workspace.s, workspace)?;
+                // Allocate temporary buffers for axpy_tangent
+                let mut temp1 = gradient.clone();
+                let mut temp2 = gradient.clone();
+                manifold.axpy_tangent(point, tau, &cg_workspace.d, &s_copy, &mut cg_workspace.s, &mut temp1, &mut temp2)?;
                 cg_workspace.boundary_hit = true;
                 break;
             }
@@ -469,7 +474,9 @@ impl<T: Scalar> TrustRegion<T> {
             let alpha = r_norm_sq / dhd;
             
             // Compute s_new = s + alpha * d using temp vector
-            manifold.axpy_tangent(point, alpha, &cg_workspace.d, &cg_workspace.s, &mut cg_workspace.temp, workspace)?;
+            let mut temp1 = gradient.clone();
+            let mut temp2 = gradient.clone();
+            manifold.axpy_tangent(point, alpha, &cg_workspace.d, &cg_workspace.s, &mut cg_workspace.temp, &mut temp1, &mut temp2)?;
             
             // Check if we would exceed trust region
             let s_new_norm = <T as Float>::sqrt(
@@ -488,7 +495,10 @@ impl<T: Scalar> TrustRegion<T> {
                 
                 // s += tau * d
                 let s_copy = cg_workspace.s.clone();
-                manifold.axpy_tangent(point, tau, &cg_workspace.d, &s_copy, &mut cg_workspace.s, workspace)?;
+                // Allocate temporary buffers for axpy_tangent
+                let mut temp1 = gradient.clone();
+                let mut temp2 = gradient.clone();
+                manifold.axpy_tangent(point, tau, &cg_workspace.d, &s_copy, &mut cg_workspace.s, &mut temp1, &mut temp2)?;
                 cg_workspace.boundary_hit = true;
                 break;
             }
@@ -498,9 +508,10 @@ impl<T: Scalar> TrustRegion<T> {
             
             // r -= alpha * hd
             let mut scaled_hd = cg_workspace.hd.clone();
-            manifold.scale_tangent(point, -alpha, &cg_workspace.hd, &mut scaled_hd, workspace)?;
+            manifold.scale_tangent(point, -alpha, &cg_workspace.hd, &mut scaled_hd)?;
             let r_copy = cg_workspace.r.clone();
-            manifold.add_tangents(point, &r_copy, &scaled_hd, &mut cg_workspace.r, workspace)?;
+            let mut temp = gradient.clone();
+            manifold.add_tangents(point, &r_copy, &scaled_hd, &mut cg_workspace.r, &mut temp)?;
             
             let r_norm_sq_new = manifold.inner_product(point, &cg_workspace.r, &cg_workspace.r)?;
             
@@ -512,7 +523,9 @@ impl<T: Scalar> TrustRegion<T> {
             let beta = r_norm_sq_new / r_norm_sq;
             // d = r + beta * d
             let d_copy = cg_workspace.d.clone();
-            manifold.axpy_tangent(point, beta, &d_copy, &cg_workspace.r, &mut cg_workspace.d, workspace)?;
+            let mut temp1 = gradient.clone();
+            let mut temp2 = gradient.clone();
+            manifold.axpy_tangent(point, beta, &d_copy, &cg_workspace.r, &mut cg_workspace.d, &mut temp1, &mut temp2)?;
             r_norm_sq = r_norm_sq_new;
         }
         
@@ -572,15 +585,7 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
         let mut workspace = Workspace::with_size(n);
         
         // Pre-allocate workspace buffers
-        workspace.get_or_create_vector(BufferId::Gradient, n);
-        workspace.get_or_create_vector(BufferId::Direction, n);
-        workspace.get_or_create_vector(BufferId::Temp1, n);
-        workspace.get_or_create_vector(BufferId::Temp2, n);
-        
-        // Additional buffers for CG solver
-        for i in 0..5 {
-            workspace.get_or_create_vector(BufferId::Custom(i as u32), n);
-        }
+        // Note: These will be allocated as needed when calling manifold methods
         
         // Initialize state
         let initial_cost = cost_fn.cost(initial_point)?;
@@ -603,12 +608,11 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
             &initial_point,
             &euclidean_grad,
             &mut riemannian_grad,
-            &mut workspace,
         )?;
         
         // Create zero vector for CG workspace initialization
         let mut zero_vector = riemannian_grad.clone();
-        manifold.scale_tangent(&initial_point, T::zero(), &riemannian_grad, &mut zero_vector, &mut workspace)?;
+        manifold.scale_tangent(&initial_point, T::zero(), &riemannian_grad, &mut zero_vector)?;
         
         // Initialize CG workspace
         let mut cg_workspace = CGWorkspace::new(zero_vector);
@@ -659,7 +663,6 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
                 &current_point,
                 &euclidean_grad,
                 &mut riemannian_grad,
-                &mut workspace,
             )?;
             
             // Compute gradient norm
@@ -700,7 +703,7 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
             
             // Compute trial point
             let mut trial_point = current_point.clone();
-            manifold.retract(&current_point, step, &mut trial_point, &mut workspace)?;
+            manifold.retract(&current_point, step, &mut trial_point)?;
             
             let trial_value = cost_fn.cost(&trial_point)?;
             function_evaluations += 1;

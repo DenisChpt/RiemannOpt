@@ -40,7 +40,7 @@ use riemannopt_core::{
     },
     error::Result,
     types::Scalar,
-    memory::workspace::{Workspace, BufferId},
+    memory::workspace::Workspace,
     optimization::{
         optimizer::{Optimizer, OptimizationResult, StoppingCriterion, TerminationReason},
         line_search::LineSearchParams,
@@ -258,7 +258,7 @@ impl<T: Scalar> ConjugateGradient<T> {
         gradient_norm: Option<T>,
         current_point: &M::Point,
         previous_point: &Option<M::Point>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         criterion: &StoppingCriterion<T>,
     ) -> Option<TerminationReason>
     where
@@ -304,7 +304,7 @@ impl<T: Scalar> ConjugateGradient<T> {
             if let Some(ref prev_point) = previous_point {
                 if iteration > 0 {
                     // Compute distance using manifold metric
-                    if let Ok(distance) = manifold.distance(prev_point, current_point, workspace) {
+                    if let Ok(distance) = manifold.distance(prev_point, current_point) {
                         if distance < point_tol {
                             return Some(TerminationReason::Converged);
                         }
@@ -331,7 +331,7 @@ impl<T: Scalar> ConjugateGradient<T> {
         previous_point: &M::Point,
         gradient: &M::TangentVector,
         cg_state: &ConjugateGradientState<T, M::TangentVector>,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
     ) -> Result<T>
     where
         M: Manifold<T>,
@@ -347,8 +347,8 @@ impl<T: Scalar> ConjugateGradient<T> {
         let mut transported_prev_grad = prev_grad.clone();
         let mut transported_prev_dir = prev_dir.clone();
         
-        manifold.parallel_transport(previous_point, current_point, prev_grad, &mut transported_prev_grad, workspace)?;
-        manifold.parallel_transport(previous_point, current_point, prev_dir, &mut transported_prev_dir, workspace)?;
+        manifold.parallel_transport(previous_point, current_point, prev_grad, &mut transported_prev_grad)?;
+        manifold.parallel_transport(previous_point, current_point, prev_dir, &mut transported_prev_dir)?;
         
         // Compute inner products needed for beta calculation
         let grad_norm_sq = manifold.inner_product(current_point, gradient, gradient)?;
@@ -369,8 +369,9 @@ impl<T: Scalar> ConjugateGradient<T> {
                 
                 // Compute g_k - g_{k-1}
                 let mut neg_prev_grad = transported_prev_grad.clone();
-                manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad, workspace)?;
-                manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, workspace)?;
+                manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad)?;
+                let mut temp = gradient.clone();
+                manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, &mut temp)?;
                 
                 let numerator = manifold.inner_product(current_point, gradient, &grad_diff)?;
                 
@@ -391,8 +392,9 @@ impl<T: Scalar> ConjugateGradient<T> {
                 
                 // Compute g_k - g_{k-1}
                 let mut neg_prev_grad = transported_prev_grad.clone();
-                manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad, workspace)?;
-                manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, workspace)?;
+                manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad)?;
+                let mut temp = gradient.clone();
+                manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, &mut temp)?;
                 
                 let numerator = manifold.inner_product(current_point, gradient, &grad_diff)?;
                 let denominator = manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
@@ -409,8 +411,9 @@ impl<T: Scalar> ConjugateGradient<T> {
                 
                 // Compute g_k - g_{k-1}
                 let mut neg_prev_grad = transported_prev_grad.clone();
-                manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad, workspace)?;
-                manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, workspace)?;
+                manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad)?;
+                let mut temp = gradient.clone();
+                manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, &mut temp)?;
                 
                 let denominator = manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
                 
@@ -445,7 +448,7 @@ impl<T: Scalar> ConjugateGradient<T> {
         direction: &M::TangentVector,
         current_cost: T,
         gradient: &M::TangentVector,
-        workspace: &mut Workspace<T>,
+        _workspace: &mut Workspace<T>,
         function_evaluations: &mut usize,
     ) -> Result<T>
     where
@@ -465,10 +468,10 @@ impl<T: Scalar> ConjugateGradient<T> {
         for _ in 0..max_iterations {
             // Try the step
             let mut scaled_direction = direction.clone();
-            manifold.scale_tangent(point, alpha, direction, &mut scaled_direction, workspace)?;
+            manifold.scale_tangent(point, alpha, direction, &mut scaled_direction)?;
             
             let mut trial_point = point.clone();
-            manifold.retract(point, &scaled_direction, &mut trial_point, workspace)?;
+            manifold.retract(point, &scaled_direction, &mut trial_point)?;
             
             // Evaluate cost
             let trial_cost = cost_fn.cost(&trial_point)?;
@@ -521,10 +524,7 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
         let mut workspace = Workspace::with_size(n);
         
         // Pre-allocate workspace buffers
-        workspace.get_or_create_vector(BufferId::Gradient, n);
-        workspace.get_or_create_vector(BufferId::Direction, n);
-        workspace.get_or_create_vector(BufferId::Temp1, n);
-        workspace.get_or_create_vector(BufferId::Temp2, n);
+        // Note: These will be allocated as needed when calling manifold methods
         
         // Initialize state
         let initial_cost = cost_fn.cost(initial_point)?;
@@ -589,7 +589,6 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
                 &current_point,
                 &euclidean_grad,
                 &mut riemannian_grad,
-                &mut workspace,
             )?;
             
             // Compute gradient norm
@@ -626,7 +625,7 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
             
             if should_restart || cg_state.previous_direction.is_none() {
                 // Restart with steepest descent: d = -g
-                manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut direction, &mut workspace)?;
+                manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut direction)?;
                 cg_state.iterations_since_restart = 0;
             } else {
                 // Compute conjugate direction: d = -g + beta * d_{k-1}
@@ -635,21 +634,22 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
                 
                 // Transport previous direction to current point if needed
                 if let Some(ref prev_point) = previous_point {
-                    manifold.parallel_transport(prev_point, &current_point, prev_dir, &mut transported_prev_dir, &mut workspace)?;
+                    manifold.parallel_transport(prev_point, &current_point, prev_dir, &mut transported_prev_dir)?;
                 }
                 
                 // d = beta * d_{k-1}
-                manifold.scale_tangent(&current_point, beta, &transported_prev_dir, &mut direction, &mut workspace)?;
+                manifold.scale_tangent(&current_point, beta, &transported_prev_dir, &mut direction)?;
                 // d = -g + beta * d_{k-1}
                 let mut neg_grad = riemannian_grad.clone();
-                manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut neg_grad, &mut workspace)?;
+                manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut neg_grad)?;
                 let mut new_direction = direction.clone();
-                manifold.add_tangents(&current_point, &neg_grad, &direction, &mut new_direction, &mut workspace)?;
+                let mut temp = riemannian_grad.clone();
+                manifold.add_tangents(&current_point, &neg_grad, &direction, &mut new_direction, &mut temp)?;
                 direction = new_direction;
                 
                 // Project the direction back to the tangent space
                 let mut projected_direction = direction.clone();
-                manifold.project_tangent(&current_point, &direction, &mut projected_direction, &mut workspace)?;
+                manifold.project_tangent(&current_point, &direction, &mut projected_direction)?;
                 direction = projected_direction;
             }
             
@@ -667,10 +667,10 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
             
             // Take the step
             let mut scaled_direction = direction.clone();
-            manifold.scale_tangent(&current_point, step_size, &direction, &mut scaled_direction, &mut workspace)?;
+            manifold.scale_tangent(&current_point, step_size, &direction, &mut scaled_direction)?;
             
             let mut new_point = current_point.clone();
-            manifold.retract(&current_point, &scaled_direction, &mut new_point, &mut workspace)?;
+            manifold.retract(&current_point, &scaled_direction, &mut new_point)?;
             
             // Evaluate cost at new point
             let new_cost_verify = cost_fn.cost(&new_point)?;

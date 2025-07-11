@@ -862,7 +862,7 @@ where
         // For now, provide a simplified implementation
         // Full implementation would require proper handling of generic point/tangent types
         let step_size = params.initial_step_size;
-        let mut workspace = Workspace::new();
+        let _workspace: Workspace<T> = Workspace::new();
         
         // Create new point - this requires the manifold to handle allocation
         let mut new_point = point.clone();
@@ -872,7 +872,7 @@ where
         // scaled_direction *= step_size;
         
         // Use manifold's retract with a simple step
-        manifold.retract(point, direction, &mut new_point, &mut workspace)?;
+        manifold.retract(point, direction, &mut new_point)?;
         
         // Evaluate at new point
         let new_value = cost_fn.cost(&new_point)?;
@@ -1143,11 +1143,11 @@ where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
         M: Manifold<T>,
     {
-        let mut workspace = Workspace::new();
+        let _workspace: Workspace<T> = Workspace::new();
         let mut new_point = point.clone();
         
         // Use manifold's retract - scaling would require trait bounds on TangentVector
-        manifold.retract(point, direction, &mut new_point, &mut workspace)?;
+        manifold.retract(point, direction, &mut new_point)?;
         let new_value = cost_fn.cost(&new_point)?;
 
         Ok(LineSearchResult {

@@ -2,7 +2,7 @@
 
 use crate::{
     error::Result,
-    memory::Workspace,
+    memory::{Workspace, BufferId},
     types::Scalar,
 };
 use num_traits::Float;
@@ -26,33 +26,46 @@ where
     
     gradient.fill(T::zero());
     
-    // Use the special method to get multiple buffers at once
-    let (_, e_i, point_plus, point_minus) = workspace.get_gradient_buffers_mut()
-        .ok_or_else(|| crate::error::ManifoldError::invalid_parameter(
-            "Workspace missing required gradient buffers".to_string()
-        ))?;
-    
-    // Verify dimensions
-    if e_i.len() != n || point_plus.len() != n || point_minus.len() != n {
-        return Err(crate::error::ManifoldError::invalid_parameter(
-            format!("Workspace buffers have incorrect dimensions for point of size {}", n),
-        ));
-    }
+    // Pre-allocate buffers if needed
+    workspace.preallocate_vector(BufferId::UnitVector, n);
+    workspace.preallocate_vector(BufferId::PointPlus, n);
+    workspace.preallocate_vector(BufferId::PointMinus, n);
     
     for i in 0..n {
         // Create unit vector in direction i
-        e_i.fill(T::zero());
-        e_i[i] = T::one();
+        {
+            let e_i = workspace.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::UnitVector)
+                .ok_or_else(|| crate::error::ManifoldError::invalid_parameter("Failed to get unit vector buffer".to_string()))?;
+            e_i.fill(T::zero());
+            e_i[i] = T::one();
+        }
         
         // Central difference
-        point_plus.copy_from(point);
-        point_plus.axpy(h, e_i, T::one());
+        {
+            let point_plus = workspace.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::PointPlus)
+                .ok_or_else(|| crate::error::ManifoldError::invalid_parameter("Failed to get point plus buffer".to_string()))?;
+            point_plus.copy_from(point);
+            point_plus[i] += h;
+        }
         
-        point_minus.copy_from(point);
-        point_minus.axpy(-h, e_i, T::one());
+        {
+            let point_minus = workspace.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::PointMinus)
+                .ok_or_else(|| crate::error::ManifoldError::invalid_parameter("Failed to get point minus buffer".to_string()))?;
+            point_minus.copy_from(point);
+            point_minus[i] -= h;
+        }
         
-        let f_plus = cost_fn(point_plus)?;
-        let f_minus = cost_fn(point_minus)?;
+        let f_plus = {
+            let point_plus = workspace.get_buffer::<nalgebra::DVector<T>>(BufferId::PointPlus)
+                .ok_or_else(|| crate::error::ManifoldError::invalid_parameter("Failed to get point plus buffer".to_string()))?;
+            cost_fn(point_plus)?
+        };
+        
+        let f_minus = {
+            let point_minus = workspace.get_buffer::<nalgebra::DVector<T>>(BufferId::PointMinus)
+                .ok_or_else(|| crate::error::ManifoldError::invalid_parameter("Failed to get point minus buffer".to_string()))?;
+            cost_fn(point_minus)?
+        };
         
         gradient[i] = (f_plus - f_minus) / (h + h);
     }
@@ -89,7 +102,7 @@ where
     let t = eps / norm;
     
     // Use workspace buffers
-    let perturbed = workspace.get_or_create_vector(BufferId::Temp1, n);
+    let perturbed = workspace.get_or_create_buffer(BufferId::Temp1, || nalgebra::DVector::<T>::zeros(n));
     
     // Compute perturbed point
     perturbed.copy_from(point);
@@ -238,8 +251,8 @@ mod tests {
         let mut workspace = Workspace::with_size(n);
         
         // Pre-check that buffers are allocated
-        assert!(workspace.get_vector(BufferId::Gradient).is_some());
-        assert_eq!(workspace.get_vector(BufferId::Gradient).unwrap().len(), n);
+        assert!(workspace.get_buffer::<DVector<f64>>(BufferId::Gradient).is_some());
+        assert_eq!(workspace.get_buffer::<DVector<f64>>(BufferId::Gradient).unwrap().len(), n);
         
         // Use workspace multiple times
         let a = DMatrix::<f64>::identity(n, n);
@@ -255,6 +268,6 @@ mod tests {
         }
         
         // Workspace buffers should still exist and have correct size
-        assert_eq!(workspace.get_vector(BufferId::Gradient).unwrap().len(), n);
+        assert_eq!(workspace.get_buffer::<DVector<f64>>(BufferId::Gradient).unwrap().len(), n);
     }
 }

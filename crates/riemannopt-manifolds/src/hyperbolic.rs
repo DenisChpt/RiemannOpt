@@ -99,7 +99,6 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Hyperbolic;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::DVector;
 //!
 //! // Create ℍ² (Poincaré disk)
@@ -113,9 +112,8 @@
 //! let v = DVector::from_vec(vec![0.1, 0.2]);
 //!
 //! // Exponential map
-//! let mut workspace = Workspace::<f64>::new();
 //! let mut y = DVector::zeros(2);
-//! hyperbolic.retract(&x, &v, &mut y, &mut workspace)?;
+//! hyperbolic.retract(&x, &v, &mut y)?;
 //!
 //! // Verify y is in the ball
 //! assert!(hyperbolic.is_point_on_manifold(&y, 1e-10));
@@ -128,7 +126,6 @@ use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
-    memory::workspace::Workspace,
     types::Scalar,
 };
 use std::fmt::{self, Debug};
@@ -621,7 +618,7 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         vector.len() == self.n
     }
 
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
         // Ensure result has correct size
         if result.len() != self.n {
             *result = DVector::zeros(self.n);
@@ -647,7 +644,6 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         if result.len() != self.n {
@@ -685,7 +681,7 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         Ok(lambda * lambda * euclidean_inner)
     }
 
-    fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point, _workspace: &mut Workspace<T>) -> Result<()> {
+    fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector, result: &mut Self::Point) -> Result<()> {
         // Ensure result has correct size
         if result.len() != self.n {
             *result = DVector::zeros(self.n);
@@ -709,7 +705,6 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         if result.len() != self.n {
@@ -734,7 +729,6 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         if result.len() != self.n {
@@ -763,7 +757,7 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         self.random_poincare_point()
     }
 
-    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector, _workspace: &mut Workspace<T>) -> Result<()> {
+    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
         // Ensure result has correct size
         if result.len() != self.n {
             *result = DVector::zeros(self.n);
@@ -799,7 +793,6 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Ensure result has correct size
         if result.len() != self.n {
@@ -818,7 +811,7 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         Ok(())
     }
 
-    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
         if x.len() != self.n || y.len() != self.n {
             return Err(ManifoldError::dimension_mismatch(
                 self.n,
@@ -839,7 +832,6 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         scalar: T,
         tangent: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // In the Poincaré ball model, tangent vectors are just vectors in R^n
         // Scaling preserves the tangent space property
@@ -854,7 +846,8 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         v1: &Self::TangentVector,
         v2: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
+        // Temporary buffer for projection if needed
+        _temp: &mut Self::TangentVector,
     ) -> Result<()> {
         // In the Poincaré ball model, tangent space at a point is just R^n
         // So addition is standard vector addition
@@ -869,7 +862,6 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DVector;
-    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_hyperbolic_creation() {
@@ -993,8 +985,7 @@ mod tests {
         
         // Test centering property: R(x, 0) = x
         let mut retracted = DVector::zeros(2);
-        let mut workspace = Workspace::<f64>::new();
-        hyperbolic.retract(&point, &zero_tangent, &mut retracted, &mut workspace).unwrap();
+        hyperbolic.retract(&point, &zero_tangent, &mut retracted).unwrap();
         assert_relative_eq!(&retracted, &point, epsilon = 1e-10);
         
         // Result should be on manifold
@@ -1024,9 +1015,8 @@ mod tests {
         let euclidean_grad = DVector::from_vec(vec![1.0, -1.0]);
         
         let mut riemannian_grad = DVector::zeros(2);
-        let mut workspace = Workspace::<f64>::new();
         hyperbolic
-            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad, &mut workspace)
+            .euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad)
             .unwrap();
         
         // Riemannian gradient should be scaled version of Euclidean gradient
@@ -1051,8 +1041,7 @@ mod tests {
         // Test random tangent generation
         let point = hyperbolic.random_point();
         let mut tangent = DVector::zeros(3);
-        let mut workspace = Workspace::<f64>::new();
-        hyperbolic.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
+        hyperbolic.random_tangent(&point, &mut tangent).unwrap();
         assert!(hyperbolic.is_vector_in_tangent_space(&point, &tangent, 1e-10));
     }
 
@@ -1064,18 +1053,15 @@ mod tests {
         let point2 = hyperbolic.random_point();
         
         // Distance should be non-negative
-        let mut workspace = Workspace::<f64>::new();
-        let dist = hyperbolic.distance(&point1, &point2, &mut workspace).unwrap();
+        let dist = hyperbolic.distance(&point1, &point2).unwrap();
         assert!(dist >= 0.0);
         
         // Distance to self should be zero
-        let mut workspace = Workspace::<f64>::new();
-        let self_dist = hyperbolic.distance(&point1, &point1, &mut workspace).unwrap();
+        let self_dist = hyperbolic.distance(&point1, &point1).unwrap();
         assert_relative_eq!(self_dist, 0.0, epsilon = 1e-10);
         
         // Distance should be symmetric
-        let mut workspace = Workspace::<f64>::new();
-        let dist_rev = hyperbolic.distance(&point2, &point1, &mut workspace).unwrap();
+        let dist_rev = hyperbolic.distance(&point2, &point1).unwrap();
         assert_relative_eq!(dist, dist_rev, epsilon = 1e-10);
     }
 
@@ -1087,8 +1073,7 @@ mod tests {
         let vector = DVector::from_vec(vec![0.1, 0.0]);
         
         let mut transported = DVector::zeros(2);
-        let mut workspace = Workspace::<f64>::new();
-        <Hyperbolic<f64> as Manifold<f64>>::parallel_transport(&hyperbolic, &from, &to, &vector, &mut transported, &mut workspace).unwrap();
+        <Hyperbolic<f64> as Manifold<f64>>::parallel_transport(&hyperbolic, &from, &to, &vector, &mut transported).unwrap();
         
         // Transported vector should be in tangent space at destination
         assert!(hyperbolic.is_vector_in_tangent_space(&to, &transported, 1e-10));
@@ -1110,8 +1095,7 @@ mod tests {
         assert_relative_eq!(lambda, 2.0, epsilon = 1e-10);
         
         // Distance from origin to origin
-        let mut workspace = Workspace::<f64>::new();
-        let dist = hyperbolic.distance(&origin, &origin, &mut workspace).unwrap();
+        let dist = hyperbolic.distance(&origin, &origin).unwrap();
         assert_relative_eq!(dist, 0.0, epsilon = 1e-10);
     }
 
@@ -1122,8 +1106,7 @@ mod tests {
         // Test wrong dimension handling
         let wrong_dim_point = DVector::from_vec(vec![1.0, 2.0]); // 2D instead of 3D
         let mut projected = DVector::zeros(3);
-        let mut workspace = Workspace::<f64>::new();
-        hyperbolic.project_point(&wrong_dim_point, &mut projected, &mut workspace);
+        hyperbolic.project_point(&wrong_dim_point, &mut projected);
         assert_eq!(projected.len(), 3);
         assert!(hyperbolic.is_point_on_manifold(&projected, 1e-6));
     }

@@ -6,7 +6,6 @@ use riemannopt_core::{
         cost_function::CostFunction,
     },
     error::Result,
-    memory::workspace::Workspace,
     types::DVector,
     // optimization::{
     //     line_search::{LineSearch, BacktrackingLineSearch, StrongWolfeLineSearch, LineSearchParams},
@@ -51,7 +50,7 @@ impl Manifold<f64> for EuclideanSpace {
         true // All vectors are valid
     }
 
-    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
+    fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>) {
         *result = point.clone(); // No projection needed
     }
 
@@ -60,7 +59,6 @@ impl Manifold<f64> for EuclideanSpace {
         _point: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
-        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         *result = vector.clone(); // No projection needed
         Ok(())
@@ -80,7 +78,6 @@ impl Manifold<f64> for EuclideanSpace {
         point: &DVector<f64>,
         tangent: &DVector<f64>,
         result: &mut DVector<f64>,
-        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         *result = point + tangent;
         Ok(())
@@ -91,7 +88,6 @@ impl Manifold<f64> for EuclideanSpace {
         point: &DVector<f64>,
         other: &DVector<f64>,
         result: &mut DVector<f64>,
-        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         *result = other - point;
         Ok(())
@@ -102,7 +98,6 @@ impl Manifold<f64> for EuclideanSpace {
         _point: &DVector<f64>,
         euclidean_grad: &DVector<f64>,
         result: &mut DVector<f64>,
-        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         *result = euclidean_grad.clone();
         Ok(())
@@ -122,7 +117,6 @@ impl Manifold<f64> for EuclideanSpace {
         &self,
         _point: &DVector<f64>,
         result: &mut DVector<f64>,
-        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -142,14 +136,13 @@ impl Manifold<f64> for EuclideanSpace {
         _to: &DVector<f64>,
         vector: &DVector<f64>,
         result: &mut DVector<f64>,
-        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         // In Euclidean space, parallel transport is identity
         *result = vector.clone();
         Ok(())
     }
 
-    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<f64>) -> Result<f64> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<f64> {
         Ok((y - x).norm())
     }
 
@@ -159,7 +152,6 @@ impl Manifold<f64> for EuclideanSpace {
         scalar: f64,
         tangent: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<f64>,
     ) -> Result<()> {
         *result = tangent * scalar;
         Ok(())
@@ -171,10 +163,28 @@ impl Manifold<f64> for EuclideanSpace {
         v1: &Self::TangentVector,
         v2: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<f64>,
+        _temp: &mut Self::TangentVector,
     ) -> Result<()> {
         *result = v1 + v2;
         Ok(())
+    }
+
+    fn axpy_tangent(
+        &self,
+        _point: &Self::Point,
+        alpha: f64,
+        x: &Self::TangentVector,
+        y: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _temp1: &mut Self::TangentVector,
+        _temp2: &mut Self::TangentVector,
+    ) -> Result<()> {
+        *result = alpha * x + y;
+        Ok(())
+    }
+
+    fn norm(&self, _point: &Self::Point, vector: &Self::TangentVector) -> Result<f64> {
+        Ok(vector.norm())
     }
 }
 
@@ -323,17 +333,16 @@ fn test_retraction_properties() {
     // Test retraction at zero
     let zero_tangent = DVector::zeros(3);
     let mut result = DVector::zeros(3);
-    let mut workspace = Workspace::new();
-    manifold.retract(&point, &zero_tangent, &mut result, &mut workspace).unwrap();
+    manifold.retract(&point, &zero_tangent, &mut result).unwrap();
     assert!((result - &point).norm() < 1e-10);
     
     // Test retraction is smooth
     let mut result1 = DVector::zeros(3);
-    manifold.retract(&point, &tangent, &mut result1, &mut workspace).unwrap();
+    manifold.retract(&point, &tangent, &mut result1).unwrap();
     let mut small_tangent = tangent.clone();
-    manifold.scale_tangent(&point, 0.001, &tangent, &mut small_tangent, &mut workspace).unwrap();
+    manifold.scale_tangent(&point, 0.001, &tangent, &mut small_tangent).unwrap();
     let mut result2 = DVector::zeros(3);
-    manifold.retract(&point, &small_tangent, &mut result2, &mut workspace).unwrap();
+    manifold.retract(&point, &small_tangent, &mut result2).unwrap();
     
     // Small retractions should be approximately linear
     let expected = &point + &small_tangent;
@@ -343,21 +352,20 @@ fn test_retraction_properties() {
 #[test]
 fn test_manifold_operations() {
     let manifold = EuclideanSpace::new(3);
-    let mut workspace = Workspace::new();
     
     // Test point operations
     let p1 = manifold.random_point();
     let p2 = manifold.random_point();
     
     // Test distance
-    let dist = manifold.distance(&p1, &p2, &mut workspace).unwrap();
+    let dist = manifold.distance(&p1, &p2).unwrap();
     assert!(dist >= 0.0);
     
     // Test tangent operations
     let mut v1 = DVector::zeros(3);
     let mut v2 = DVector::zeros(3);
-    manifold.random_tangent(&p1, &mut v1, &mut workspace).unwrap();
-    manifold.random_tangent(&p1, &mut v2, &mut workspace).unwrap();
+    manifold.random_tangent(&p1, &mut v1).unwrap();
+    manifold.random_tangent(&p1, &mut v2).unwrap();
     
     // Test inner product
     let inner = manifold.inner_product(&p1, &v1, &v2).unwrap();
@@ -366,28 +374,28 @@ fn test_manifold_operations() {
     
     // Test tangent addition
     let mut sum = DVector::zeros(3);
-    manifold.add_tangents(&p1, &v1, &v2, &mut sum, &mut workspace).unwrap();
+    let mut temp = DVector::zeros(3);
+    manifold.add_tangents(&p1, &v1, &v2, &mut sum, &mut temp).unwrap();
     assert!((&sum - (&v1 + &v2)).norm() < 1e-10);
     
     // Test tangent scaling
     let mut scaled = DVector::zeros(3);
-    manifold.scale_tangent(&p1, 2.5, &v1, &mut scaled, &mut workspace).unwrap();
+    manifold.scale_tangent(&p1, 2.5, &v1, &mut scaled).unwrap();
     assert!((&scaled - (&v1 * 2.5)).norm() < 1e-10);
 }
 
 #[test]
 fn test_parallel_transport_euclidean() {
     let manifold = EuclideanSpace::new(4);
-    let mut workspace = Workspace::new();
     
     let p1 = manifold.random_point();
     let p2 = manifold.random_point();
     
     let mut v = DVector::zeros(4);
-    manifold.random_tangent(&p1, &mut v, &mut workspace).unwrap();
+    manifold.random_tangent(&p1, &mut v).unwrap();
     
     let mut transported = DVector::zeros(4);
-    manifold.parallel_transport(&p1, &p2, &v, &mut transported, &mut workspace).unwrap();
+    manifold.parallel_transport(&p1, &p2, &v, &mut transported).unwrap();
     
     // In Euclidean space, parallel transport is identity
     assert!((&transported - &v).norm() < 1e-10);
@@ -397,13 +405,12 @@ fn test_parallel_transport_euclidean() {
 fn test_gradient_conversion() {
     let manifold = EuclideanSpace::new(3);
     let cost_fn = SimpleQuadratic::new(3);
-    let mut workspace = Workspace::new();
     
     let point = DVector::from_vec(vec![1.0, 2.0, 3.0]);
     let euclidean_grad = cost_fn.gradient(&point).unwrap();
     
     let mut riemannian_grad = DVector::zeros(3);
-    manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad, &mut workspace).unwrap();
+    manifold.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut riemannian_grad).unwrap();
     
     // In Euclidean space, gradients are the same
     assert!((&riemannian_grad - &euclidean_grad).norm() < 1e-10);
@@ -412,23 +419,22 @@ fn test_gradient_conversion() {
 #[test]
 fn test_retract_inverse_retract_consistency() {
     let manifold = EuclideanSpace::new(3);
-    let mut workspace = Workspace::new();
     
     let point = manifold.random_point();
     let mut tangent = DVector::zeros(3);
-    manifold.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
+    manifold.random_tangent(&point, &mut tangent).unwrap();
     
     // Scale tangent to be small
     let mut scaled_tangent = tangent.clone();
-    manifold.scale_tangent(&point, 0.1, &tangent, &mut scaled_tangent, &mut workspace).unwrap();
+    manifold.scale_tangent(&point, 0.1, &tangent, &mut scaled_tangent).unwrap();
     
     // Retract
     let mut new_point = DVector::zeros(3);
-    manifold.retract(&point, &scaled_tangent, &mut new_point, &mut workspace).unwrap();
+    manifold.retract(&point, &scaled_tangent, &mut new_point).unwrap();
     
     // Inverse retract
     let mut recovered_tangent = DVector::zeros(3);
-    manifold.inverse_retract(&point, &new_point, &mut recovered_tangent, &mut workspace).unwrap();
+    manifold.inverse_retract(&point, &new_point, &mut recovered_tangent).unwrap();
     
     // Should recover the tangent vector
     assert!((&recovered_tangent - &scaled_tangent).norm() < 1e-10);
