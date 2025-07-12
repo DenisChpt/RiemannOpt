@@ -516,20 +516,20 @@ impl<T: Scalar> Hyperbolic<T> {
     }
 
     /// Generates a random point in the Poincare ball.
-    fn random_poincare_point(&self) -> DVector<T> {
+    fn random_poincare_point(&self, result: &mut DVector<T>) -> Result<()> {
         let mut rng = rand::thread_rng();
         
         // Generate random direction
-        let mut point = DVector::<T>::zeros(self.n);
+        result.resize_vertically_mut(self.n, T::zero());
         for i in 0..self.n {
             let val: f64 = StandardNormal.sample(&mut rng);
-            point[i] = <T as Scalar>::from_f64(val);
+            result[i] = <T as Scalar>::from_f64(val);
         }
         
         // Normalize and scale by random radius
-        let norm = point.norm();
+        let norm = result.norm();
         if norm > <T as Scalar>::from_f64(1e-16) {
-            point = point / norm;
+            *result /= norm;
             
             // Random radius with appropriate distribution for uniform distribution in ball
             let u: f64 = rand::random();
@@ -539,11 +539,13 @@ impl<T: Scalar> Hyperbolic<T> {
             let max_radius = ball_radius - self.boundary_tolerance.to_f64();
             let scaled_radius = radius * max_radius;
             
-            point * <T as Scalar>::from_f64(scaled_radius)
+            *result *= <T as Scalar>::from_f64(scaled_radius);
         } else {
             // Return origin if we got zero vector
-            DVector::<T>::zeros(self.n)
+            result.fill(T::zero());
         }
+        
+        Ok(())
     }
 
     /// Parallel transport using the Levi-Civita connection.
@@ -753,8 +755,8 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
-        self.random_poincare_point()
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
+        self.random_poincare_point(result)
     }
 
     fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {

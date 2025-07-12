@@ -773,7 +773,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -789,7 +789,8 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         let ata = a.transpose() * &a;
         let identity = DMatrix::<T>::identity(self.n, self.n);
         
-        ata + identity * self.min_eigenvalue
+        *result = ata + identity * self.min_eigenvalue;
+        Ok(())
     }
 
     fn random_tangent(

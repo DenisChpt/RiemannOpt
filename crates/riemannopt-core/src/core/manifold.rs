@@ -172,7 +172,7 @@ use std::fmt::Debug;
 /// ```
 pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     /// The type of data for a point (e.g., DVector<T> or DMatrix<T>).
-    type Point: Clone + Debug + Send + Sync;
+    type Point: Clone + Debug + Send + Sync + Default;
     /// The type of data for a tangent vector.
     type TangentVector: Clone + Debug + Send + Sync;
     /// Returns a human-readable name for the manifold.
@@ -431,10 +431,14 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
     ///
     /// This is useful for testing and initialization.
     ///
+    /// # Arguments
+    ///
+    /// * `result` - Pre-allocated output buffer for the random point
+    ///
     /// # Returns
     ///
-    /// A random point uniformly distributed on the manifold (if possible).
-    fn random_point(&self) -> Self::Point;
+    /// Ok(()) if successful, error otherwise.
+    fn random_point(&self, result: &mut Self::Point) -> Result<()>;
 
     /// Generates a random tangent vector at a given point.
     ///

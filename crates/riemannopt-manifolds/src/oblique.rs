@@ -674,26 +674,26 @@ impl<T: Scalar> Manifold<T> for Oblique {
         self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
-        let mut matrix = DMatrix::<T>::zeros(self.n, self.p);
+        result.resize_mut(self.n, self.p, T::zero());
         
         // Generate random columns and normalize
         for j in 0..self.p {
             for i in 0..self.n {
-                matrix[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+                result[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
             }
             
-            let col_norm = matrix.column(j).norm();
+            let col_norm = result.column(j).norm();
             if col_norm > T::zero() {
-                let mut col_mut = matrix.column_mut(j);
+                let mut col_mut = result.column_mut(j);
                 col_mut /= col_norm;
             }
         }
         
-        matrix
+        Ok(())
     }
 
     fn random_tangent(

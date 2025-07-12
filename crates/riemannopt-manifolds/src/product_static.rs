@@ -145,8 +145,10 @@ where
     /// ```
     pub fn new(manifold1: M1, manifold2: M2) -> Self {
         // Get dimensions by creating test points
-        let test1 = manifold1.random_point();
-        let test2 = manifold2.random_point();
+        let mut test1 = Default::default();
+        let mut test2 = Default::default();
+        manifold1.random_point(&mut test1).unwrap();
+        manifold2.random_point(&mut test2).unwrap();
         let dim1 = test1.len();
         let dim2 = test2.len();
         let total_dim = dim1 + dim2;
@@ -548,10 +550,15 @@ where
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
-        let p1 = self.manifold1.random_point();
-        let p2 = self.manifold2.random_point();
-        self.combine_vectors(&p1, &p2).unwrap()
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
+        let mut p1 = Default::default();
+        let mut p2 = Default::default();
+        
+        self.manifold1.random_point(&mut p1)?;
+        self.manifold2.random_point(&mut p2)?;
+        
+        self.combine_vectors_mut(&p1, &p2, result)?;
+        Ok(())
     }
 
     fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {

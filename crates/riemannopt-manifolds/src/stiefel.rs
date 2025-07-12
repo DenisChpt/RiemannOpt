@@ -646,7 +646,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -660,14 +660,16 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         
         // QR decomposition to get orthonormal columns
         let qr = a.qr();
-        let mut q = qr.q();
+        let q = qr.q();
         
         // Extract first p columns if needed
         if q.ncols() > self.p {
-            q = q.columns(0, self.p).clone_owned();
+            result.copy_from(&q.columns(0, self.p));
+        } else {
+            result.copy_from(&q);
         }
         
-        q
+        Ok(())
     }
 
     fn random_tangent(

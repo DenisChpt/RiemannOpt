@@ -146,6 +146,16 @@ pub struct FixedRankPoint<T: Scalar> {
     pub v: DMatrix<T>,
 }
 
+impl<T: Scalar> Default for FixedRankPoint<T> {
+    fn default() -> Self {
+        Self {
+            u: DMatrix::default(),
+            s: DVector::default(),
+            v: DMatrix::default(),
+        }
+    }
+}
+
 impl<T: Scalar> FixedRankPoint<T> {
     /// Create a new fixed-rank point from factors
     pub fn new(u: DMatrix<T>, s: DVector<T>, v: DMatrix<T>) -> Self {
@@ -541,7 +551,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
         self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -572,7 +582,8 @@ impl<T: Scalar> Manifold<T> for FixedRank {
             s[i] = <T as Scalar>::from_f64(val.abs() + 1.0);
         }
         
-        FixedRankPoint::new(u_orth, s, v_orth)
+        *result = FixedRankPoint::new(u_orth, s, v_orth);
+        Ok(())
     }
 
     fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
@@ -762,7 +773,8 @@ impl FixedRank {
     /// 
     /// A random m×n matrix of rank k.
     pub fn random_matrix<T: Scalar>(&self) -> DMatrix<T> {
-        let point = <Self as Manifold<T>>::random_point(self);
+        let mut point = FixedRankPoint::<T>::default();
+        <Self as Manifold<T>>::random_point(self, &mut point).unwrap();
         point.to_matrix()
     }
 

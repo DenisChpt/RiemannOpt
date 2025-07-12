@@ -672,7 +672,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
         self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -694,7 +694,8 @@ impl<T: Scalar> Manifold<T> for PSDCone {
         // Scale to reasonable size
         let psd_scaled = psd / <T as Scalar>::from_f64(self.n as f64);
         
-        self.mat_to_vec(&psd_scaled)
+        *result = self.mat_to_vec(&psd_scaled);
+        Ok(())
     }
 
     fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {

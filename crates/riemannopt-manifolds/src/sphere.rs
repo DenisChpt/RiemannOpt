@@ -586,26 +586,28 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
         // Generate random Gaussian vector
-        let mut x = DVector::zeros(self.ambient_dim);
+        if result.len() != self.ambient_dim {
+            *result = DVector::zeros(self.ambient_dim);
+        }
         for i in 0..self.ambient_dim {
-            x[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+            result[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
         }
         
         // Normalize to get uniform distribution on sphere
-        let norm = x.norm();
+        let norm = result.norm();
         if norm < <T as Scalar>::from_f64(1e-16) {
             // Extremely rare case: regenerate
-            x[0] = T::one();
+            result[0] = T::one();
         } else {
-            x /= norm;
+            *result /= norm;
         }
         
-        x
+        Ok(())
     }
 
     fn random_tangent(
