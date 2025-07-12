@@ -89,10 +89,11 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
-        DVector::from_fn(self.dim, |_, _| {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
+        *result = DVector::from_fn(self.dim, |_, _| {
 <T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
-        })
+        });
+        Ok(())
     }
 
     fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector, ) -> Result<()> {
@@ -218,18 +219,18 @@ impl<T: Scalar> Manifold<T> for TestSphereManifold {
         self.project_tangent(point, grad, result)
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         // Generate random point and normalize
-        let mut point = DVector::from_fn(self.dim, |_, _| {
+        *result = DVector::from_fn(self.dim, |_, _| {
 <T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
         });
-        let norm = point.norm();
+        let norm = result.norm();
         if norm > T::epsilon() {
-            point /= norm;
+            *result /= norm;
         } else {
-            point[0] = T::one();
+            result[0] = T::one();
         }
-        point
+        Ok(())
     }
 
     fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
@@ -351,8 +352,9 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
-        DVector::zeros(self.dim)
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
+        *result = DVector::zeros(self.dim);
+        Ok(())
     }
 
     fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector, ) -> Result<()> {

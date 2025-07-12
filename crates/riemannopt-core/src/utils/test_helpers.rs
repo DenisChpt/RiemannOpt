@@ -111,15 +111,14 @@ impl Manifold<f64> for TestSphere {
         self.project_tangent(point, euclidean_grad, result)
     }
 
-    fn random_point(&self) -> DVector<f64> {
+    fn random_point(&self, result: &mut DVector<f64>) -> Result<()> {
         let mut rng = thread_rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
             v[i] = rng.gen::<f64>() * 2.0 - 1.0;
         }
-        let mut result = DVector::zeros(self.dim);
-        self.project_point(&v, &mut result);
-        result
+        self.project_point(&v, result);
+        Ok(())
     }
 
     fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {

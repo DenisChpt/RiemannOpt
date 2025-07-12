@@ -141,8 +141,9 @@ impl Product {
         assert!(!manifolds.is_empty(), "Product manifold requires at least one component");
         
         let dimensions: Vec<usize> = manifolds.iter().map(|m| {
-            // Get dimension by creating a random point
-            let p = m.random_point();
+            // Get dimension by creating a default point and getting a random point
+            let mut p = DVector::<f64>::default();
+            m.random_point(&mut p).unwrap();
             p.len()
         }).collect();
         
@@ -581,15 +582,18 @@ impl<T: Scalar> Manifold<T> for Product {
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut components = Vec::with_capacity(self.manifolds.len());
         
         for manifold in &self.manifolds {
-            components.push(manifold.random_point());
+            let mut component = DVector::<f64>::zeros(manifold.dimension());
+            manifold.random_point(&mut component)?;
+            components.push(component);
         }
 
-        let combined = self.combine_vectors(&components).unwrap();
-        Self::convert_scalar::<f64, T>(&combined)
+        let combined = self.combine_vectors(&components)?;
+        *result = Self::convert_scalar::<f64, T>(&combined);
+        Ok(())
     }
 
     fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
