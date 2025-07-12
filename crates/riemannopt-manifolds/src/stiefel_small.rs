@@ -1,14 +1,63 @@
-//! Specialized implementations for small Stiefel manifolds
+//! # Specialized Implementations for Small Stiefel Manifolds
 //!
-//! This module provides optimized implementations for common small
-//! Stiefel manifold configurations like St(3,2), St(4,2), etc.
+//! This module provides highly optimized, hand-coded implementations for common small
+//! Stiefel manifold configurations, specifically St(3,2) and St(4,2). These specialized
+//! implementations offer significant performance improvements over the generic Stiefel
+//! manifold operations by eliminating dynamic memory allocation and leveraging compile-time
+//! knowledge of matrix dimensions.
+//!
+//! ## Performance Benefits
+//!
+//! 1. **No Dynamic Allocation**: All operations work with fixed-size arrays
+//! 2. **Unrolled Loops**: Matrix multiplications are fully unrolled
+//! 3. **Cache Efficiency**: Small, fixed-size data structures fit in CPU cache
+//! 4. **Compiler Optimization**: Known dimensions enable better optimization
+//!
+//! ## Supported Configurations
+//!
+//! - **St(3,2)**: 3×2 matrices with orthonormal columns (6 elements)
+//! - **St(4,2)**: 4×2 matrices with orthonormal columns (8 elements)
+//!
+//! ## Memory Layout
+//!
+//! Matrices are stored in column-major order as contiguous arrays:
+//! - For a 3×2 matrix X = [x₁ x₂], the array is [x₁₁, x₂₁, x₃₁, x₁₂, x₂₂, x₃₂]
+//! - This layout matches BLAS conventions for optimal performance
+//!
+//! ## Use Cases
+//!
+//! These specialized functions are particularly useful in:
+//! - Real-time systems with strict performance requirements
+//! - Embedded systems with limited memory
+//! - Inner loops of optimization algorithms
+//! - GPU kernel implementations (as templates)
 
 use riemannopt_core::types::Scalar;
 
-/// Specialized projection to tangent space for St(3,2)
+/// Specialized projection to tangent space for St(3,2).
+/// 
+/// Computes the orthogonal projection of a matrix V onto the tangent space
+/// of the Stiefel manifold at point X.
+/// 
+/// # Mathematical Formula
 /// 
 /// For X ∈ St(3,2) and V ∈ ℝ³ˣ², the projection is:
-/// P_X(V) = V - X(X^T V + V^T X)/2
+/// ```text
+/// P_X(V) = V - X sym(X^T V)
+/// ```
+/// where sym(A) = (A + A^T)/2 is the symmetric part.
+/// 
+/// # Algorithm Details
+/// 
+/// 1. Compute X^T V (2×2 matrix multiplication)
+/// 2. Symmetrize: S = (X^T V + V^T X)/2
+/// 3. Project: result = V - X S
+/// 
+/// # Performance
+/// 
+/// - **Operations**: 36 multiplications, 30 additions
+/// - **Memory**: Stack-allocated temporaries only
+/// - **Vectorization**: Compiler may auto-vectorize the loops
 #[inline(always)]
 pub fn project_tangent_stiefel_3_2<T: Scalar>(
     x: &[T], // 3x2 matrix as column-major array of length 6
@@ -45,7 +94,24 @@ pub fn project_tangent_stiefel_3_2<T: Scalar>(
     result[5] = v[5] - (x[2] * sym_01 + x[5] * sym_11);
 }
 
-/// Specialized projection to tangent space for St(4,2)
+/// Specialized projection to tangent space for St(4,2).
+/// 
+/// Computes the orthogonal projection of a matrix V onto the tangent space
+/// of the Stiefel manifold at point X.
+/// 
+/// # Mathematical Formula
+/// 
+/// For X ∈ St(4,2) and V ∈ ℝ⁴ˣ², the projection follows the same formula
+/// as St(3,2) but with different dimensions:
+/// ```text
+/// P_X(V) = V - X sym(X^T V)
+/// ```
+/// 
+/// # Performance
+/// 
+/// - **Operations**: 48 multiplications, 40 additions  
+/// - **Memory**: Stack-allocated temporaries only
+/// - **Vectorization**: Well-suited for SSE/AVX instructions
 #[inline(always)]
 pub fn project_tangent_stiefel_4_2<T: Scalar>(
     x: &[T], // 4x2 matrix as column-major array of length 8
@@ -83,7 +149,26 @@ pub fn project_tangent_stiefel_4_2<T: Scalar>(
     result[7] = v[7] - (x[3] * sym_01 + x[7] * sym_11);
 }
 
-/// Check if we can use specialized Stiefel operations
+/// Check if specialized Stiefel operations are available for given dimensions.
+/// 
+/// # Arguments
+/// 
+/// * `n` - Number of rows in the Stiefel matrix
+/// * `p` - Number of columns in the Stiefel matrix
+/// 
+/// # Returns
+/// 
+/// `true` if specialized implementations exist for St(n,p), `false` otherwise.
+/// 
+/// # Example
+/// 
+/// ```rust
+/// use riemannopt_manifolds::stiefel_small::can_use_specialized_stiefel;
+/// 
+/// assert!(can_use_specialized_stiefel(3, 2));  // St(3,2) is specialized
+/// assert!(can_use_specialized_stiefel(4, 2));  // St(4,2) is specialized
+/// assert!(!can_use_specialized_stiefel(5, 2)); // St(5,2) uses generic code
+/// ```
 #[inline(always)]
 pub fn can_use_specialized_stiefel(n: usize, p: usize) -> bool {
     (n == 3 && p == 2) || (n == 4 && p == 2)

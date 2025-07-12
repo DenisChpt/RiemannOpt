@@ -1,6 +1,6 @@
 //! Integration tests for automatic differentiation with manifolds.
 
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, DVector};
 use riemannopt_autodiff::prelude::*;
 use riemannopt_core::prelude::Manifold;
 use riemannopt_manifolds::Sphere;
@@ -180,7 +180,9 @@ fn test_real_manifold_integration() {
     let grad = graph.variable(grad_mat.clone());
     
     // Project gradient to tangent space using sphere manifold
-    let tangent_grad = sphere.project_tangent(&x_val, &grad_val).unwrap();
+    let mut tangent_grad = DVector::zeros(3);
+    let mut workspace = riemannopt_core::memory::workspace::Workspace::new();
+    sphere.project_tangent(&x_val, &grad_val, &mut tangent_grad, &mut workspace).unwrap();
     
     // Do the same with autodiff
     let auto_tangent = graph.riemannian_gradient(x.id, grad.id, "sphere");
@@ -188,6 +190,6 @@ fn test_real_manifold_integration() {
     
     // Results should match
     for i in 0..3 {
-        assert!((tangent_grad[(i, 0)] - auto_result[(i, 0)]).abs() < 1e-10);
+        assert!((tangent_grad[i] - auto_result[(i, 0)]).abs() < 1e-10);
     }
 }

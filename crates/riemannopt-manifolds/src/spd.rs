@@ -115,7 +115,6 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::SPD;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::DMatrix;
 //!
 //! // Create SPD manifold S⁺⁺(3)
@@ -135,9 +134,8 @@
 //! });
 //!
 //! // Exponential map
-//! let mut workspace = Workspace::<f64>::new();
 //! let mut q = DMatrix::zeros(3, 3);
-//! spd.retract(&p, &v, &mut q, &mut workspace)?;
+//! spd.retract(&p, &v, &mut q)?;
 //! 
 //! // Verify result is SPD
 //! assert!(spd.is_point_on_manifold(&q, 1e-10));
@@ -150,7 +148,7 @@ use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
-    memory::workspace::Workspace,
+    core::matrix_manifold::MatrixManifold,
     types::Scalar,
 };
 use std::fmt::{self, Debug};
@@ -310,7 +308,9 @@ impl<T: Scalar> SPD<T> {
     /// Validates that a matrix is symmetric positive definite.
     ///
     /// # Mathematical Checks
-    ///\n    /// 1. Symmetry: ‖P - P^T‖ ≤ tolerance\n    /// 2. Positive definiteness: λᵢ(P) > min_eigenvalue ∀i
+    ///
+    /// 1. Symmetry: ‖P - P^T‖ ≤ tolerance
+    /// 2. Positive definiteness: λᵢ(P) > min_eigenvalue ∀i
     ///
     /// # Errors
     ///
@@ -605,7 +605,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         symmetry_error < tol
     }
 
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
         if point.nrows() != self.n || point.ncols() != self.n {
             *result = DMatrix::identity(self.n, self.n);
             *result *= self.min_eigenvalue + <T as Scalar>::from_f64(1.0);
@@ -639,7 +639,6 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.nrows() != self.n || point.ncols() != self.n ||
            vector.nrows() != self.n || vector.ncols() != self.n {
@@ -694,7 +693,6 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         point: &Self::Point,
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         match self.metric {
             SPDMetric::AffineInvariant => {
@@ -706,7 +704,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
             _ => {
                 // For other metrics, use projection-based retraction
                 let sum = point + tangent;
-                self.project_point(&sum, result, workspace);
+                self.project_point(&sum, result);
                 Ok(())
             }
         }
@@ -717,7 +715,6 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
         self.check_point(other)?;
@@ -732,7 +729,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
             _ => {
                 // For other metrics, use approximation
                 let diff = other - point;
-                self.project_tangent(point, &diff, result, workspace)
+                self.project_tangent(point, &diff, result)
             }
         }
     }
@@ -742,7 +739,6 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
 
@@ -762,7 +758,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         };
 
         // Ensure symmetry
-        self.project_tangent(point, &grad_result, result, workspace)
+        self.project_tangent(point, &grad_result, result)
     }
 
     fn parallel_transport(
@@ -771,14 +767,13 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         let transported = self.parallel_transport(from, to, vector)?;
         result.copy_from(&transported);
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -794,14 +789,14 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         let ata = a.transpose() * &a;
         let identity = DMatrix::<T>::identity(self.n, self.n);
         
-        ata + identity * self.min_eigenvalue
+        *result = ata + identity * self.min_eigenvalue;
+        Ok(())
     }
 
     fn random_tangent(
         &self,
         point: &Self::Point,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
         
@@ -828,7 +823,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
         Ok(())
     }
 
-    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
         self.distance(x, y)
     }
 
@@ -839,6 +834,46 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
     fn is_flat(&self) -> bool {
         false // SPD has negative curvature
     }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+    ) -> Result<()> {
+        // For SPD manifold, tangent vectors are symmetric matrices
+        // Scaling preserves symmetry
+        result.copy_from(tangent);
+        *result *= scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        // Temporary buffer for projection if needed
+        temp: &mut Self::TangentVector,
+    ) -> Result<()> {
+        // Add the tangent vectors
+        temp.copy_from(v1);
+        *temp += v2;
+        
+        // The sum should already be symmetric if v1 and v2 are,
+        // but we project for numerical stability
+        self.project_tangent(point, temp, result)?;
+        
+        Ok(())
+    }
+}
+
+impl<T: Scalar> MatrixManifold<T> for SPD<T> {
+    fn matrix_dims(&self) -> (usize, usize) {
+        (self.n, self.n)
+    }
 }
 
 
@@ -847,7 +882,6 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::{DMatrix, DVector};
-    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_spd_creation() {
@@ -893,7 +927,6 @@ mod tests {
     #[test]
     fn test_tangent_projection() {
         let spd = SPD::<f64>::new(3).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let p = spd.random_point();
         
@@ -901,7 +934,7 @@ mod tests {
         let v = DMatrix::from_fn(3, 3, |i, j| (i + j) as f64);
         
         let mut v_symmetric = DMatrix::zeros(3, 3);
-        spd.project_tangent(&p, &v, &mut v_symmetric, &mut workspace).unwrap();
+        spd.project_tangent(&p, &v, &mut v_symmetric).unwrap();
         
         // Check symmetry
         let symmetry_error = (&v_symmetric - &v_symmetric.transpose()).norm();
@@ -1024,13 +1057,12 @@ mod tests {
     #[test]
     fn test_euclidean_to_riemannian_gradient() {
         let spd = SPD::<f64>::new(2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let p = DMatrix::<f64>::identity(2, 2) * 2.0;
         let grad = DMatrix::from_row_slice(2, 2, &[1.0, 0.5, 0.5, 2.0]);
         
         let mut rgrad = grad.clone();
-        spd.euclidean_to_riemannian_gradient(&p, &grad, &mut rgrad, &mut workspace).unwrap();
+        spd.euclidean_to_riemannian_gradient(&p, &grad, &mut rgrad).unwrap();
         
         // Check it's symmetric
         assert!(spd.check_tangent(&p, &rgrad).is_ok());

@@ -17,12 +17,13 @@ num-traits = { workspace = true }
 approx = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [features]
 default = ["std", "parallel"]
 std = ["riemannopt-core/std", "riemannopt-manifolds/std"]
 parallel = ["riemannopt-manifolds/parallel", "riemannopt-core/parallel"]
-serde = ["riemannopt-core/serde", "riemannopt-manifolds/serde"]
+serde = ["dep:serde", "riemannopt-core/serde", "riemannopt-manifolds/serde"]
 
 [dev-dependencies]
 riemannopt-core = { path = "../riemannopt-core", version = "0.1.0", features = ["test-utils"] }
@@ -30,6 +31,3 @@ proptest = { workspace = true }
 criterion = { workspace = true }
 pretty_assertions = { workspace = true }
 
-[[bench]]
-name = "optimizer_comparison"
-harness = false

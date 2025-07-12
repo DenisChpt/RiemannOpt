@@ -122,8 +122,7 @@
 //! // Project gradient to tangent space
 //! let grad = DMatrix::from_fn(5, 2, |i, j| (i + j) as f64);
 //! let mut rgrad = grad.clone();
-//! let mut workspace = Workspace::<f64>::new();
-//! stiefel.euclidean_to_riemannian_gradient(&x, &grad, &mut rgrad, &mut workspace)?;
+//! stiefel.euclidean_to_riemannian_gradient(&x, &grad, &mut rgrad)?;
 //!
 //! // Verify tangent space constraint
 //! let constraint = x.transpose() * &rgrad;
@@ -137,7 +136,7 @@ use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
-    memory::workspace::Workspace,
+    core::matrix_manifold::MatrixManifold,
     types::Scalar,
 };
 use std::fmt::{self, Debug};
@@ -463,7 +462,6 @@ impl<T: Scalar> Stiefel<T> {
         x: &DMatrix<T>,
         y: &DMatrix<T>,
         v: &DMatrix<T>,
-        _workspace: &mut Workspace<T>,
     ) -> Result<DMatrix<T>> {
         self.check_tangent(x, v)?;
         self.check_point(y)?;
@@ -521,7 +519,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         (&xtz + &xtz.transpose()).norm() < tol
     }
 
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
         if point.nrows() != self.n || point.ncols() != self.p {
             *result = DMatrix::zeros(self.n, self.p);
             return;
@@ -554,7 +552,6 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.nrows() != self.n || point.ncols() != self.p ||
            vector.nrows() != self.n || vector.ncols() != self.p {
@@ -605,7 +602,6 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         point: &Self::Point,
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Use QR retraction by default
         let retracted = self.qr_retraction(point, tangent)?;
@@ -618,7 +614,6 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
         self.check_point(other)?;
@@ -626,7 +621,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         // Compute log map approximation
         // For close points: log_X(Y) ≈ P_X(Y - X)
         let diff = other - point;
-        self.project_tangent(point, &diff, result, workspace)
+        self.project_tangent(point, &diff, result)
     }
 
     fn euclidean_to_riemannian_gradient(
@@ -634,10 +629,9 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Riemannian gradient is the tangent projection of Euclidean gradient
-        self.project_tangent(point, euclidean_grad, result, workspace)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn parallel_transport(
@@ -646,14 +640,13 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
-        let transported = self.parallel_transport(from, to, vector, workspace)?;
+        let transported = self.parallel_transport(from, to, vector)?;
         result.copy_from(&transported);
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
@@ -667,21 +660,22 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         
         // QR decomposition to get orthonormal columns
         let qr = a.qr();
-        let mut q = qr.q();
+        let q = qr.q();
         
         // Extract first p columns if needed
         if q.ncols() > self.p {
-            q = q.columns(0, self.p).clone_owned();
+            result.copy_from(&q.columns(0, self.p));
+        } else {
+            result.copy_from(&q);
         }
         
-        q
+        Ok(())
     }
 
     fn random_tangent(
         &self,
         point: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
         
@@ -697,7 +691,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         }
         
         // Project to tangent space
-        self.project_tangent(point, &z, result, workspace)?;
+        self.project_tangent(point, &z, result)?;
         
         // Normalize
         let norm = result.norm();
@@ -708,7 +702,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         Ok(())
     }
 
-    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
         self.geodesic_distance(x, y)
     }
 
@@ -719,6 +713,46 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
     fn is_flat(&self) -> bool {
         false
     }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+    ) -> Result<()> {
+        // For Stiefel manifold, tangent vectors satisfy X^T Z + Z^T X = 0
+        // Scaling preserves this skew-symmetry constraint
+        result.copy_from(tangent);
+        *result *= scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        // Temporary buffer for projection if needed
+        temp: &mut Self::TangentVector,
+    ) -> Result<()> {
+        // Add the tangent vectors
+        temp.copy_from(v1);
+        *temp += v2;
+        
+        // The sum should already satisfy the tangent space constraint if v1 and v2 do,
+        // but we project for numerical stability
+        self.project_tangent(point, temp, result)?;
+        
+        Ok(())
+    }
+}
+
+impl<T: Scalar> MatrixManifold<T> for Stiefel<T> {
+    fn matrix_dims(&self) -> (usize, usize) {
+        (self.n, self.p)
+    }
 }
 
 #[cfg(test)]
@@ -726,7 +760,6 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DMatrix;
-    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_stiefel_creation() {
@@ -772,7 +805,6 @@ mod tests {
     #[test]
     fn test_tangent_projection() {
         let stiefel = Stiefel::<f64>::new(3, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         // Point on manifold
         let x = DMatrix::from_row_slice(3, 2, &[
@@ -789,7 +821,7 @@ mod tests {
         ]);
         
         let mut z_tangent = DMatrix::zeros(3, 2);
-        stiefel.project_tangent(&x, &z, &mut z_tangent, &mut workspace).unwrap();
+        stiefel.project_tangent(&x, &z, &mut z_tangent).unwrap();
         
         // Check tangent space constraint
         let xtz = x.transpose() * &z_tangent;
@@ -807,8 +839,7 @@ mod tests {
         // Small tangent vector
         let z = DMatrix::from_fn(4, 2, |i, j| 0.1 * ((i + j) as f64));
         let mut z_tangent = z.clone();
-        let mut workspace = Workspace::<f64>::new();
-        stiefel.project_tangent(&x, &z, &mut z_tangent, &mut workspace).unwrap();
+        stiefel.project_tangent(&x, &z, &mut z_tangent).unwrap();
         
         // Retract
         let y = stiefel.qr_retraction(&x, &z_tangent).unwrap();
@@ -827,7 +858,6 @@ mod tests {
         let stiefel = Stiefel::<f64>::new(3, 2).unwrap();
         
         let x = stiefel.random_point();
-        let mut workspace = Workspace::<f64>::new();
         
         // Generate two tangent vectors
         let u = DMatrix::from_fn(3, 2, |i, j| (i as f64) * 0.1 + (j as f64) * 0.2);
@@ -835,8 +865,8 @@ mod tests {
         
         let mut u_tangent = u.clone();
         let mut v_tangent = v.clone();
-        stiefel.project_tangent(&x, &u, &mut u_tangent, &mut workspace).unwrap();
-        stiefel.project_tangent(&x, &v, &mut v_tangent, &mut workspace).unwrap();
+        stiefel.project_tangent(&x, &u, &mut u_tangent).unwrap();
+        stiefel.project_tangent(&x, &v, &mut v_tangent).unwrap();
         
         // Compute inner product
         let inner = stiefel.inner_product(&x, &u_tangent, &v_tangent).unwrap();
@@ -864,7 +894,6 @@ mod tests {
     #[test]
     fn test_euclidean_to_riemannian_gradient() {
         let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let x = stiefel.random_point();
         
@@ -872,7 +901,7 @@ mod tests {
         let grad = DMatrix::from_fn(4, 2, |i, j| (i + j) as f64);
         
         let mut rgrad = grad.clone();
-        stiefel.euclidean_to_riemannian_gradient(&x, &grad, &mut rgrad, &mut workspace).unwrap();
+        stiefel.euclidean_to_riemannian_gradient(&x, &grad, &mut rgrad).unwrap();
         
         // Check it's in tangent space
         assert!(stiefel.check_tangent(&x, &rgrad).is_ok());

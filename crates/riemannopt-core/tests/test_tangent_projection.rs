@@ -3,8 +3,12 @@
 //! This test module verifies that projecting to the tangent space
 //! is an idempotent operation: P(P(v)) = P(v).
 
-use nalgebra::Dyn;
-use riemannopt_core::{error::Result, manifold::Manifold, types::DVector, memory::workspace::Workspace};
+use riemannopt_core::{
+    core::manifold::Manifold,
+    error::Result,
+    memory::workspace::Workspace,
+    types::DVector,
+};
 
 /// Sphere manifold for testing projections
 #[derive(Debug)]
@@ -18,7 +22,10 @@ impl TestSphere {
     }
 }
 
-impl Manifold<f64, Dyn> for TestSphere {
+impl Manifold<f64> for TestSphere {
+    type Point = DVector<f64>;
+    type TangentVector = DVector<f64>;
+
     fn name(&self) -> &str {
         "Test Sphere"
     }
@@ -43,7 +50,7 @@ impl Manifold<f64, Dyn> for TestSphere {
     fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
         let norm = point.norm();
         if norm > f64::EPSILON {
-            result.copy_from(&(point / norm));
+            *result = point / norm;
         } else {
             result.fill(0.0);
             result[0] = 1.0;
@@ -53,8 +60,7 @@ impl Manifold<f64, Dyn> for TestSphere {
     fn project_tangent(&self, point: &DVector<f64>, vector: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
         // Project vector to tangent space: v - <v, p>p
         let inner = point.dot(vector);
-        result.copy_from(vector);
-        result.axpy(-inner, point, 1.0);
+        *result = vector - point * inner;
         Ok(())
     }
 
@@ -68,10 +74,8 @@ impl Manifold<f64, Dyn> for TestSphere {
     }
 
     fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, workspace: &mut Workspace<f64>) -> Result<()> {
-        result.copy_from(point);
-        *result += tangent;
-        let temp = result.clone();
-        self.project_point(&temp, result, workspace);
+        let new_point = point + tangent;
+        self.project_point(&new_point, result, workspace);
         Ok(())
     }
 
@@ -82,11 +86,10 @@ impl Manifold<f64, Dyn> for TestSphere {
         if theta.abs() < f64::EPSILON {
             result.fill(0.0);
         } else {
-            result.copy_from(other);
-            result.axpy(-inner, point, 1.0);
-            let v_norm = result.norm();
+            let v = other - point * inner;
+            let v_norm = v.norm();
             if v_norm > f64::EPSILON {
-                result.scale_mut(theta / v_norm);
+                *result = v * (theta / v_norm);
             } else {
                 result.fill(0.0);
             }
@@ -121,6 +124,48 @@ impl Manifold<f64, Dyn> for TestSphere {
             v[i] = rand::random::<f64>() * 2.0 - 1.0;
         }
         self.project_tangent(point, &v, result, workspace)
+    }
+
+    fn parallel_transport(
+        &self,
+        _from: &DVector<f64>,
+        to: &DVector<f64>,
+        vector: &DVector<f64>,
+        result: &mut DVector<f64>,
+        workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        // Simple projection-based transport
+        self.project_tangent(to, vector, result, workspace)
+    }
+
+    fn distance(&self, x: &Self::Point, y: &Self::Point, workspace: &mut Workspace<f64>) -> Result<f64> {
+        let mut tangent = DVector::zeros(x.len());
+        self.inverse_retract(x, y, &mut tangent, workspace)?;
+        self.norm(x, &tangent)
+    }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: f64,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        *result = tangent * scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        _point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        *result = v1 + v2;
+        Ok(())
     }
 }
 
@@ -386,3 +431,76 @@ fn test_projection_normal_vector() {
     );
 }
 
+#[test]
+fn test_projection_scale_invariance() {
+    let sphere = TestSphere::new(3);
+    let tolerance = 1e-14;
+    let mut workspace = Workspace::new();
+
+    let point = sphere.random_point();
+    let mut v = DVector::zeros(3);
+    for i in 0..3 {
+        v[i] = rand::random::<f64>() * 2.0 - 1.0;
+    }
+
+    // P(αv) = αP(v) for any scalar α
+    let scales = vec![0.5, 2.0, -1.0, 10.0];
+    
+    let mut proj_v = DVector::zeros(3);
+    sphere.project_tangent(&point, &v, &mut proj_v, &mut workspace).unwrap();
+
+    for alpha in scales {
+        let scaled_v = &v * alpha;
+        let mut proj_scaled_v = DVector::zeros(3);
+        sphere.project_tangent(&point, &scaled_v, &mut proj_scaled_v, &mut workspace).unwrap();
+
+        let expected = &proj_v * alpha;
+        let diff = &proj_scaled_v - &expected;
+        let error = diff.norm();
+
+        assert!(
+            error < tolerance,
+            "Projection not scale invariant: ||P(αv) - αP(v)|| = {} for α = {}",
+            error,
+            alpha
+        );
+    }
+}
+
+#[test]
+fn test_projection_preserves_inner_product_structure() {
+    let sphere = TestSphere::new(4);
+    let tolerance = 1e-12;
+    let mut workspace = Workspace::new();
+
+    let point = sphere.random_point();
+
+    // Generate two tangent vectors
+    let mut u_tangent = DVector::zeros(4);
+    let mut v_tangent = DVector::zeros(4);
+    sphere.random_tangent(&point, &mut u_tangent, &mut workspace).unwrap();
+    sphere.random_tangent(&point, &mut v_tangent, &mut workspace).unwrap();
+
+    // Generate two general vectors
+    let mut u = u_tangent.clone();
+    u += &point * 0.5; // Add normal component
+    let mut v = v_tangent.clone();
+    v += &point * (-0.3); // Add normal component
+
+    // Project them
+    let mut proj_u = DVector::zeros(4);
+    let mut proj_v = DVector::zeros(4);
+    sphere.project_tangent(&point, &u, &mut proj_u, &mut workspace).unwrap();
+    sphere.project_tangent(&point, &v, &mut proj_v, &mut workspace).unwrap();
+
+    // Inner product of projections should equal inner product of tangent parts
+    let inner_proj = sphere.inner_product(&point, &proj_u, &proj_v).unwrap();
+    let inner_tangent = sphere.inner_product(&point, &u_tangent, &v_tangent).unwrap();
+
+    assert!(
+        (inner_proj - inner_tangent).abs() < tolerance,
+        "Projection doesn't preserve tangent inner product: <P(u),P(v)> = {} vs <u_t,v_t> = {}",
+        inner_proj,
+        inner_tangent
+    );
+}

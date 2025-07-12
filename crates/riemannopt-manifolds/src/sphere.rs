@@ -99,7 +99,6 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Sphere;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::DVector;
 //!
 //! // Create unit sphere in ℝ³
@@ -112,8 +111,7 @@
 //! // Tangent vector
 //! let v = DVector::from_vec(vec![0.0, 1.0, 0.0]);
 //! let mut v_tangent = v.clone();
-//! let mut workspace = Workspace::<f64>::new();
-//! sphere.project_tangent(&x, &v, &mut v_tangent, &mut workspace)?;
+//! sphere.project_tangent(&x, &v, &mut v_tangent)?;
 //! assert!(x.dot(&v_tangent).abs() < 1e-14);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
@@ -123,7 +121,6 @@ use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
-    memory::workspace::Workspace,
     types::{DVector, Scalar},
 };
 use std::fmt::{self, Debug};
@@ -484,7 +481,7 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         vector.len() == self.ambient_dim && <T as Float>::abs(point.dot(vector)) < tol
     }
 
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, _workspace: &mut Workspace<T>) {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
         if point.len() != self.ambient_dim {
             result.resize_vertically_mut(self.ambient_dim, T::zero());
         }
@@ -506,7 +503,6 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.len() != self.ambient_dim || vector.len() != self.ambient_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -549,7 +545,6 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         point: &Self::Point,
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Use exponential map as the retraction
         let exp_result = self.exp_map(point, tangent)?;
@@ -562,7 +557,6 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Use logarithmic map as the inverse retraction
         let log_result = self.log_map(point, other)?;
@@ -575,10 +569,9 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         // Riemannian gradient is the projection of Euclidean gradient
-        self.project_tangent(point, euclidean_grad, result, workspace)
+        self.project_tangent(point, euclidean_grad, result)
     }
 
     fn parallel_transport(
@@ -587,40 +580,40 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        _workspace: &mut Workspace<T>,
     ) -> Result<()> {
         let transported = self.parallel_transport(from, to, vector)?;
         result.copy_from(&transported);
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
         let mut rng = rand::thread_rng();
         let normal = StandardNormal;
         
         // Generate random Gaussian vector
-        let mut x = DVector::zeros(self.ambient_dim);
+        if result.len() != self.ambient_dim {
+            *result = DVector::zeros(self.ambient_dim);
+        }
         for i in 0..self.ambient_dim {
-            x[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+            result[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
         }
         
         // Normalize to get uniform distribution on sphere
-        let norm = x.norm();
+        let norm = result.norm();
         if norm < <T as Scalar>::from_f64(1e-16) {
             // Extremely rare case: regenerate
-            x[0] = T::one();
+            result[0] = T::one();
         } else {
-            x /= norm;
+            *result /= norm;
         }
         
-        x
+        Ok(())
     }
 
     fn random_tangent(
         &self,
         point: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         self.check_point(point)?;
         
@@ -634,7 +627,7 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         }
         
         // Project to tangent space
-        self.project_tangent(point, &v, result, workspace)?;
+        self.project_tangent(point, &v, result)?;
         
         // Normalize
         let norm = result.norm();
@@ -645,7 +638,7 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         Ok(())
     }
 
-    fn distance(&self, x: &Self::Point, y: &Self::Point, _workspace: &mut Workspace<T>) -> Result<T> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
         self.geodesic_distance(x, y)
     }
 
@@ -656,6 +649,40 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
     fn is_flat(&self) -> bool {
         false
     }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+    ) -> Result<()> {
+        // For the sphere, tangent vectors are just vectors in the ambient space
+        // orthogonal to the point. Scaling preserves this orthogonality.
+        result.copy_from(tangent);
+        *result *= scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        // Temporary buffer for projection if needed
+        temp: &mut Self::TangentVector,
+    ) -> Result<()> {
+        // Add the vectors
+        temp.copy_from(v1);
+        *temp += v2;
+        
+        // The sum should already be in the tangent space if v1 and v2 are,
+        // but we project for numerical stability
+        self.project_tangent(point, temp, result)?;
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -663,7 +690,6 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use nalgebra::DVector;
-    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_sphere_creation() {
@@ -683,12 +709,11 @@ mod tests {
     #[test]
     fn test_point_projection() {
         let sphere = Sphere::<f64>::new(3).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         // Project non-zero vector
         let point = DVector::from_vec(vec![3.0, 4.0, 0.0]);
         let mut projected = DVector::zeros(3);
-        sphere.project_point(&point, &mut projected, &mut workspace);
+        sphere.project_point(&point, &mut projected);
         
         assert_relative_eq!(projected.norm(), 1.0, epsilon = 1e-14);
         assert_relative_eq!(projected[0], 0.6, epsilon = 1e-14);
@@ -697,20 +722,19 @@ mod tests {
         
         // Project already normalized vector
         let unit_point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        sphere.project_point(&unit_point, &mut projected, &mut workspace);
+        sphere.project_point(&unit_point, &mut projected);
         assert_relative_eq!(projected, unit_point, epsilon = 1e-14);
     }
 
     #[test]
     fn test_tangent_projection() {
         let sphere = Sphere::<f64>::new(3).unwrap();
-        let mut workspace = Workspace::<f64>::new();
         
         let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
         let v = DVector::from_vec(vec![0.5, 1.0, 2.0]);
         let mut v_tangent = DVector::zeros(3);
         
-        sphere.project_tangent(&x, &v, &mut v_tangent, &mut workspace).unwrap();
+        sphere.project_tangent(&x, &v, &mut v_tangent).unwrap();
         
         // Check orthogonality
         assert_relative_eq!(x.dot(&v_tangent), 0.0, epsilon = 1e-14);

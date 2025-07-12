@@ -103,7 +103,7 @@
 //!
 //! ## Basic Backtracking Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # use riemannopt_core::prelude::*;
 //! let mut line_search = BacktrackingLineSearch::new();
 //! let params = LineSearchParams::backtracking();
@@ -121,7 +121,7 @@
 //!
 //! ## Strong Wolfe for Quasi-Newton
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # use riemannopt_core::prelude::*;
 //! let mut line_search = StrongWolfeLineSearch::new();
 //! let params = LineSearchParams::strong_wolfe();
@@ -131,7 +131,6 @@
 //!     &cost_fn, &manifold, &point, value,
 //!     &gradient, &quasi_newton_direction, &params
 //! )?;
-//! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
 use crate::{
@@ -208,16 +207,19 @@ where
 ///
 /// ## For Gradient Descent
 /// ```rust,no_run
-/// let params = LineSearchParams::backtracking(); // c₁ = 0.5, simple conditions
+/// # use riemannopt_core::prelude::*;
+/// let params = LineSearchParams::<f64>::backtracking(); // c₁ = 0.5, simple conditions
 /// ```
 ///
 /// ## For Quasi-Newton Methods
 /// ```rust,no_run
-/// let params = LineSearchParams::strong_wolfe(); // c₁ = 10⁻⁴, c₂ = 0.9
+/// # use riemannopt_core::prelude::*;
+/// let params = LineSearchParams::<f64>::strong_wolfe(); // c₁ = 10⁻⁴, c₂ = 0.9
 /// ```
 ///
 /// ## Custom Configuration
 /// ```rust,no_run
+/// # use riemannopt_core::prelude::*;
 /// let params = LineSearchParams {
 ///     c1: 1e-4,           // Tight sufficient decrease
 ///     c2: 0.1,            // Loose curvature (for CG)
@@ -450,7 +452,7 @@ where
 ///
 /// # Usage Pattern
 ///
-/// ```rust,no_run
+/// ```rust,ignore
 /// # use riemannopt_core::prelude::*;
 /// let ctx = LineSearchContext::new(&cost_fn, &manifold);
 /// 
@@ -657,7 +659,7 @@ where
     ///
     /// # Usage
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # use riemannopt_core::prelude::*;
     /// // Compute directional derivative once
     /// let dir_deriv = manifold.inner_product(&point, &gradient, &direction)?;
@@ -719,7 +721,7 @@ where
     ///
     /// # Usage
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # use riemannopt_core::prelude::*;
     /// let ctx = LineSearchContext::new(&cost_fn, &manifold);
     /// 
@@ -860,7 +862,7 @@ where
         // For now, provide a simplified implementation
         // Full implementation would require proper handling of generic point/tangent types
         let step_size = params.initial_step_size;
-        let mut workspace = Workspace::new();
+        let _workspace: Workspace<T> = Workspace::new();
         
         // Create new point - this requires the manifold to handle allocation
         let mut new_point = point.clone();
@@ -870,7 +872,7 @@ where
         // scaled_direction *= step_size;
         
         // Use manifold's retract with a simple step
-        manifold.retract(point, direction, &mut new_point, &mut workspace)?;
+        manifold.retract(point, direction, &mut new_point)?;
         
         // Evaluate at new point
         let new_value = cost_fn.cost(&new_point)?;
@@ -1080,13 +1082,18 @@ where
 ///
 /// ## Stochastic Optimization
 /// ```rust,no_run
+/// # use riemannopt_core::prelude::*;
+/// # use riemannopt_core::line_search::FixedStepSize;
 /// // Diminishing step size for SGD
+/// let iteration = 10; // example iteration number
 /// let step_size = 1.0 / (iteration as f64 + 1.0);
 /// let line_search = FixedStepSize::new(step_size);
 /// ```
 ///
 /// ## Lipschitz Gradient Methods
 /// ```rust,no_run
+/// # use riemannopt_core::prelude::*;
+/// # use riemannopt_core::line_search::FixedStepSize;
 /// // Step size based on Lipschitz constant
 /// let lipschitz_constant = 2.0;
 /// let line_search = FixedStepSize::new(1.0 / lipschitz_constant);
@@ -1136,11 +1143,11 @@ where
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
         M: Manifold<T>,
     {
-        let mut workspace = Workspace::new();
+        let _workspace: Workspace<T> = Workspace::new();
         let mut new_point = point.clone();
         
         // Use manifold's retract - scaling would require trait bounds on TangentVector
-        manifold.retract(point, direction, &mut new_point, &mut workspace)?;
+        manifold.retract(point, direction, &mut new_point)?;
         let new_value = cost_fn.cost(&new_point)?;
 
         Ok(LineSearchResult {

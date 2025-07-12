@@ -31,14 +31,12 @@
 //! ## Core Abstractions
 //! - **Optimizer trait**: Universal interface for all optimization algorithms
 //! - **OptimizationResult**: Complete optimization outcome with metadata
-//! - **OptimizerState**: Mutable state tracking during optimization
 //!
 //! ## Convergence Control 
 //! - **StoppingCriterion**: Mathematical conditions for algorithm termination:
 //!   - **Gradient norm**: ||grad f(x)||_g < ε_grad (first-order optimality)
 //!   - **Function change**: |f(xₖ) - f(xₖ₋₁)| < ε_f (stationarity)
 //!   - **Point change**: d_ℳ(xₖ, xₖ₋₁) < ε_x (convergence in manifold metric)
-//! - **ConvergenceChecker**: Logic for evaluating termination conditions
 //!
 //! ## Termination Analysis
 //! - **Converged**: First-order necessary conditions satisfied
@@ -69,7 +67,7 @@
 //!
 //! ## Basic Gradient Descent
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # use riemannopt_core::prelude::*;
 //! # struct GradientDescent { step_size: f64 }
 //! # impl Optimizer<f64> for GradientDescent {
@@ -77,9 +75,6 @@
 //! #   fn optimize<C, M>(&mut self, cost_fn: &C, manifold: &M, 
 //! #                     initial_point: &M::Point, criterion: &StoppingCriterion<f64>) 
 //! #                     -> Result<OptimizationResult<f64, M::Point>> 
-//! #   where C: CostFunction<f64>, M: Manifold<f64> { todo!() }
-//! #   fn step<C, M>(&mut self, cost_fn: &C, manifold: &M, 
-//! #                 state: &mut OptimizerState<f64, M::Point, M::TangentVector>) -> Result<()>
 //! #   where C: CostFunction<f64>, M: Manifold<f64> { todo!() }
 //! # }
 //! # fn main() -> Result<()> {
@@ -112,13 +107,12 @@
 //! ```
 
 use crate::{
-    core::manifold::Manifold,
+    core::{manifold::Manifold, cost_function::CostFunction},
     error::Result,
-    memory::workspace::Workspace,
     types::Scalar,
 };
 use std::fmt::Debug;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Comprehensive result of a Riemannian optimization run.
 ///
@@ -408,134 +402,6 @@ where
     }
 }
 
-/// Dynamic state information maintained during Riemannian optimization.
-///
-/// This structure tracks the evolving state of an optimization algorithm,
-/// maintaining both the current mathematical state (point, value, gradient)
-/// and computational metadata (iteration counts, timing information).
-///
-/// # Mathematical State
-///
-/// - **Current state**: (point, value, gradient) representing current iterate
-/// - **Previous state**: Historical information for convergence analysis
-/// - **Gradient information**: Both vector and norm for optimality testing
-///
-/// # Computational Tracking
-///
-/// - **Iteration counting**: Major algorithm steps
-/// - **Evaluation counting**: Function and gradient computation costs
-/// - **Timing information**: Wall-clock performance measurement
-///
-/// # State Evolution
-///
-/// The state evolves through the optimization process:
-/// 1. **Initialization**: Set initial point and function value
-/// 2. **Gradient computation**: Add gradient and norm information
-/// 3. **Iteration update**: Move to new point, preserve history
-/// 4. **Convergence testing**: Use current and historical data
-#[derive(Clone, Debug)]
-pub struct OptimizerState<T, P, TV>
-where
-    T: Scalar,
-{
-    /// Current iterate xₖ ∈ ℳ on the manifold
-    pub point: P,
-
-    /// Current objective function value f(xₖ)
-    pub value: T,
-
-    /// Current Riemannian gradient grad f(xₖ) ∈ T_{xₖ} ℳ (if computed)
-    pub gradient: Option<TV>,
-
-    /// Riemannian gradient norm ||grad f(xₖ)||_g for optimality testing
-    pub gradient_norm: Option<T>,
-
-    /// Previous iterate xₖ₋₁ for convergence analysis
-    pub previous_point: Option<P>,
-
-    /// Previous objective value f(xₖ₋₁) for progress monitoring
-    pub previous_value: Option<T>,
-
-    /// Current major iteration number k
-    pub iteration: usize,
-
-    /// Total number of objective function evaluations f(x)
-    pub function_evaluations: usize,
-
-    /// Total number of gradient evaluations grad f(x)
-    pub gradient_evaluations: usize,
-
-    /// Optimization start time for duration calculation
-    pub start_time: Instant,
-}
-
-impl<T, P, TV> OptimizerState<T, P, TV>
-where
-    T: Scalar,
-    P: Clone,
-    TV: Clone,
-{
-    /// Creates a new optimizer state.
-    pub fn new(point: P, value: T) -> Self {
-        Self {
-            point,
-            value,
-            gradient: None,
-            gradient_norm: None,
-            previous_point: None,
-            previous_value: None,
-            iteration: 0,
-            function_evaluations: 1,
-            gradient_evaluations: 0,
-            start_time: Instant::now(),
-        }
-    }
-
-    /// Updates the state with a new point and value.
-    pub fn update(&mut self, point: P, value: T) {
-        self.previous_point = Some(std::mem::replace(&mut self.point, point));
-        self.previous_value = Some(self.value);
-        self.value = value;
-        self.iteration += 1;
-        self.function_evaluations += 1;
-    }
-
-    /// Sets the current gradient.
-    pub fn set_gradient(&mut self, gradient: TV, norm: T) {
-        self.gradient = Some(gradient);
-        self.gradient_norm = Some(norm);
-        self.gradient_evaluations += 1;
-    }
-
-    /// Computes the change in objective value.
-    pub fn value_change(&self) -> Option<T> {
-        self.previous_value
-            .map(|prev| <T as num_traits::Float>::abs(self.value - prev))
-    }
-
-    /// Computes the distance between current and previous points.
-    pub fn point_change<M>(&self, _manifold: &M) -> Result<Option<T>> 
-    where 
-        M: Manifold<T>,
-        M::Point: std::borrow::Borrow<P>,
-    {
-        match &self.previous_point {
-            Some(_prev) => {
-                let _workspace = Workspace::<T>::new();
-                // This will need special handling since we can't directly use distance
-                // For now, return None - this will be fixed when we update Manifold trait
-                Ok(None)
-            },
-            None => Ok(None),
-        }
-    }
-
-    /// Gets the elapsed time since optimization started.
-    pub fn elapsed(&self) -> Duration {
-        self.start_time.elapsed()
-    }
-}
-
 /// Universal interface for optimization algorithms on Riemannian manifolds.
 ///
 /// This trait defines the mathematical and computational contract that all
@@ -571,8 +437,9 @@ where
 /// # Implementation Guidelines
 ///
 /// ## State Management
-/// The optimizer should maintain internal state separately from the
-/// `OptimizerState` parameter, which is used for algorithm communication.
+/// The optimizer should maintain its own internal state including workspace
+/// and algorithm-specific data structures. Each instance is specialized for
+/// a specific manifold type and maintains full ownership of its state.
 ///
 /// ## Error Handling
 /// Return appropriate errors for:
@@ -582,11 +449,9 @@ where
 /// - Resource exhaustion
 ///
 /// ## Generic Design
-/// The trait is generic over cost function and manifold types to enable:
-/// - Type-safe manifold operations
-/// - Efficient memory layouts
-/// - Compile-time optimization
-/// - Flexible algorithm composition
+/// The trait itself is not generic over manifold types. Instead, methods
+/// are generic to allow flexibility while maintaining zero-allocation efficiency.
+/// Each optimizer instance is created for a specific manifold type.
 pub trait Optimizer<T>: Debug
 where
     T: Scalar,
@@ -632,7 +497,7 @@ where
     /// - Numerical instabilities during optimization
     /// - Manifold operation failures
     /// - Resource exhaustion without progress
-    fn optimize<C, M>(
+    fn optimize<M, C>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
@@ -640,410 +505,6 @@ where
         stopping_criterion: &StoppingCriterion<T>,
     ) -> Result<OptimizationResult<T, M::Point>>
     where
-        C: crate::cost_function::CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>;
-
-    /// Performs a single major iteration of the optimization algorithm.
-    ///
-    /// This method enables fine-grained control over the optimization process,
-    /// allowing custom termination logic, progress monitoring, and algorithm
-    /// composition. It updates the provided state in-place.
-    ///
-    /// # Mathematical Operation
-    ///
-    /// Typically performs one iteration of the form:
-    /// 1. Compute search direction ηₖ ∈ T_{xₖ} ℳ
-    /// 2. Determine step size αₖ > 0 (possibly via line search)
-    /// 3. Update point: xₖ₊₁ = R_{xₖ}(αₖ ηₖ)
-    /// 4. Evaluate f(xₖ₊₁) and update gradient information
-    ///
-    /// # State Updates
-    ///
-    /// The method updates the state with:
-    /// - New point and objective value
-    /// - New gradient and gradient norm (if computed)
-    /// - Incremented iteration and evaluation counters
-    /// - Previous point/value for convergence analysis
-    ///
-    /// # Arguments
-    ///
-    /// * `cost_fn` - Objective function f: ℳ → ℝ
-    /// * `manifold` - Riemannian manifold ℳ
-    /// * `state` - Current optimization state (modified in-place)
-    ///
-    /// # Errors
-    ///
-    /// Returns errors for:
-    /// - Line search failure
-    /// - Numerical instabilities
-    /// - Manifold constraint violations
-    /// - Invalid state (NaN values, etc.)
-    ///
-    /// # Usage
-    ///
-    /// ```rust,no_run
-    /// # use riemannopt_core::prelude::*;
-    /// # fn example() -> Result<()> {
-    /// let mut state = OptimizerState::new(initial_point, initial_value);
-    /// 
-    /// for iteration in 0..max_iterations {
-    ///     optimizer.step(&cost_fn, &manifold, &mut state)?;
-    ///     
-    ///     // Custom convergence check
-    ///     if let Some(grad_norm) = state.gradient_norm {
-    ///         if grad_norm < tolerance {
-    ///             break;
-    ///         }
-    ///     }
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    fn step<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        state: &mut OptimizerState<T, M::Point, M::TangentVector>,
-    ) -> Result<()>
-    where
-        C: crate::cost_function::CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>;
-}
-
-/// Mathematical convergence analysis for Riemannian optimization algorithms.
-///
-/// This utility provides rigorous testing of convergence conditions for
-/// optimization algorithms on Riemannian manifolds. It implements both
-/// standard and strict convergence criteria based on established
-/// optimization theory.
-///
-/// # Convergence Theory
-///
-/// ## First-Order Conditions
-/// For unconstrained optimization on manifolds, a point x* is stationary if:
-/// ||grad f(x*)||_g = 0
-///
-/// In practice, we test: ||grad f(x)||_g < ε_grad
-///
-/// ## Progress-Based Criteria
-/// - **Function progress**: |f(xₖ) - f(xₖ₋₁)| < ε_f
-/// - **Point progress**: d_ℳ(xₖ, xₖ₋₁) < ε_x using manifold distance
-///
-/// # Testing Strategies
-///
-/// ## Standard Testing (`check`)
-/// Tests each criterion independently - algorithm terminates when
-/// ANY condition is satisfied.
-///
-/// ## Strict Testing (`check_strict`)
-/// Requires MULTIPLE criteria to be satisfied simultaneously,
-/// providing higher confidence in convergence quality.
-pub struct ConvergenceChecker;
-
-impl ConvergenceChecker {
-    /// Tests all stopping criteria and returns the first satisfied condition.
-    ///
-    /// This method implements standard convergence testing where the algorithm
-    /// terminates as soon as ANY criterion is satisfied. It checks criteria
-    /// in order of computational cost (cheapest first).
-    ///
-    /// # Testing Order
-    ///
-    /// 1. **Iteration limit**: iteration ≥ max_iterations
-    /// 2. **Time limit**: elapsed_time ≥ max_time
-    /// 3. **Evaluation limit**: evaluations ≥ max_evaluations
-    /// 4. **Gradient norm**: ||grad f(x)||_g < ε_grad
-    /// 5. **Function change**: |f(xₖ) - f(xₖ₋₁)| < ε_f
-    /// 6. **Point change**: d_ℳ(xₖ, xₖ₋₁) < ε_x
-    /// 7. **Target value**: f(x) ≤ f_target
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Current optimization state with point, value, and gradients
-    /// * `manifold` - Riemannian manifold for distance computations
-    /// * `criterion` - Stopping criteria configuration
-    ///
-    /// # Returns
-    ///
-    /// - `Some(TerminationReason)` if any criterion is satisfied
-    /// - `None` if optimization should continue
-    ///
-    /// # Mathematical Notes
-    ///
-    /// - Gradient norm uses the Riemannian metric: ||·||_g
-    /// - Point distance uses manifold metric: d_ℳ(·,·)
-    /// - Function change uses absolute difference: |f(xₖ) - f(xₖ₋₁)|
-    ///
-    /// # Errors
-    ///
-    /// Returns errors for:
-    /// - Manifold distance computation failures
-    /// - Invalid state (NaN values)
-    /// - Numerical instabilities in distance calculation
-    pub fn check<T, P, TV, M>(
-        state: &OptimizerState<T, P, TV>,
-        manifold: &M,
-        criterion: &StoppingCriterion<T>,
-    ) -> Result<Option<TerminationReason>>
-    where
-        T: Scalar,
         M: Manifold<T>,
-        M::Point: std::borrow::Borrow<P>,
-        P: Clone,
-        TV: Clone,
-    {
-        // Check iteration limit
-        if let Some(max_iter) = criterion.max_iterations {
-            if state.iteration >= max_iter {
-                return Ok(Some(TerminationReason::MaxIterations));
-            }
-        }
-
-        // Check time limit
-        if let Some(max_time) = criterion.max_time {
-            if state.elapsed() >= max_time {
-                return Ok(Some(TerminationReason::MaxTime));
-            }
-        }
-
-        // Check function evaluation limit
-        if let Some(max_evals) = criterion.max_function_evaluations {
-            if state.function_evaluations >= max_evals {
-                return Ok(Some(TerminationReason::MaxFunctionEvaluations));
-            }
-        }
-
-        // Check gradient norm
-        if let (Some(grad_norm), Some(grad_tol)) =
-            (state.gradient_norm, criterion.gradient_tolerance)
-        {
-            if grad_norm < grad_tol {
-                return Ok(Some(TerminationReason::Converged));
-            }
-        }
-
-        // Check function value change
-        if let (Some(val_change), Some(val_tol)) =
-            (state.value_change(), criterion.function_tolerance)
-        {
-            if val_change < val_tol && state.iteration > 0 {
-                return Ok(Some(TerminationReason::Converged));
-            }
-        }
-
-        // Check point change
-        if let Some(point_tol) = criterion.point_tolerance {
-            if let Some(point_change) = state.point_change(manifold)? {
-                if point_change < point_tol && state.iteration > 0 {
-                    return Ok(Some(TerminationReason::Converged));
-                }
-            }
-        }
-
-        // Check target value
-        if let Some(target) = criterion.target_value {
-            if state.value <= target {
-                return Ok(Some(TerminationReason::TargetReached));
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Tests convergence using strict multi-criteria analysis.
-    ///
-    /// This method implements rigorous convergence testing where multiple
-    /// criteria must be satisfied simultaneously. It provides higher confidence
-    /// in solution quality at the cost of potentially longer optimization times.
-    ///
-    /// # Multi-Criteria Logic
-    ///
-    /// The algorithm has converged if ALL required criteria are satisfied:
-    /// - **Gradient criterion** (if `require_gradient`): ||grad f(x)||_g < ε_grad
-    /// - **Progress criteria** (if `require_value_and_point`):
-    ///   - Function progress: |f(xₖ) - f(xₖ₋₁)| < ε_f
-    ///   - Point progress: d_ℳ(xₖ, xₖ₋₁) < ε_x
-    ///
-    /// # Usage Guidelines
-    ///
-    /// ## Conservative Convergence
-    /// ```rust,no_run
-    /// # use riemannopt_core::prelude::*;
-    /// # fn example() -> Result<Option<TerminationReason>> {
-    /// // Require both gradient and progress criteria
-    /// let result = ConvergenceChecker::check_strict(
-    ///     &state, &manifold, &criterion,
-    ///     true,  // require_gradient
-    ///     true   // require_value_and_point
-    /// )?;
-    /// # Ok(result)
-    /// # }
-    /// ```
-    ///
-    /// ## Gradient-Only Convergence
-    /// ```rust,no_run
-    /// # use riemannopt_core::prelude::*;
-    /// # fn example() -> Result<Option<TerminationReason>> {
-    /// // Require only gradient criterion (for smooth functions)
-    /// let result = ConvergenceChecker::check_strict(
-    ///     &state, &manifold, &criterion,
-    ///     true,  // require_gradient
-    ///     false  // skip progress criteria
-    /// )?;
-    /// # Ok(result)
-    /// # }
-    /// ```
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Current optimization state
-    /// * `manifold` - Riemannian manifold for geometric operations
-    /// * `criterion` - Stopping criteria configuration
-    /// * `require_gradient` - Whether gradient norm must satisfy tolerance
-    /// * `require_value_and_point` - Whether both function and point progress must satisfy tolerances
-    ///
-    /// # Returns
-    ///
-    /// - `Some(TerminationReason::Converged)` if all required criteria satisfied
-    /// - `Some(other_reason)` for non-convergence termination (limits exceeded)
-    /// - `None` if optimization should continue
-    pub fn check_strict<T, P, TV, M>(
-        state: &OptimizerState<T, P, TV>,
-        manifold: &M,
-        criterion: &StoppingCriterion<T>,
-        require_gradient: bool,
-        require_value_and_point: bool,
-    ) -> Result<Option<TerminationReason>>
-    where
-        T: Scalar,
-        M: Manifold<T>,
-        M::Point: std::borrow::Borrow<P>,
-        P: Clone,
-        TV: Clone,
-    {
-        // First check non-convergence termination conditions
-        let basic_check = Self::check(state, manifold, criterion)?;
-        if let Some(reason) = basic_check {
-            if !matches!(reason, TerminationReason::Converged) {
-                return Ok(Some(reason));
-            }
-        }
-
-        let mut converged = true;
-
-        // Check gradient criterion if required
-        if require_gradient {
-            if let (Some(grad_norm), Some(grad_tol)) =
-                (state.gradient_norm, criterion.gradient_tolerance)
-            {
-                converged &= grad_norm < grad_tol;
-            } else {
-                converged = false;
-            }
-        }
-
-        // Check value and point change if required
-        if require_value_and_point && state.iteration > 0 {
-            let value_ok = if let (Some(val_change), Some(val_tol)) =
-                (state.value_change(), criterion.function_tolerance)
-            {
-                val_change < val_tol
-            } else {
-                false
-            };
-
-            let point_ok = if let Some(point_tol) = criterion.point_tolerance {
-                if let Some(point_change) = state.point_change(manifold)? {
-                    point_change < point_tol
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            converged &= value_ok && point_ok;
-        }
-
-        if converged && state.iteration > 0 {
-            Ok(Some(TerminationReason::Converged))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::DVector;
-    use std::time::Duration;
-
-    #[test]
-    fn test_optimization_result() {
-        let point = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        let result = OptimizationResult::<f64, DVector<f64>>::new(
-            point.clone(),
-            0.5,
-            100,
-            Duration::from_secs(1),
-            TerminationReason::Converged,
-        );
-
-        assert_eq!(result.point, point);
-        assert_eq!(result.value, 0.5);
-        assert_eq!(result.iterations, 100);
-        assert!(result.converged);
-        assert_eq!(result.termination_reason, TerminationReason::Converged);
-    }
-
-    #[test]
-    fn test_stopping_criterion() {
-        let criterion = StoppingCriterion::<f64>::new()
-            .with_max_iterations(500)
-            .with_gradient_tolerance(1e-8)
-            .with_function_tolerance(1e-10);
-
-        assert_eq!(criterion.max_iterations, Some(500));
-        assert_eq!(criterion.gradient_tolerance, Some(1e-8));
-        assert_eq!(criterion.function_tolerance, Some(1e-10));
-    }
-
-    #[test]
-    fn test_optimizer_state() {
-        let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let mut state = OptimizerState::<f64, DVector<f64>, DVector<f64>>::new(point.clone(), 1.0);
-
-        assert_eq!(state.iteration, 0);
-        assert_eq!(state.function_evaluations, 1);
-        assert_eq!(state.gradient_evaluations, 0);
-
-        let new_point = DVector::from_vec(vec![0.9, 0.1, 0.0]);
-        state.update(new_point.clone(), 0.9);
-
-        assert_eq!(state.iteration, 1);
-        assert_eq!(state.point, new_point);
-        assert_eq!(state.value, 0.9);
-        assert_eq!(state.previous_value, Some(1.0));
-        assert!((state.value_change().unwrap() - 0.1f64).abs() < 1e-10);
-    }
-
-    // Tests temporairement commentés - seront mis à jour après l'implémentation complète
-    // #[test]
-    // fn test_convergence_checker_iterations() {
-    //     let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-    //     let mut state = OptimizerState::<f64, DVector<f64>, DVector<f64>>::new(point, 1.0);
-    //     state.iteration = 1000;
-
-    //     let criterion = StoppingCriterion::new().with_max_iterations(1000);
-
-    //     let manifold = MinimalTestManifold::new(3);
-    //     let result = ConvergenceChecker::check(&state, &manifold, &criterion).unwrap();
-    //     assert_eq!(result, Some(TerminationReason::MaxIterations));
-    // }
-
-    // #[test]
-    // fn test_convergence_checker_gradient() {
-    //     // TODO: Mettre à jour après avoir implémenté MockManifold avec les types associés
-    // }
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>;
 }

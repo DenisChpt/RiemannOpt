@@ -64,7 +64,7 @@ impl VectorRetractionWorkspace {
         );
 
         let n = point.len();
-        let temp = workspace.get_or_create_vector(BufferId::Temp1, n);
+        let temp = workspace.get_or_create_buffer(BufferId::Temp1, || DVector::<T>::zeros(n));
 
         for (direction, result) in directions.iter().zip(results.iter_mut()) {
             // temp = point + t * direction
