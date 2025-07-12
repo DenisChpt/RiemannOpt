@@ -58,7 +58,6 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::{ProductStatic, Sphere, Stiefel};
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //!
 //! // Create S² × St(5,2) statically
 //! let sphere = Sphere::<f64>::new(3)?;
@@ -67,7 +66,6 @@
 //!
 //! // Operations are fully type-safe and optimized
 //! let x = product.random_point();
-//! let mut workspace = Workspace::<f64>::new();
 //!
 //! // Access components directly
 //! let (x1, x2) = product.split_point(&x)?;
@@ -81,7 +79,6 @@ use std::marker::PhantomData;
 use riemannopt_core::{
     error::{ManifoldError, Result},
     manifold::Manifold,
-    memory::workspace::Workspace,
     types::Scalar,
 };
 
@@ -148,8 +145,10 @@ where
     /// ```
     pub fn new(manifold1: M1, manifold2: M2) -> Self {
         // Get dimensions by creating test points
-        let test1 = manifold1.random_point();
-        let test2 = manifold2.random_point();
+        let mut test1 = Default::default();
+        let mut test2 = Default::default();
+        manifold1.random_point(&mut test1).unwrap();
+        manifold2.random_point(&mut test2).unwrap();
         let dim1 = test1.len();
         let dim2 = test2.len();
         let total_dim = dim1 + dim2;
@@ -374,7 +373,7 @@ where
         }
     }
 
-    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, workspace: &mut Workspace<T>) {
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
         // Ensure result has correct size
         if result.len() != self.total_dim {
             *result = DVector::zeros(self.total_dim);
@@ -395,8 +394,8 @@ where
             let mut proj1 = p1.clone();
             let mut proj2 = p2.clone();
             
-            self.manifold1.project_point(&p1, &mut proj1, workspace);
-            self.manifold2.project_point(&p2, &mut proj2, workspace);
+            self.manifold1.project_point(&p1, &mut proj1);
+            self.manifold2.project_point(&p2, &mut proj2);
             
             // Combine results
             result.rows_mut(0, self.dim1).copy_from(&proj1);
@@ -409,7 +408,6 @@ where
         point: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.len() != self.total_dim || vector.len() != self.total_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -429,8 +427,8 @@ where
         let mut proj1 = v1.clone();
         let mut proj2 = v2.clone();
         
-        self.manifold1.project_tangent(&p1, &v1, &mut proj1, workspace)?;
-        self.manifold2.project_tangent(&p2, &v2, &mut proj2, workspace)?;
+        self.manifold1.project_tangent(&p1, &v1, &mut proj1)?;
+        self.manifold2.project_tangent(&p2, &v2, &mut proj2)?;
         
         self.combine_vectors_mut(&proj1, &proj2, result)?;
         Ok(())
@@ -464,7 +462,6 @@ where
         point: &Self::Point,
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.len() != self.total_dim || tangent.len() != self.total_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -484,8 +481,8 @@ where
         let mut ret1 = p1.clone();
         let mut ret2 = p2.clone();
         
-        self.manifold1.retract(&p1, &t1, &mut ret1, workspace)?;
-        self.manifold2.retract(&p2, &t2, &mut ret2, workspace)?;
+        self.manifold1.retract(&p1, &t1, &mut ret1)?;
+        self.manifold2.retract(&p2, &t2, &mut ret2)?;
         
         self.combine_vectors_mut(&ret1, &ret2, result)?;
         Ok(())
@@ -496,7 +493,6 @@ where
         point: &Self::Point,
         other: &Self::Point,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.len() != self.total_dim || other.len() != self.total_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -516,8 +512,8 @@ where
         let mut tan1 = DVector::zeros(self.dim1);
         let mut tan2 = DVector::zeros(self.dim2);
         
-        self.manifold1.inverse_retract(&p1, &o1, &mut tan1, workspace)?;
-        self.manifold2.inverse_retract(&p2, &o2, &mut tan2, workspace)?;
+        self.manifold1.inverse_retract(&p1, &o1, &mut tan1)?;
+        self.manifold2.inverse_retract(&p2, &o2, &mut tan2)?;
         
         self.combine_vectors_mut(&tan1, &tan2, result)?;
         Ok(())
@@ -528,7 +524,6 @@ where
         point: &Self::Point,
         euclidean_grad: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if point.len() != self.total_dim || euclidean_grad.len() != self.total_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -548,20 +543,25 @@ where
         let mut rgrad1 = g1.clone();
         let mut rgrad2 = g2.clone();
         
-        self.manifold1.euclidean_to_riemannian_gradient(&p1, &g1, &mut rgrad1, workspace)?;
-        self.manifold2.euclidean_to_riemannian_gradient(&p2, &g2, &mut rgrad2, workspace)?;
+        self.manifold1.euclidean_to_riemannian_gradient(&p1, &g1, &mut rgrad1)?;
+        self.manifold2.euclidean_to_riemannian_gradient(&p2, &g2, &mut rgrad2)?;
         
         self.combine_vectors_mut(&rgrad1, &rgrad2, result)?;
         Ok(())
     }
 
-    fn random_point(&self) -> Self::Point {
-        let p1 = self.manifold1.random_point();
-        let p2 = self.manifold2.random_point();
-        self.combine_vectors(&p1, &p2).unwrap()
+    fn random_point(&self, result: &mut Self::Point) -> Result<()> {
+        let mut p1 = Default::default();
+        let mut p2 = Default::default();
+        
+        self.manifold1.random_point(&mut p1)?;
+        self.manifold2.random_point(&mut p2)?;
+        
+        self.combine_vectors_mut(&p1, &p2, result)?;
+        Ok(())
     }
 
-    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector, workspace: &mut Workspace<T>) -> Result<()> {
+    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
         if point.len() != self.total_dim {
             return Err(ManifoldError::dimension_mismatch(
                 self.total_dim,
@@ -579,14 +579,14 @@ where
         let mut tan1 = DVector::zeros(self.dim1);
         let mut tan2 = DVector::zeros(self.dim2);
         
-        self.manifold1.random_tangent(&p1, &mut tan1, workspace)?;
-        self.manifold2.random_tangent(&p2, &mut tan2, workspace)?;
+        self.manifold1.random_tangent(&p1, &mut tan1)?;
+        self.manifold2.random_tangent(&p2, &mut tan2)?;
         
         self.combine_vectors_mut(&tan1, &tan2, result)?;
         Ok(())
     }
 
-    fn distance(&self, x: &Self::Point, y: &Self::Point, workspace: &mut Workspace<T>) -> Result<T> {
+    fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
         if x.len() != self.total_dim || y.len() != self.total_dim {
             return Err(ManifoldError::dimension_mismatch(
                 self.total_dim,
@@ -597,8 +597,8 @@ where
         let (x1, x2) = self.split_vector(x)?;
         let (y1, y2) = self.split_vector(y)?;
 
-        let d1 = self.manifold1.distance(&x1, &y1, workspace)?;
-        let d2 = self.manifold2.distance(&x2, &y2, workspace)?;
+        let d1 = self.manifold1.distance(&x1, &y1)?;
+        let d2 = self.manifold2.distance(&x2, &y2)?;
         
         Ok(<T as Float>::sqrt(d1 * d1 + d2 * d2))
     }
@@ -609,7 +609,6 @@ where
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
-        workspace: &mut Workspace<T>,
     ) -> Result<()> {
         if from.len() != self.total_dim || to.len() != self.total_dim || vector.len() != self.total_dim {
             return Err(ManifoldError::dimension_mismatch(
@@ -630,8 +629,8 @@ where
         let mut trans1 = v1.clone();
         let mut trans2 = v2.clone();
         
-        self.manifold1.parallel_transport(&f1, &t1, &v1, &mut trans1, workspace)?;
-        self.manifold2.parallel_transport(&f2, &t2, &v2, &mut trans2, workspace)?;
+        self.manifold1.parallel_transport(&f1, &t1, &v1, &mut trans1)?;
+        self.manifold2.parallel_transport(&f2, &t2, &v2, &mut trans2)?;
         
         self.combine_vectors_mut(&trans1, &trans2, result)?;
         Ok(())
@@ -643,6 +642,77 @@ where
 
     fn is_flat(&self) -> bool {
         self.manifold1.is_flat() && self.manifold2.is_flat()
+    }
+
+    fn scale_tangent(
+        &self,
+        point: &Self::Point,
+        scalar: T,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+    ) -> Result<()> {
+        if point.len() != self.total_dim || tangent.len() != self.total_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                self.total_dim,
+                point.len().max(tangent.len())
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.total_dim {
+            *result = DVector::zeros(self.total_dim);
+        }
+
+        let (p1, p2) = self.split_vector(point)?;
+        let (t1, t2) = self.split_vector(tangent)?;
+
+        let mut scaled1 = t1.clone();
+        let mut scaled2 = t2.clone();
+        
+        self.manifold1.scale_tangent(&p1, scalar, &t1, &mut scaled1)?;
+        self.manifold2.scale_tangent(&p2, scalar, &t2, &mut scaled2)?;
+        
+        self.combine_vectors_mut(&scaled1, &scaled2, result)?;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        // Temporary buffer for projection if needed
+        _temp: &mut Self::TangentVector,
+    ) -> Result<()> {
+        if point.len() != self.total_dim || v1.len() != self.total_dim || v2.len() != self.total_dim {
+            return Err(ManifoldError::dimension_mismatch(
+                self.total_dim,
+                point.len().max(v1.len()).max(v2.len())
+            ));
+        }
+
+        // Ensure result has correct size
+        if result.len() != self.total_dim {
+            *result = DVector::zeros(self.total_dim);
+        }
+
+        let (p1, p2) = self.split_vector(point)?;
+        let (v1_1, v1_2) = self.split_vector(v1)?;
+        let (v2_1, v2_2) = self.split_vector(v2)?;
+
+        let mut sum1 = v1_1.clone();
+        let mut sum2 = v1_2.clone();
+        
+        // Create temp buffers for components
+        let mut temp1 = DVector::zeros(self.dim1);
+        let mut temp2 = DVector::zeros(self.dim2);
+        
+        self.manifold1.add_tangents(&p1, &v1_1, &v2_1, &mut sum1, &mut temp1)?;
+        self.manifold2.add_tangents(&p2, &v1_2, &v2_2, &mut sum2, &mut temp2)?;
+        
+        self.combine_vectors_mut(&sum1, &sum2, result)?;
+        Ok(())
     }
 }
 
@@ -679,7 +749,6 @@ mod tests {
     use super::*;
     use crate::Sphere;
     use approx::assert_relative_eq;
-    use riemannopt_core::memory::workspace::Workspace;
 
     #[test]
     fn test_product_static_creation() {
@@ -702,7 +771,7 @@ mod tests {
         // Split and recombine
         let (p1, p2) = product.split_point(&point).unwrap();
         assert_eq!(p1.len(), 3);
-        assert_eq!(p2.len(), 3);
+        assert_eq!(p2.len(), 4);
         
         let recombined = product.combine_points(&p1, &p2).unwrap();
         assert_relative_eq!(point, recombined, epsilon = 1e-14);
@@ -713,7 +782,6 @@ mod tests {
         let sphere = Sphere::<f64>::new(3).unwrap();
         let sphere2 = Sphere::<f64>::new(4).unwrap();
         let product = ProductStatic::new(sphere, sphere2);
-        let mut workspace = Workspace::<f64>::new();
         
         // Test point validation
         let point = product.random_point();
@@ -721,13 +789,13 @@ mod tests {
         
         // Test tangent projection
         let mut tangent = DVector::zeros(product.total_dim);
-        product.random_tangent(&point, &mut tangent, &mut workspace).unwrap();
+        product.random_tangent(&point, &mut tangent).unwrap();
         assert!(product.is_vector_in_tangent_space(&point, &tangent, 1e-6));
         
         // Test retraction
         let scaled_tangent = tangent * 0.1;
         let mut retracted = DVector::zeros(product.total_dim);
-        product.retract(&point, &scaled_tangent, &mut retracted, &mut workspace).unwrap();
+        product.retract(&point, &scaled_tangent, &mut retracted).unwrap();
         assert!(product.is_point_on_manifold(&retracted, 1e-6));
     }
 
@@ -736,13 +804,12 @@ mod tests {
         let sphere = Sphere::<f64>::new(3).unwrap();
         let sphere2 = Sphere::<f64>::new(4).unwrap();
         let product = ProductStatic::new(sphere, sphere2);
-        let mut workspace = Workspace::<f64>::new();
         
         let point = product.random_point();
         let mut u = DVector::zeros(product.total_dim);
         let mut v = DVector::zeros(product.total_dim);
-        product.random_tangent(&point, &mut u, &mut workspace).unwrap();
-        product.random_tangent(&point, &mut v, &mut workspace).unwrap();
+        product.random_tangent(&point, &mut u).unwrap();
+        product.random_tangent(&point, &mut v).unwrap();
         
         let ip_uv = product.inner_product(&point, &u, &v).unwrap();
         let ip_vu = product.inner_product(&point, &v, &u).unwrap();
@@ -756,18 +823,17 @@ mod tests {
         let sphere = Sphere::<f64>::new(3).unwrap();
         let sphere2 = Sphere::<f64>::new(4).unwrap();
         let product = ProductStatic::new(sphere, sphere2);
-        let mut workspace = Workspace::<f64>::new();
         
         let x = product.random_point();
         let y = product.random_point();
         
         // Distance to self should be zero
-        let d_xx = product.distance(&x, &x, &mut workspace).unwrap();
+        let d_xx = product.distance(&x, &x).unwrap();
         assert_relative_eq!(d_xx, 0.0, epsilon = 1e-10);
         
         // Distance should be symmetric
-        let d_xy = product.distance(&x, &y, &mut workspace).unwrap();
-        let d_yx = product.distance(&y, &x, &mut workspace).unwrap();
+        let d_xy = product.distance(&x, &y).unwrap();
+        let d_yx = product.distance(&y, &x).unwrap();
         assert_relative_eq!(d_xy, d_yx, epsilon = 1e-10);
         
         // Distance should be non-negative

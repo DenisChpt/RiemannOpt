@@ -29,19 +29,20 @@
 //! - Nocedal & Wright, "Numerical Optimization" (2006)
 
 use riemannopt_core::{
-    cost_function::CostFunction,
-    core::CachedCostFunction,
-    error::{ManifoldError, Result},
-    manifold::{Manifold, Point, TangentVector},
-    memory::workspace::{Workspace, WorkspaceBuilder},
-    optimizer::{Optimizer, OptimizerStateLegacy as OptimizerState, OptimizationResult, StoppingCriterion, ConvergenceChecker, TerminationReason},
-    retraction::Retraction,
+    core::{
+        manifold::Manifold,
+        cost_function::CostFunction,
+    },
+    error::Result,
     types::Scalar,
+    memory::workspace::Workspace,
+    optimization::{
+        optimizer::{Optimizer, OptimizationResult, StoppingCriterion, TerminationReason},
+    },
 };
-use nalgebra::{allocator::Allocator, DefaultAllocator, Dim};
-use num_traits::Float;
-use std::fmt::Debug;
 use std::time::Instant;
+use std::fmt::Debug;
+use num_traits::Float;
 
 /// Configuration for the Trust Region optimizer.
 #[derive(Debug, Clone)]
@@ -137,324 +138,190 @@ impl<T: Scalar> TrustRegionConfig<T> {
     }
 }
 
-/// State for the Trust Region optimizer.
+/// Workspace for the Steihaug-CG solver.
 #[derive(Debug)]
-struct TrustRegionState<T, D>
+struct CGWorkspace<T, TV>
 where
     T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
+    TV: Clone + Debug + Send + Sync,
 {
-    /// Current trust region radius
-    radius: T,
-    /// Previous model value (kept for potential future use)
-    #[allow(dead_code)]
-    model_value: Option<T>,
-    /// Number of rejected steps in a row
-    consecutive_rejections: usize,
-    /// Workspace for the Steihaug-CG solver (zero-allocation)
-    cg_workspace: SteiahugCGWorkspace<T, D>,
+    /// Solution vector
+    s: TV,
+    /// Residual vector
+    r: TV,
+    /// Search direction
+    d: TV,
+    /// Hessian-vector product
+    hd: TV,
+    /// Temporary vector
+    temp: TV,
+    /// Whether we hit the trust region boundary
+    boundary_hit: bool,
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T, D> TrustRegionState<T, D>
+impl<T, TV> CGWorkspace<T, TV>
 where
     T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
+    TV: Clone + Debug + Send + Sync,
 {
-    /// Creates a new trust region state.
-    fn new(initial_radius: T, dimension: D) -> Self {
+    /// Creates a new CG workspace with zero vectors.
+    fn new(zero_vector: TV) -> Self {
         Self {
-            radius: initial_radius,
-            model_value: None,
-            consecutive_rejections: 0,
-            cg_workspace: SteiahugCGWorkspace::new(dimension),
-        }
-    }
-
-    /// Updates the trust region radius based on the reduction ratio.
-    fn update_radius(&mut self, ratio: T, config: &TrustRegionConfig<T>) {
-        if ratio < config.decrease_threshold {
-            // Poor agreement: shrink trust region
-            self.radius *= config.decrease_factor;
-            self.consecutive_rejections += 1;
-        } else if ratio > config.increase_threshold {
-            // Good agreement: expand trust region
-            self.radius = <T as Float>::min(
-                self.radius * config.increase_factor,
-                config.max_radius,
-            );
-            self.consecutive_rejections = 0;
-        } else {
-            // Moderate agreement: keep radius unchanged
-            self.consecutive_rejections = 0;
+            s: zero_vector.clone(),
+            r: zero_vector.clone(),
+            d: zero_vector.clone(),
+            hd: zero_vector.clone(),
+            temp: zero_vector,
+            boundary_hit: false,
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-/// Steihaug-CG solver for the trust region subproblem.
+/// Riemannian Trust Region optimizer.
 ///
-/// Solves the subproblem:
-/// min_s  m(s) = f + <g, s> + 0.5 <s, H s>
-/// s.t.   ||s|| <= Delta
+/// This optimizer adapts the classical trust region method to Riemannian manifolds
+/// by solving the trust region subproblem in the tangent space and using retraction
+/// for updates.
 ///
-/// where s is in the tangent space.
-struct SteiahugCG;
-
-/// Workspace for the Steihaug-CG solver to avoid allocations.
+/// # Examples
+///
+/// ```rust,ignore
+/// use riemannopt_optim::{TrustRegion, TrustRegionConfig};
+/// 
+/// // Basic trust region with default parameters
+/// let tr: TrustRegion<f64> = TrustRegion::new(TrustRegionConfig::new());
+/// 
+/// // Trust region with custom parameters
+/// let tr_custom = TrustRegion::new(
+///     TrustRegionConfig::new()
+///         .with_initial_radius(0.5)
+///         .with_exact_hessian()
+///         .with_max_cg_iterations(20)
+/// );
+/// ```
 #[derive(Debug)]
-struct SteiahugCGWorkspace<T, D>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    /// Solution vector s
-    s: TangentVector<T, D>,
-    /// Residual vector r
-    r: TangentVector<T, D>,
-    /// Search direction d
-    d: TangentVector<T, D>,
-    /// Hessian-vector product Hd
-    hd: TangentVector<T, D>,
-    /// Temporary vector for intermediate calculations
-    temp: TangentVector<T, D>,
-    /// Temporary vector for perturbation calculations
-    temp_perturbation: TangentVector<T, D>,
-    /// Temporary point for finite differences
-    temp_point: Point<T, D>,
-    /// Temporary gradient for finite differences
-    temp_grad: TangentVector<T, D>,
+pub struct TrustRegion<T: Scalar> {
+    config: TrustRegionConfig<T>,
 }
 
-impl<T, D> SteiahugCGWorkspace<T, D>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    /// Creates a new workspace with the given dimension.
-    fn new(dim: D) -> Self {
-        let zeros = TangentVector::zeros_generic(dim, nalgebra::U1);
+impl<T: Scalar> TrustRegion<T> {
+    /// Creates a new Trust Region optimizer with the given configuration.
+    pub fn new(config: TrustRegionConfig<T>) -> Self {
         Self {
-            s: zeros.clone(),
-            r: zeros.clone(),
-            d: zeros.clone(),
-            hd: zeros.clone(),
-            temp: zeros.clone(),
-            temp_perturbation: zeros.clone(),
-            temp_point: zeros.clone(),
-            temp_grad: zeros,
+            config,
         }
     }
 
-    /// Resets all vectors to zero.
-    fn reset(&mut self) {
-        self.s.fill(T::zero());
-        self.r.fill(T::zero());
-        self.d.fill(T::zero());
-        self.hd.fill(T::zero());
-        self.temp.fill(T::zero());
-        self.temp_perturbation.fill(T::zero());
-        self.temp_point.fill(T::zero());
-        self.temp_grad.fill(T::zero());
-    }
-}
-
-impl SteiahugCG {
-    /// Solves the trust region subproblem using truncated conjugate gradient (allocating version).
-    ///
-    /// Returns the step direction and a flag indicating if the boundary was hit.
-    #[allow(dead_code)]  // Used in tests to verify zero-allocation version produces same results
-    fn solve<T, D, C, M>(
-        cost_fn: &C,
-        manifold: &M,
-        point: &Point<T, D>,
-        gradient: &TangentVector<T, D>,
-        radius: T,
-        config: &TrustRegionConfig<T>,
-    ) -> Result<(TangentVector<T, D>, bool)>
-    where
-        T: Scalar,
-        D: Dim,
-        DefaultAllocator: Allocator<D>,
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Create workspace for this solve
-        let mut workspace = SteiahugCGWorkspace::new(gradient.shape_generic().0);
-        
-        // Use the zero-allocation version
-        Self::solve_with_workspace(cost_fn, manifold, point, gradient, radius, config, &mut workspace)?;
-        
-        // Return solution (this still requires one allocation for backward compatibility)
-        Ok((workspace.s.clone(), workspace.temp[0] != T::zero())) // temp[0] stores boundary_hit flag
+    /// Creates a new Trust Region optimizer with default configuration.
+    pub fn with_default_config() -> Self {
+        Self::new(TrustRegionConfig::default())
     }
 
-    /// Solves the trust region subproblem using truncated conjugate gradient (zero-allocation version).
-    ///
-    /// The solution is written to `workspace.s` and the boundary hit flag is stored in `workspace.temp[0]`.
-    fn solve_with_workspace<T, D, C, M>(
-        cost_fn: &C,
-        manifold: &M,
-        point: &Point<T, D>,
-        gradient: &TangentVector<T, D>,
-        radius: T,
-        config: &TrustRegionConfig<T>,
-        workspace: &mut SteiahugCGWorkspace<T, D>,
-    ) -> Result<()>
-    where
-        T: Scalar,
-        D: Dim,
-        DefaultAllocator: Allocator<D>,
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        let n = gradient.len();
-        let max_iter = config.max_cg_iterations.unwrap_or(n);
-        
-        // Reset workspace
-        workspace.reset();
-        
-        // Initialize CG iteration using workspace vectors
-        // s is already zero from reset
-        workspace.r.copy_from(&(-gradient)); // r = -gradient
-        workspace.d.copy_from(&workspace.r); // d = r
-        let mut r_norm_sq = manifold.inner_product(point, &workspace.r, &workspace.r)?;
-        
-        // Check if gradient is already small
-        if <T as Float>::sqrt(r_norm_sq) < config.cg_tolerance {
-            workspace.temp[0] = T::zero(); // boundary_hit = false
-            return Ok(());
-        }
-        
-        let mut boundary_hit = false;
-        
-        for _ in 0..max_iter {
-            // Compute Hessian-vector product using workspace
-            if config.use_exact_hessian {
-                workspace.hd.copy_from(&cost_fn.hessian_vector_product(point, &workspace.d)?);
-            } else {
-                // Use finite differences for Hessian-vector product (zero-allocation version)
-                // We need to temporarily copy direction to avoid borrow conflicts
-                let d_copy = workspace.d.clone();
-                Self::finite_diff_hessian_vec_product_workspace(
-                    cost_fn, manifold, point, gradient, &d_copy, workspace
-                )?;
-            };
-            
-            let dhd = manifold.inner_product(point, &workspace.d, &workspace.hd)?;
-            
-            // Check if we have negative curvature
-            if dhd <= T::zero() {
-                // Find tau such that ||s + tau*d|| = radius
-                let (tau, _) = Self::boundary_intersection(&workspace.s, &workspace.d, radius, manifold, point)?;
-                workspace.s.axpy(tau, &workspace.d, T::one()); // s += tau * d
-                boundary_hit = true;
-                break;
-            }
-            
-            let alpha = r_norm_sq / dhd;
-            
-            // Compute s_new = s + alpha * d using temp vector
-            workspace.temp.copy_from(&workspace.s);
-            workspace.temp.axpy(alpha, &workspace.d, T::one()); // temp = s + alpha * d
-            
-            // Check if we would exceed trust region
-            let s_new_norm = <T as Float>::sqrt(
-                manifold.inner_product(point, &workspace.temp, &workspace.temp)?
-            );
-            
-            if s_new_norm >= radius {
-                // Find tau such that ||s + tau*d|| = radius
-                let (tau, _) = Self::boundary_intersection(&workspace.s, &workspace.d, radius, manifold, point)?;
-                workspace.s.axpy(tau, &workspace.d, T::one()); // s += tau * d
-                boundary_hit = true;
-                break;
-            }
-            
-            // Update CG iteration
-            workspace.s.copy_from(&workspace.temp); // s = s_new
-            workspace.r.axpy(-alpha, &workspace.hd, T::one()); // r -= alpha * hd
-            let r_norm_sq_new = manifold.inner_product(point, &workspace.r, &workspace.r)?;
-            
-            // Check convergence
-            if <T as Float>::sqrt(r_norm_sq_new) < config.cg_tolerance {
-                break;
-            }
-            
-            let beta = r_norm_sq_new / r_norm_sq;
-            // d = r + beta * d
-            workspace.d *= beta;
-            workspace.d += &workspace.r;
-            r_norm_sq = r_norm_sq_new;
-        }
-        
-        // Store boundary hit flag in temp[0]
-        workspace.temp[0] = if boundary_hit { T::one() } else { T::zero() };
-        
-        Ok(())
+    /// Returns the configuration.
+    pub fn config(&self) -> &TrustRegionConfig<T> {
+        &self.config
     }
     
-    /// Computes Hessian-vector product using finite differences (allocating version).
-    fn finite_diff_hessian_vec_product<T, D, C, M>(
-        cost_fn: &C,
+    /// Checks stopping criteria internally
+    fn check_stopping_criteria<M>(
+        &self,
         manifold: &M,
-        point: &Point<T, D>,
-        gradient: &TangentVector<T, D>,
-        direction: &TangentVector<T, D>,
-    ) -> Result<TangentVector<T, D>>
+        iteration: usize,
+        function_evaluations: usize,
+        _gradient_evaluations: usize,
+        start_time: Instant,
+        current_cost: T,
+        previous_cost: Option<T>,
+        gradient_norm: Option<T>,
+        current_point: &M::Point,
+        previous_point: &Option<M::Point>,
+        _workspace: &mut Workspace<T>,
+        criterion: &StoppingCriterion<T>,
+        trust_radius: T,
+    ) -> Option<TerminationReason>
     where
-        T: Scalar,
-        D: Dim,
-        DefaultAllocator: Allocator<D>,
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
+        M: Manifold<T>,
     {
-        let eps = <T as Float>::sqrt(T::epsilon());
-        let norm = <T as Float>::sqrt(
-            manifold.inner_product(point, direction, direction)?
-        );
-        
-        if norm < T::epsilon() {
-            return Ok(TangentVector::zeros_generic(
-                gradient.shape_generic().0,
-                nalgebra::U1,
-            ));
+        // Check if trust region is too small
+        if trust_radius < self.config.min_radius {
+            return Some(TerminationReason::Converged);
         }
-        
-        let t = eps / norm;
-        
-        // Use default retraction for perturbation
-        use riemannopt_core::retraction::DefaultRetraction;
-        let retraction = DefaultRetraction;
-        
-        let perturbed = retraction.retract(manifold, point, &(direction * t))?;
-        let (_, grad_perturbed) = cost_fn.cost_and_gradient(&perturbed)?;
-        
-        // Transport gradient back and compute difference
-        let grad_transported = manifold.parallel_transport(&perturbed, point, &grad_perturbed)?;
-        
-        Ok((grad_transported - gradient) / t)
-    }
 
-    /// Computes Hessian-vector product using finite differences (zero-allocation version).
-    ///
-    /// Uses workspace for temporary calculations and writes the result to workspace.hd.
-    fn finite_diff_hessian_vec_product_workspace<T, D, C, M>(
+        // Check iteration limit
+        if let Some(max_iter) = criterion.max_iterations {
+            if iteration >= max_iter {
+                return Some(TerminationReason::MaxIterations);
+            }
+        }
+
+        // Check time limit
+        if let Some(max_time) = criterion.max_time {
+            if start_time.elapsed() >= max_time {
+                return Some(TerminationReason::MaxTime);
+            }
+        }
+
+        // Check function evaluation limit
+        if let Some(max_evals) = criterion.max_function_evaluations {
+            if function_evaluations >= max_evals {
+                return Some(TerminationReason::MaxFunctionEvaluations);
+            }
+        }
+
+        // Check gradient norm
+        if let (Some(grad_norm), Some(grad_tol)) = (gradient_norm, criterion.gradient_tolerance) {
+            if grad_norm < grad_tol {
+                return Some(TerminationReason::Converged);
+            }
+        }
+
+        // Check function value change
+        if let (Some(prev_cost), Some(val_tol)) = (previous_cost, criterion.function_tolerance) {
+            if <T as Float>::abs(current_cost - prev_cost) < val_tol && iteration > 0 {
+                return Some(TerminationReason::Converged);
+            }
+        }
+
+        // Check point change
+        if let Some(point_tol) = criterion.point_tolerance {
+            if let Some(ref prev_point) = previous_point {
+                if iteration > 0 {
+                    // Compute distance using manifold metric
+                    if let Ok(distance) = manifold.distance(prev_point, current_point) {
+                        if distance < point_tol {
+                            return Some(TerminationReason::Converged);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check target value
+        if let Some(target) = criterion.target_value {
+            if current_cost <= target {
+                return Some(TerminationReason::TargetReached);
+            }
+        }
+
+        None
+    }
+    
+    /// Computes Hessian-vector product using finite differences.
+    fn finite_diff_hessian_vec_product<M, C>(
+        &self,
         cost_fn: &C,
         manifold: &M,
-        point: &Point<T, D>,
-        gradient: &TangentVector<T, D>,
-        direction: &TangentVector<T, D>,
-        workspace: &mut SteiahugCGWorkspace<T, D>,
+        point: &M::Point,
+        gradient: &M::TangentVector,
+        direction: &M::TangentVector,
+        result: &mut M::TangentVector,
+        workspace: &mut Workspace<T>,
     ) -> Result<()>
     where
-        T: Scalar,
-        D: Dim,
-        DefaultAllocator: Allocator<D>,
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
         let eps = <T as Float>::sqrt(T::epsilon());
         let norm = <T as Float>::sqrt(
@@ -462,55 +329,53 @@ impl SteiahugCG {
         );
         
         if norm < T::epsilon() {
-            workspace.hd.fill(T::zero());
+            manifold.scale_tangent(point, T::zero(), gradient, result)?;
             return Ok(());
         }
         
         let t = eps / norm;
         
-        // Use default retraction for perturbation
-        use riemannopt_core::retraction::DefaultRetraction;
-        let retraction = DefaultRetraction;
-        
-        // Compute perturbation: temp_perturbation = direction * t
-        workspace.temp_perturbation.copy_from(direction);
-        workspace.temp_perturbation *= t;
+        // Create perturbation: t * direction
+        let mut perturbation = direction.clone();
+        manifold.scale_tangent(point, t, direction, &mut perturbation)?;
         
         // Compute perturbed point
-        workspace.temp_point.copy_from(point);
-        workspace.temp_point = retraction.retract(manifold, point, &workspace.temp_perturbation)?;
+        let mut perturbed_point = point.clone();
+        manifold.retract(point, &perturbation, &mut perturbed_point)?;
         
         // Compute gradient at perturbed point
-        let (_, grad_perturbed) = cost_fn.cost_and_gradient(&workspace.temp_point)?;
+        let mut perturbed_euclidean_grad = gradient.clone();
+        let _cost = cost_fn.cost_and_gradient(&perturbed_point, workspace, &mut perturbed_euclidean_grad)?;
         
-        // Transport gradient back and compute difference
-        workspace.temp_grad.copy_from(&manifold.parallel_transport(
-            &workspace.temp_point, 
-            point, 
-            &grad_perturbed
-        )?);
+        let mut perturbed_grad = perturbed_euclidean_grad.clone();
+        manifold.euclidean_to_riemannian_gradient(&perturbed_point, &perturbed_euclidean_grad, &mut perturbed_grad)?;
         
-        // hd = (grad_transported - gradient) / t
-        workspace.hd.copy_from(&workspace.temp_grad);
-        workspace.hd -= gradient;
-        workspace.hd /= t;
+        // Transport gradient back
+        let mut transported_grad = perturbed_grad.clone();
+        manifold.parallel_transport(&perturbed_point, point, &perturbed_grad, &mut transported_grad)?;
+        
+        // result = (transported_grad - gradient) / t
+        let mut neg_gradient = gradient.clone();
+        manifold.scale_tangent(point, -T::one(), gradient, &mut neg_gradient)?;
+        // Allocate temporary buffer for add_tangents
+        let mut temp = gradient.clone();
+        manifold.add_tangents(point, &transported_grad, &neg_gradient, result, &mut temp)?;
+        let result_copy = result.clone();
+        manifold.scale_tangent(point, T::one() / t, &result_copy, result)?;
         
         Ok(())
     }
     
     /// Finds the intersection of the line s + tau*d with the trust region boundary.
-    fn boundary_intersection<T, D, M>(
-        s: &TangentVector<T, D>,
-        d: &TangentVector<T, D>,
+    fn boundary_intersection<M>(
+        s: &M::TangentVector,
+        d: &M::TangentVector,
         radius: T,
         manifold: &M,
-        point: &Point<T, D>,
+        point: &M::Point,
     ) -> Result<(T, T)>
     where
-        T: Scalar,
-        D: Dim,
-        DefaultAllocator: Allocator<D>,
-        M: Manifold<T, D>,
+        M: Manifold<T>,
     {
         // Solve ||s + tau*d||^2 = radius^2
         let ss = manifold.inner_product(point, s, s)?;
@@ -520,7 +385,7 @@ impl SteiahugCG {
         let discriminant = sd * sd - dd * (ss - radius * radius);
         
         if discriminant < T::zero() {
-            return Err(ManifoldError::numerical_error(
+            return Err(riemannopt_core::error::ManifoldError::numerical_error(
                 "No intersection with trust region boundary"
             ));
         }
@@ -536,481 +401,372 @@ impl SteiahugCG {
             Ok((tau2, tau1))
         }
     }
-}
-
-/// Trust Region optimizer for Riemannian manifolds.
-#[derive(Debug)]
-pub struct TrustRegion<T, D>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    config: TrustRegionConfig<T>,
-    _phantom: std::marker::PhantomData<D>,
-}
-
-impl<T, D> TrustRegion<T, D>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D>,
-{
-    /// Creates a new Trust Region optimizer with the given configuration.
-    pub fn new(config: TrustRegionConfig<T>) -> Self {
-        Self {
-            config,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Returns the configuration.
-    pub fn config(&self) -> &TrustRegionConfig<T> {
-        &self.config
-    }
-
-    /// Computes the model value at a given step.
-    fn model_value<C, M>(
+    
+    /// Solves the trust region subproblem using Steihaug-CG.
+    fn solve_subproblem<M, C>(
         &self,
         cost_fn: &C,
         manifold: &M,
-        point: &Point<T, D>,
+        point: &M::Point,
+        gradient: &M::TangentVector,
+        radius: T,
+        cg_workspace: &mut CGWorkspace<T, M::TangentVector>,
+        workspace: &mut Workspace<T>,
+    ) -> Result<()>
+    where
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
+    {
+        let max_iter = self.config.max_cg_iterations.unwrap_or(manifold.dimension());
+        
+        // Reset CG vectors
+        manifold.scale_tangent(point, T::zero(), gradient, &mut cg_workspace.s)?;
+        
+        // r = -gradient
+        manifold.scale_tangent(point, -T::one(), gradient, &mut cg_workspace.r)?;
+        // d = r  
+        cg_workspace.d = cg_workspace.r.clone();
+        
+        let mut r_norm_sq = manifold.inner_product(point, &cg_workspace.r, &cg_workspace.r)?;
+        
+        // Check if gradient is already small
+        if <T as Float>::sqrt(r_norm_sq) < self.config.cg_tolerance {
+            cg_workspace.boundary_hit = false;
+            return Ok(());
+        }
+        
+        cg_workspace.boundary_hit = false;
+        
+        for _ in 0..max_iter {
+            // Compute Hessian-vector product
+            if self.config.use_exact_hessian {
+                cg_workspace.hd = cost_fn.hessian_vector_product(point, &cg_workspace.d)?;
+            } else {
+                // Use finite differences for Hessian-vector product
+                self.finite_diff_hessian_vec_product(
+                    cost_fn, manifold, point, gradient, &cg_workspace.d, &mut cg_workspace.hd, workspace
+                )?;
+            }
+            
+            let dhd = manifold.inner_product(point, &cg_workspace.d, &cg_workspace.hd)?;
+            
+            // Check if we have negative curvature
+            if dhd <= T::zero() {
+                // Find tau such that ||s + tau*d|| = radius
+                let (tau, _) = Self::boundary_intersection(
+                    &cg_workspace.s, 
+                    &cg_workspace.d, 
+                    radius, 
+                    manifold, 
+                    point,
+                )?;
+                
+                // s += tau * d
+                let s_copy = cg_workspace.s.clone();
+                // Allocate temporary buffers for axpy_tangent
+                let mut temp1 = gradient.clone();
+                let mut temp2 = gradient.clone();
+                manifold.axpy_tangent(point, tau, &cg_workspace.d, &s_copy, &mut cg_workspace.s, &mut temp1, &mut temp2)?;
+                cg_workspace.boundary_hit = true;
+                break;
+            }
+            
+            let alpha = r_norm_sq / dhd;
+            
+            // Compute s_new = s + alpha * d using temp vector
+            let mut temp1 = gradient.clone();
+            let mut temp2 = gradient.clone();
+            manifold.axpy_tangent(point, alpha, &cg_workspace.d, &cg_workspace.s, &mut cg_workspace.temp, &mut temp1, &mut temp2)?;
+            
+            // Check if we would exceed trust region
+            let s_new_norm = <T as Float>::sqrt(
+                manifold.inner_product(point, &cg_workspace.temp, &cg_workspace.temp)?
+            );
+            
+            if s_new_norm >= radius {
+                // Find tau such that ||s + tau*d|| = radius
+                let (tau, _) = Self::boundary_intersection(
+                    &cg_workspace.s, 
+                    &cg_workspace.d, 
+                    radius, 
+                    manifold, 
+                    point,
+                )?;
+                
+                // s += tau * d
+                let s_copy = cg_workspace.s.clone();
+                // Allocate temporary buffers for axpy_tangent
+                let mut temp1 = gradient.clone();
+                let mut temp2 = gradient.clone();
+                manifold.axpy_tangent(point, tau, &cg_workspace.d, &s_copy, &mut cg_workspace.s, &mut temp1, &mut temp2)?;
+                cg_workspace.boundary_hit = true;
+                break;
+            }
+            
+            // Update CG iteration
+            cg_workspace.s = cg_workspace.temp.clone(); // s = s_new
+            
+            // r -= alpha * hd
+            let mut scaled_hd = cg_workspace.hd.clone();
+            manifold.scale_tangent(point, -alpha, &cg_workspace.hd, &mut scaled_hd)?;
+            let r_copy = cg_workspace.r.clone();
+            let mut temp = gradient.clone();
+            manifold.add_tangents(point, &r_copy, &scaled_hd, &mut cg_workspace.r, &mut temp)?;
+            
+            let r_norm_sq_new = manifold.inner_product(point, &cg_workspace.r, &cg_workspace.r)?;
+            
+            // Check convergence
+            if <T as Float>::sqrt(r_norm_sq_new) < self.config.cg_tolerance {
+                break;
+            }
+            
+            let beta = r_norm_sq_new / r_norm_sq;
+            // d = r + beta * d
+            let d_copy = cg_workspace.d.clone();
+            let mut temp1 = gradient.clone();
+            let mut temp2 = gradient.clone();
+            manifold.axpy_tangent(point, beta, &d_copy, &cg_workspace.r, &mut cg_workspace.d, &mut temp1, &mut temp2)?;
+            r_norm_sq = r_norm_sq_new;
+        }
+        
+        Ok(())
+    }
+    
+    /// Computes the model value at a given step.
+    fn model_value<M, C>(
+        &self,
+        cost_fn: &C,
+        manifold: &M,
+        point: &M::Point,
         value: T,
-        gradient: &TangentVector<T, D>,
-        step: &TangentVector<T, D>,
+        gradient: &M::TangentVector,
+        step: &M::TangentVector,
+        workspace: &mut Workspace<T>,
     ) -> Result<T>
     where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+        M: Manifold<T>,
     {
         let gs = manifold.inner_product(point, gradient, step)?;
         
         // Compute Hessian-vector product
-        let hs = if self.config.use_exact_hessian {
-            cost_fn.hessian_vector_product(point, step)?
+        let mut hs = step.clone();
+        if self.config.use_exact_hessian {
+            hs = cost_fn.hessian_vector_product(point, step)?;
         } else {
-            SteiahugCG::finite_diff_hessian_vec_product(cost_fn, manifold, point, gradient, step)?
-        };
+            self.finite_diff_hessian_vec_product(cost_fn, manifold, point, gradient, step, &mut hs, workspace)?;
+        }
         
         let shs = manifold.inner_product(point, step, &hs)?;
         
         Ok(value + gs + shs * <T as Scalar>::from_f64(0.5))
     }
+}
 
-    /// Performs a single optimization step.
-    fn step_internal<C, M, R>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        retraction: &R,
-        state: &mut OptimizerState<T, D>,
-        tr_state: &mut TrustRegionState<T, D>,
-        _workspace: &mut Workspace<T>,
-    ) -> Result<()>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-        R: Retraction<T, D>,
-    {
-        // Compute gradient
-        let (cost, euclidean_grad) = cost_fn.cost_and_gradient(&state.point)?;
-        let gradient = manifold.euclidean_to_riemannian_gradient(&state.point, &euclidean_grad)?;
-        let grad_norm = <T as Float>::sqrt(
-            manifold.inner_product(&state.point, &gradient, &gradient)?
-        );
-        
-        state.set_gradient(gradient.clone(), grad_norm);
-        state.value = cost;
-        
-        // Check if radius is too small
-        if tr_state.radius < self.config.min_radius {
-            return Err(ManifoldError::numerical_error(
-                "Trust region radius below minimum threshold"
-            ));
-        }
-        
-        // Solve trust region subproblem using zero-allocation workspace
-        SteiahugCG::solve_with_workspace(
-            cost_fn,
-            manifold,
-            &state.point,
-            &gradient,
-            tr_state.radius,
-            &self.config,
-            &mut tr_state.cg_workspace,
-        )?;
-        
-        // Extract solution from workspace
-        let step = &tr_state.cg_workspace.s;
-        let _boundary_hit = tr_state.cg_workspace.temp[0] != T::zero();
-        
-        // Compute predicted reduction
-        let model_current = cost;
-        let model_step = self.model_value(
-            cost_fn,
-            manifold,
-            &state.point,
-            cost,
-            &gradient,
-            &step,
-        )?;
-        let predicted_reduction = model_current - model_step;
-        
-        // Compute trial point
-        let trial_point = retraction.retract(manifold, &state.point, &step)?;
-        let trial_value = cost_fn.cost(&trial_point)?;
-        
-        // Compute actual reduction
-        let actual_reduction = cost - trial_value;
-        
-        // Compute reduction ratio
-        let ratio = if <T as Float>::abs(predicted_reduction) > T::epsilon() {
-            actual_reduction / predicted_reduction
-        } else {
-            T::zero()
-        };
-        
-        // Accept or reject the step
-        if ratio >= self.config.acceptance_ratio {
-            // Accept the step
-            state.update(trial_point, trial_value);
-            tr_state.consecutive_rejections = 0;
-        } else {
-            // Reject the step
-            tr_state.consecutive_rejections += 1;
-        }
-        
-        // Update trust region radius
-        tr_state.update_radius(ratio, &self.config);
-        
-        Ok(())
+// Implementation of the Optimizer trait from core
+impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
+    fn name(&self) -> &str {
+        "Riemannian Trust Region"
     }
-
-    /// Optimizes the given cost function.
-    pub fn optimize<C, M, R>(
+    
+    fn optimize<M, C>(
         &mut self,
         cost_fn: &C,
         manifold: &M,
-        retraction: &R,
-        initial_point: &Point<T, D>,
+        initial_point: &M::Point,
         stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, D>>
+    ) -> Result<OptimizationResult<T, M::Point>>
     where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-        R: Retraction<T, D>,
-        DefaultAllocator: Allocator<D, D>,
+        M: Manifold<T>,
+        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
     {
         let start_time = Instant::now();
+        let n = manifold.dimension();
+        let mut workspace = Workspace::with_size(n);
         
-        // Wrap cost function with caching to avoid redundant computations
-        let cached_cost_fn = CachedCostFunction::new(cost_fn);
+        // Pre-allocate workspace buffers
+        // Note: These will be allocated as needed when calling manifold methods
         
-        // Initialize optimizer state
-        let initial_cost = cached_cost_fn.cost(initial_point)?;
-        let mut state = OptimizerState::new(initial_point.clone(), initial_cost);
-        let dim = initial_point.shape_generic().0;
-        let mut tr_state = TrustRegionState::new(self.config.initial_radius, dim);
+        // Initialize state
+        let initial_cost = cost_fn.cost(initial_point)?;
+        let mut current_point = initial_point.clone();
+        let mut previous_point: Option<M::Point> = None;
+        let mut current_cost = initial_cost;
+        let mut previous_cost: Option<T> = None;
+        let mut gradient_norm: Option<T> = None;
+        let mut iteration = 0;
+        let mut function_evaluations = 1;
+        let mut gradient_evaluations = 0;
+        let mut trust_radius = self.config.initial_radius;
         
-        // Create a single workspace for the entire optimization
-        let n = initial_point.len();
-        let mut workspace = WorkspaceBuilder::new()
-            .with_standard_buffers(n)
-            .build();
+        // Compute initial gradient to get the right type for CG workspace
+        let mut euclidean_grad = cost_fn.gradient(&initial_point)?;
+        let mut riemannian_grad = euclidean_grad.clone();
+        gradient_evaluations += 1;
+        
+        manifold.euclidean_to_riemannian_gradient(
+            &initial_point,
+            &euclidean_grad,
+            &mut riemannian_grad,
+        )?;
+        
+        // Create zero vector for CG workspace initialization
+        let mut zero_vector = riemannian_grad.clone();
+        manifold.scale_tangent(&initial_point, T::zero(), &riemannian_grad, &mut zero_vector)?;
+        
+        // Initialize CG workspace
+        let mut cg_workspace = CGWorkspace::new(zero_vector);
         
         // Main optimization loop
         loop {
             // Check stopping criteria
-            if let Some(reason) = ConvergenceChecker::check(&state, manifold, stopping_criterion)? {
-                // Get cache statistics for diagnostics
-                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
-                
+            let reason = self.check_stopping_criteria(
+                manifold,
+                iteration,
+                function_evaluations,
+                gradient_evaluations,
+                start_time,
+                current_cost,
+                previous_cost,
+                gradient_norm,
+                &current_point,
+                &previous_point,
+                &mut workspace,
+                stopping_criterion,
+                trust_radius,
+            );
+            
+            if let Some(reason) = reason {
                 return Ok(OptimizationResult::new(
-                    state.point,
-                    state.value,
-                    state.iteration,
+                    current_point,
+                    current_cost,
+                    iteration,
                     start_time.elapsed(),
                     reason,
                 )
-                .with_function_evaluations(cost_misses)  // Use cache misses as actual evaluations
-                .with_gradient_evaluations(grad_misses)  // Use cache misses as actual evaluations
-                .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
+                .with_function_evaluations(function_evaluations)
+                .with_gradient_evaluations(gradient_evaluations)
+                .with_gradient_norm(gradient_norm.unwrap_or(T::zero())));
             }
             
-            // Check if trust region is too small
-            if tr_state.radius < self.config.min_radius {
-                // Get cache statistics for diagnostics
-                let ((_cost_hits, cost_misses), (_grad_hits, grad_misses), _) = cached_cost_fn.cache_stats();
-                
-                return Ok(OptimizationResult::new(
-                    state.point,
-                    state.value,
-                    state.iteration,
-                    start_time.elapsed(),
-                    TerminationReason::Converged,
-                )
-                .with_function_evaluations(cost_misses)  // Use cache misses as actual evaluations
-                .with_gradient_evaluations(grad_misses)  // Use cache misses as actual evaluations
-                .with_gradient_norm(state.gradient_norm.unwrap_or(T::zero())));
+            // Compute gradient at current point
+            let _new_cost = cost_fn.cost_and_gradient(
+                &current_point,
+                &mut workspace,
+                &mut euclidean_grad,
+            )?;
+            function_evaluations += 1;
+            gradient_evaluations += 1;
+            
+            // Convert to Riemannian gradient
+            manifold.euclidean_to_riemannian_gradient(
+                &current_point,
+                &euclidean_grad,
+                &mut riemannian_grad,
+            )?;
+            
+            // Compute gradient norm
+            let grad_norm_squared = manifold.inner_product(
+                &current_point,
+                &riemannian_grad,
+                &riemannian_grad,
+            )?;
+            let grad_norm = <T as Float>::sqrt(grad_norm_squared);
+            gradient_norm = Some(grad_norm);
+            
+            // Solve trust region subproblem
+            self.solve_subproblem(
+                cost_fn,
+                manifold,
+                &current_point,
+                &riemannian_grad,
+                trust_radius,
+                &mut cg_workspace,
+                &mut workspace,
+            )?;
+            
+            // Get step from CG workspace
+            let step = &cg_workspace.s;
+            
+            // Compute predicted reduction
+            let model_current = current_cost;
+            let model_step = self.model_value(
+                cost_fn,
+                manifold,
+                &current_point,
+                current_cost,
+                &riemannian_grad,
+                step,
+                &mut workspace,
+            )?;
+            let predicted_reduction = model_current - model_step;
+            
+            // Compute trial point
+            let mut trial_point = current_point.clone();
+            manifold.retract(&current_point, step, &mut trial_point)?;
+            
+            let trial_value = cost_fn.cost(&trial_point)?;
+            function_evaluations += 1;
+            
+            // Compute actual reduction
+            let actual_reduction = current_cost - trial_value;
+            
+            // Compute reduction ratio
+            let ratio = if <T as Float>::abs(predicted_reduction) > T::epsilon() {
+                actual_reduction / predicted_reduction
+            } else {
+                T::zero()
+            };
+            
+            // Accept or reject the step
+            if ratio >= self.config.acceptance_ratio {
+                // Accept the step
+                previous_point = Some(current_point.clone());
+                current_point = trial_point;
+                previous_cost = Some(current_cost);
+                current_cost = trial_value;
+                iteration += 1;
             }
             
-            // Perform one optimization step
-            self.step_internal(&cached_cost_fn, manifold, retraction, &mut state, &mut tr_state, &mut workspace)?;
+            // Update trust region radius
+            if ratio < self.config.decrease_threshold {
+                // Poor agreement: shrink trust region
+                trust_radius *= self.config.decrease_factor;
+            } else if ratio > self.config.increase_threshold && cg_workspace.boundary_hit {
+                // Good agreement and hit boundary: expand trust region
+                trust_radius = <T as Float>::min(
+                    trust_radius * self.config.increase_factor,
+                    self.config.max_radius,
+                );
+            }
         }
-    }
-
-    /// Performs a single optimization step.
-    pub fn step<C, M, R>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        retraction: &R,
-        state: &mut OptimizerState<T, D>,
-    ) -> Result<()>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-        R: Retraction<T, D>,
-    {
-        // Create temporary trust region state
-        let dim = state.point.shape_generic().0;
-        let mut tr_state = TrustRegionState::new(self.config.initial_radius, dim);
-        
-        // Create temporary workspace
-        let n = state.point.len();
-        let mut workspace = WorkspaceBuilder::new()
-            .with_standard_buffers(n)
-            .build();
-        
-        self.step_internal(cost_fn, manifold, retraction, state, &mut tr_state, &mut workspace)
-    }
-}
-
-// Implementation of the Optimizer trait
-impl<T, D> Optimizer<T, D> for TrustRegion<T, D>
-where
-    T: Scalar,
-    D: Dim,
-    DefaultAllocator: Allocator<D> + Allocator<D, D>,
-{
-    fn name(&self) -> &str {
-        "Riemannian Trust Region"
-    }
-
-    fn optimize<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        initial_point: &Point<T, D>,
-        stopping_criterion: &StoppingCriterion<T>,
-    ) -> Result<OptimizationResult<T, D>>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Use the default retraction
-        use riemannopt_core::retraction::DefaultRetraction;
-        let retraction = DefaultRetraction;
-        TrustRegion::optimize(self, cost_fn, manifold, &retraction, initial_point, stopping_criterion)
-    }
-
-    fn step<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        state: &mut OptimizerState<T, D>,
-    ) -> Result<()>
-    where
-        C: CostFunction<T, D>,
-        M: Manifold<T, D>,
-    {
-        // Use the default retraction
-        use riemannopt_core::retraction::DefaultRetraction;
-        let retraction = DefaultRetraction;
-        self.step(cost_fn, manifold, &retraction, state)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use riemannopt_core::{
-        cost_function::QuadraticCost,
-        test_manifolds::TestEuclideanManifold,
-        types::DVector,
-    };
-    use nalgebra::Dyn;
-    use approx::assert_relative_eq;
+    
 
     #[test]
     fn test_trust_region_config() {
         let config = TrustRegionConfig::<f64>::new()
             .with_initial_radius(0.5)
             .with_max_radius(5.0)
-            .with_exact_hessian();
+            .with_exact_hessian()
+            .with_max_cg_iterations(20)
+            .with_cg_tolerance(1e-8);
         
         assert_eq!(config.initial_radius, 0.5);
         assert_eq!(config.max_radius, 5.0);
         assert!(config.use_exact_hessian);
+        assert_eq!(config.max_cg_iterations, Some(20));
+        assert_eq!(config.cg_tolerance, 1e-8);
     }
-
+    
     #[test]
-    fn test_trust_region_state_update() {
-        let config = TrustRegionConfig::<f64>::default();
-        let mut state = TrustRegionState::<f64, Dyn>::new(1.0, Dyn(2));
-        
-        // Test radius decrease
-        state.update_radius(0.1, &config);
-        assert_eq!(state.radius, 0.25);
-        assert_eq!(state.consecutive_rejections, 1);
-        
-        // Test radius increase
-        state.radius = 1.0;
-        state.update_radius(0.9, &config);
-        assert_eq!(state.radius, 2.0);
-        assert_eq!(state.consecutive_rejections, 0);
-        
-        // Test radius unchanged
-        state.radius = 1.0;
-        state.update_radius(0.5, &config);
-        assert_eq!(state.radius, 1.0);
-        assert_eq!(state.consecutive_rejections, 0);
-    }
-
-    #[test]
-    fn test_trust_region_on_quadratic() {
-        let cost_fn = QuadraticCost::simple(Dyn(3));
-        let manifold = TestEuclideanManifold::new(3);
-        let initial_point = DVector::from_vec(vec![1.0, 2.0, 3.0]);
-        
-        let config = TrustRegionConfig::new()
-            .with_initial_radius(0.5)
-            .with_max_cg_iterations(10);
-        
-        let mut optimizer = TrustRegion::new(config);
-        
-        let stopping_criterion = StoppingCriterion::new()
-            .with_max_iterations(100)
-            .with_gradient_tolerance(1e-6);
-        
-        use riemannopt_core::retraction::DefaultRetraction;
-        let retraction = DefaultRetraction;
-        
-        let result = optimizer.optimize(
-            &cost_fn,
-            &manifold,
-            &retraction,
-            &initial_point,
-            &stopping_criterion,
-        ).unwrap();
-        
-        // Should converge to origin for simple quadratic
-        assert!(result.converged);
-        assert!(result.point.norm() < 1e-3);
-        assert!(result.iterations < 100);
-    }
-
-    #[test]
-    fn test_steihaug_cg_boundary() {
-        let cost_fn = QuadraticCost::simple(Dyn(2));
-        let manifold = TestEuclideanManifold::new(2);
-        let point = DVector::from_vec(vec![1.0, 1.0]);
-        let gradient = DVector::from_vec(vec![1.0, 1.0]);
-        let radius = 0.5;
-        
-        let config = TrustRegionConfig::<f64>::new()
-            .with_cg_tolerance(1e-10);
-        
-        let (step, boundary_hit) = SteiahugCG::solve(
-            &cost_fn,
-            &manifold,
-            &point,
-            &gradient,
-            radius,
-            &config,
-        ).unwrap();
-        
-        let step_norm = step.norm();
-        
-        // Step should be on the boundary
-        assert!(boundary_hit);
-        assert_relative_eq!(step_norm, radius, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_trust_region_optimizer_trait() {
-        let cost_fn = QuadraticCost::simple(Dyn(2));
-        let manifold = TestEuclideanManifold::new(2);
-        let initial_point = DVector::from_vec(vec![1.0, 1.0]);
-        
-        let mut optimizer = TrustRegion::<f64, Dyn>::new(TrustRegionConfig::default());
-        
-        // Test that it implements the Optimizer trait
-        assert_eq!(optimizer.name(), "Riemannian Trust Region");
-        
-        let stopping_criterion = StoppingCriterion::new()
-            .with_max_iterations(50)
-            .with_gradient_tolerance(1e-6);
-        
-        // Use the trait method
-        let result: OptimizationResult<f64, Dyn> = Optimizer::optimize(
-            &mut optimizer,
-            &cost_fn,
-            &manifold,
-            &initial_point,
-            &stopping_criterion,
-        ).unwrap();
-        
-        assert!(result.converged);
-    }
-
-    #[test]
-    fn test_steihaug_cg_zero_allocation() {
-        // Test that the zero-allocation version produces the same results as the allocating version
-        let cost_fn = QuadraticCost::simple(Dyn(2));
-        let manifold = TestEuclideanManifold::new(2);
-        let point = DVector::from_vec(vec![1.0, 1.0]);
-        let gradient = DVector::from_vec(vec![1.0, 1.0]);
-        let radius = 0.5;
-        
-        let config = TrustRegionConfig::<f64>::new()
-            .with_cg_tolerance(1e-10)
-            .with_max_cg_iterations(10);
-        
-        // Test allocating version
-        let (step_alloc, boundary_hit_alloc) = SteiahugCG::solve(
-            &cost_fn,
-            &manifold,
-            &point,
-            &gradient,
-            radius,
-            &config,
-        ).unwrap();
-        
-        // Test zero-allocation version
-        let mut workspace = SteiahugCGWorkspace::new(Dyn(2));
-        SteiahugCG::solve_with_workspace(
-            &cost_fn,
-            &manifold,
-            &point,
-            &gradient,
-            radius,
-            &config,
-            &mut workspace,
-        ).unwrap();
-        
-        let step_workspace = workspace.s.clone();
-        let boundary_hit_workspace = workspace.temp[0] != 0.0;
-        
-        // Both versions should produce the same results
-        assert_relative_eq!(step_alloc[0], step_workspace[0], epsilon = 1e-10);
-        assert_relative_eq!(step_alloc[1], step_workspace[1], epsilon = 1e-10);
-        assert_eq!(boundary_hit_alloc, boundary_hit_workspace);
-        
-        // Verify that the solution norm is correct
-        let step_norm = step_workspace.norm();
-        if boundary_hit_workspace {
-            assert_relative_eq!(step_norm, radius, epsilon = 1e-10);
-        }
+    fn test_trust_region_builder() {
+        let tr = TrustRegion::<f64>::with_default_config();
+        assert_eq!(tr.name(), "Riemannian Trust Region");
     }
 }

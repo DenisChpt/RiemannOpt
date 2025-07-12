@@ -31,7 +31,7 @@ impl TangentVectorWorkspace {
         let inner = point.dot(vector);
         
         // Use workspace for temporary storage
-        let temp = workspace.get_or_create_vector(BufferId::Temp1, n);
+        let temp = workspace.get_or_create_buffer(BufferId::Temp1, || DVector::<T>::zeros(n));
         temp.copy_from(point);
         temp.scale_mut(inner);
         
@@ -70,7 +70,7 @@ impl TangentVectorWorkspace {
         
         // For the sphere, parallel transport along a geodesic from p to q
         // of a tangent vector v at p is given by:
-        // PT(v) = v - 2 * <v, q> / (1 + <p, q>) * (p + q)
+        // PT(v) = v - <v, q> / (1 + <p, q>) * (p + q)
         
         let p_dot_q = from_point.dot(to_point);
         let v_dot_q = vector.dot(to_point);
@@ -81,10 +81,10 @@ impl TangentVectorWorkspace {
             return Ok(());
         }
         
-        let scale = <T as Scalar>::from_f64(2.0) * v_dot_q / (T::one() + p_dot_q);
+        let scale = v_dot_q / (T::one() + p_dot_q);
         
         // Use workspace for p + q
-        let temp = workspace.get_or_create_vector(BufferId::Temp1, n);
+        let temp = workspace.get_or_create_buffer(BufferId::Temp1, || DVector::<T>::zeros(n));
         temp.copy_from(from_point);
         temp.axpy(T::one(), to_point, T::one());
         
@@ -111,7 +111,7 @@ impl TangentVectorWorkspace {
         
         // Project onto tangent space
         let temp_vector = {
-            let temp_result = workspace.get_or_create_vector(BufferId::Temp2, result.len());
+            let temp_result = workspace.get_or_create_buffer(BufferId::Temp2, || DVector::<T>::zeros(result.len()));
             temp_result.copy_from(result);
             temp_result.clone_owned()
         };

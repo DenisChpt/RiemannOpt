@@ -4,11 +4,11 @@
 [![Documentation](https://docs.rs/riemannopt-manifolds/badge.svg)](https://docs.rs/riemannopt-manifolds)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-High-performance implementations of Riemannian manifolds for optimization, featuring zero-copy matrix operations, SIMD acceleration, and compile-time optimizations.
+High-performance implementations of Riemannian manifolds for optimization, featuring zero-copy matrix operations, SIMD acceleration, compile-time optimizations, and the new associated types API.
 
 ## Overview
 
-This crate provides comprehensive implementations of commonly used Riemannian manifolds in optimization, machine learning, and scientific computing. All manifolds implement the unified `Manifold` trait from `riemannopt-core`, with additional optimizations for specific use cases.
+This crate provides comprehensive implementations of commonly used Riemannian manifolds in optimization, machine learning, and scientific computing. All manifolds implement the unified `Manifold` trait from `riemannopt-core` with associated types for `Point` and `TangentVector`, providing additional optimizations for specific use cases.
 
 ## Key Features
 
@@ -17,6 +17,7 @@ This crate provides comprehensive implementations of commonly used Riemannian ma
 - **📦 Flexible composition**: Both static and dynamic product manifolds
 - **🧮 Rich geometry**: Multiple metrics and retractions for each manifold
 - **✅ Battle-tested**: Comprehensive test suite with integration and performance tests
+- **🎯 Type-safe API**: Associated types for Point and TangentVector ensure compile-time correctness
 
 ## Implemented Manifolds
 
@@ -38,6 +39,7 @@ Matrices with orthonormal columns (n×p with p≤n).
   - Multiple retractions: QR (default), polar, Cayley
   - Parallel QR decomposition for large matrices
   - Specialized implementations for small manifolds (e.g., St(3,2), St(4,2))
+  - Associated types: `Point = DMatrix<T>`, `TangentVector = DMatrix<T>`
 - **Variants**: `Stiefel`, `StiefelMatrix`, `StiefelSmall`
 
 #### Grassmann Manifold `Gr(n,p)`
@@ -109,7 +111,7 @@ Product of unit spheres (S¹)^n - matrices with unit-norm columns.
 A key innovation in this crate is the `MatrixManifold` trait, which provides zero-copy matrix operations:
 
 ```rust
-pub trait MatrixManifold<T: Scalar>: Manifold<T, Dyn> {
+pub trait MatrixManifold<T: Scalar>: Manifold<T> {
     fn project_matrix(&self, matrix: &MatrixView<T>, result: &mut Matrix<T>, 
                       workspace: &mut Workspace<T>);
     
@@ -148,14 +150,18 @@ riemannopt-manifolds = "0.1"
 
 ```rust
 use riemannopt_manifolds::{Sphere, Stiefel, StiefelMatrix};
-use riemannopt_core::{Manifold, MatrixManifold};
+use riemannopt_core::manifold::{Manifold, MatrixManifold};
+use riemannopt_core::memory::workspace::{Workspace, WorkspaceBuilder};
 use nalgebra::{DVector, DMatrix};
 
 // Create a sphere in R^10
 let sphere = Sphere::new(10)?;
-let mut workspace = Workspace::with_size(10);
+let mut workspace = WorkspaceBuilder::new()
+    .with_standard_buffers(10)
+    .build();
 
-// Generate random point and tangent
+// Note: With the new API, Point and TangentVector are associated types
+// For Sphere: type Point = DVector<T>, type TangentVector = DVector<T>
 let mut point = DVector::zeros(10);
 sphere.random_point(&mut point, &mut workspace);
 
@@ -172,12 +178,14 @@ stiefel.random_matrix(&mut matrix, &mut workspace);
 
 ```rust
 use riemannopt_manifolds::SphereSIMD;
+use nalgebra::DVector;
 
 // Automatic SIMD acceleration for large vectors
 let sphere = SphereSIMD::new(1000)?;
 
 // SIMD operations are used automatically when beneficial
-let mut point = DVector::zeros(1000);
+let point = DVector::zeros(1000);
+let mut result = DVector::zeros(1000);
 sphere.project_point(&point, &mut result, &mut workspace);
 ```
 
@@ -199,12 +207,16 @@ let dim = product_manifold.dimension(); // 10 + 5*2 = 20
 
 ```rust
 use riemannopt_manifolds::{SPDMatrix, StiefelMatrix};
+use riemannopt_core::memory::workspace::WorkspaceBuilder;
 use nalgebra::DMatrix;
 
 // SPD manifold with matrix interface
 let spd = SPDMatrix::new(3)?;
-let mut covariance = DMatrix::identity(3, 3);
-let mut workspace = Workspace::with_size(9);
+let covariance = DMatrix::identity(3, 3);
+let mut result = DMatrix::zeros(3, 3);
+let mut workspace = WorkspaceBuilder::new()
+    .with_standard_buffers(9)
+    .build();
 
 // Direct matrix operations
 spd.project_matrix(&covariance.view(), &mut result, &mut workspace);

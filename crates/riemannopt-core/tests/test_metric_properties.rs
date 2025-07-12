@@ -3,28 +3,33 @@
 //! This test module verifies that metrics satisfy positive definiteness
 //! and other required mathematical properties.
 
-use nalgebra::Dyn;
-use riemannopt_core::{error::Result, manifold::Manifold, memory::workspace::Workspace, types::DVector};
+use riemannopt_core::{
+    core::manifold::Manifold,
+    error::{Result, ManifoldError},
+    memory::workspace::Workspace,
+    types::DVector,
+};
+use nalgebra::DMatrix;
 
 /// Test manifold with custom metric
 #[derive(Debug)]
 struct ManifoldWithMetric {
     dim: usize,
     /// Metric matrix (must be positive definite)
-    metric_matrix: nalgebra::DMatrix<f64>,
+    metric_matrix: DMatrix<f64>,
 }
 
 impl ManifoldWithMetric {
     fn new_euclidean(dim: usize) -> Self {
         Self {
             dim,
-            metric_matrix: nalgebra::DMatrix::identity(dim, dim),
+            metric_matrix: DMatrix::identity(dim, dim),
         }
     }
 
     fn new_weighted(dim: usize, weights: Vec<f64>) -> Self {
         assert_eq!(weights.len(), dim);
-        let mut metric = nalgebra::DMatrix::zeros(dim, dim);
+        let mut metric = DMatrix::zeros(dim, dim);
         for (i, &w) in weights.iter().enumerate() {
             metric[(i, i)] = w;
         }
@@ -35,7 +40,9 @@ impl ManifoldWithMetric {
     }
 }
 
-impl Manifold<f64, Dyn> for ManifoldWithMetric {
+impl Manifold<f64> for ManifoldWithMetric {
+    type Point = DVector<f64>;
+    type TangentVector = DVector<f64>;
     fn name(&self) -> &str {
         "Test Manifold with Metric"
     }
@@ -102,9 +109,22 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
     ) -> Result<()> {
         // Riemannian gradient = G^{-1} * Euclidean gradient
         let g_inv = self.metric_matrix.clone().try_inverse().ok_or_else(|| {
-            riemannopt_core::error::ManifoldError::numerical_error("Metric not invertible")
+            ManifoldError::NumericalError { reason: "Metric not invertible".to_string() }
         })?;
         *result = &g_inv * euclidean_grad;
+        Ok(())
+    }
+
+    fn parallel_transport(
+        &self,
+        _from: &Self::Point,
+        _to: &Self::Point,
+        vector: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        // For flat manifolds, parallel transport is identity
+        result.copy_from(vector);
         Ok(())
     }
 
@@ -116,6 +136,41 @@ impl Manifold<f64, Dyn> for ManifoldWithMetric {
         *result = DVector::from_fn(self.dim, |_, _| {
             rand::random::<f64>() * 2.0 - 1.0
         });
+        Ok(())
+    }
+
+    fn distance(&self, x: &Self::Point, y: &Self::Point, workspace: &mut Workspace<f64>) -> Result<f64> {
+        // For flat manifolds, distance is given by the norm of the difference
+        // under the Riemannian metric
+        let diff = y - x;
+        let mut tangent = diff.clone();
+        self.inverse_retract(x, y, &mut tangent, workspace)?;
+        self.norm(x, &tangent)
+    }
+
+    fn scale_tangent(
+        &self,
+        _point: &Self::Point,
+        scalar: f64,
+        tangent: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        // Simple scalar multiplication for flat manifolds
+        *result = tangent * scalar;
+        Ok(())
+    }
+
+    fn add_tangents(
+        &self,
+        _point: &Self::Point,
+        v1: &Self::TangentVector,
+        v2: &Self::TangentVector,
+        result: &mut Self::TangentVector,
+        _workspace: &mut Workspace<f64>,
+    ) -> Result<()> {
+        // Simple vector addition for flat manifolds
+        *result = v1 + v2;
         Ok(())
     }
 }
@@ -402,7 +457,104 @@ fn test_metric_eigenvalues() {
     assert!(condition_number < 100.0, "Metric is poorly conditioned");
 }
 
-fn main() {
-    // Run specific test if needed
-    test_euclidean_metric_positive_definite();
+#[test]
+fn test_parallelogram_law() {
+    // Test the parallelogram law: ||u+v||² + ||u-v||² = 2(||u||² + ||v||²)
+    let manifold = ManifoldWithMetric::new_euclidean(4);
+    let point = manifold.random_point();
+    let mut workspace = Workspace::new();
+
+    for _ in 0..20 {
+        let mut u = DVector::zeros(4);
+        let mut v = DVector::zeros(4);
+        manifold.random_tangent(&point, &mut u, &mut workspace).unwrap();
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
+
+        let u_plus_v = &u + &v;
+        let u_minus_v = &u - &v;
+
+        let norm_u_plus_v_sq = manifold.inner_product(&point, &u_plus_v, &u_plus_v).unwrap();
+        let norm_u_minus_v_sq = manifold.inner_product(&point, &u_minus_v, &u_minus_v).unwrap();
+        let norm_u_sq = manifold.inner_product(&point, &u, &u).unwrap();
+        let norm_v_sq = manifold.inner_product(&point, &v, &v).unwrap();
+
+        let lhs = norm_u_plus_v_sq + norm_u_minus_v_sq;
+        let rhs = 2.0 * (norm_u_sq + norm_v_sq);
+
+        assert!(
+            (lhs - rhs).abs() < 1e-13,
+            "Parallelogram law violated: {} != {}",
+            lhs,
+            rhs
+        );
+    }
+}
+
+#[test]
+fn test_gram_schmidt_orthogonalization() {
+    // Test that Gram-Schmidt process works correctly with the metric
+    let manifold = ManifoldWithMetric::new_weighted(4, vec![1.0, 2.0, 0.5, 1.5]);
+    let point = manifold.random_point();
+    let mut workspace = Workspace::new();
+
+    // Generate linearly independent vectors
+    let mut vectors = Vec::new();
+    for _ in 0..4 {
+        let mut v = DVector::zeros(4);
+        manifold.random_tangent(&point, &mut v, &mut workspace).unwrap();
+        vectors.push(v);
+    }
+
+    // Apply Gram-Schmidt orthogonalization
+    let mut orthogonal_vectors = vec![vectors[0].clone()];
+    
+    for i in 1..4 {
+        let mut ortho_v = vectors[i].clone();
+        
+        // Subtract projections onto previous orthogonal vectors
+        for j in 0..i {
+            let inner_vj = manifold.inner_product(&point, &vectors[i], &orthogonal_vectors[j]).unwrap();
+            let inner_jj = manifold.inner_product(&point, &orthogonal_vectors[j], &orthogonal_vectors[j]).unwrap();
+            if inner_jj > 1e-10 {
+                ortho_v -= &orthogonal_vectors[j] * (inner_vj / inner_jj);
+            }
+        }
+        orthogonal_vectors.push(ortho_v);
+    }
+
+    // Verify orthogonality
+    for i in 0..4 {
+        for j in i+1..4 {
+            let inner = manifold.inner_product(&point, &orthogonal_vectors[i], &orthogonal_vectors[j]).unwrap();
+            let norm_i = manifold.inner_product(&point, &orthogonal_vectors[i], &orthogonal_vectors[i]).unwrap().sqrt();
+            let norm_j = manifold.inner_product(&point, &orthogonal_vectors[j], &orthogonal_vectors[j]).unwrap().sqrt();
+            
+            // Check relative orthogonality
+            if norm_i > 1e-10 && norm_j > 1e-10 {
+                let relative_inner = inner.abs() / (norm_i * norm_j);
+                assert!(
+                    relative_inner < 1e-10,
+                    "Vectors {} and {} not orthogonal: relative inner product = {}",
+                    i, j, relative_inner
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_metric_completeness() {
+    // Test that the metric defines a complete inner product space
+    let manifold = ManifoldWithMetric::new_euclidean(3);
+    let point = manifold.random_point();
+    let mut workspace = Workspace::new();
+
+    // Test that if <v,w> = 0 for all w, then v = 0
+    let zero = DVector::zeros(3);
+    for _ in 0..20 {
+        let mut w = DVector::zeros(3);
+        manifold.random_tangent(&point, &mut w, &mut workspace).unwrap();
+        let inner = manifold.inner_product(&point, &zero, &w).unwrap();
+        assert!(inner.abs() < 1e-15, "Zero vector has non-zero inner product");
+    }
 }

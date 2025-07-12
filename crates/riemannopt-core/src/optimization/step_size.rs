@@ -64,6 +64,7 @@
 //! ## Stochastic Gradient Descent
 //! ```rust,no_run
 //! # use riemannopt_core::prelude::*;
+//! # use riemannopt_core::optimization::step_size::StepSizeSchedule;
 //! // Theoretical guarantee: O(1/√k) convergence
 //! let schedule = StepSizeSchedule::sqrt_decay(0.1);
 //! ```
@@ -71,6 +72,7 @@
 //! ## Batch Optimization
 //! ```rust,no_run
 //! # use riemannopt_core::prelude::*;
+//! # use riemannopt_core::optimization::step_size::StepSizeSchedule;
 //! // Fast early progress, fine-tuning later
 //! let schedule = StepSizeSchedule::exponential_decay(1.0, 0.95);
 //! ```
@@ -78,6 +80,7 @@
 //! ## Adaptive Learning
 //! ```rust,no_run
 //! # use riemannopt_core::prelude::*;
+//! # use riemannopt_core::optimization::step_size::StepSizeSchedule;
 //! // Balanced decay for general problems
 //! let schedule = StepSizeSchedule::polynomial_decay(0.1, 0.01, 1.0);
 //! ```

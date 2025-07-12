@@ -20,9 +20,9 @@ High-performance core traits and types for Riemannian optimization in Rust.
 - **Backend flexibility**: Runtime selection between CPU, SIMD, and GPU backends
 
 ### 🧮 Mathematical Framework
-- **Manifold trait**: Complete abstraction for Riemannian manifolds
-- **Optimizer framework**: Flexible trait-based optimization algorithms
-- **Cost functions**: Efficient interface for objective functions with caching
+- **Manifold trait**: Complete abstraction for Riemannian manifolds with associated types
+- **Optimizer framework**: Flexible trait-based optimization algorithms with mutable state
+- **Cost functions**: Efficient interface for objective functions with workspace-based API
 - **Retractions**: Multiple retraction methods (exponential map, QR, polar)
 - **Vector transport**: Parallel transport and vector transport implementations
 - **Fisher information**: Various approximation strategies for natural gradient methods
@@ -64,43 +64,51 @@ riemannopt-core = "0.1"
 
 ```rust
 use riemannopt_core::prelude::*;
-use nalgebra::DVector;
+use riemannopt_core::memory::workspace::{Workspace, WorkspaceBuilder};
 
 // Create a workspace for memory management
 let n = 100;
-let mut workspace = Workspace::with_size(n);
+let mut workspace = WorkspaceBuilder::new()
+    .with_standard_buffers(n)
+    .build();
 
 // Define your manifold (e.g., using a provided implementation)
-let manifold = Sphere::new(n)?;
+// Note: Manifolds now use associated types for Point and TangentVector
+let manifold = /* your manifold implementation */;
 
 // Generate a random point on the manifold
-let mut point = DVector::zeros(n);
+let mut point = /* manifold-specific point type */;
 manifold.random_point(&mut point, &mut workspace);
 
 // Generate a random tangent vector
-let mut tangent = DVector::zeros(n);
+let mut tangent = /* manifold-specific tangent vector type */;
 manifold.random_tangent(&point, &mut tangent, &mut workspace)?;
 
 // Perform retraction
-let mut new_point = DVector::zeros(n);
+let mut new_point = /* manifold-specific point type */;
 manifold.retract(&point, &tangent, &mut new_point, &mut workspace)?;
 ```
 
 ### Using the Workspace System
 
 ```rust
-use riemannopt_core::memory::{Workspace, WorkspaceBuilder, BufferId};
+use riemannopt_core::memory::workspace::{Workspace, WorkspaceBuilder, BufferId};
 
 // Create workspace with standard optimization buffers
-let workspace = WorkspaceBuilder::new()
+let mut workspace = WorkspaceBuilder::new()
     .with_standard_buffers(n)      // Gradient, Direction, etc.
     .with_momentum_buffers(n)      // For momentum-based methods
     .with_hessian_buffers(n)       // For second-order methods
     .build();
 
 // Access pre-allocated buffers
-let gradient = workspace.get_or_create_vector(BufferId::Gradient, n);
-let direction = workspace.get_or_create_vector(BufferId::Direction, n);
+let gradient = workspace.get_vector_mut(BufferId::Gradient)?;
+let direction = workspace.get_vector_mut(BufferId::Direction)?;
+
+// For temporary allocations
+let temp = workspace.acquire_temp_vector(n)?;
+// ... use temp ...
+workspace.release_temp_vector(temp);
 ```
 
 ### Backend Selection
@@ -131,29 +139,36 @@ let result = backend.dot(&a, &b)?;
 
 ```rust
 use riemannopt_core::prelude::*;
-use riemannopt_core::optimization::{SGD, SGDConfig, StoppingCriterion};
+use riemannopt_core::optimizer::{Optimizer, StoppingCriterion};
+// Note: Specific optimizers like SGD are in riemannopt-optim crate
 
-// 1. Define your cost function
-struct MyObjective { /* ... */ }
+// 1. Define your cost function with associated types
+struct MyObjective<M: Manifold<T>, T: Scalar> {
+    _phantom: std::marker::PhantomData<(M, T)>,
+}
 
-impl<T: Scalar, D: Dim> CostFunction<T, D> for MyObjective {
+impl<M: Manifold<T>, T: Scalar> CostFunction<T> for MyObjective<M, T> {
+    type Point = M::Point;
+    type TangentVector = M::TangentVector;
+    
+    fn cost(&self, point: &Self::Point) -> Result<T> {
+        // Compute cost
+        // ...
+    }
+    
     fn cost_and_gradient(
         &self, 
-        point: &Point<T, D>, 
+        point: &Self::Point, 
         workspace: &mut Workspace<T>,
-        gradient: &mut TangentVector<T, D>
+        gradient: &mut Self::TangentVector
     ) -> Result<T> {
         // Compute cost and gradient
         // ...
     }
 }
 
-// 2. Configure optimizer
-let mut optimizer = SGD::new(
-    SGDConfig::new()
-        .with_constant_step_size(0.1)
-        .with_classical_momentum(0.9)
-);
+// 2. Configure optimizer (from riemannopt-optim crate)
+// let mut optimizer = SGD::new(config);
 
 // 3. Set stopping criteria
 let stopping_criterion = StoppingCriterion::new()
@@ -162,20 +177,16 @@ let stopping_criterion = StoppingCriterion::new()
     .with_cost_tolerance(1e-8);
 
 // 4. Run optimization
-let manifold = Stiefel::new(n, p)?;
-let cost_fn = MyObjective::new();
-let initial_point = manifold.random_point();
+// let manifold = /* your manifold */;
+// let cost_fn = MyObjective::new();
+// let initial_point = /* initial point on manifold */;
 
-let result = optimizer.optimize(
-    &cost_fn,
-    &manifold,
-    &initial_point,
-    &stopping_criterion
-)?;
-
-println!("Converged: {}", result.converged);
-println!("Final cost: {}", result.value);
-println!("Iterations: {}", result.iterations);
+// let result = optimizer.optimize(
+//     &cost_fn,
+//     &manifold,
+//     &initial_point,
+//     &stopping_criterion
+// )?;
 ```
 
 ## Core Traits
@@ -185,33 +196,37 @@ println!("Iterations: {}", result.iterations);
 The central trait for Riemannian manifolds:
 
 ```rust
-pub trait Manifold<T: Scalar, D: Dim> {
+pub trait Manifold<T: Scalar> {
+    // Associated types for flexibility
+    type Point: Clone + Debug + Send + Sync;
+    type TangentVector: Clone + Debug + Send + Sync;
+    
     // Manifold properties
     fn name(&self) -> &str;
     fn dimension(&self) -> usize;
     
     // Point operations (non-allocating)
-    fn project_point(&self, point: &Point<T, D>, result: &mut Point<T, D>, 
+    fn project_point(&self, point: &Self::Point, result: &mut Self::Point, 
                      workspace: &mut Workspace<T>);
     
     // Tangent space operations
-    fn project_tangent(&self, point: &Point<T, D>, vector: &TangentVector<T, D>,
-                       result: &mut TangentVector<T, D>, workspace: &mut Workspace<T>) 
+    fn project_tangent(&self, point: &Self::Point, vector: &Self::TangentVector,
+                       result: &mut Self::TangentVector, workspace: &mut Workspace<T>) 
                        -> Result<()>;
     
     // Riemannian metric
-    fn inner_product(&self, point: &Point<T, D>, u: &TangentVector<T, D>, 
-                     v: &TangentVector<T, D>, workspace: &mut Workspace<T>) 
+    fn inner_product(&self, point: &Self::Point, u: &Self::TangentVector, 
+                     v: &Self::TangentVector, workspace: &mut Workspace<T>) 
                      -> Result<T>;
     
     // Retraction and transport
-    fn retract(&self, point: &Point<T, D>, tangent: &TangentVector<T, D>,
-               result: &mut Point<T, D>, workspace: &mut Workspace<T>) 
+    fn retract(&self, point: &Self::Point, tangent: &Self::TangentVector,
+               result: &mut Self::Point, workspace: &mut Workspace<T>) 
                -> Result<()>;
                
-    fn vector_transport(&self, from: &Point<T, D>, to: &Point<T, D>, 
-                        vector: &TangentVector<T, D>, result: &mut TangentVector<T, D>,
-                        workspace: &mut Workspace<T>) -> Result<()>;
+    fn parallel_transport(&self, from: &Self::Point, to: &Self::Point, 
+                          vector: &Self::TangentVector, result: &mut Self::TangentVector,
+                          workspace: &mut Workspace<T>) -> Result<()>;
 }
 ```
 
@@ -220,7 +235,7 @@ pub trait Manifold<T: Scalar, D: Dim> {
 Specialized trait for matrix-based manifolds with efficient operations:
 
 ```rust
-pub trait MatrixManifold<T: Scalar>: Manifold<T, Dyn> {
+pub trait MatrixManifold<T: Scalar>: Manifold<T> {
     fn ambient_dimension(&self) -> (usize, usize);
     
     // Matrix-specific operations
@@ -238,19 +253,23 @@ pub trait MatrixManifold<T: Scalar>: Manifold<T, Dyn> {
 Efficient interface for objective functions:
 
 ```rust
-pub trait CostFunction<T: Scalar, D: Dim> {
-    // Non-allocating version (preferred)
-    fn cost_and_gradient(&self, point: &Point<T, D>, workspace: &mut Workspace<T>,
-                         gradient: &mut TangentVector<T, D>) -> Result<T>;
+pub trait CostFunction<T: Scalar> {
+    // Associated types matching the manifold
+    type Point;
+    type TangentVector;
     
     // Cost-only evaluation
-    fn cost(&self, point: &Point<T, D>, workspace: &mut Workspace<T>) -> Result<T>;
+    fn cost(&self, point: &Self::Point) -> Result<T>;
+    
+    // Non-allocating version with workspace (preferred)
+    fn cost_and_gradient(&self, point: &Self::Point, workspace: &mut Workspace<T>,
+                         gradient: &mut Self::TangentVector) -> Result<T>;
     
     // Optional: Hessian-vector products for second-order methods
-    fn hessian_vector_product(&self, point: &Point<T, D>, vector: &TangentVector<T, D>,
-                              workspace: &mut Workspace<T>, result: &mut TangentVector<T, D>) 
+    fn hessian_vector_product(&self, point: &Self::Point, vector: &Self::TangentVector,
+                              workspace: &mut Workspace<T>, result: &mut Self::TangentVector) 
                               -> Result<()> {
-        Err(OptimizerError::NotImplemented("Hessian-vector product"))
+        Err(ManifoldError::NotImplemented("Hessian-vector product".into()))
     }
 }
 ```
