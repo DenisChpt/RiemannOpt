@@ -35,21 +35,13 @@ from ._riemannopt import (
     optimizers,
     # Cost function
     CostFunction,
-    quadratic_cost,
-    rosenbrock_cost,
-    # Utilities
-    check_point_on_manifold,
-    check_vector_in_tangent_space,
-    format_result,
-    validate_point_shape,
-    default_line_search,
+    create_cost_function,
 )
 
 # Import Python convenience functions
 from .helpers import (
     optimize,
     gradient_check,
-    create_cost_function,
     OptimizationCallback,
     ProgressCallback,
     EarlyStoppingCallback,
@@ -60,81 +52,78 @@ from .helpers import (
 # Import exceptions
 from .exceptions import (
     RiemannOptError,
-    ManifoldError,
-    InvalidPointError,
-    InvalidTangentError,
-    DimensionMismatchError,
-    OptimizationError,
+    ManifoldValidationError,
+    OptimizationFailedError,
     ConvergenceError,
     LineSearchError,
-    InvalidConfigurationError,
-    NumericalError,
-    GradientError,
+    DimensionMismatchError,
+    ConfigurationError,
+    BackendError,
 )
 
 # Import visualization (optional)
-try:
-    from .visualization import (
-        plot_sphere_optimization,
-        plot_stiefel_columns,
-        plot_grassmann_subspace,
-        plot_convergence_comparison,
-        plot_manifold_tangent_space,
-        create_optimization_animation,
-    )
-    _has_visualization = True
-except ImportError:
-    _has_visualization = False
+# try:
+#     from .visualization import (
+#         plot_sphere_optimization,
+#         plot_stiefel_columns,
+#         plot_grassmann_subspace,
+#         plot_convergence_comparison,
+#         plot_manifold_tangent_space,
+#         create_optimization_animation,
+#     )
+#     _has_visualization = True
+# except ImportError:
+#     _has_visualization = False
 
 # Import decorators
-from .decorators import (
-    validate_arrays,
-    ensure_on_manifold,
-    handle_rust_exceptions,
-    deprecated,
-    cache_result,
-    time_function,
-    require_gradient,
-    property_cached,
-    vectorize_manifold_operation,
-)
+# from .decorators import (
+#     validate_arrays,
+#     ensure_on_manifold,
+#     handle_rust_exceptions,
+#     deprecated,
+#     cache_result,
+#     time_function,
+#     require_gradient,
+#     property_cached,
+#     vectorize_manifold_operation,
+# )
 
 # Import integration features
-try:
-    from .integrations import (
-        TensorConverter,
-        PyTorchAdapter,
-        JAXAdapter,
-        AutogradAdapter,
-        optimize_pytorch_model,
-        optimize_jax_function,
-        ProgressReporter,
-        create_sklearn_compatible_optimizer,
-    )
-    _has_integrations = True
-except ImportError:
-    _has_integrations = False
+# try:
+#     from .integrations import (
+#         TensorConverter,
+#         PyTorchAdapter,
+#         JAXAdapter,
+#         AutogradAdapter,
+#         optimize_pytorch_model,
+#         optimize_jax_function,
+#         ProgressReporter,
+#         create_sklearn_compatible_optimizer,
+#     )
+#     _has_integrations = True
+# except ImportError:
+#     _has_integrations = False
 
 # Import callbacks
-from .callbacks import (
-    BaseCallback,
-    CallbackManager,
-    ProgressCallback as AdvancedProgressCallback,
-    HistoryCallback,
-    EarlyStoppingCallback as AdvancedEarlyStoppingCallback,
-    CheckpointCallback,
-    MetricsCallback,
-    LoggingCallback,
-    AdaptiveCallback,
-)
+# from .callbacks import (
+#     BaseCallback,
+#     CallbackManager,
+#     ProgressCallback as AdvancedProgressCallback,
+#     HistoryCallback,
+#     EarlyStoppingCallback as AdvancedEarlyStoppingCallback,
+#     CheckpointCallback,
+#     MetricsCallback,
+#     LoggingCallback,
+#     AdaptiveCallback,
+# )
 
 # Import validation utilities
-from .validation import (
-    validate_manifold,
-    validate_gradient,
-    validate_optimizer,
-    compare_optimizers,
-)
+# from .validation import (
+#     validate_manifold,
+#     validate_gradient,
+#     validate_optimizer,
+#     compare_optimizers,
+# )
 
 __version__ = _riemannopt.__version__
 
@@ -143,18 +132,11 @@ __all__ = [
     "manifolds",
     "optimizers", 
     "CostFunction",
-    "quadratic_cost",
-    "rosenbrock_cost",
-    "check_point_on_manifold",
-    "check_vector_in_tangent_space",
-    "format_result",
-    "validate_point_shape",
-    "default_line_search",
+    "create_cost_function",
     
     # Python convenience functions
     "optimize",
     "gradient_check", 
-    "create_cost_function",
     "OptimizationCallback",
     "ProgressCallback",
     "EarlyStoppingCallback",
@@ -163,66 +145,35 @@ __all__ = [
     
     # Exceptions
     "RiemannOptError",
-    "ManifoldError",
-    "InvalidPointError",
-    "InvalidTangentError", 
-    "DimensionMismatchError",
-    "OptimizationError",
+    "ManifoldValidationError",
+    "OptimizationFailedError",
     "ConvergenceError",
     "LineSearchError",
-    "InvalidConfigurationError",
-    "NumericalError",
-    "GradientError",
-    
-    # Decorators
-    "validate_arrays",
-    "ensure_on_manifold",
-    "handle_rust_exceptions",
-    "deprecated",
-    "cache_result",
-    "time_function",
-    "require_gradient",
-    "property_cached",
-    "vectorize_manifold_operation",
-    
-    # Callbacks
-    "BaseCallback",
-    "CallbackManager",
-    "AdvancedProgressCallback",
-    "HistoryCallback",
-    "AdvancedEarlyStoppingCallback",
-    "CheckpointCallback",
-    "MetricsCallback",
-    "LoggingCallback",
-    "AdaptiveCallback",
-    
-    # Validation
-    "validate_manifold",
-    "validate_gradient",
-    "validate_optimizer",
-    "compare_optimizers",
+    "DimensionMismatchError",
+    "ConfigurationError",
+    "BackendError",
 ]
 
-# Add integration features if available
-if _has_integrations:
-    __all__.extend([
-        "TensorConverter",
-        "PyTorchAdapter",
-        "JAXAdapter", 
-        "AutogradAdapter",
-        "optimize_pytorch_model",
-        "optimize_jax_function",
-        "ProgressReporter",
-        "create_sklearn_compatible_optimizer",
-    ])
+# Add integration features if available  
+# if _has_integrations:
+#     __all__.extend([
+#         "TensorConverter",
+#         "PyTorchAdapter",
+#         "JAXAdapter", 
+#         "AutogradAdapter",
+#         "optimize_pytorch_model",
+#         "optimize_jax_function",
+#         "ProgressReporter",
+#         "create_sklearn_compatible_optimizer",
+#     ])
 
 # Add visualization functions if available
-if _has_visualization:
-    __all__.extend([
-        "plot_sphere_optimization",
-        "plot_stiefel_columns", 
-        "plot_grassmann_subspace",
-        "plot_convergence_comparison",
-        "plot_manifold_tangent_space",
-        "create_optimization_animation",
-    ])
+# if _has_visualization:
+#     __all__.extend([
+#         "plot_sphere_optimization",
+#         "plot_stiefel_columns", 
+#         "plot_grassmann_subspace",
+#         "plot_convergence_comparison",
+#         "plot_manifold_tangent_space",
+#         "create_optimization_animation",
+#     ])
