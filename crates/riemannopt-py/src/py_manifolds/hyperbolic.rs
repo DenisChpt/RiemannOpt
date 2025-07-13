@@ -7,8 +7,6 @@
 use pyo3::prelude::*;
 use numpy::{PyArray1, PyReadonlyArray1, PyArrayMethods};
 use nalgebra::{DVector, DMatrix};
-use rand::Rng;
-use rand_distr::{Distribution, StandardNormal};
 use riemannopt_manifolds::hyperbolic::Hyperbolic;
 use riemannopt_core::manifold::Manifold;
 
@@ -245,7 +243,8 @@ impl PyHyperbolic {
         
         let mut result = DVector::zeros(self.n + 1);
         
-        self.inner.project_point(&point_vec, &mut result);
+        self.inner.project_point(&point_vec, &mut result)
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -278,7 +277,7 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -311,7 +310,7 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.inverse_retract(&point_vec, &other_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -346,7 +345,7 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -382,7 +381,7 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.project_tangent(&point_vec, &vector_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -523,19 +522,12 @@ impl PyHyperbolic {
     /// array_like, shape (n+1,)
     ///     Random point satisfying <x, x>_L = -1
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let mut rng = rand::thread_rng();
-        let mut point = DVector::zeros(self.n + 1);
+        let mut result = DVector::zeros(self.n + 1);
         
-        // Generate random values for spatial components
-        for i in 1..=self.n {
-            point[i] = rng.sample::<f64, _>(StandardNormal);
-        }
+        self.inner.random_point(&mut result)
+            ;
         
-        // Compute time component to satisfy constraint
-        let spatial_norm_sq: f64 = point.rows(1, self.n).norm_squared();
-        point[0] = (1.0 / (-self.curvature) + spatial_norm_sq).sqrt();
-        
-        dvector_to_numpy(py, &point)
+        dvector_to_numpy(py, &result)
     }
     
     /// Generate a random tangent vector at a point.
@@ -563,19 +555,15 @@ impl PyHyperbolic {
             ));
         }
         
-        let mut rng = rand::thread_rng();
-        let mut vector = DVector::zeros(self.n + 1);
-        
-        // Generate random vector
-        for i in 0..=self.n {
-            vector[i] = rng.sample::<f64, _>(StandardNormal) * scale;
-        }
-        
-        // Project to tangent space
         let mut result = DVector::zeros(self.n + 1);
         
-        self.inner.project_tangent(&point_vec, &vector, &mut result)
-            .map_err(to_py_err)?;
+        self.inner.random_tangent(&point_vec, &mut result)
+            ;
+        
+        // Scale the result if needed
+        if scale != 1.0 {
+            result *= scale;
+        }
         
         dvector_to_numpy(py, &result)
     }

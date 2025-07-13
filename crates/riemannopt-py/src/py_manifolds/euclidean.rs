@@ -7,8 +7,6 @@
 use pyo3::prelude::*;
 use numpy::{PyArray1, PyReadonlyArray1, PyArrayMethods};
 use nalgebra::{DVector, DMatrix};
-use rand::Rng;
-use rand_distr::{Distribution, StandardNormal};
 use riemannopt_manifolds::euclidean::Euclidean;
 use riemannopt_core::manifold::Manifold;
 
@@ -422,15 +420,12 @@ impl PyEuclidean {
     /// array_like, shape (n,)
     ///     Random point sampled from standard normal distribution
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let mut rng = rand::thread_rng();
-        let mut point = DVector::zeros(self.n);
+        let mut result = DVector::zeros(self.n);
         
-        // Fill with random normal values
-        for i in 0..self.n {
-            point[i] = rng.sample::<f64, _>(StandardNormal);
-        }
+        self.inner.random_point(&mut result)
+            ;
         
-        dvector_to_numpy(py, &point)
+        dvector_to_numpy(py, &result)
     }
     
     /// Generate a random tangent vector.
@@ -458,15 +453,17 @@ impl PyEuclidean {
             ));
         }
         
-        let mut rng = rand::thread_rng();
-        let mut tangent = DVector::zeros(self.n);
+        let mut result = DVector::zeros(self.n);
         
-        // Fill with random normal values
-        for i in 0..self.n {
-            tangent[i] = rng.sample::<f64, _>(StandardNormal) * scale;
+        self.inner.random_tangent(&point_vec, &mut result)
+            ;
+        
+        // Scale the result if needed
+        if scale != 1.0 {
+            result *= scale;
         }
         
-        dvector_to_numpy(py, &tangent)
+        dvector_to_numpy(py, &result)
     }
     
     /// Parallel transport (identity operation in Euclidean space).
@@ -508,22 +505,22 @@ impl PyEuclidean {
         super::base::array_to_point(py, obj)
     }
     
-    fn contains_vector(&self, vec: &DVector<f64>, atol: f64, _workspace: &mut riemannopt_core::memory::Workspace<f64>) -> PyResult<bool> {
+    fn contains_vector(&self, vec: &DVector<f64>, atol: f64) -> PyResult<bool> {
         Ok(self.inner.is_point_on_manifold(vec, atol))
     }
     
-    fn is_tangent_vector(&self, point: &DVector<f64>, vector: &DVector<f64>, atol: f64, _workspace: &mut riemannopt_core::memory::Workspace<f64>) -> PyResult<bool> {
+    fn is_tangent_vector(&self, point: &DVector<f64>, vector: &DVector<f64>, atol: f64) -> PyResult<bool> {
         Ok(self.inner.is_vector_in_tangent_space(point, vector, atol))
     }
     
-    fn contains_matrix(&self, _mat: &DMatrix<f64>, _atol: f64, _workspace: &mut riemannopt_core::memory::Workspace<f64>) -> PyResult<bool> {
+    fn contains_matrix(&self, _mat: &DMatrix<f64>, _atol: f64) -> PyResult<bool> {
         Err(crate::error::type_error(
             "vector point",
             "matrix point",
         ))
     }
     
-    fn is_tangent_matrix(&self, _point: &DMatrix<f64>, _vector: &DMatrix<f64>, _atol: f64, _workspace: &mut riemannopt_core::memory::Workspace<f64>) -> PyResult<bool> {
+    fn is_tangent_matrix(&self, _point: &DMatrix<f64>, _vector: &DMatrix<f64>, _atol: f64) -> PyResult<bool> {
         Err(crate::error::type_error(
             "vector tangent",
             "matrix tangent",

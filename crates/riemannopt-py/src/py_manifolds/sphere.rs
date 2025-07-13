@@ -7,9 +7,7 @@ use pyo3::prelude::*;
 use numpy::{PyArray1, PyReadonlyArray1};
 use nalgebra::{DVector, DMatrix};
 use riemannopt_manifolds::Sphere;
-use riemannopt_core::core::manifold::Manifold;
-use rand::thread_rng;
-use rand_distr::{Distribution, StandardNormal};
+use riemannopt_core::manifold::Manifold;
 
 use crate::array_utils::{numpy_to_dvector, dvector_to_numpy};
 use crate::error::to_py_err;
@@ -126,7 +124,7 @@ impl PySphere {
         
         let mut result = DVector::zeros(self.dimension);
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -155,7 +153,7 @@ impl PySphere {
         
         let mut result = DVector::zeros(self.dimension);
         self.inner.inverse_retract(&point_vec, &other_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -185,7 +183,7 @@ impl PySphere {
         let mut result = DVector::zeros(self.dimension);
         
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -213,7 +211,7 @@ impl PySphere {
         let mut result = DVector::zeros(self.dimension);
         
         self.inner.project_tangent(&point_vec, &vector_vec, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -297,18 +295,10 @@ impl PySphere {
     /// Returns:
     ///     Random point uniformly distributed on the sphere
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let mut rng = thread_rng();
-        
-        // Generate random Gaussian vector
-        let mut point = DVector::zeros(self.dimension);
-        for i in 0..self.dimension {
-            point[i] = StandardNormal.sample(&mut rng);
-        }
-        
-        // Project to sphere (normalize)
         let mut result = DVector::zeros(self.dimension);
         
-        self.inner.project_point(&point, &mut result);
+        self.inner.random_point(&mut result)
+            ;
         
         dvector_to_numpy(py, &result)
     }
@@ -333,20 +323,15 @@ impl PySphere {
             ));
         }
         
-        let mut rng = thread_rng();
-        
-        // Generate random vector in ambient space
-        let mut ambient = DVector::zeros(self.dimension);
-        for i in 0..self.dimension {
-            let val: f64 = StandardNormal.sample(&mut rng);
-            ambient[i] = val * scale;
-        }
-        
-        // Project to tangent space
         let mut result = DVector::zeros(self.dimension);
         
-        self.inner.project_tangent(&point_vec, &ambient, &mut result)
-            .map_err(to_py_err)?;
+        self.inner.random_tangent(&point_vec, &mut result)
+            ;
+        
+        // Scale the result if needed
+        if scale != 1.0 {
+            result *= scale;
+        }
         
         dvector_to_numpy(py, &result)
     }

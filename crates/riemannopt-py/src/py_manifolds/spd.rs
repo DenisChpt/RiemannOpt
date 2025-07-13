@@ -7,8 +7,6 @@
 use pyo3::prelude::*;
 use numpy::{PyArray2, PyReadonlyArray2, PyArrayMethods};
 use nalgebra::{DMatrix, DVector};
-use rand::Rng;
-use rand_distr::{Distribution, StandardNormal};
 use riemannopt_manifolds::spd::SPD;
 use riemannopt_core::manifold::Manifold;
 
@@ -217,7 +215,8 @@ impl PySPD {
         
         let mut result = DMatrix::zeros(self.n, self.n);
         
-        self.inner.project_point(&point_mat, &mut result);
+        self.inner.project_point(&point_mat, &mut result)
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -252,7 +251,7 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -287,7 +286,7 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.inverse_retract(&point_mat, &other_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -323,7 +322,7 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -358,7 +357,7 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.project_tangent(&point_mat, &vector_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -468,24 +467,10 @@ impl PySPD {
     /// array_like, shape (n, n)
     ///     Random SPD matrix
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let mut rng = rand::thread_rng();
-        let mut mat = DMatrix::zeros(self.n, self.n);
+        let mut result = DMatrix::zeros(self.n, self.n);
         
-        // Fill with random normal values
-        for i in 0..self.n {
-            for j in 0..self.n {
-                mat[(i, j)] = rng.sample::<f64, _>(StandardNormal);
-            }
-        }
-        
-        // Make SPD: X = A @ A.T + epsilon * I
-        let aat = &mat * mat.transpose();
-        let mut result = aat;
-        
-        // Add small diagonal term for numerical stability
-        for i in 0..self.n {
-            result[(i, i)] += 0.1;
-        }
+        self.inner.random_point(&mut result)
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -517,21 +502,17 @@ impl PySPD {
             ));
         }
         
-        let mut rng = rand::thread_rng();
-        let mut mat = DMatrix::zeros(self.n, self.n);
+        let mut result = DMatrix::zeros(self.n, self.n);
         
-        // Fill upper triangular part with random values
-        for i in 0..self.n {
-            for j in i..self.n {
-                let val = rng.sample::<f64, _>(StandardNormal) * scale;
-                mat[(i, j)] = val;
-                if i != j {
-                    mat[(j, i)] = val;  // Ensure symmetry
-                }
-            }
+        self.inner.random_tangent(&point_mat, &mut result)
+            ;
+        
+        // Scale the result if needed
+        if scale != 1.0 {
+            result *= scale;
         }
         
-        dmatrix_to_numpy(py, &mat)
+        dmatrix_to_numpy(py, &result)
     }
     
     /// Parallel transport a tangent vector along a geodesic.

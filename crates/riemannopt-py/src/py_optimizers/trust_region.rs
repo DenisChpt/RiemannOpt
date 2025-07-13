@@ -9,19 +9,28 @@ use nalgebra::{DVector, DMatrix};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use riemannopt_optim::{TrustRegion, TrustRegionConfig};
 use riemannopt_core::{
-    optimization::{
-        optimizer::{Optimizer, StoppingCriterion},
-    },
+    optimizer::{Optimizer, StoppingCriterion},
 };
 use std::time::Duration;
 
 use crate::{
-    py_manifolds::{sphere::PySphere, stiefel::PyStiefel},
+    py_manifolds::{
+        sphere::PySphere,
+        stiefel::PyStiefel,
+        grassmann::PyGrassmann,
+        spd::PySPD,
+        hyperbolic::PyHyperbolic,
+        oblique::PyOblique,
+        // fixed_rank::PyFixedRank,  // TODO: Fix FixedRankPoint representation mismatch
+        psd_cone::PyPSDCone,
+    },
     py_cost::{PyCostFunction, PyCostFunctionSphere, PyCostFunctionStiefel},
     array_utils::{numpy_to_dvector, numpy_to_dmatrix, dvector_to_numpy, dmatrix_to_numpy},
     error::to_py_err,
+    impl_optimizer_methods, impl_optimizer_generic_default,
 };
-use super::base::PyOptimizationResult;
+use super::base::{PyOptimizationResult, PyOptimizerBase};
+use super::generic::PyOptimizerGeneric;
 
 /// Trust Region optimizer for Riemannian manifolds.
 ///
@@ -67,14 +76,15 @@ use super::base::PyOptimizationResult;
 /// ...     max_iterations=100
 /// ... )
 #[pyclass(name = "TrustRegion", module = "riemannopt.optimizers")]
+#[derive(Clone)]
 pub struct PyTrustRegion {
-    initial_radius: f64,
-    max_radius: f64,
-    eta: f64,
-    radius_decrease_factor: f64,
-    radius_increase_factor: f64,
-    subproblem_solver: String,
-    max_subproblem_iterations: Option<usize>,
+    pub initial_radius: f64,
+    pub max_radius: f64,
+    pub eta: f64,
+    pub radius_decrease_factor: f64,
+    pub radius_increase_factor: f64,
+    pub subproblem_solver: String,
+    pub max_subproblem_iterations: Option<usize>,
 }
 
 #[pymethods]
@@ -165,8 +175,9 @@ impl PyTrustRegion {
         dict.set_item("max_subproblem_iterations", self.max_subproblem_iterations)?;
         Ok(dict.into())
     }
-    
-    /// Run optimization on Sphere manifold.
+
+    /// Optimize on a Sphere manifold
+    #[pyo3(signature = (cost_function, sphere, initial_point, max_iterations, gradient_tolerance=None))]
     pub fn optimize_sphere(
         &mut self,
         py: Python<'_>,
@@ -176,52 +187,14 @@ impl PyTrustRegion {
         max_iterations: usize,
         gradient_tolerance: Option<f64>,
     ) -> PyResult<PyObject> {
-        // Convert initial point
-        let x0 = numpy_to_dvector(initial_point)?;
-        
-        // Create stopping criterion
-        let mut criterion = StoppingCriterion::new()
-            .with_max_iterations(max_iterations);
-        
-        if let Some(tol) = gradient_tolerance {
-            criterion = criterion.with_gradient_tolerance(tol);
-        }
-        
-        // Create Trust Region configuration
-        let tr_config = TrustRegionConfig {
-            initial_radius: self.initial_radius,
-            max_radius: self.max_radius,
-            min_radius: 1e-10,  // Default minimum radius
-            acceptance_ratio: self.eta,
-            increase_threshold: 0.75,  // Default increase threshold
-            decrease_threshold: 0.25,  // Default decrease threshold
-            increase_factor: self.radius_increase_factor,
-            decrease_factor: self.radius_decrease_factor,
-            max_cg_iterations: self.max_subproblem_iterations,
-            cg_tolerance: 1e-6,  // Default CG tolerance
-            use_exact_hessian: true,  // Use exact Hessian when available
-        };
-        
-        // Create optimizer
-        let mut tr = TrustRegion::new(tr_config);
-        
-        // Get the inner manifold
-        let manifold = &sphere.inner;
-        
-        // Create adapter for the cost function
-        let cost_fn_sphere = PyCostFunctionSphere::new(&*cost_function);
-        
-        // Run optimization
-        let result = tr.optimize(&cost_fn_sphere, manifold, &x0, &criterion)
-            .map_err(to_py_err)?;
-        
-        // Convert result
-        PyOptimizationResult::from_rust_result(py, result, |point| {
-            Ok(dvector_to_numpy(py, point)?.into())
-        }).map(|r| r.into_py(py))
+        self.optimize_sphere_impl(
+            py, &*cost_function, &*sphere, initial_point, 
+            max_iterations, gradient_tolerance
+        ).map(|r| r.into_py(py))
     }
     
-    /// Run optimization on Stiefel manifold.
+    /// Optimize on a Stiefel manifold
+    #[pyo3(signature = (cost_function, stiefel, initial_point, max_iterations, gradient_tolerance=None))]
     pub fn optimize_stiefel(
         &mut self,
         py: Python<'_>,
@@ -231,48 +204,171 @@ impl PyTrustRegion {
         max_iterations: usize,
         gradient_tolerance: Option<f64>,
     ) -> PyResult<PyObject> {
-        // Convert initial point
-        let x0 = numpy_to_dmatrix(initial_point)?;
-        
-        // Create stopping criterion
-        let mut criterion = StoppingCriterion::new()
-            .with_max_iterations(max_iterations);
-        
-        if let Some(tol) = gradient_tolerance {
-            criterion = criterion.with_gradient_tolerance(tol);
-        }
-        
-        // Create Trust Region configuration
-        let tr_config = TrustRegionConfig {
-            initial_radius: self.initial_radius,
-            max_radius: self.max_radius,
-            min_radius: 1e-10,  // Default minimum radius
-            acceptance_ratio: self.eta,
-            increase_threshold: 0.75,  // Default increase threshold
-            decrease_threshold: 0.25,  // Default decrease threshold
-            increase_factor: self.radius_increase_factor,
-            decrease_factor: self.radius_decrease_factor,
-            max_cg_iterations: self.max_subproblem_iterations,
-            cg_tolerance: 1e-6,  // Default CG tolerance
-            use_exact_hessian: true,  // Use exact Hessian when available
-        };
-        
-        // Create optimizer
-        let mut tr = TrustRegion::new(tr_config);
-        
-        // Get the inner manifold
-        let manifold = &stiefel.inner;
-        
-        // Create adapter for the cost function
-        let cost_fn_stiefel = PyCostFunctionStiefel::new(&*cost_function);
-        
-        // Run optimization
-        let result = tr.optimize(&cost_fn_stiefel, manifold, &x0, &criterion)
-            .map_err(to_py_err)?;
-        
-        // Convert result
-        PyOptimizationResult::from_rust_result(py, result, |point| {
-            Ok(dmatrix_to_numpy(py, point)?.into())
-        }).map(|r| r.into_py(py))
+        self.optimize_stiefel_impl(
+            py, &*cost_function, &*stiefel, initial_point, 
+            max_iterations, gradient_tolerance
+        ).map(|r| r.into_py(py))
+    }
+    
+    /// Optimize on a Grassmann manifold
+    #[pyo3(signature = (cost_function, grassmann, initial_point, max_iterations, gradient_tolerance=None))]
+    pub fn optimize_grassmann(
+        &mut self,
+        py: Python<'_>,
+        cost_function: PyRef<'_, PyCostFunction>,
+        grassmann: PyRef<'_, PyGrassmann>,
+        initial_point: PyReadonlyArray2<'_, f64>,
+        max_iterations: usize,
+        gradient_tolerance: Option<f64>,
+    ) -> PyResult<PyObject> {
+        self.optimize_grassmann_impl(
+            py, &*cost_function, &*grassmann, initial_point, 
+            max_iterations, gradient_tolerance
+        ).map(|r| r.into_py(py))
+    }
+    
+    /// Optimize on a SPD manifold
+    #[pyo3(signature = (cost_function, spd, initial_point, max_iterations, gradient_tolerance=None))]
+    pub fn optimize_spd(
+        &mut self,
+        py: Python<'_>,
+        cost_function: PyRef<'_, PyCostFunction>,
+        spd: PyRef<'_, PySPD>,
+        initial_point: PyReadonlyArray2<'_, f64>,
+        max_iterations: usize,
+        gradient_tolerance: Option<f64>,
+    ) -> PyResult<PyObject> {
+        self.optimize_spd_impl(
+            py, &*cost_function, &*spd, initial_point, 
+            max_iterations, gradient_tolerance
+        ).map(|r| r.into_py(py))
+    }
+    
+    /// Optimize on a Hyperbolic manifold
+    #[pyo3(signature = (cost_function, hyperbolic, initial_point, max_iterations, gradient_tolerance=None))]
+    pub fn optimize_hyperbolic(
+        &mut self,
+        py: Python<'_>,
+        cost_function: PyRef<'_, PyCostFunction>,
+        hyperbolic: PyRef<'_, PyHyperbolic>,
+        initial_point: PyReadonlyArray1<'_, f64>,
+        max_iterations: usize,
+        gradient_tolerance: Option<f64>,
+    ) -> PyResult<PyObject> {
+        self.optimize_hyperbolic_impl(
+            py, &*cost_function, &*hyperbolic, initial_point, 
+            max_iterations, gradient_tolerance
+        ).map(|r| r.into_py(py))
+    }
+    
+    /// Optimize on an Oblique manifold
+    #[pyo3(signature = (cost_function, oblique, initial_point, max_iterations, gradient_tolerance=None))]
+    pub fn optimize_oblique(
+        &mut self,
+        py: Python<'_>,
+        cost_function: PyRef<'_, PyCostFunction>,
+        oblique: PyRef<'_, PyOblique>,
+        initial_point: PyReadonlyArray2<'_, f64>,
+        max_iterations: usize,
+        gradient_tolerance: Option<f64>,
+    ) -> PyResult<PyObject> {
+        self.optimize_oblique_impl(
+            py, &*cost_function, &*oblique, initial_point, 
+            max_iterations, gradient_tolerance
+        ).map(|r| r.into_py(py))
+    }
+    
+    // /// Optimize on a Fixed-Rank manifold
+    // #[pyo3(signature = (cost_function, fixed_rank, initial_point, max_iterations, gradient_tolerance=None))]
+    // pub fn optimize_fixed_rank(
+    //     &mut self,
+    //     py: Python<'_>,
+    //     cost_function: PyRef<'_, PyCostFunction>,
+    //     fixed_rank: PyRef<'_, PyFixedRank>,
+    //     initial_point: PyReadonlyArray2<'_, f64>,
+    //     max_iterations: usize,
+    //     gradient_tolerance: Option<f64>,
+    // ) -> PyResult<PyObject> {
+    //     self.optimize_fixed_rank_impl(
+    //         py, &*cost_function, &*fixed_rank, initial_point, 
+    //         max_iterations, gradient_tolerance
+    //     ).map(|r| r.into_py(py))
+    // }
+    
+    /// Optimize on a PSD Cone manifold
+    #[pyo3(signature = (cost_function, psd_cone, initial_point, max_iterations, gradient_tolerance=None))]
+    pub fn optimize_psd_cone(
+        &mut self,
+        py: Python<'_>,
+        cost_function: PyRef<'_, PyCostFunction>,
+        psd_cone: PyRef<'_, PyPSDCone>,
+        initial_point: PyReadonlyArray2<'_, f64>,
+        max_iterations: usize,
+        gradient_tolerance: Option<f64>,
+    ) -> PyResult<PyObject> {
+        self.optimize_psd_cone_impl(
+            py, &*cost_function, &*psd_cone, initial_point, 
+            max_iterations, gradient_tolerance
+        ).map(|r| r.into_py(py))
     }
 }
+
+// Implement the base trait
+impl PyOptimizerBase for PyTrustRegion {
+    fn name(&self) -> &'static str {
+        "TrustRegion"
+    }
+    
+    fn validate_config(&self) -> PyResult<()> {
+        if self.initial_radius <= 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "initial_radius must be positive"
+            ));
+        }
+        if self.max_radius <= self.initial_radius {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "max_radius must be greater than initial_radius"
+            ));
+        }
+        if self.eta <= 0.0 || self.eta >= 1.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "eta must be in (0, 1)"
+            ));
+        }
+        if self.radius_decrease_factor <= 0.0 || self.radius_decrease_factor >= 1.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "radius_decrease_factor must be in (0, 1)"
+            ));
+        }
+        if self.radius_increase_factor <= 1.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "radius_increase_factor must be greater than 1"
+            ));
+        }
+        let valid_solvers = ["CG", "Lanczos"];
+        if !valid_solvers.contains(&self.subproblem_solver.as_str()) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Invalid subproblem_solver '{}'. Choose from: {:?}", self.subproblem_solver, valid_solvers)
+            ));
+        }
+        Ok(())
+    }
+}
+
+// Implement generic optimizer interface
+impl_optimizer_generic_default!(PyTrustRegion, TrustRegion<f64>, TrustRegionConfig<f64>, |opt: &PyTrustRegion| {
+    TrustRegionConfig {
+        initial_radius: opt.initial_radius,
+        max_radius: opt.max_radius,
+        min_radius: 1e-10,
+        acceptance_ratio: opt.eta,
+        increase_threshold: 0.75,
+        decrease_threshold: 0.25,
+        increase_factor: opt.radius_increase_factor,
+        decrease_factor: opt.radius_decrease_factor,
+        max_cg_iterations: opt.max_subproblem_iterations,
+        cg_tolerance: 1e-6,
+        use_exact_hessian: true,
+    }
+});
+

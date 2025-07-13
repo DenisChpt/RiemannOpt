@@ -6,50 +6,160 @@ import numpy.typing as npt
 
 __version__: str
 
-# Core Rust classes
+# Core classes
 class CostFunction:
     """Cost function wrapper for optimization."""
     
-    def __init__(
-        self,
-        function: Callable[[npt.NDArray[np.float64]], float],
-        gradient: Optional[Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]]] = None
-    ) -> None: ...
+    def cost(self, point: npt.NDArray[np.float64]) -> float:
+        """Evaluate cost at a point."""
+        ...
     
-    def __call__(self, point: npt.NDArray[np.float64]) -> float: ...
+    def gradient(self, point: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Evaluate gradient at a point."""
+        ...
     
-    def gradient(self, point: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+    def cost_and_gradient(self, point: npt.NDArray[np.float64]) -> Tuple[float, npt.NDArray[np.float64]]:
+        """Evaluate both cost and gradient."""
+        ...
+    
+    @property
+    def eval_counts(self) -> Dict[str, int]:
+        """Get evaluation counts."""
+        ...
+    
+    def reset_counts(self) -> None:
+        """Reset evaluation counters."""
+        ...
+
+class OptimizationResult:
+    """Result from optimization."""
+    
+    point: npt.NDArray[np.float64]
+    value: float
+    gradient_norm: Optional[float]
+    converged: bool
+    iterations: int
+    function_evals: int
+    gradient_evals: int
+    time_seconds: float
+    termination_reason: str
+    history: Optional[Dict[str, Any]]
+    
+    @property
+    def cost(self) -> float:
+        """Alias for value."""
+        ...
+    
+    @property
+    def x(self) -> npt.NDArray[np.float64]:
+        """Alias for point."""
+        ...
+    
+    @property
+    def success(self) -> bool:
+        """Alias for converged."""
+        ...
+    
+    @property
+    def as_dict(self) -> Dict[str, Any]:
+        """Get result as dictionary."""
+        ...
+    
+    def summary(self) -> str:
+        """Get summary string."""
+        ...
 
 # Python convenience functions
 def optimize(
     manifold: Any,
     cost_function: Union[Callable[[npt.NDArray[np.float64]], float], CostFunction],
     initial_point: npt.NDArray[np.float64],
-    optimizer: str = "sgd",
-    **kwargs: Any
-) -> Dict[str, Any]:
-    """Convenience function for optimization."""
+    optimizer: str = "Adam",
+    max_iterations: int = 1000,
+    gradient_tolerance: float = 1e-6,
+    callback: Optional[Callable[[int, npt.NDArray[np.float64], float, float], bool]] = None,
+    **optimizer_kwargs: Any
+) -> 'OptimizationResult':
+    """High-level optimization interface.
+    
+    Parameters
+    ----------
+    manifold : Manifold
+        The manifold on which to optimize.
+    cost_function : callable or CostFunction
+        Cost function to minimize.
+    initial_point : array_like
+        Starting point for optimization.
+    optimizer : str, default="Adam"
+        Name of the optimizer to use.
+    max_iterations : int, default=1000
+        Maximum number of iterations.
+    gradient_tolerance : float, default=1e-6
+        Tolerance for gradient norm.
+    callback : callable, optional
+        Callback function.
+    **optimizer_kwargs
+        Additional optimizer parameters.
+    
+    Returns
+    -------
+    OptimizationResult
+        Result object with optimization details.
+    """
     ...
 
 def gradient_check(
-    manifold: Any,
-    cost_function: Callable[[npt.NDArray[np.float64]], float],
+    cost_function: CostFunction,
     point: npt.NDArray[np.float64],
-    gradient_function: Optional[Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]]] = None,
     epsilon: float = 1e-8,
     tolerance: float = 1e-5
-) -> Dict[str, Any]:
-    """Check gradient computation using finite differences."""
+) -> Tuple[bool, float]:
+    """Check gradient accuracy using finite differences.
+    
+    Parameters
+    ----------
+    cost_function : CostFunction
+        Cost function with gradient.
+    point : array_like
+        Point at which to check gradient.
+    epsilon : float, default=1e-8
+        Step size for finite differences.
+    tolerance : float, default=1e-5
+        Tolerance for gradient accuracy.
+    
+    Returns
+    -------
+    is_accurate : bool
+        True if gradient is accurate.
+    max_error : float
+        Maximum relative error found.
+    """
     ...
 
 def create_cost_function(
-    function: Callable[[npt.NDArray[np.float64]], float],
-    gradient: Optional[Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]]] = None,
-    check_gradient: bool = True,
-    manifold: Optional[Any] = None,
-    test_point: Optional[npt.NDArray[np.float64]] = None
+    cost_fn: Callable[[npt.NDArray[np.float64]], Union[float, Tuple[float, npt.NDArray[np.float64]]]],
+    gradient_fn: Optional[Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]]] = None,
+    validate_gradient: bool = False,
+    dimension: Optional[Union[int, Tuple[int, int]]] = None
 ) -> CostFunction:
-    """Create a CostFunction with optional gradient checking."""
+    """Create a cost function wrapper for optimization.
+    
+    Parameters
+    ----------
+    cost_fn : callable
+        Function that computes the cost, or returns (cost, gradient).
+    gradient_fn : callable, optional
+        Function that computes the gradient.
+    validate_gradient : bool, default=False
+        Whether to validate gradient using finite differences.
+    dimension : int or tuple, optional
+        Problem dimension.
+    
+    Returns
+    -------
+    CostFunction
+        Wrapped cost function.
+    """
     ...
 
 class OptimizationCallback(Protocol):
@@ -192,22 +302,24 @@ def default_line_search() -> Callable: ...
 # Manifolds
 class Sphere:
     """Unit sphere manifold S^(n-1)."""
-    def __init__(self, dim: int) -> None: ...
+    def __init__(self, dimension: int) -> None: ...
     @property
     def dim(self) -> int: ...
     @property
     def ambient_dim(self) -> int: ...
     def project(self, point: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
     def project_tangent(self, point: npt.NDArray[np.float64], vector: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
-    def retract(self, point: npt.NDArray[np.float64], vector: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+    def retract(self, point: npt.NDArray[np.float64], tangent: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+    def exp(self, point: npt.NDArray[np.float64], tangent: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+    def log(self, point: npt.NDArray[np.float64], other: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
     def inner(self, point: npt.NDArray[np.float64], u: npt.NDArray[np.float64], v: npt.NDArray[np.float64]) -> float: ...
-    def norm(self, point: npt.NDArray[np.float64], vector: npt.NDArray[np.float64]) -> float: ...
+    def norm(self, point: npt.NDArray[np.float64], tangent: npt.NDArray[np.float64]) -> float: ...
+    def distance(self, x: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> float: ...
     def random_point(self) -> npt.NDArray[np.float64]: ...
-    def random_tangent(self, point: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
-    def exp(self, point: npt.NDArray[np.float64], vector: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
-    def log(self, point: npt.NDArray[np.float64], target: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
-    def dist(self, x: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> float: ...
-    def transport(self, x: npt.NDArray[np.float64], y: npt.NDArray[np.float64], v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+    def random_tangent(self, point: npt.NDArray[np.float64], scale: float = 1.0) -> npt.NDArray[np.float64]: ...
+    def parallel_transport(self, from_point: npt.NDArray[np.float64], to_point: npt.NDArray[np.float64], tangent: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+    def contains(self, point: npt.NDArray[np.float64], atol: float = 1e-10) -> bool: ...
+    def is_tangent(self, point: npt.NDArray[np.float64], vector: npt.NDArray[np.float64], atol: float = 1e-10) -> bool: ...
 
 class Stiefel:
     """Stiefel manifold St(n,p)."""
@@ -289,15 +401,33 @@ class SGD:
     """Stochastic Gradient Descent optimizer."""
     def __init__(
         self,
-        manifold: Any,
-        cost_fn: CostFunction,
         learning_rate: float = 0.01,
         momentum: float = 0.0,
-        max_iter: int = 100,
-        tolerance: float = 1e-6,
-        verbose: bool = False
+        nesterov: bool = False,
+        gradient_clip: Optional[float] = None,
+        line_search: bool = False
     ) -> None: ...
-    def optimize(self, initial_point: npt.NDArray[np.float64]) -> Tuple[npt.NDArray[np.float64], float, Dict[str, Any]]: ...
+    
+    @property
+    def config(self) -> Dict[str, Any]: ...
+    
+    def optimize_sphere(
+        self,
+        cost_function: CostFunction,
+        sphere: Sphere,
+        initial_point: npt.NDArray[np.float64],
+        max_iterations: int,
+        gradient_tolerance: Optional[float] = None
+    ) -> OptimizationResult: ...
+    
+    def optimize_stiefel(
+        self,
+        cost_function: CostFunction,
+        stiefel: Stiefel,
+        initial_point: npt.NDArray[np.float64],
+        max_iterations: int,
+        gradient_tolerance: Optional[float] = None
+    ) -> OptimizationResult: ...
 
 class Adam:
     """Adam optimizer for Riemannian manifolds."""
