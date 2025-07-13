@@ -7,8 +7,6 @@
 use pyo3::prelude::*;
 use numpy::{PyArray2, PyReadonlyArray2, PyArrayMethods};
 use nalgebra::{DMatrix, DVector};
-use rand::Rng;
-use rand_distr::{Distribution, StandardNormal};
 use riemannopt_manifolds::grassmann::Grassmann;
 use riemannopt_core::manifold::Manifold;
 
@@ -237,7 +235,8 @@ impl PyGrassmann {
         }
         
         let mut result = DMatrix::zeros(self.n, self.p);
-        self.inner.project_point(&point_mat, &mut result);
+        self.inner.project_point(&point_mat, &mut result)
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -269,7 +268,7 @@ impl PyGrassmann {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -301,7 +300,7 @@ impl PyGrassmann {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         self.inner.inverse_retract(&point_mat, &other_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -336,7 +335,7 @@ impl PyGrassmann {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -368,7 +367,7 @@ impl PyGrassmann {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         self.inner.project_tangent(&point_mat, &vector_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -470,19 +469,10 @@ impl PyGrassmann {
     /// array_like, shape (n, p)
     ///     Random point with orthonormal columns
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let mut rng = rand::thread_rng();
-        let mut point = DMatrix::zeros(self.n, self.p);
-        
-        // Fill with random normal values
-        for i in 0..self.n {
-            for j in 0..self.p {
-                point[(i, j)] = StandardNormal.sample(&mut rng);
-            }
-        }
-        
-        // Project to get orthonormal columns
         let mut result = DMatrix::zeros(self.n, self.p);
-        self.inner.project_point(&point, &mut result);
+        
+        self.inner.random_point(&mut result)
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -512,21 +502,15 @@ impl PyGrassmann {
             ));
         }
         
-        let mut rng = rand::thread_rng();
-        let mut vector = DMatrix::zeros(self.n, self.p);
-        
-        // Fill with random normal values
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                vector[(i, j)] = val * scale;
-            }
-        }
-        
-        // Project to tangent space
         let mut result = DMatrix::zeros(self.n, self.p);
-        self.inner.project_tangent(&point_mat, &vector, &mut result)
-            .map_err(to_py_err)?;
+        
+        self.inner.random_tangent(&point_mat, &mut result)
+            ;
+        
+        // Scale the result if needed
+        if scale != 1.0 {
+            result *= scale;
+        }
         
         dmatrix_to_numpy(py, &result)
     }

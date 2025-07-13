@@ -25,7 +25,7 @@ mod py_optimizers;
 mod py_cost;
 
 // Re-exports for easier access
-use error::RiemannOptError;
+// use error::RiemannOptError;
 
 /// RiemannOpt: High-performance Riemannian optimization in Python.
 ///
@@ -42,8 +42,8 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py_optimizers::register_module(m)?;
     py_cost::register_module(m)?;
     
-    // Add error types
-    m.add("RiemannOptError", m.py().get_type_bound::<RiemannOptError>())?;
+    // Register all error types
+    error::register_exceptions(m)?;
     
     Ok(())
 }

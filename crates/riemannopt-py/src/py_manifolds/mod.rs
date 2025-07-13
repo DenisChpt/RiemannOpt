@@ -12,6 +12,9 @@ pub mod stiefel;
 pub mod grassmann;
 pub mod spd;
 pub mod hyperbolic;
+pub mod oblique;
+// pub mod fixed_rank;  // TODO: Fix FixedRankPoint representation mismatch
+pub mod psd_cone;
 // pub mod euclidean;  // TODO: Implement when Euclidean manifold is available
 pub mod product;
 
@@ -20,6 +23,9 @@ pub use stiefel::PyStiefel;
 pub use grassmann::PyGrassmann;
 pub use spd::PySPD;
 pub use hyperbolic::PyHyperbolic;
+pub use oblique::PyOblique;
+// pub use fixed_rank::PyFixedRank;  // TODO: Fix FixedRankPoint representation mismatch
+pub use psd_cone::PyPSDCone;
 // pub use euclidean::PyEuclidean;
 pub use product::PyProductManifold;
 
@@ -33,6 +39,9 @@ pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGrassmann>()?;
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
+    m.add_class::<PyOblique>()?;
+    // m.add_class::<PyFixedRank>()?;  // TODO: Fix FixedRankPoint representation mismatch
+    m.add_class::<PyPSDCone>()?;
     // m.add_class::<PyEuclidean>()?;
     m.add_class::<PyProductManifold>()?;
     

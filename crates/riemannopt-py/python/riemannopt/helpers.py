@@ -79,9 +79,13 @@ def optimize(manifold,
              optimizer: str = "Adam",
              max_iterations: int = 1000,
              gradient_tolerance: float = 1e-6,
-             **optimizer_kwargs) -> Dict[str, Any]:
+             callback: Optional[Callable] = None,
+             **optimizer_kwargs) -> 'OptimizationResult':
     """
     High-level optimization interface.
+    
+    This function provides a unified interface for all Riemannian optimizers,
+    automatically handling manifold types, cost function wrapping, and result conversion.
     
     Parameters
     ----------
@@ -89,8 +93,11 @@ def optimize(manifold,
         The manifold on which to optimize.
     cost_function : PyCostFunction or callable
         Cost function to minimize. If callable, will be wrapped automatically.
+        The function should accept a numpy array and return either:
+        - A scalar cost value
+        - A tuple (cost, gradient)
     initial_point : array_like
-        Starting point for optimization.
+        Starting point for optimization. Must be on the manifold.
     optimizer : str, default="Adam"
         Name of the optimizer to use. Options: "SGD", "Adam", "LBFGS", 
         "ConjugateGradient", "TrustRegion", "Newton".
@@ -98,18 +105,23 @@ def optimize(manifold,
         Maximum number of optimization iterations.
     gradient_tolerance : float, default=1e-6
         Tolerance for gradient norm convergence criterion.
+    callback : callable, optional
+        Callback function called at each iteration. Should accept:
+        (iteration, point, cost, grad_norm) and return bool (continue?).
     **optimizer_kwargs
         Additional keyword arguments for the optimizer.
     
     Returns
     -------
-    result : dict
-        Optimization result with keys:
-        - 'x': Final point
-        - 'cost': Final cost value
-        - 'iterations': Number of iterations performed
-        - 'converged': Whether the optimization converged
-        - 'grad_norm': Final gradient norm
+    result : OptimizationResult
+        Optimization result object with attributes:
+        - point: Final point (numpy array)
+        - value/cost: Final cost value
+        - gradient_norm: Final gradient norm
+        - converged: Whether the optimization converged
+        - iterations: Number of iterations performed
+        - time_seconds: Total optimization time
+        - termination_reason: Why the optimization stopped
     
     Examples
     --------
@@ -124,87 +136,162 @@ def optimize(manifold,
     >>> # Optimize
     >>> x0 = sphere.random_point()
     >>> result = ro.optimize(sphere, cost, x0, optimizer="Adam", learning_rate=0.01)
-    >>> print(f"Converged: {result['converged']}, Final cost: {result['cost']:.6f}")
+    >>> print(f"Converged: {result.converged}, Final cost: {result.cost:.6f}")
+    >>> 
+    >>> # With callback
+    >>> def callback(iter, x, cost, grad_norm):
+    ...     if iter % 10 == 0:
+    ...         print(f"Iter {iter}: cost={cost:.4f}")
+    ...     return True  # Continue
+    >>> 
+    >>> result = ro.optimize(sphere, cost, x0, callback=callback)
     """
     # Convert cost function if needed
     if not hasattr(cost_function, 'cost'):
-        # Infer dimension from manifold
-        if hasattr(manifold, 'ambient_dim'):
-            dimension = manifold.ambient_dim
-        elif hasattr(manifold, 'n') and hasattr(manifold, 'p'):
-            # Matrix manifold like Stiefel
-            dimension = (manifold.n, manifold.p)
-        elif hasattr(manifold, 'dim'):
-            dimension = manifold.dim + 1  # For sphere, ambient_dim = dim + 1
+        # Infer dimension from manifold and initial point
+        if initial_point.ndim == 1:
+            dimension = len(initial_point)
+        elif initial_point.ndim == 2:
+            dimension = initial_point.shape
         else:
-            dimension = None
+            raise ValueError(f"Unsupported point dimension: {initial_point.ndim}")
         
-        # Save the original cost function
-        original_cost = cost_function
-        
-        # Simple finite difference gradient
-        def gradient_fn(x):
-            eps = 1e-8
-            grad = np.zeros_like(x)
-            for i in range(len(x.flat)):
-                x_plus = x.copy()
-                x_minus = x.copy()
-                x_plus.flat[i] += eps
-                x_minus.flat[i] -= eps
-                grad.flat[i] = (original_cost(x_plus) - original_cost(x_minus)) / (2 * eps)
-            return grad
-        
-        cost_function = create_cost_function(original_cost, gradient_fn, dimension=dimension)
+        # Create cost function wrapper (will auto-detect if it returns gradient)
+        cost_function = create_cost_function(cost_function, dimension=dimension)
+    
+    # Validate initial point is on manifold
+    if hasattr(manifold, 'contains'):
+        if not manifold.contains(initial_point):
+            warnings.warn("Initial point is not on the manifold. Projecting...", UserWarning)
+            if hasattr(manifold, 'project'):
+                initial_point = manifold.project(initial_point)
+            else:
+                raise ValueError("Initial point is not on the manifold and no projection available")
     
     # Create optimizer (handle case-insensitive names)
-    optimizer_lower = optimizer.lower()
-    if optimizer_lower == 'sgd':
-        optimizer_name = 'SGD'
-    elif optimizer_lower == 'adam':
-        optimizer_name = 'Adam'
-    elif optimizer_lower == 'lbfgs':
-        optimizer_name = 'LBFGS'
-    elif optimizer_lower == 'conjugategradient':
-        optimizer_name = 'ConjugateGradient'
-    elif optimizer_lower == 'trustregion':
-        optimizer_name = 'TrustRegion'
-    elif optimizer_lower == 'newton':
-        optimizer_name = 'Newton'
-    else:
-        optimizer_name = optimizer  # Use as-is
+    optimizer_map = {
+        'sgd': 'SGD',
+        'adam': 'Adam',
+        'lbfgs': 'LBFGS',
+        'conjugategradient': 'ConjugateGradient',
+        'cg': 'ConjugateGradient',
+        'trustregion': 'TrustRegion',
+        'newton': 'Newton',
+        'riemanniannewton': 'Newton'
+    }
     
-    optimizer_class = getattr(_riemannopt.optimizers, optimizer_name)
-    opt = optimizer_class(**optimizer_kwargs)
+    optimizer_name = optimizer_map.get(optimizer.lower(), optimizer)
+    
+    try:
+        optimizer_class = getattr(_riemannopt.optimizers, optimizer_name)
+    except AttributeError:
+        available = list(optimizer_map.values())
+        raise ValueError(f"Unknown optimizer: {optimizer}. Available: {', '.join(available)}")
+    
+    # Set default hyperparameters based on optimizer type
+    defaults = {
+        'SGD': {'learning_rate': 0.01},
+        'Adam': {'learning_rate': 0.001, 'beta1': 0.9, 'beta2': 0.999},
+        'LBFGS': {'memory_size': 10},
+        'ConjugateGradient': {},
+        'TrustRegion': {'initial_radius': 1.0},
+        'Newton': {'regularization': 1e-6}
+    }
+    
+    # Merge defaults with user kwargs
+    final_kwargs = defaults.get(optimizer_name, {}).copy()
+    final_kwargs.update(optimizer_kwargs)
+    
+    opt = optimizer_class(**final_kwargs)
+    
+    # Prepare optimization parameters
+    opt_params = {
+        'cost_function': cost_function,
+        'initial_point': initial_point,
+        'max_iterations': max_iterations,
+    }
+    
+    # Check if the optimizer method accepts gradient_tolerance
+    # Only add it if the method signature includes it
+    if gradient_tolerance is not None and optimizer_name in ['Adam', 'LBFGS', 'ConjugateGradient', 'TrustRegion', 'Newton']:
+        opt_params['gradient_tolerance'] = gradient_tolerance
+    
+    # Handle callbacks if provided
+    callback_wrapper = None
+    if callback is not None:
+        # Wrap Python callback for Rust
+        callback_wrapper = CallbackWrapper(callback)
+        opt_params['callback'] = callback_wrapper
     
     # Determine manifold type and call appropriate method
     manifold_name = type(manifold).__name__.lower()
     
-    if manifold_name == "sphere":
-        return opt.optimize_sphere(
-            cost_function, manifold, initial_point, max_iterations
-        )
-    elif manifold_name == "stiefel":
-        if hasattr(opt, 'optimize_stiefel'):
-            return opt.optimize_stiefel(
-                cost_function, manifold, initial_point, max_iterations
-            )
-        else:
-            # SGD and other optimizers that don't support Stiefel specifically
-            raise ValueError(f"Optimizer {optimizer_name} does not support Stiefel manifolds. Try 'Adam' instead.")
+    # Try to find the appropriate optimize method
+    method_name = f"optimize_{manifold_name}"
+    if hasattr(opt, method_name):
+        method = getattr(opt, method_name)
+        # Add manifold parameter based on manifold type
+        opt_params[manifold_name] = manifold
+        result = method(**opt_params)
     else:
-        # For other manifolds, try the specific method or fall back to Sphere
-        try:
-            method_name = f"optimize_{manifold_name}"
-            if hasattr(opt, method_name):
-                method = getattr(opt, method_name)
-                return method(cost_function, manifold, initial_point, max_iterations)
+        # Try generic methods based on point type
+        if initial_point.ndim == 1:
+            # Vector manifold - assume Sphere for now
+            if hasattr(opt, 'optimize_sphere'):
+                opt_params['sphere'] = manifold
+                result = opt.optimize_sphere(**opt_params)
             else:
-                # Fall back to sphere for vector manifolds
-                return opt.optimize_sphere(
-                    cost_function, manifold, initial_point, max_iterations
-                )
+                raise ValueError(f"Optimizer {optimizer_name} does not support vector manifolds")
+        elif initial_point.ndim == 2:
+            # Matrix manifold - try Stiefel first
+            if hasattr(opt, 'optimize_stiefel'):
+                opt_params['stiefel'] = manifold
+                result = opt.optimize_stiefel(**opt_params)
+            elif hasattr(opt, 'optimize_matrix'):
+                opt_params['matrix_manifold'] = manifold
+                result = opt.optimize_matrix(**opt_params)
+            else:
+                raise ValueError(f"Optimizer {optimizer_name} does not support matrix manifolds")
+        else:
+            raise ValueError(f"Unsupported point dimension: {initial_point.ndim}")
+    
+    # The result should be an OptimizationResult object from Rust
+    # Add callback history if available
+    if callback_wrapper and hasattr(callback_wrapper, 'history'):
+        if hasattr(result, 'history'):
+            result.history = callback_wrapper.history
+    
+    return result
+
+
+class CallbackWrapper:
+    """Wrapper to adapt Python callbacks for Rust optimizers."""
+    
+    def __init__(self, callback):
+        self.callback = callback
+        self.history = []
+        self.should_stop = False
+    
+    def __call__(self, iteration, point, cost, grad_norm):
+        """Called at each iteration by the optimizer."""
+        # Store history
+        self.history.append({
+            'iteration': iteration,
+            'cost': cost,
+            'grad_norm': grad_norm
+        })
+        
+        # Call user callback
+        try:
+            result = self.callback(iteration, point, cost, grad_norm)
+            # If callback returns False, signal to stop
+            if result is False:
+                self.should_stop = True
+                return False
+            return True
         except Exception as e:
-            raise ValueError(f"Optimization not supported for manifold type {type(manifold).__name__}: {e}")
+            warnings.warn(f"Callback error at iteration {iteration}: {e}", RuntimeWarning)
+            return True  # Continue optimization despite callback error
 
 
 def gradient_check(cost_function, 

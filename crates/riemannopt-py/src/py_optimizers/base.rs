@@ -25,6 +25,29 @@ use crate::{
 ///
 /// This provides a Pythonic interface to optimization results,
 /// converting Rust types to appropriate Python representations.
+///
+/// Attributes
+/// ----------
+/// point : numpy.ndarray
+///     Final point found by the optimizer
+/// value : float
+///     Final objective function value
+/// gradient_norm : float or None
+///     Norm of the gradient at the final point
+/// converged : bool
+///     Whether the optimization converged successfully
+/// iterations : int
+///     Number of iterations performed
+/// function_evals : int
+///     Number of function evaluations
+/// gradient_evals : int
+///     Number of gradient evaluations
+/// time_seconds : float
+///     Total optimization time in seconds
+/// termination_reason : str
+///     Reason for termination (e.g., 'Converged', 'MaxIterations')
+/// history : dict or None
+///     Optional optimization history (if callbacks were used)
 #[pyclass(name = "OptimizationResult", module = "riemannopt.optimizers")]
 pub struct PyOptimizationResult {
     /// Final point as numpy array
@@ -45,6 +68,8 @@ pub struct PyOptimizationResult {
     pub time_seconds: f64,
     /// Termination reason as string
     pub termination_reason: String,
+    /// Optional optimization history
+    pub history: Option<PyObject>,
 }
 
 #[pymethods]
@@ -74,7 +99,47 @@ impl PyOptimizationResult {
         dict.set_item("gradient_evals", self.gradient_evals)?;
         dict.set_item("time_seconds", self.time_seconds)?;
         dict.set_item("termination_reason", &self.termination_reason)?;
+        if let Some(ref history) = self.history {
+            dict.set_item("history", history)?;
+        }
         Ok(dict.into())
+    }
+    
+    /// Get a summary of the optimization result.
+    fn summary(&self) -> String {
+        let status = if self.converged { "✓ Converged" } else { "✗ Not converged" };
+        format!(
+            "Optimization Result:\n\
+            {} after {} iterations\n\
+            Final value: {:.6e}\n\
+            Gradient norm: {}\n\
+            Time: {:.3}s\n\
+            Termination: {}",
+            status,
+            self.iterations,
+            self.value,
+            self.gradient_norm.map(|g| format!("{:.6e}", g)).unwrap_or("N/A".to_string()),
+            self.time_seconds,
+            self.termination_reason
+        )
+    }
+    
+    /// Check if the optimization was successful.
+    #[getter]
+    fn success(&self) -> bool {
+        self.converged
+    }
+    
+    /// Get the final cost value (alias for value).
+    #[getter]
+    fn cost(&self) -> f64 {
+        self.value
+    }
+    
+    /// Get the final point (alias for point).
+    #[getter]
+    fn x(&self) -> PyObject {
+        Python::with_gil(|py| self.point.clone_ref(py))
     }
 }
 
@@ -109,6 +174,7 @@ impl PyOptimizationResult {
             gradient_evals: result.gradient_evaluations,
             time_seconds: result.duration.as_secs_f64(),
             termination_reason,
+            history: None,  // Can be populated by callbacks
         })
     }
 }

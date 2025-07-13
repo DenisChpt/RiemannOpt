@@ -7,9 +7,7 @@ use pyo3::prelude::*;
 use numpy::{PyArray2, PyReadonlyArray2};
 use nalgebra::DMatrix;
 use riemannopt_manifolds::Stiefel;
-use riemannopt_core::core::manifold::Manifold;
-use rand::thread_rng;
-use rand_distr::{Distribution, StandardNormal};
+use riemannopt_core::manifold::Manifold;
 
 use crate::array_utils::{numpy_to_dmatrix, dmatrix_to_numpy};
 use crate::error::to_py_err;
@@ -139,7 +137,7 @@ impl PyStiefel {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -164,11 +162,9 @@ impl PyStiefel {
             ));
         }
         
-        // Log map for Stiefel is complex, use retraction-based approximation
-        let tangent = other_mat.clone() - &point_mat;
         let mut result = DMatrix::zeros(self.n, self.p);
-        self.inner.project_tangent(&point_mat, &tangent, &mut result)
-            .map_err(to_py_err)?;
+        self.inner.inverse_retract(&point_mat, &other_mat, &mut result)
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -196,7 +192,7 @@ impl PyStiefel {
         let mut result = DMatrix::zeros(self.n, self.p);
         
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -224,7 +220,7 @@ impl PyStiefel {
         let mut result = DMatrix::zeros(self.n, self.p);
         
         self.inner.project_tangent(&point_mat, &vector_mat, &mut result)
-            .map_err(to_py_err)?;
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -303,25 +299,27 @@ impl PyStiefel {
             .map_err(to_py_err)?)
     }
 
+    /// Get the number of rows.
+    #[getter]
+    pub fn n(&self) -> usize {
+        self.n
+    }
+    
+    /// Get the number of columns.
+    #[getter]
+    pub fn p(&self) -> usize {
+        self.p
+    }
+    
     /// Generate a random point on the Stiefel manifold.
     ///
     /// Returns:
     ///     Random matrix with orthonormal columns
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let mut rng = thread_rng();
-        
-        // Generate random Gaussian matrix
-        let mut point = DMatrix::zeros(self.n, self.p);
-        for i in 0..self.n {
-            for j in 0..self.p {
-                point[(i, j)] = StandardNormal.sample(&mut rng);
-            }
-        }
-        
-        // Project to Stiefel manifold (QR decomposition)
         let mut result = DMatrix::zeros(self.n, self.p);
         
-        self.inner.project_point(&point, &mut result);
+        self.inner.random_point(&mut result)
+            ;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -346,22 +344,15 @@ impl PyStiefel {
             ));
         }
         
-        let mut rng = thread_rng();
-        
-        // Generate random matrix in ambient space
-        let mut ambient = DMatrix::zeros(self.n, self.p);
-        for i in 0..self.n {
-            for j in 0..self.p {
-                let val: f64 = StandardNormal.sample(&mut rng);
-                ambient[(i, j)] = val * scale;
-            }
-        }
-        
-        // Project to tangent space
         let mut result = DMatrix::zeros(self.n, self.p);
         
-        self.inner.project_tangent(&point_mat, &ambient, &mut result)
-            .map_err(to_py_err)?;
+        self.inner.random_tangent(&point_mat, &mut result)
+            ;
+        
+        // Scale the result if needed
+        if scale != 1.0 {
+            result *= scale;
+        }
         
         dmatrix_to_numpy(py, &result)
     }

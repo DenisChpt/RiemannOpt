@@ -143,4 +143,11 @@ def test_optimizer_types(optimizer_name):
     )
     
     assert result is not None
-    assert 'point' in result
+    # Handle both dict and OptimizationResult object
+    if hasattr(result, 'x'):
+        # PyOptimizationResult uses 'x' as property name
+        assert result.x is not None
+    elif hasattr(result, 'point'):
+        assert result.point is not None
+    else:
+        assert 'point' in result
