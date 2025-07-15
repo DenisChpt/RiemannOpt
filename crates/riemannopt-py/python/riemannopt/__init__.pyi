@@ -137,28 +137,52 @@ def gradient_check(
     ...
 
 def create_cost_function(
-    cost_fn: Callable[[npt.NDArray[np.float64]], Union[float, Tuple[float, npt.NDArray[np.float64]]]],
-    gradient_fn: Optional[Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]]] = None,
-    validate_gradient: bool = False,
-    dimension: Optional[Union[int, Tuple[int, int]]] = None
+    cost: Callable[[npt.NDArray[np.float64]], Union[float, Tuple[float, npt.NDArray[np.float64]]]],
+    gradient: Optional[Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]]] = None,
+    cost_and_gradient: Optional[Callable[[npt.NDArray[np.float64]], Tuple[float, npt.NDArray[np.float64]]]] = None,
+    dimension: Optional[Union[int, Tuple[int, int]]] = None,
+    validate: bool = False,
+    auto_detect: bool = True
 ) -> CostFunction:
     """Create a cost function wrapper for optimization.
     
     Parameters
     ----------
-    cost_fn : callable
-        Function that computes the cost, or returns (cost, gradient).
-    gradient_fn : callable, optional
-        Function that computes the gradient.
-    validate_gradient : bool, default=False
+    cost : callable
+        Function that computes the cost. Can return either:
+        - float: Just the cost value
+        - tuple[float, ndarray]: Both cost and gradient (if auto_detect=True)
+    gradient : callable, optional
+        Function that computes the gradient. If not provided and cost doesn't
+        return gradient, finite differences will be used automatically.
+    cost_and_gradient : callable, optional
+        Function that efficiently computes both cost and gradient together.
+    dimension : int or tuple[int, int], optional
+        Problem dimension. Required if gradient is not provided.
+    validate : bool, default=False
         Whether to validate gradient using finite differences.
-    dimension : int or tuple, optional
-        Problem dimension.
+    auto_detect : bool, default=True
+        Whether to automatically detect if cost function returns (cost, gradient).
     
     Returns
     -------
     CostFunction
-        Wrapped cost function.
+        Wrapped cost function with automatic gradient computation if needed.
+    
+    Examples
+    --------
+    >>> # Function with explicit gradient
+    >>> def f(x): return np.sum(x**2)
+    >>> def grad_f(x): return 2*x
+    >>> cost_fn = create_cost_function(cost=f, gradient=grad_f, dimension=10)
+    
+    >>> # Function returning both cost and gradient
+    >>> def f_and_grad(x): return np.sum(x**2), 2*x
+    >>> cost_fn = create_cost_function(cost=f_and_grad, dimension=10)
+    
+    >>> # Function with automatic gradient via finite differences
+    >>> def f(x): return np.sum(x**2)
+    >>> cost_fn = create_cost_function(cost=f, dimension=10)
     """
     ...
 
