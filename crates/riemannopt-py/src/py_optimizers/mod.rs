@@ -24,7 +24,6 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use numpy::PyArrayMethods;
 
 mod sgd_simple;
 mod adam;
@@ -86,8 +85,7 @@ pub fn optimize(
     max_iterations: usize,
     gradient_tolerance: f64,
 ) -> PyResult<PyObject> {
-    use numpy::PyArrayMethods;
-    
+        
     // Create optimizer instance based on name with default parameters
     let mut opt: Box<dyn std::any::Any> = match optimizer {
         "SGD" => Box::new(PySGD {
@@ -144,130 +142,37 @@ pub fn optimize(
         )),
     };
     
-    // Dispatch based on manifold type
-    if let Ok(sphere) = manifold.extract::<PyRef<crate::py_manifolds::sphere::PySphere>>(py) {
-        if let Ok(initial_array) = initial_point.downcast_bound::<numpy::PyArray1<f64>>(py) {
-            match optimizer {
-                "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize_sphere(py, cost_function, sphere, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize_sphere(py, cost_function, sphere, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize_sphere(py, cost_function, sphere, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize_sphere(py, cost_function, sphere, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize_sphere(py, cost_function, sphere, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize_sphere(py, cost_function, sphere, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize_sphere(py, cost_function, sphere, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                _ => unreachable!(),
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "initial_point must be a 1D numpy array for Sphere manifold"
-            ))
-        }
-    } else if let Ok(stiefel) = manifold.extract::<PyRef<crate::py_manifolds::stiefel::PyStiefel>>(py) {
-        if let Ok(initial_array) = initial_point.downcast_bound::<numpy::PyArray2<f64>>(py) {
-            match optimizer {
-                "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize_stiefel(py, cost_function, stiefel, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize_stiefel(py, cost_function, stiefel, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize_stiefel(py, cost_function, stiefel, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize_stiefel(py, cost_function, stiefel, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize_stiefel(py, cost_function, stiefel, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize_stiefel(py, cost_function, stiefel, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize_stiefel(py, cost_function, stiefel, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                _ => unreachable!(),
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "initial_point must be a 2D numpy array for Stiefel manifold"
-            ))
-        }
-    } else if let Ok(grassmann) = manifold.extract::<PyRef<crate::py_manifolds::grassmann::PyGrassmann>>(py) {
-        if let Ok(initial_array) = initial_point.downcast_bound::<numpy::PyArray2<f64>>(py) {
-            match optimizer {
-                "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize_grassmann(py, cost_function, grassmann, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize_grassmann(py, cost_function, grassmann, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize_grassmann(py, cost_function, grassmann, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize_grassmann(py, cost_function, grassmann, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize_grassmann(py, cost_function, grassmann, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize_grassmann(py, cost_function, grassmann, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize_grassmann(py, cost_function, grassmann, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                _ => unreachable!(),
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "initial_point must be a 2D numpy array for Grassmann manifold"
-            ))
-        }
-    } else if let Ok(spd) = manifold.extract::<PyRef<crate::py_manifolds::spd::PySPD>>(py) {
-        if let Ok(initial_array) = initial_point.downcast_bound::<numpy::PyArray2<f64>>(py) {
-            match optimizer {
-                "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize_spd(py, cost_function, spd, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize_spd(py, cost_function, spd, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize_spd(py, cost_function, spd, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize_spd(py, cost_function, spd, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize_spd(py, cost_function, spd, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize_spd(py, cost_function, spd, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize_spd(py, cost_function, spd, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                _ => unreachable!(),
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "initial_point must be a 2D numpy array for SPD manifold"
-            ))
-        }
-    } else if let Ok(hyperbolic) = manifold.extract::<PyRef<crate::py_manifolds::hyperbolic::PyHyperbolic>>(py) {
-        if let Ok(initial_array) = initial_point.downcast_bound::<numpy::PyArray1<f64>>(py) {
-            match optimizer {
-                "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize_hyperbolic(py, cost_function, hyperbolic, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize_hyperbolic(py, cost_function, hyperbolic, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize_hyperbolic(py, cost_function, hyperbolic, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize_hyperbolic(py, cost_function, hyperbolic, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize_hyperbolic(py, cost_function, hyperbolic, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize_hyperbolic(py, cost_function, hyperbolic, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize_hyperbolic(py, cost_function, hyperbolic, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                _ => unreachable!(),
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "initial_point must be a 1D numpy array for Hyperbolic manifold"
-            ))
-        }
-    } else if let Ok(oblique) = manifold.extract::<PyRef<crate::py_manifolds::oblique::PyOblique>>(py) {
-        if let Ok(initial_array) = initial_point.downcast_bound::<numpy::PyArray2<f64>>(py) {
-            match optimizer {
-                "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize_oblique(py, cost_function, oblique, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize_oblique(py, cost_function, oblique, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize_oblique(py, cost_function, oblique, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize_oblique(py, cost_function, oblique, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize_oblique(py, cost_function, oblique, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize_oblique(py, cost_function, oblique, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize_oblique(py, cost_function, oblique, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                _ => unreachable!(),
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "initial_point must be a 2D numpy array for Oblique manifold"
-            ))
-        }
-    } else if let Ok(psd_cone) = manifold.extract::<PyRef<crate::py_manifolds::psd_cone::PyPSDCone>>(py) {
-        if let Ok(initial_array) = initial_point.downcast_bound::<numpy::PyArray2<f64>>(py) {
-            match optimizer {
-                "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize_psd_cone(py, cost_function, psd_cone, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize_psd_cone(py, cost_function, psd_cone, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize_psd_cone(py, cost_function, psd_cone, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize_psd_cone(py, cost_function, psd_cone, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize_psd_cone(py, cost_function, psd_cone, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize_psd_cone(py, cost_function, psd_cone, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize_psd_cone(py, cost_function, psd_cone, initial_array.readonly(), max_iterations, Some(gradient_tolerance)),
-                _ => unreachable!(),
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "initial_point must be a 2D numpy array for PSDCone manifold"
-            ))
-        }
-    } else {
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "Unsupported manifold type. Supported manifolds: Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, PSDCone"
-        ))
+    // Now use the unified optimize method
+    match optimizer {
+        "SGD" => opt.downcast_mut::<PySGD>().unwrap().optimize(
+            py, cost_function, manifold, initial_point, max_iterations, 
+            Some(gradient_tolerance), None, None, None
+        ),
+        "Adam" => opt.downcast_mut::<PyAdam>().unwrap().optimize(
+            py, cost_function, manifold, initial_point, max_iterations, 
+            Some(gradient_tolerance), None, None, None
+        ),
+        "LBFGS" => opt.downcast_mut::<PyLBFGS>().unwrap().optimize(
+            py, cost_function, manifold, initial_point, max_iterations, 
+            Some(gradient_tolerance), None, None, None
+        ),
+        "ConjugateGradient" => opt.downcast_mut::<PyConjugateGradient>().unwrap().optimize(
+            py, cost_function, manifold, initial_point, max_iterations, 
+            Some(gradient_tolerance), None, None, None
+        ),
+        "TrustRegion" => opt.downcast_mut::<PyTrustRegion>().unwrap().optimize(
+            py, cost_function, manifold, initial_point, max_iterations, 
+            Some(gradient_tolerance), None, None, None
+        ),
+        "Newton" => opt.downcast_mut::<PyNewton>().unwrap().optimize(
+            py, cost_function, manifold, initial_point, max_iterations, 
+            Some(gradient_tolerance), None, None, None
+        ),
+        "NaturalGradient" => opt.downcast_mut::<PyNaturalGradient>().unwrap().optimize(
+            py, cost_function, manifold, initial_point, max_iterations, 
+            Some(gradient_tolerance), None, None, None
+        ),
+        _ => unreachable!(),
     }
 }
 

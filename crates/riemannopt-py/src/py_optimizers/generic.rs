@@ -5,8 +5,8 @@ use nalgebra::{DVector, DMatrix};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use riemannopt_core::{
     manifold::Manifold,
-    core::MatrixManifold,
-    optimizer::StoppingCriterion
+    core::{MatrixManifold, CachedDynamicCostFunction},
+    optimizer::StoppingCriterion,
 };
 
 use crate::{
@@ -286,6 +286,7 @@ macro_rules! impl_optimizer_generic_default {
                 gradient_tolerance: Option<f64>,
             ) -> PyResult<PyOptimizationResult> {
                 use crate::py_cost::PyCostFunctionSphere;
+                use riemannopt_core::core::CachedDynamicCostFunction;
                 
                 let x0 = numpy_to_dvector(initial_point)?;
                 let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
@@ -296,6 +297,7 @@ macro_rules! impl_optimizer_generic_default {
                 let config: $config_type = $create_config(self);
                 let mut optimizer = <$rust_optimizer>::new(config);
                 let cost_fn = PyCostFunctionSphere::new(cost_function);
+                let cost_fn = CachedDynamicCostFunction::new(cost_fn);
                 
                 let result = py.allow_threads(|| {
                     optimizer.optimize(&cost_fn, &sphere.inner, &x0, &criterion)
@@ -326,6 +328,7 @@ macro_rules! impl_optimizer_generic_default {
                 let config: $config_type = $create_config(self);
                 let mut optimizer = <$rust_optimizer>::new(config);
                 let cost_fn = PyCostFunctionStiefel::new(cost_function);
+                // Note: CachedDynamicCostFunction only works with DVector types, not DMatrix
                 
                 let result = py.allow_threads(|| {
                     optimizer.optimize(&cost_fn, &stiefel.inner, &x0, &criterion)
@@ -406,6 +409,7 @@ macro_rules! impl_optimizer_generic_default {
                 gradient_tolerance: Option<f64>,
             ) -> PyResult<PyOptimizationResult> {
                 use crate::py_cost::PyCostFunctionVector;
+                use riemannopt_core::core::CachedDynamicCostFunction;
                 
                 let x0 = numpy_to_dvector(initial_point)?;
                 let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
@@ -416,6 +420,7 @@ macro_rules! impl_optimizer_generic_default {
                 let config: $config_type = $create_config(self);
                 let mut optimizer = <$rust_optimizer>::new(config);
                 let cost_fn = PyCostFunctionVector::new(cost_function);
+                let cost_fn = CachedDynamicCostFunction::new(cost_fn);
                 
                 let result = py.allow_threads(|| {
                     optimizer.optimize(&cost_fn, &hyperbolic.inner, &x0, &criterion)

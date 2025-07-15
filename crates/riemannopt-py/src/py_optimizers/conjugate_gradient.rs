@@ -6,7 +6,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use nalgebra::{DVector, DMatrix};
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyArrayMethods};
 use riemannopt_optim::{ConjugateGradient, CGConfig, ConjugateGradientMethod};
 use riemannopt_core::{
     optimizer::{Optimizer, StoppingCriterion},
@@ -28,7 +28,7 @@ use crate::{
     py_cost::{PyCostFunction, PyCostFunctionSphere, PyCostFunctionStiefel},
     array_utils::{numpy_to_dvector, numpy_to_dmatrix, dvector_to_numpy, dmatrix_to_numpy},
     error::to_py_err,
-    impl_optimizer_methods, impl_optimizer_generic_default,
+    impl_optimizer_generic_default,
 };
 use super::base::{PyOptimizationResult, PyOptimizerBase};
 use super::generic::PyOptimizerGeneric;
@@ -150,140 +150,127 @@ impl PyConjugateGradient {
         Ok(dict.into())
     }
 
-    /// Optimize on a Sphere manifold
-    #[pyo3(signature = (cost_function, sphere, initial_point, max_iterations, gradient_tolerance=None))]
-    pub fn optimize_sphere(
+    /// Unified optimize method that accepts any supported manifold.
+    ///
+    /// Parameters
+    /// ----------
+    /// cost_function : CostFunction
+    ///     The cost function to minimize
+    /// manifold : Manifold
+    ///     The Riemannian manifold to optimize on (Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, or PSDCone)
+    /// initial_point : array_like
+    ///     Starting point for optimization (shape must match manifold requirements)
+    /// max_iterations : int
+    ///     Maximum number of iterations
+    /// gradient_tolerance : float, optional
+    ///     Gradient norm tolerance for convergence
+    /// callback : callable, optional
+    ///     Function called after each iteration
+    /// target_value : float, optional
+    ///     Target cost value to stop optimization early
+    /// max_time : float, optional
+    ///     Maximum optimization time in seconds
+    ///
+    /// Returns
+    /// -------
+    /// OptimizationResult
+    ///     Object containing the optimized point, final cost, and optimization statistics
+    #[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None, callback=None, target_value=None, max_time=None))]
+    pub fn optimize(
         &mut self,
         py: Python<'_>,
         cost_function: PyRef<'_, PyCostFunction>,
-        sphere: PyRef<'_, PySphere>,
-        initial_point: PyReadonlyArray1<'_, f64>,
+        manifold: PyObject,
+        initial_point: PyObject,
         max_iterations: usize,
         gradient_tolerance: Option<f64>,
+        callback: Option<PyObject>,
+        target_value: Option<f64>,
+        max_time: Option<f64>,
     ) -> PyResult<PyObject> {
-        self.optimize_sphere_impl(
-            py, &*cost_function, &*sphere, initial_point, 
-            max_iterations, gradient_tolerance
-        ).map(|r| r.into_py(py))
-    }
-    
-    /// Optimize on a Stiefel manifold
-    #[pyo3(signature = (cost_function, stiefel, initial_point, max_iterations, gradient_tolerance=None))]
-    pub fn optimize_stiefel(
-        &mut self,
-        py: Python<'_>,
-        cost_function: PyRef<'_, PyCostFunction>,
-        stiefel: PyRef<'_, PyStiefel>,
-        initial_point: PyReadonlyArray2<'_, f64>,
-        max_iterations: usize,
-        gradient_tolerance: Option<f64>,
-    ) -> PyResult<PyObject> {
-        self.optimize_stiefel_impl(
-            py, &*cost_function, &*stiefel, initial_point, 
-            max_iterations, gradient_tolerance
-        ).map(|r| r.into_py(py))
-    }
-    
-    /// Optimize on a Grassmann manifold
-    #[pyo3(signature = (cost_function, grassmann, initial_point, max_iterations, gradient_tolerance=None))]
-    pub fn optimize_grassmann(
-        &mut self,
-        py: Python<'_>,
-        cost_function: PyRef<'_, PyCostFunction>,
-        grassmann: PyRef<'_, PyGrassmann>,
-        initial_point: PyReadonlyArray2<'_, f64>,
-        max_iterations: usize,
-        gradient_tolerance: Option<f64>,
-    ) -> PyResult<PyObject> {
-        self.optimize_grassmann_impl(
-            py, &*cost_function, &*grassmann, initial_point, 
-            max_iterations, gradient_tolerance
-        ).map(|r| r.into_py(py))
-    }
-    
-    /// Optimize on a SPD manifold
-    #[pyo3(signature = (cost_function, spd, initial_point, max_iterations, gradient_tolerance=None))]
-    pub fn optimize_spd(
-        &mut self,
-        py: Python<'_>,
-        cost_function: PyRef<'_, PyCostFunction>,
-        spd: PyRef<'_, PySPD>,
-        initial_point: PyReadonlyArray2<'_, f64>,
-        max_iterations: usize,
-        gradient_tolerance: Option<f64>,
-    ) -> PyResult<PyObject> {
-        self.optimize_spd_impl(
-            py, &*cost_function, &*spd, initial_point, 
-            max_iterations, gradient_tolerance
-        ).map(|r| r.into_py(py))
-    }
-    
-    /// Optimize on a Hyperbolic manifold
-    #[pyo3(signature = (cost_function, hyperbolic, initial_point, max_iterations, gradient_tolerance=None))]
-    pub fn optimize_hyperbolic(
-        &mut self,
-        py: Python<'_>,
-        cost_function: PyRef<'_, PyCostFunction>,
-        hyperbolic: PyRef<'_, PyHyperbolic>,
-        initial_point: PyReadonlyArray1<'_, f64>,
-        max_iterations: usize,
-        gradient_tolerance: Option<f64>,
-    ) -> PyResult<PyObject> {
-        self.optimize_hyperbolic_impl(
-            py, &*cost_function, &*hyperbolic, initial_point, 
-            max_iterations, gradient_tolerance
-        ).map(|r| r.into_py(py))
-    }
-    
-    /// Optimize on an Oblique manifold
-    #[pyo3(signature = (cost_function, oblique, initial_point, max_iterations, gradient_tolerance=None))]
-    pub fn optimize_oblique(
-        &mut self,
-        py: Python<'_>,
-        cost_function: PyRef<'_, PyCostFunction>,
-        oblique: PyRef<'_, PyOblique>,
-        initial_point: PyReadonlyArray2<'_, f64>,
-        max_iterations: usize,
-        gradient_tolerance: Option<f64>,
-    ) -> PyResult<PyObject> {
-        self.optimize_oblique_impl(
-            py, &*cost_function, &*oblique, initial_point, 
-            max_iterations, gradient_tolerance
-        ).map(|r| r.into_py(py))
-    }
-    
-    // /// Optimize on a Fixed-Rank manifold
-    // #[pyo3(signature = (cost_function, fixed_rank, initial_point, max_iterations, gradient_tolerance=None))]
-    // pub fn optimize_fixed_rank(
-    //     &mut self,
-    //     py: Python<'_>,
-    //     cost_function: PyRef<'_, PyCostFunction>,
-    //     fixed_rank: PyRef<'_, PyFixedRank>,
-    //     initial_point: PyReadonlyArray2<'_, f64>,
-    //     max_iterations: usize,
-    //     gradient_tolerance: Option<f64>,
-    // ) -> PyResult<PyObject> {
-    //     self.optimize_fixed_rank_impl(
-    //         py, &*cost_function, &*fixed_rank, initial_point, 
-    //         max_iterations, gradient_tolerance
-    //     ).map(|r| r.into_py(py))
-    // }
-    
-    /// Optimize on a PSD Cone manifold
-    #[pyo3(signature = (cost_function, psd_cone, initial_point, max_iterations, gradient_tolerance=None))]
-    pub fn optimize_psd_cone(
-        &mut self,
-        py: Python<'_>,
-        cost_function: PyRef<'_, PyCostFunction>,
-        psd_cone: PyRef<'_, PyPSDCone>,
-        initial_point: PyReadonlyArray2<'_, f64>,
-        max_iterations: usize,
-        gradient_tolerance: Option<f64>,
-    ) -> PyResult<PyObject> {
-        self.optimize_psd_cone_impl(
-            py, &*cost_function, &*psd_cone, initial_point, 
-            max_iterations, gradient_tolerance
-        ).map(|r| r.into_py(py))
+        // Dispatch based on manifold type
+        if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>(py) {
+            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray1<f64>>(py) {
+                self.optimize_sphere_impl(
+                    py, &*cost_function, &*sphere, initial_array.readonly(), 
+                    max_iterations, gradient_tolerance
+                ).map(|r| r.into_py(py))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "initial_point must be a 1D numpy array for Sphere manifold"
+                ))
+            }
+        } else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>(py) {
+            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+                self.optimize_stiefel_impl(
+                    py, &*cost_function, &*stiefel, initial_array.readonly(), 
+                    max_iterations, gradient_tolerance
+                ).map(|r| r.into_py(py))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "initial_point must be a 2D numpy array for Stiefel manifold"
+                ))
+            }
+        } else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>(py) {
+            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+                self.optimize_grassmann_impl(
+                    py, &*cost_function, &*grassmann, initial_array.readonly(), 
+                    max_iterations, gradient_tolerance
+                ).map(|r| r.into_py(py))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "initial_point must be a 2D numpy array for Grassmann manifold"
+                ))
+            }
+        } else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>(py) {
+            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+                self.optimize_spd_impl(
+                    py, &*cost_function, &*spd, initial_array.readonly(), 
+                    max_iterations, gradient_tolerance
+                ).map(|r| r.into_py(py))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "initial_point must be a 2D numpy array for SPD manifold"
+                ))
+            }
+        } else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>(py) {
+            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray1<f64>>(py) {
+                self.optimize_hyperbolic_impl(
+                    py, &*cost_function, &*hyperbolic, initial_array.readonly(), 
+                    max_iterations, gradient_tolerance
+                ).map(|r| r.into_py(py))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "initial_point must be a 1D numpy array for Hyperbolic manifold"
+                ))
+            }
+        } else if let Ok(oblique) = manifold.extract::<PyRef<PyOblique>>(py) {
+            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+                self.optimize_oblique_impl(
+                    py, &*cost_function, &*oblique, initial_array.readonly(), 
+                    max_iterations, gradient_tolerance
+                ).map(|r| r.into_py(py))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "initial_point must be a 2D numpy array for Oblique manifold"
+                ))
+            }
+        } else if let Ok(psd_cone) = manifold.extract::<PyRef<PyPSDCone>>(py) {
+            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+                self.optimize_psd_cone_impl(
+                    py, &*cost_function, &*psd_cone, initial_array.readonly(), 
+                    max_iterations, gradient_tolerance
+                ).map(|r| r.into_py(py))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "initial_point must be a 2D numpy array for PSDCone manifold"
+                ))
+            }
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "Unsupported manifold type. Supported manifolds: Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, PSDCone"
+            ))
+        }
     }
 }
 

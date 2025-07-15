@@ -21,6 +21,7 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::{ManifoldError, Result},
     memory::workspace::Workspace,
+    core::cached_cost_function_dyn::{CachedDynamicCostFunction, CacheConfig},
 };
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -48,6 +49,8 @@ pub struct PyCostFunction {
     dimension_info: DimensionInfo,
     /// Counter for function evaluations (for debugging/profiling)
     eval_count: Arc<RwLock<EvalCount>>,
+    /// Whether to use finite differences for gradient (when no gradient function is provided)
+    use_finite_differences: bool,
 }
 
 /// Information about the problem dimensions
@@ -117,12 +120,16 @@ impl PyCostFunction {
             }
         })?;
 
+        // Determine if we should use finite differences
+        let use_finite_differences = grad_fn.is_none() && cost_and_grad_fn.is_none();
+        
         Ok(PyCostFunction {
             cost_fn,
             grad_fn,
             cost_and_grad_fn,
             dimension_info,
             eval_count: Arc::new(RwLock::new(EvalCount::default())),
+            use_finite_differences,
         })
     }
 
@@ -292,6 +299,7 @@ impl Clone for PyCostFunction {
                 cost_and_grad_fn: self.cost_and_grad_fn.as_ref().map(|cg| cg.clone_ref(py)),
                 dimension_info: self.dimension_info.clone(),
                 eval_count: Arc::new(RwLock::new(EvalCount::default())),
+                use_finite_differences: self.use_finite_differences,
             }
         })
     }
@@ -724,7 +732,7 @@ impl std::fmt::Debug for PyCostFunction {
 ///     If no gradient is provided, finite differences will be used automatically.
 ///     This may be slower but ensures the optimization can proceed.
 #[pyfunction]
-#[pyo3(signature = (cost, gradient=None, cost_and_gradient=None, dimension=None, validate=false))]
+#[pyo3(signature = (cost, gradient=None, cost_and_gradient=None, dimension=None, validate=false, auto_detect=true))]
 pub fn create_cost_function(
     py: Python<'_>,
     cost: PyObject,
@@ -732,9 +740,10 @@ pub fn create_cost_function(
     cost_and_gradient: Option<PyObject>,
     dimension: Option<PyObject>,
     validate: bool,
+    auto_detect: bool,
 ) -> PyResult<PyCostFunction> {
     // Try to detect if cost function returns (cost, gradient)
-    let (actual_cost, actual_gradient, actual_cost_and_gradient) = if gradient.is_none() && cost_and_gradient.is_none() {
+    let (actual_cost, actual_gradient, actual_cost_and_gradient, detected_tuple) = if auto_detect && gradient.is_none() && cost_and_gradient.is_none() && dimension.is_some() {
         // Try calling the cost function to see what it returns
         Python::with_gil(|py| {
             // Create a test point based on dimension
@@ -748,12 +757,12 @@ pub fn create_cost_function(
                         dmatrix_to_numpy(py, &DMatrix::zeros(rows, cols)).map(PyObject::from)?
                     } else {
                         // Can't determine dimension, skip auto-detection
-                        return Ok::<_, PyErr>((cost, gradient, cost_and_gradient));
+                        return Ok::<_, PyErr>((cost, gradient, cost_and_gradient, false));
                     }
                 }
                 None => {
                     // No dimension info, skip auto-detection
-                    return Ok::<_, PyErr>((cost, gradient, cost_and_gradient));
+                    return Ok::<_, PyErr>((cost, gradient, cost_and_gradient, false));
                 }
             };
             
@@ -763,28 +772,51 @@ pub fn create_cost_function(
                     // Check if it's a tuple
                     if let Ok(tuple) = result.downcast_bound::<pyo3::types::PyTuple>(py) {
                         if tuple.len() == 2 {
-                            // It returns (cost, gradient), use it as cost_and_gradient
-                            Ok((cost.clone_ref(py), None, Some(cost)))
+                            // Check if the second element looks like a gradient (array-like)
+                            if let Ok(_) = tuple.get_item(1).unwrap().downcast::<numpy::PyArray1<f64>>() {
+                                // It returns (cost, gradient), use it as cost_and_gradient
+                                Ok((cost.clone_ref(py), None, Some(cost), true))
+                            } else if let Ok(_) = tuple.get_item(1).unwrap().downcast::<numpy::PyArray2<f64>>() {
+                                // It returns (cost, gradient), use it as cost_and_gradient
+                                Ok((cost.clone_ref(py), None, Some(cost), true))
+                            } else {
+                                Ok((cost, gradient, cost_and_gradient, false))
+                            }
                         } else {
-                            Ok((cost, gradient, cost_and_gradient))
+                            Ok((cost, gradient, cost_and_gradient, false))
                         }
                     } else {
                         // Returns scalar, keep original
-                        Ok((cost, gradient, cost_and_gradient))
+                        Ok((cost, gradient, cost_and_gradient, false))
                     }
                 }
                 Err(_) => {
                     // Call failed, keep original
-                    Ok((cost, gradient, cost_and_gradient))
+                    Ok((cost, gradient, cost_and_gradient, false))
                 }
             }
         })?
     } else {
-        (cost, gradient, cost_and_gradient)
+        (cost, gradient, cost_and_gradient, false)
     };
     
     // Create the cost function
     let cost_fn = PyCostFunction::new(actual_cost, actual_gradient, actual_cost_and_gradient, dimension)?;
+    
+    // Print info message if using finite differences
+    if cost_fn.use_finite_differences && !detected_tuple {
+        py.run_bound(
+            r#"print("[RiemannOpt] Note: No gradient function provided. Using finite differences approximation.\n              For better performance, consider providing a gradient function or returning (cost, gradient) tuple.")"#,
+            None,
+            None
+        ).ok(); // Ignore print errors
+    } else if detected_tuple {
+        py.run_bound(
+            r#"print("[RiemannOpt] Detected that cost function returns (cost, gradient) tuple. Using it for optimization.")"#,
+            None,
+            None
+        ).ok(); // Ignore print errors
+    }
     
     // Optionally validate the gradient implementation
     if validate && (cost_fn.grad_fn.is_some() || cost_fn.cost_and_grad_fn.is_some()) {
@@ -1432,6 +1464,8 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 
 /// Register the cost function module with Python.
 pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
+    use pyo3::wrap_pyfunction;
+    
     // Add the cost function class and factory directly to parent module
     parent.add_class::<PyCostFunction>()?;
     parent.add_function(wrap_pyfunction!(create_cost_function, parent)?)?;

@@ -313,9 +313,10 @@ impl PySGD {
         // Create adapter for the cost function
         let cost_fn_adapter = crate::py_cost::PyCostFunctionSphere::new(&*cost_fn);
         
-        // Run optimization
-        let result = optimizer.optimize(&cost_fn_adapter, manifold, &x0, criterion)
-            .map_err(to_py_err)?;
+        // Run optimization with GIL released for better performance
+        let result = py.allow_threads(|| {
+            optimizer.optimize(&cost_fn_adapter, manifold, &x0, criterion)
+        }).map_err(to_py_err)?;
         
         // Convert result
         PyOptimizationResult::from_rust_result(py, result, |point| {
@@ -343,9 +344,10 @@ impl PySGD {
         // Create adapter for the cost function
         let cost_fn_adapter = crate::py_cost::PyCostFunctionStiefel::new(&*cost_fn);
         
-        // Run optimization
-        let result = optimizer.optimize(&cost_fn_adapter, manifold, &x0, criterion)
-            .map_err(to_py_err)?;
+        // Run optimization with GIL released for better performance
+        let result = py.allow_threads(|| {
+            optimizer.optimize(&cost_fn_adapter, manifold, &x0, criterion)
+        }).map_err(to_py_err)?;
         
         // Convert result
         PyOptimizationResult::from_rust_result(py, result, |point| {

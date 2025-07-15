@@ -141,6 +141,60 @@ impl PyOptimizationResult {
     fn x(&self) -> PyObject {
         Python::with_gil(|py| self.point.clone_ref(py))
     }
+    
+    /// Get the final value.
+    #[getter]
+    fn value(&self) -> f64 {
+        self.value
+    }
+    
+    /// Get the final gradient norm.
+    #[getter]
+    fn gradient_norm(&self) -> Option<f64> {
+        self.gradient_norm
+    }
+    
+    /// Get whether optimization converged.
+    #[getter]
+    fn converged(&self) -> bool {
+        self.converged
+    }
+    
+    /// Get the number of iterations.
+    #[getter]
+    fn iterations(&self) -> usize {
+        self.iterations
+    }
+    
+    /// Get the number of function evaluations.
+    #[getter]
+    fn function_evals(&self) -> usize {
+        self.function_evals
+    }
+    
+    /// Get the number of gradient evaluations.
+    #[getter]
+    fn gradient_evals(&self) -> usize {
+        self.gradient_evals
+    }
+    
+    /// Get the optimization time in seconds.
+    #[getter]
+    fn time_seconds(&self) -> f64 {
+        self.time_seconds
+    }
+    
+    /// Get the termination reason.
+    #[getter]
+    fn termination_reason(&self) -> &str {
+        &self.termination_reason
+    }
+    
+    /// Get the final point.
+    #[getter]
+    fn point(&self) -> PyObject {
+        Python::with_gil(|py| self.point.clone_ref(py))
+    }
 }
 
 impl PyOptimizationResult {
