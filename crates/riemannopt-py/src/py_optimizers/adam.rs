@@ -5,11 +5,9 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use nalgebra::{DVector, DMatrix};
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyArrayMethods};
+use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use riemannopt_optim::{Adam, AdamConfig};
 use riemannopt_core::optimizer::{Optimizer, StoppingCriterion};
-use std::time::Duration;
 
 use crate::{
     py_manifolds::{
@@ -22,13 +20,12 @@ use crate::{
         // fixed_rank::PyFixedRank,  // TODO: Fix FixedRankPoint representation mismatch
         psd_cone::PyPSDCone,
     },
-    py_cost::{PyCostFunction, PyCostFunctionSphere, PyCostFunctionStiefel},
+    py_cost::PyCostFunction,
     array_utils::{numpy_to_dvector, numpy_to_dmatrix, dvector_to_numpy, dmatrix_to_numpy},
     error::to_py_err,
     impl_optimizer_generic_default,
 };
 use super::base::{PyOptimizationResult, PyOptimizerBase};
-use super::generic::PyOptimizerGeneric;
 
 /// Adam optimizer for Riemannian manifolds.
 ///
@@ -177,89 +174,20 @@ impl PyAdam {
         target_value: Option<f64>,
         max_time: Option<f64>,
     ) -> PyResult<PyObject> {
-        // Dispatch based on manifold type
-        if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>(py) {
-            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray1<f64>>(py) {
-                self.optimize_sphere_impl(
-                    py, &*cost_function, &*sphere, initial_array.readonly(), 
-                    max_iterations, gradient_tolerance
-                ).map(|r| r.into_py(py))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "initial_point must be a 1D numpy array for Sphere manifold"
-                ))
-            }
-        } else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>(py) {
-            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
-                self.optimize_stiefel_impl(
-                    py, &*cost_function, &*stiefel, initial_array.readonly(), 
-                    max_iterations, gradient_tolerance
-                ).map(|r| r.into_py(py))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "initial_point must be a 2D numpy array for Stiefel manifold"
-                ))
-            }
-        } else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>(py) {
-            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
-                self.optimize_grassmann_impl(
-                    py, &*cost_function, &*grassmann, initial_array.readonly(), 
-                    max_iterations, gradient_tolerance
-                ).map(|r| r.into_py(py))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "initial_point must be a 2D numpy array for Grassmann manifold"
-                ))
-            }
-        } else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>(py) {
-            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
-                self.optimize_spd_impl(
-                    py, &*cost_function, &*spd, initial_array.readonly(), 
-                    max_iterations, gradient_tolerance
-                ).map(|r| r.into_py(py))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "initial_point must be a 2D numpy array for SPD manifold"
-                ))
-            }
-        } else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>(py) {
-            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray1<f64>>(py) {
-                self.optimize_hyperbolic_impl(
-                    py, &*cost_function, &*hyperbolic, initial_array.readonly(), 
-                    max_iterations, gradient_tolerance
-                ).map(|r| r.into_py(py))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "initial_point must be a 1D numpy array for Hyperbolic manifold"
-                ))
-            }
-        } else if let Ok(oblique) = manifold.extract::<PyRef<PyOblique>>(py) {
-            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
-                self.optimize_oblique_impl(
-                    py, &*cost_function, &*oblique, initial_array.readonly(), 
-                    max_iterations, gradient_tolerance
-                ).map(|r| r.into_py(py))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "initial_point must be a 2D numpy array for Oblique manifold"
-                ))
-            }
-        } else if let Ok(psd_cone) = manifold.extract::<PyRef<PyPSDCone>>(py) {
-            if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
-                self.optimize_psd_cone_impl(
-                    py, &*cost_function, &*psd_cone, initial_array.readonly(), 
-                    max_iterations, gradient_tolerance
-                ).map(|r| r.into_py(py))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "initial_point must be a 2D numpy array for PSDCone manifold"
-                ))
-            }
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "Unsupported manifold type. Supported manifolds: Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, PSDCone"
-            ))
-        }
+        // Use the generic dispatcher to route to the correct manifold implementation
+        use super::generic::optimize_dispatcher;
+        optimize_dispatcher(
+            self,
+            py,
+            cost_function,
+            manifold,
+            initial_point,
+            max_iterations,
+            gradient_tolerance,
+            callback,
+            target_value,
+            max_time,
+        )
     }
 }
 

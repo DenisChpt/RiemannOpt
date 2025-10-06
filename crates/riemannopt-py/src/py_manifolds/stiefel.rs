@@ -137,7 +137,7 @@ impl PyStiefel {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -164,7 +164,7 @@ impl PyStiefel {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         self.inner.inverse_retract(&point_mat, &other_mat, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -192,7 +192,7 @@ impl PyStiefel {
         let mut result = DMatrix::zeros(self.n, self.p);
         
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -220,7 +220,7 @@ impl PyStiefel {
         let mut result = DMatrix::zeros(self.n, self.p);
         
         self.inner.project_tangent(&point_mat, &vector_mat, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -319,7 +319,7 @@ impl PyStiefel {
         let mut result = DMatrix::zeros(self.n, self.p);
         
         self.inner.random_point(&mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dmatrix_to_numpy(py, &result)
     }
@@ -347,7 +347,7 @@ impl PyStiefel {
         let mut result = DMatrix::zeros(self.n, self.p);
         
         self.inner.random_tangent(&point_mat, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         // Scale the result if needed
         if scale != 1.0 {

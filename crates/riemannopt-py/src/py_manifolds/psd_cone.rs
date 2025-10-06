@@ -4,7 +4,7 @@
 
 use pyo3::prelude::*;
 use numpy::{PyArray2, PyReadonlyArray2};
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DVector;
 use riemannopt_manifolds::psd_cone::PSDCone;
 use riemannopt_core::manifold::Manifold;
 
@@ -164,7 +164,8 @@ impl PyPSDCone {
         let tangent_vec = self.inner.matrix_to_vector(&tangent_mat);
         let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
         
-        self.inner.project_tangent(&point_vec, &tangent_vec, &mut result_vec);
+        self.inner.project_tangent(&point_vec, &tangent_vec, &mut result_vec)
+            .map_err(to_py_err)?;
         
         // Convert back to matrix
         let result = self.inner.vector_to_matrix(&result_vec);
@@ -189,7 +190,8 @@ impl PyPSDCone {
         let tangent_vec = self.inner.matrix_to_vector(&tangent_mat);
         let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
         
-        self.inner.retract(&point_vec, &tangent_vec, &mut result_vec);
+        self.inner.retract(&point_vec, &tangent_vec, &mut result_vec)
+            .map_err(to_py_err)?;
         
         // Convert back to matrix
         let result = self.inner.vector_to_matrix(&result_vec);
@@ -214,7 +216,8 @@ impl PyPSDCone {
         let y_vec = self.inner.matrix_to_vector(&y_mat);
         let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
         
-        self.inner.inverse_retract(&x_vec, &y_vec, &mut result_vec);
+        self.inner.inverse_retract(&x_vec, &y_vec, &mut result_vec)
+            .map_err(to_py_err)?;
         
         // Convert back to matrix
         let result = self.inner.vector_to_matrix(&result_vec);
@@ -272,7 +275,8 @@ impl PyPSDCone {
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
         
-        self.inner.random_point(&mut result_vec);
+        self.inner.random_point(&mut result_vec)
+            .map_err(to_py_err)?;
         
         // Convert back to matrix
         let result = self.inner.vector_to_matrix(&result_vec);
@@ -296,7 +300,8 @@ impl PyPSDCone {
         let point_vec = self.inner.matrix_to_vector(&point_mat);
         let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
         
-        self.inner.random_tangent(&point_vec, &mut result_vec);
+        self.inner.random_tangent(&point_vec, &mut result_vec)
+            .map_err(to_py_err)?;
         
         // Scale the result if needed
         if scale != 1.0 {

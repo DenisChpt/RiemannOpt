@@ -126,6 +126,6 @@ mod tests {
         });
         
         assert_eq!(result, 42);
-        assert!(optimizer.workspace.get_vector(riemannopt_core::memory::workspace::BufferId::Gradient).is_some());
+        assert!(optimizer.workspace.get_buffer::<nalgebra::DVector<f64>>(riemannopt_core::memory::workspace::BufferId::Gradient).is_some());
     }
 }

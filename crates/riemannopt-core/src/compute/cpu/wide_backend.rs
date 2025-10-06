@@ -227,4 +227,97 @@ mod tests {
         // Should be efficient for larger sizes
         assert!(backend.is_efficient_for_size(100));
     }
+    
+    #[test]
+    fn test_scale_vector() {
+        let backend = WideBackend::<f32>::new();
+        let mut x = DVector::from_vec(vec![2.0, 3.0, 4.0, 5.0]);
+        
+        backend.scale(&mut x, 2.5);
+        
+        assert_relative_eq!(x[0], 5.0, epsilon = 1e-6);
+        assert_relative_eq!(x[1], 7.5, epsilon = 1e-6);
+        assert_relative_eq!(x[2], 10.0, epsilon = 1e-6);
+        assert_relative_eq!(x[3], 12.5, epsilon = 1e-6);
+    }
+    
+    #[test]
+    fn test_add_vectors() {
+        let backend = WideBackend::<f64>::new();
+        let a = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+        let b = DVector::from_vec(vec![4.0, 5.0, 6.0]);
+        let mut result = DVector::zeros(3);
+        
+        backend.add(&a, &b, &mut result);
+        
+        assert_relative_eq!(result[0], 5.0, epsilon = 1e-10);
+        assert_relative_eq!(result[1], 7.0, epsilon = 1e-10);
+        assert_relative_eq!(result[2], 9.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_max_abs_diff() {
+        let backend = WideBackend::<f64>::new();
+        let a = DVector::from_vec(vec![1.0, -5.0, 3.0, 7.0]);
+        let b = DVector::from_vec(vec![2.0, -2.0, 3.0, 4.0]);
+        
+        // Max abs diff should be |(-5) - (-2)| = 3
+        let max_diff = backend.max_abs_diff(&a, &b);
+        assert_relative_eq!(max_diff, 3.0, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_frobenius_norm() {
+        let backend = WideBackend::<f32>::new();
+        let matrix = DMatrix::from_row_slice(2, 3, &[
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0
+        ]);
+        
+        // Frobenius norm = sqrt(1^2 + 2^2 + 3^2 + 4^2 + 5^2 + 6^2) = sqrt(91)
+        let expected = (91.0_f32).sqrt();
+        let result = backend.frobenius_norm(&matrix);
+        assert_relative_eq!(result, expected, epsilon = 1e-6);
+    }
+    
+    #[test]
+    fn test_large_vectors() {
+        // Test with larger vectors to ensure wide operations work correctly
+        let backend = WideBackend::<f64>::new();
+        let size = 1000;
+        
+        let a = DVector::from_vec(vec![1.5; size]);
+        let b = DVector::from_vec(vec![2.5; size]);
+        
+        // Test dot product
+        let dot = backend.dot_product(&a, &b);
+        assert_relative_eq!(dot, 3.75 * size as f64, epsilon = 1e-8);
+        
+        // Test norm squared
+        let norm_sq = backend.norm_squared(&a);
+        assert_relative_eq!(norm_sq, 2.25 * size as f64, epsilon = 1e-8);
+        
+    }
+    
+    #[test]
+    fn test_edge_cases() {
+        let backend = WideBackend::<f32>::new();
+        
+        // Test with single element
+        let single = DVector::from_vec(vec![42.0]);
+        assert_relative_eq!(backend.norm_squared(&single), 1764.0, epsilon = 1e-6);
+        assert_relative_eq!(backend.norm(&single), 42.0, epsilon = 1e-6);
+        
+        // Test normalize with zero vector
+        let mut zero_vec = DVector::from_vec(vec![0.0, 0.0, 0.0]);
+        let norm = backend.normalize(&mut zero_vec);
+        assert_relative_eq!(norm, 0.0, epsilon = 1e-6);
+        
+        // Test normalize with non-zero vector
+        let mut vec = DVector::from_vec(vec![3.0, 4.0]);
+        let norm = backend.normalize(&mut vec);
+        assert_relative_eq!(norm, 5.0, epsilon = 1e-6);
+        assert_relative_eq!(vec[0], 0.6, epsilon = 1e-6);
+        assert_relative_eq!(vec[1], 0.8, epsilon = 1e-6);
+    }
 }

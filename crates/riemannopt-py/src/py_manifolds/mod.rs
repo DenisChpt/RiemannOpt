@@ -13,9 +13,9 @@ pub mod grassmann;
 pub mod spd;
 pub mod hyperbolic;
 pub mod oblique;
-// pub mod fixed_rank;  // TODO: Fix FixedRankPoint representation mismatch
+// pub mod fixed_rank;  // TODO: Fix compilation with new Manifold trait
 pub mod psd_cone;
-// pub mod euclidean;  // TODO: Implement when Euclidean manifold is available
+pub mod euclidean;
 pub mod product;
 
 pub use sphere::PySphere;
@@ -24,9 +24,9 @@ pub use grassmann::PyGrassmann;
 pub use spd::PySPD;
 pub use hyperbolic::PyHyperbolic;
 pub use oblique::PyOblique;
-// pub use fixed_rank::PyFixedRank;  // TODO: Fix FixedRankPoint representation mismatch
+// pub use fixed_rank::{PyFixedRank, PyFixedRankPoint, PyFixedRankTangent};  // TODO: Fix
 pub use psd_cone::PyPSDCone;
-// pub use euclidean::PyEuclidean;
+pub use euclidean::PyEuclidean;
 pub use product::PyProductManifold;
 
 /// Register all manifold classes with the Python module.
@@ -40,9 +40,12 @@ pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySPD>()?;
     m.add_class::<PyHyperbolic>()?;
     m.add_class::<PyOblique>()?;
-    // m.add_class::<PyFixedRank>()?;  // TODO: Fix FixedRankPoint representation mismatch
+    // TODO: Fix FixedRank compilation issues with the new Manifold trait
+    // m.add_class::<PyFixedRank>()?;
+    // m.add_class::<PyFixedRankPoint>()?;
+    // m.add_class::<PyFixedRankTangent>()?;
     m.add_class::<PyPSDCone>()?;
-    // m.add_class::<PyEuclidean>()?;
+    m.add_class::<PyEuclidean>()?;
     m.add_class::<PyProductManifold>()?;
     
     parent.add_submodule(&m)?;

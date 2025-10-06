@@ -145,8 +145,7 @@ impl PyOblique {
         
         let mut result = DMatrix::zeros(self.n, self.p);
         
-        self.inner.project_point(&point_mat, &mut result)
-            ;
+        self.inner.project_point(&point_mat, &mut result);
         
         dmatrix_to_numpy(py, &result)
     }
@@ -172,10 +171,10 @@ impl PyOblique {
         }
         
         let mut result = DMatrix::zeros(self.n, self.p);
-        
+
         self.inner.project_tangent(&point_mat, &tangent_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -190,12 +189,12 @@ impl PyOblique {
     pub fn exp<'py>(&self, py: Python<'py>, point: PyReadonlyArray2<'_, f64>, tangent: PyReadonlyArray2<'_, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let point_mat = numpy_to_dmatrix(point)?;
         let tangent_mat = numpy_to_dmatrix(tangent)?;
-        
+
         let mut result = DMatrix::zeros(self.n, self.p);
-        
+
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -210,12 +209,12 @@ impl PyOblique {
     pub fn log<'py>(&self, py: Python<'py>, x: PyReadonlyArray2<'_, f64>, y: PyReadonlyArray2<'_, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let x_mat = numpy_to_dmatrix(x)?;
         let y_mat = numpy_to_dmatrix(y)?;
-        
+
         let mut result = DMatrix::zeros(self.n, self.p);
-        
+
         self.inner.inverse_retract(&x_mat, &y_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -230,12 +229,12 @@ impl PyOblique {
     pub fn retract<'py>(&self, py: Python<'py>, point: PyReadonlyArray2<'_, f64>, tangent: PyReadonlyArray2<'_, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let point_mat = numpy_to_dmatrix(point)?;
         let tangent_mat = numpy_to_dmatrix(tangent)?;
-        
+
         let mut result = DMatrix::zeros(self.n, self.p);
-        
+
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -250,12 +249,12 @@ impl PyOblique {
     pub fn inverse_retract<'py>(&self, py: Python<'py>, x: PyReadonlyArray2<'_, f64>, y: PyReadonlyArray2<'_, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let x_mat = numpy_to_dmatrix(x)?;
         let y_mat = numpy_to_dmatrix(y)?;
-        
+
         let mut result = DMatrix::zeros(self.n, self.p);
-        
+
         self.inner.inverse_retract(&x_mat, &y_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -315,10 +314,10 @@ impl PyOblique {
     ///     Random matrix with normalized columns
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let mut result = DMatrix::zeros(self.n, self.p);
-        
+
         self.inner.random_point(&mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -333,12 +332,12 @@ impl PyOblique {
     #[pyo3(signature = (point, scale=1.0))]
     pub fn random_tangent<'py>(&self, py: Python<'py>, point: PyReadonlyArray2<'_, f64>, scale: f64) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let point_mat = numpy_to_dmatrix(point)?;
-        
+
         let mut result = DMatrix::zeros(self.n, self.p);
-        
+
         self.inner.random_tangent(&point_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         // Scale the result if needed
         if scale != 1.0 {
             result *= scale;

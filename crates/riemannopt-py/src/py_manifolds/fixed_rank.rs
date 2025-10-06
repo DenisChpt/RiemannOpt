@@ -3,17 +3,231 @@
 //! The fixed-rank manifold consists of matrices with a fixed rank constraint.
 
 use pyo3::prelude::*;
-use numpy::{PyArray2, PyReadonlyArray2};
-use nalgebra::DMatrix;
-use riemannopt_manifolds::fixed_rank::FixedRank;
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use nalgebra::{DMatrix, DVector};
+use riemannopt_manifolds::fixed_rank::{FixedRank, FixedRankPoint, FixedRankTangent};
 use riemannopt_core::manifold::Manifold;
 
 use crate::{
-    array_utils::{numpy_to_dmatrix, dmatrix_to_numpy},
+    array_utils::{numpy_to_dmatrix, dmatrix_to_numpy, numpy_to_dvector, dvector_to_numpy},
     error::to_py_err,
 };
 
 use super::base::{PyManifoldBase, PointType};
+
+/// Python wrapper for a point on the Fixed-Rank manifold.
+///
+/// A point on the fixed-rank manifold is represented using its SVD factorization:
+/// X = U * S * V^T
+///
+/// where:
+/// - U: m × k matrix with orthonormal columns (left singular vectors)
+/// - S: k-dimensional vector of singular values
+/// - V: n × k matrix with orthonormal columns (right singular vectors)
+///
+/// Attributes
+/// ----------
+/// u : ndarray
+///     Left singular vectors (m × k matrix)
+/// s : ndarray
+///     Singular values (k-dimensional vector)
+/// v : ndarray
+///     Right singular vectors (n × k matrix)
+#[pyclass(name = "FixedRankPoint", module = "riemannopt.manifolds")]
+#[derive(Clone)]
+pub struct PyFixedRankPoint {
+    /// Internal Rust representation
+    pub(crate) inner: FixedRankPoint<f64>,
+}
+
+#[pymethods]
+impl PyFixedRankPoint {
+    /// Create a new FixedRankPoint from SVD components.
+    ///
+    /// Args:
+    ///     u: Left singular vectors (m × k matrix with orthonormal columns)
+    ///     s: Singular values (k-dimensional positive vector)
+    ///     v: Right singular vectors (n × k matrix with orthonormal columns)
+    ///
+    /// Returns:
+    ///     FixedRankPoint: The point on the fixed-rank manifold
+    #[new]
+    pub fn new(
+        u: PyReadonlyArray2<'_, f64>,
+        s: PyReadonlyArray1<'_, f64>,
+        v: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Self> {
+        let u_mat = numpy_to_dmatrix(u)?;
+        let s_vec = numpy_to_dvector(s)?;
+        let v_mat = numpy_to_dmatrix(v)?;
+        
+        // Validate dimensions
+        let k = s_vec.len();
+        if u_mat.ncols() != k {
+            return Err(crate::error::dimension_mismatch(
+                &[u_mat.nrows(), k],
+                &[u_mat.nrows(), u_mat.ncols()],
+            ));
+        }
+        if v_mat.ncols() != k {
+            return Err(crate::error::dimension_mismatch(
+                &[v_mat.nrows(), k],
+                &[v_mat.nrows(), v_mat.ncols()],
+            ));
+        }
+        
+        Ok(PyFixedRankPoint {
+            inner: FixedRankPoint::new(u_mat, s_vec, v_mat),
+        })
+    }
+    
+    /// Get the left singular vectors U.
+    #[getter]
+    pub fn u<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        dmatrix_to_numpy(py, &self.inner.u)
+    }
+    
+    /// Get the singular values S.
+    #[getter]
+    pub fn s<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        dvector_to_numpy(py, &self.inner.s)
+    }
+    
+    /// Get the right singular vectors V.
+    #[getter]
+    pub fn v<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        dmatrix_to_numpy(py, &self.inner.v)
+    }
+    
+    /// Convert to full matrix representation X = U * S * V^T.
+    ///
+    /// Returns:
+    ///     ndarray: The full m × n matrix
+    pub fn to_matrix<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let mat = self.inner.to_matrix();
+        dmatrix_to_numpy(py, &mat)
+    }
+    
+    /// Create from a full matrix using truncated SVD.
+    ///
+    /// Args:
+    ///     matrix: The m × n matrix to decompose
+    ///     k: The target rank
+    ///
+    /// Returns:
+    ///     FixedRankPoint: The rank-k approximation
+    #[staticmethod]
+    pub fn from_matrix(matrix: PyReadonlyArray2<'_, f64>, k: usize) -> PyResult<Self> {
+        let mat = numpy_to_dmatrix(matrix)?;
+        let point = FixedRankPoint::from_matrix(&mat, k).map_err(to_py_err)?;
+        Ok(PyFixedRankPoint { inner: point })
+    }
+    
+    fn __repr__(&self) -> String {
+        format!(
+            "FixedRankPoint(m={}, n={}, k={})",
+            self.inner.u.nrows(),
+            self.inner.v.nrows(),
+            self.inner.s.len()
+        )
+    }
+}
+
+/// Python wrapper for a tangent vector on the Fixed-Rank manifold.
+///
+/// A tangent vector at a point X = U*S*V^T is represented as:
+/// ξ = U_perp*M*V^T + U*S_dot*V^T + U*N*V_perp^T
+///
+/// where:
+/// - U_perp*M*V^T: Component in the direction of increasing left singular space
+/// - U*S_dot*V^T: Component changing the singular values
+/// - U*N*V_perp^T: Component in the direction of increasing right singular space
+///
+/// Attributes
+/// ----------
+/// u_perp_m : ndarray
+///     Left orthogonal component (m-k) × k matrix
+/// s_dot : ndarray
+///     Singular value derivatives (k-dimensional vector)
+/// v_perp_n : ndarray
+///     Right orthogonal component (n-k) × k matrix
+#[pyclass(name = "FixedRankTangent", module = "riemannopt.manifolds")]
+#[derive(Clone)]
+pub struct PyFixedRankTangent {
+    /// Internal Rust representation
+    pub(crate) inner: FixedRankTangent<f64>,
+}
+
+#[pymethods]
+impl PyFixedRankTangent {
+    /// Create a new FixedRankTangent from components.
+    ///
+    /// Args:
+    ///     u_perp_m: Left orthogonal component ((m-k) × k matrix)
+    ///     s_dot: Singular value derivatives (k-dimensional vector)
+    ///     v_perp_n: Right orthogonal component ((n-k) × k matrix)
+    ///
+    /// Returns:
+    ///     FixedRankTangent: The tangent vector
+    #[new]
+    pub fn new(
+        u_perp_m: PyReadonlyArray2<'_, f64>,
+        s_dot: PyReadonlyArray1<'_, f64>,
+        v_perp_n: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Self> {
+        let u_perp_m_mat = numpy_to_dmatrix(u_perp_m)?;
+        let s_dot_vec = numpy_to_dvector(s_dot)?;
+        let v_perp_n_mat = numpy_to_dmatrix(v_perp_n)?;
+        
+        Ok(PyFixedRankTangent {
+            inner: FixedRankTangent::new(u_perp_m_mat, s_dot_vec, v_perp_n_mat),
+        })
+    }
+    
+    /// Get the left orthogonal component.
+    #[getter]
+    pub fn u_perp_m<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        dmatrix_to_numpy(py, &self.inner.u_perp_m)
+    }
+    
+    /// Get the singular value derivatives.
+    #[getter]
+    pub fn s_dot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        dvector_to_numpy(py, &self.inner.s_dot)
+    }
+    
+    /// Get the right orthogonal component.
+    #[getter]
+    pub fn v_perp_n<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        dmatrix_to_numpy(py, &self.inner.v_perp_n)
+    }
+    
+    /// Convert to full matrix representation given a base point.
+    ///
+    /// Args:
+    ///     point: The base point (FixedRankPoint)
+    ///
+    /// Returns:
+    ///     ndarray: The full m × n tangent matrix
+    pub fn to_matrix<'py>(
+        &self, 
+        py: Python<'py>, 
+        point: &PyFixedRankPoint
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let mat = self.inner.to_matrix(&point.inner);
+        dmatrix_to_numpy(py, &mat)
+    }
+    
+    fn __repr__(&self) -> String {
+        let (m_k, k1) = (self.inner.u_perp_m.nrows(), self.inner.u_perp_m.ncols());
+        let k2 = self.inner.s_dot.len();
+        let (n_k, k3) = (self.inner.v_perp_n.nrows(), self.inner.v_perp_n.ncols());
+        format!(
+            "FixedRankTangent(u_perp_m={}×{}, s_dot={}, v_perp_n={}×{})",
+            m_k, k1, k2, n_k, k3
+        )
+    }
+}
 
 /// Python wrapper for the Fixed-Rank manifold.
 ///
@@ -156,9 +370,7 @@ impl PyFixedRank {
         
         let mut result = DMatrix::zeros(self.m, self.n);
         
-        self.inner.project_point(&point_mat, &mut result)
-            ;
-        
+        self.inner.project_point(&point_mat, &mut result);
         dmatrix_to_numpy(py, &result)
     }
     
@@ -185,8 +397,8 @@ impl PyFixedRank {
         let mut result = DMatrix::zeros(self.m, self.n);
         
         self.inner.project_tangent(&point_mat, &tangent_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -205,8 +417,8 @@ impl PyFixedRank {
         let mut result = DMatrix::zeros(self.m, self.n);
         
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -225,8 +437,8 @@ impl PyFixedRank {
         let mut result = DMatrix::zeros(self.m, self.n);
         
         self.inner.inverse_retract(&x_mat, &y_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -272,8 +484,8 @@ impl PyFixedRank {
         let mut result = DMatrix::zeros(self.m, self.n);
         
         self.inner.random_point(&mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -292,7 +504,6 @@ impl PyFixedRank {
         let mut result = DMatrix::zeros(self.m, self.n);
         
         self.inner.random_tangent(&point_mat, &mut result)
-            ;
         
         // Scale the result if needed
         if scale != 1.0 {

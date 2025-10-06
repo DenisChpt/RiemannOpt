@@ -124,7 +124,7 @@ impl PySphere {
         
         let mut result = DVector::zeros(self.dimension);
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dvector_to_numpy(py, &result)
     }
@@ -153,7 +153,7 @@ impl PySphere {
         
         let mut result = DVector::zeros(self.dimension);
         self.inner.inverse_retract(&point_vec, &other_vec, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dvector_to_numpy(py, &result)
     }
@@ -183,7 +183,7 @@ impl PySphere {
         let mut result = DVector::zeros(self.dimension);
         
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dvector_to_numpy(py, &result)
     }
@@ -211,7 +211,7 @@ impl PySphere {
         let mut result = DVector::zeros(self.dimension);
         
         self.inner.project_tangent(&point_vec, &vector_vec, &mut result)
-            ;
+            .map_err(to_py_err)?;
         
         dvector_to_numpy(py, &result)
     }
@@ -295,11 +295,8 @@ impl PySphere {
     /// Returns:
     ///     Random point uniformly distributed on the sphere
     pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let mut result = DVector::zeros(self.dimension);
-        
-        self.inner.random_point(&mut result)
-            ;
-        
+        let result = self.inner.random_point();
+
         dvector_to_numpy(py, &result)
     }
 
@@ -314,7 +311,7 @@ impl PySphere {
     #[pyo3(signature = (point, scale=1.0))]
     pub fn random_tangent<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>, scale: f64) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let point_vec = numpy_to_dvector(point)?;
-        
+
         // Validate dimension
         if point_vec.len() != self.dimension {
             return Err(crate::error::dimension_mismatch(
@@ -322,17 +319,15 @@ impl PySphere {
                 &[point_vec.len()],
             ));
         }
-        
-        let mut result = DVector::zeros(self.dimension);
-        
-        self.inner.random_tangent(&point_vec, &mut result)
-            ;
-        
+
+        let mut result = self.inner.random_tangent(&point_vec)
+            .map_err(to_py_err)?;
+
         // Scale the result if needed
         if scale != 1.0 {
             result *= scale;
         }
-        
+
         dvector_to_numpy(py, &result)
     }
 

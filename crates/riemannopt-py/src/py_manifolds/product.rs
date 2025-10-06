@@ -5,13 +5,12 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
-use numpy::{PyArray1, PyArray2, PyArrayMethods};
-use nalgebra::{DVector, DMatrix};
+use numpy::PyArrayMethods;
+use nalgebra::DVector;
 
 use crate::{
     array_utils::{numpy_to_dvector, dvector_to_numpy, numpy_to_dmatrix, dmatrix_to_numpy},
     error::dimension_mismatch,
-    types::PyPoint,
 };
 use super::base::{PyManifoldBase, PointType};
 
@@ -212,7 +211,7 @@ impl PyProductManifold {
         }
         
         // Check each component
-        for (i, (manifold, component)) in self.manifolds.iter().zip(tuple.iter()).enumerate() {
+        for (manifold, component) in self.manifolds.iter().zip(tuple.iter()) {
             let contains: bool = manifold
                 .call_method1(py, "contains", (component, atol))?
                 .extract(py)?;
@@ -451,10 +450,9 @@ impl PyProductManifold {
         
         let mut total_inner = 0.0;
         
-        for (i, (manifold, ((pt, u_comp), v_comp))) in self.manifolds
+        for (manifold, ((pt, u_comp), v_comp)) in self.manifolds
             .iter()
-            .zip(point_tuple.iter().zip(u_tuple.iter()).zip(v_tuple.iter()))
-            .enumerate() 
+            .zip(point_tuple.iter().zip(u_tuple.iter()).zip(v_tuple.iter())) 
         {
             let inner_value: f64 = manifold
                 .call_method1(py, "inner", (pt, u_comp, v_comp))?
@@ -528,7 +526,7 @@ impl PyProductManifold {
 // Internal methods would handle the complexity of mixed point types
 impl PyProductManifold {
     /// Convert a tuple of component points to a concatenated vector representation
-    fn tuple_to_vector(&self, py: Python<'_>, tuple: &Bound<'_, PyTuple>) -> PyResult<DVector<f64>> {
+    fn tuple_to_vector(&self, _py: Python<'_>, tuple: &Bound<'_, PyTuple>) -> PyResult<DVector<f64>> {
         if tuple.len() != self.manifolds.len() {
             return Err(dimension_mismatch(
                 &[self.manifolds.len()],
@@ -538,8 +536,8 @@ impl PyProductManifold {
         
         let mut concatenated = DVector::zeros(self.total_ambient_dim);
         let mut offset = 0;
-        
-        for (manifold, component) in self.manifolds.iter().zip(tuple.iter()) {
+
+        for (_manifold, component) in self.manifolds.iter().zip(tuple.iter()) {
             // Get the numpy array representation of this component
             let array = if let Ok(arr) = component.downcast::<numpy::PyArray1<f64>>() {
                 // Vector case
