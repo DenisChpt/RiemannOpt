@@ -58,7 +58,7 @@ impl<T: Scalar> BatchData<T> {
     }
     
     /// Creates a mutable BatchData view from a mutable DMatrix reference.
-    pub fn from_matrix_mut(matrix: &mut DMatrix<T>) -> BatchDataMut<T> {
+    pub fn from_matrix_mut(matrix: &mut DMatrix<T>) -> BatchDataMut<'_, T> {
         let dim = matrix.nrows();
         let n_points = matrix.ncols();
         
@@ -87,7 +87,7 @@ impl<T: Scalar> BatchData<T> {
     
     /// Gets an immutable view of a point.
     #[inline]
-    pub fn point_view(&self, index: usize) -> DVectorView<T> {
+    pub fn point_view(&self, index: usize) -> DVectorView<'_, T> {
         debug_assert!(index < self.n_points);
         let start = index * self.dim;
         DVectorView::from_slice(&self.data[start..start + self.dim], self.dim)
@@ -95,7 +95,7 @@ impl<T: Scalar> BatchData<T> {
     
     /// Gets a mutable view of a point.
     #[inline]
-    pub fn point_view_mut(&mut self, index: usize) -> DVectorViewMut<T> {
+    pub fn point_view_mut(&mut self, index: usize) -> DVectorViewMut<'_, T> {
         debug_assert!(index < self.n_points);
         let start = index * self.dim;
         DVectorViewMut::from_slice(&mut self.data[start..start + self.dim], self.dim)
@@ -159,7 +159,7 @@ pub struct BatchDataMut<'a, T: Scalar> {
 impl<'a, T: Scalar> BatchDataMut<'a, T> {
     /// Gets a mutable view of a column in the matrix.
     #[inline]
-    pub fn column_mut(&mut self, index: usize) -> DVectorViewMut<T> {
+    pub fn column_mut(&mut self, index: usize) -> DVectorViewMut<'_, T> {
         debug_assert!(index < self.n_points);
         self.matrix.column_mut(index)
     }

@@ -23,6 +23,8 @@ mod array_utils;
 mod py_manifolds;
 mod py_optimizers;
 mod py_cost;
+mod callbacks;
+mod callback_manager;
 
 // Re-exports for easier access
 // use error::RiemannOptError;
@@ -41,6 +43,11 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py_manifolds::register_module(m)?;
     py_optimizers::register_module(m)?;
     py_cost::register_module(m)?;
+    
+    // Register callback classes
+    m.add_class::<callbacks::PyCallbackInfo>()?;
+    m.add_class::<callbacks::PyOptimizationCallback>()?;
+    callback_manager::register_callback_manager(m)?;
     
     // Register all error types
     error::register_exceptions(m)?;

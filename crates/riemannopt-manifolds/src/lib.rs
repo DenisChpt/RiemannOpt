@@ -14,6 +14,7 @@ pub mod product;
 pub mod product_static;
 pub mod fixed_rank;
 pub mod psd_cone;
+pub mod euclidean;
 pub mod utils;
 
 #[cfg(feature = "parallel")]
@@ -30,3 +31,4 @@ pub use product::Product;
 pub use product_static::{ProductStatic, product_static};
 pub use fixed_rank::FixedRank;
 pub use psd_cone::PSDCone;
+pub use euclidean::Euclidean;

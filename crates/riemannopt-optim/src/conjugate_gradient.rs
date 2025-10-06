@@ -389,38 +389,52 @@ impl<T: Scalar> ConjugateGradient<T> {
             ConjugateGradientMethod::HestenesStiefel => {
                 // β = <g_k, g_k - g_{k-1}> / <d_{k-1}, g_k - g_{k-1}>
                 let mut grad_diff = gradient.clone();
-                
+
                 // Compute g_k - g_{k-1}
                 let mut neg_prev_grad = transported_prev_grad.clone();
                 manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad)?;
                 let mut temp = gradient.clone();
                 manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, &mut temp)?;
-                
+
                 let numerator = manifold.inner_product(current_point, gradient, &grad_diff)?;
                 let denominator = manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
-                
-                if <T as Float>::abs(denominator) > T::epsilon() {
+
+                // Safeguard: scale denominator check by vector norms to avoid
+                // false restarts when vectors are small but well-conditioned
+                let norm_dir = <T as Float>::sqrt(manifold.inner_product(current_point, &transported_prev_dir, &transported_prev_dir)?);
+                let norm_diff = <T as Float>::sqrt(manifold.inner_product(current_point, &grad_diff, &grad_diff)?);
+                let denom_scale = norm_dir * norm_diff;
+                let tiny = T::from(100.0).unwrap() * T::epsilon() * denom_scale;
+
+                if <T as Float>::abs(denominator) > tiny {
                     numerator / denominator
                 } else {
-                    T::zero()
+                    T::zero() // Implicit restart
                 }
             }
             ConjugateGradientMethod::DaiYuan => {
                 // β = ||g_k||² / <d_{k-1}, g_k - g_{k-1}>
                 let mut grad_diff = gradient.clone();
-                
+
                 // Compute g_k - g_{k-1}
                 let mut neg_prev_grad = transported_prev_grad.clone();
                 manifold.scale_tangent(current_point, -T::one(), &transported_prev_grad, &mut neg_prev_grad)?;
                 let mut temp = gradient.clone();
                 manifold.add_tangents(current_point, gradient, &neg_prev_grad, &mut grad_diff, &mut temp)?;
-                
+
                 let denominator = manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
-                
-                if <T as Float>::abs(denominator) > T::epsilon() {
+
+                // Safeguard: scale denominator check by vector norms to avoid
+                // false restarts when vectors are small but well-conditioned
+                let norm_dir = <T as Float>::sqrt(manifold.inner_product(current_point, &transported_prev_dir, &transported_prev_dir)?);
+                let norm_diff = <T as Float>::sqrt(manifold.inner_product(current_point, &grad_diff, &grad_diff)?);
+                let denom_scale = norm_dir * norm_diff;
+                let tiny = T::from(100.0).unwrap() * T::epsilon() * denom_scale;
+
+                if <T as Float>::abs(denominator) > tiny {
                     grad_norm_sq / denominator
                 } else {
-                    T::zero()
+                    T::zero() // Implicit restart
                 }
             }
         };
@@ -631,28 +645,46 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
                 // Compute conjugate direction: d = -g + beta * d_{k-1}
                 let prev_dir = cg_state.previous_direction.as_ref().unwrap();
                 let mut transported_prev_dir = prev_dir.clone();
-                
+
                 // Transport previous direction to current point if needed
-                if let Some(ref prev_point) = previous_point {
-                    manifold.parallel_transport(prev_point, &current_point, prev_dir, &mut transported_prev_dir)?;
+                // If transport fails (e.g., near-antipodal points), restart with steepest descent
+                let transport_success = if let Some(ref prev_point) = previous_point {
+                    manifold.parallel_transport(prev_point, &current_point, prev_dir, &mut transported_prev_dir).is_ok()
+                } else {
+                    true
+                };
+
+                if !transport_success {
+                    // Near-antipodal or other transport failure: force restart
+                    manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut direction)?;
+                    cg_state.iterations_since_restart = 0;
+                } else {
+                    // d = beta * d_{k-1}
+                    manifold.scale_tangent(&current_point, beta, &transported_prev_dir, &mut direction)?;
+                    // d = -g + beta * d_{k-1}
+                    let mut neg_grad = riemannian_grad.clone();
+                    manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut neg_grad)?;
+                    let mut new_direction = direction.clone();
+                    let mut temp = riemannian_grad.clone();
+                    manifold.add_tangents(&current_point, &neg_grad, &direction, &mut new_direction, &mut temp)?;
+                    direction = new_direction;
+
+                    // No reprojection needed: linear combinations of tangent vectors
+                    // remain in the tangent space by the vector space property of T_x M.
+                    // The previous reprojection was introducing numerical errors.
                 }
-                
-                // d = beta * d_{k-1}
-                manifold.scale_tangent(&current_point, beta, &transported_prev_dir, &mut direction)?;
-                // d = -g + beta * d_{k-1}
-                let mut neg_grad = riemannian_grad.clone();
-                manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut neg_grad)?;
-                let mut new_direction = direction.clone();
-                let mut temp = riemannian_grad.clone();
-                manifold.add_tangents(&current_point, &neg_grad, &direction, &mut new_direction, &mut temp)?;
-                direction = new_direction;
-                
-                // Project the direction back to the tangent space
-                let mut projected_direction = direction.clone();
-                manifold.project_tangent(&current_point, &direction, &mut projected_direction)?;
-                direction = projected_direction;
             }
-            
+
+            // Safeguard: ensure descent direction
+            // Check that <g, d> < 0 (direction makes acute angle with negative gradient)
+            // If not, force restart to steepest descent
+            let directional_derivative = manifold.inner_product(&current_point, &riemannian_grad, &direction)?;
+            if directional_derivative >= T::zero() {
+                // Not a descent direction! Force restart
+                manifold.scale_tangent(&current_point, -T::one(), &riemannian_grad, &mut direction)?;
+                cg_state.iterations_since_restart = 0;
+            }
+
             // Perform line search
             let step_size = self.perform_line_search(
                 cost_fn,

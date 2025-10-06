@@ -268,8 +268,8 @@ mod tests {
         
         // Large matrices - adjust test for thread scaling
         // Default threshold is 128 * sqrt(num_threads)
-        // For 6 threads: 128 * 2.45 ≈ 313
-        let large_dim = 400; // Should be parallel on any reasonable thread count
+        // Use a very large dimension to ensure it triggers parallelization
+        let large_dim = 1000; // Should be parallel on any reasonable thread count
         assert!(config.should_parallelize_gemm(large_dim, large_dim, large_dim));
         
         // Mixed sizes - decision based on smallest dimension

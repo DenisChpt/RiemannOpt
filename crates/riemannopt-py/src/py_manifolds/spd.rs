@@ -5,7 +5,7 @@
 //! and diffusion tensor imaging.
 
 use pyo3::prelude::*;
-use numpy::{PyArray2, PyReadonlyArray2, PyArrayMethods};
+use numpy::{PyArray2, PyReadonlyArray2};
 use nalgebra::{DMatrix, DVector};
 use riemannopt_manifolds::spd::SPD;
 use riemannopt_core::manifold::Manifold;
@@ -215,9 +215,7 @@ impl PySPD {
         
         let mut result = DMatrix::zeros(self.n, self.n);
         
-        self.inner.project_point(&point_mat, &mut result)
-            ;
-        
+        self.inner.project_point(&point_mat, &mut result);
         dmatrix_to_numpy(py, &result)
     }
     
@@ -251,8 +249,8 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -286,8 +284,8 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.inverse_retract(&point_mat, &other_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -322,8 +320,8 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.retract(&point_mat, &tangent_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -357,8 +355,8 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.project_tangent(&point_mat, &vector_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -470,8 +468,8 @@ impl PySPD {
         let mut result = DMatrix::zeros(self.n, self.n);
         
         self.inner.random_point(&mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dmatrix_to_numpy(py, &result)
     }
     
@@ -503,15 +501,15 @@ impl PySPD {
         }
         
         let mut result = DMatrix::zeros(self.n, self.n);
-        
+
         self.inner.random_tangent(&point_mat, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         // Scale the result if needed
         if scale != 1.0 {
             result *= scale;
         }
-        
+
         dmatrix_to_numpy(py, &result)
     }
     

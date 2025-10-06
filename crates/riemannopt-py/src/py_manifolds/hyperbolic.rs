@@ -5,7 +5,7 @@
 //! embedded in Minkowski space.
 
 use pyo3::prelude::*;
-use numpy::{PyArray1, PyReadonlyArray1, PyArrayMethods};
+use numpy::{PyArray1, PyReadonlyArray1};
 use nalgebra::{DVector, DMatrix};
 use riemannopt_manifolds::hyperbolic::Hyperbolic;
 use riemannopt_core::manifold::Manifold;
@@ -243,9 +243,7 @@ impl PyHyperbolic {
         
         let mut result = DVector::zeros(self.n + 1);
         
-        self.inner.project_point(&point_vec, &mut result)
-            ;
-        
+        self.inner.project_point(&point_vec, &mut result);
         dvector_to_numpy(py, &result)
     }
     
@@ -277,8 +275,8 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dvector_to_numpy(py, &result)
     }
     
@@ -310,8 +308,8 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.inverse_retract(&point_vec, &other_vec, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dvector_to_numpy(py, &result)
     }
     
@@ -345,8 +343,8 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.retract(&point_vec, &tangent_vec, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dvector_to_numpy(py, &result)
     }
     
@@ -381,8 +379,8 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.project_tangent(&point_vec, &vector_vec, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dvector_to_numpy(py, &result)
     }
     
@@ -440,7 +438,7 @@ impl PyHyperbolic {
     /// -------
     /// float
     ///     Inner product <u, v>_point
-    pub fn inner(&self, py: Python<'_>, point: PyReadonlyArray1<'_, f64>, u: PyReadonlyArray1<'_, f64>, v: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
+    pub fn inner(&self, _py: Python<'_>, point: PyReadonlyArray1<'_, f64>, u: PyReadonlyArray1<'_, f64>, v: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
         let point_vec = numpy_to_dvector(point)?;
         let u_vec = numpy_to_dvector(u)?;
         let v_vec = numpy_to_dvector(v)?;
@@ -525,8 +523,8 @@ impl PyHyperbolic {
         let mut result = DVector::zeros(self.n + 1);
         
         self.inner.random_point(&mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         dvector_to_numpy(py, &result)
     }
     
@@ -556,15 +554,15 @@ impl PyHyperbolic {
         }
         
         let mut result = DVector::zeros(self.n + 1);
-        
+
         self.inner.random_tangent(&point_vec, &mut result)
-            ;
-        
+            .map_err(to_py_err)?;
+
         // Scale the result if needed
         if scale != 1.0 {
             result *= scale;
         }
-        
+
         dvector_to_numpy(py, &result)
     }
     

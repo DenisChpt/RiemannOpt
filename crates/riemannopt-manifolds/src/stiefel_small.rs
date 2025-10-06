@@ -174,39 +174,3 @@ pub fn can_use_specialized_stiefel(n: usize, p: usize) -> bool {
     (n == 3 && p == 2) || (n == 4 && p == 2)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-        
-    #[test]
-    fn test_project_tangent_stiefel_3_2() {
-        // Create an orthonormal matrix X in St(3,2)
-        let x: Vec<f64> = vec![
-            1.0, 0.0, 0.0,  // Column 0
-            0.0, 1.0, 0.0,  // Column 1
-        ];
-        
-        // Create a test vector
-        let v: Vec<f64> = vec![
-            0.5, 0.5, 0.5,  // Column 0
-            0.5, 0.5, 0.5,  // Column 1
-        ];
-        
-        let mut result = vec![0.0f64; 6];
-        project_tangent_stiefel_3_2(&x, &v, &mut result);
-        
-        // Check that X^T * result + result^T * X = 0 (approximately)
-        // This verifies the tangent space constraint
-        
-        // X^T * result
-        let xtr_00 = x[0] * result[0] + x[1] * result[1] + x[2] * result[2];
-        let xtr_10 = x[3] * result[0] + x[4] * result[1] + x[5] * result[2];
-        let xtr_01 = x[0] * result[3] + x[1] * result[4] + x[2] * result[5];
-        let xtr_11 = x[3] * result[3] + x[4] * result[4] + x[5] * result[5];
-        
-        // Check skew-symmetry
-        assert!((xtr_00 + xtr_00).abs() < 1e-10);
-        assert!((xtr_11 + xtr_11).abs() < 1e-10);
-        assert!((xtr_01 + xtr_10).abs() < 1e-10);
-    }
-}

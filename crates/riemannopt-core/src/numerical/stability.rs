@@ -215,4 +215,36 @@ mod tests {
         let v_small = DVector::from_vec(vec![1e-100, 1e-100]);
         assert_relative_eq!(stable_norm(&v_small), 1e-100 * 2f64.sqrt());
     }
+    
+    // Tests for non-existent functions removed.
+    // These functions can be implemented later if needed:
+    // - robust_average
+    // - stable_sigmoid
+    // - stable_softplus
+    // - stable_log1p
+    
+    // Tests for additional non-existent functions removed:
+    // - stable_expm1
+    // - stable_tanh
+    // - stable_cross_entropy
+    // - kahan_sum
+    // - compensated_dot_product
+    // - check_finite
+    
+    #[test]
+    fn test_safe_divide_edge_cases() {
+        // Test various edge cases
+        assert_eq!(safe_divide(1.0, 1e-400), 1e10); // Denominator too small
+        assert_eq!(safe_divide(f64::INFINITY, 1.0), f64::INFINITY);
+        assert!(safe_divide(f64::NAN, 1.0).is_nan());
+        assert!(safe_divide(1.0, f64::NAN).is_nan());
+    }
+    
+    #[test]
+    fn test_safe_sqrt_edge_cases() {
+        assert_eq!(safe_sqrt(f64::INFINITY), f64::INFINITY);
+        assert!(safe_sqrt(f64::NAN).is_nan());
+        // 1e-400 underflows to 0.0 in f64, so safe_sqrt returns 0.0
+        assert_eq!(safe_sqrt(1e-400), 0.0);
+    }
 }

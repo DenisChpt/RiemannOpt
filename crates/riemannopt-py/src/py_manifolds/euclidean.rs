@@ -1,529 +1,509 @@
-//! Python wrapper for the Euclidean manifold.
-//!
-//! The Euclidean manifold R^n is the standard n-dimensional Euclidean space
-//! with the usual inner product and flat metric. This is the simplest manifold
-//! and serves as a baseline for optimization algorithms.
-
 use pyo3::prelude::*;
-use numpy::{PyArray1, PyReadonlyArray1, PyArrayMethods};
-use nalgebra::{DVector, DMatrix};
-use riemannopt_manifolds::euclidean::Euclidean;
+use pyo3::exceptions::PyValueError;
+use numpy::{PyArray1, PyReadonlyArray1, IntoPyArray};
+use nalgebra::DVector;
+
+use riemannopt_manifolds::Euclidean;
 use riemannopt_core::manifold::Manifold;
 
-use crate::{
-    array_utils::{numpy_to_dvector, dvector_to_numpy},
-    error::{to_py_err, dimension_mismatch},
-    types::PyPoint,
-};
-use super::base::{PyManifoldBase, PointType};
+// Helper macro to check array dimensions
+macro_rules! check_dim {
+    ($arr:expr, $expected:expr, $name:expr) => {
+        if $arr.len()? != $expected {
+            return Err(PyValueError::new_err(format!(
+                "Dimension mismatch for {}: expected {}, got {}",
+                $name,
+                $expected,
+                $arr.len()?
+            )));
+        }
+    };
+}
 
-/// The Euclidean manifold R^n.
+/// Python wrapper for the Euclidean manifold ℝ^n.
 ///
-/// The Euclidean manifold is the standard n-dimensional vector space with
-/// the usual Euclidean metric. All operations are trivial:
-/// - Projection is the identity
-/// - Exponential map is addition
-/// - Logarithmic map is subtraction
-/// - Parallel transport is the identity
+/// The Euclidean manifold is the standard n-dimensional vector space equipped
+/// with the usual Euclidean metric. All Riemannian operations are trivial:
+/// - Projection is identity
+/// - Retraction is addition  
+/// - Inner product is dot product
+/// - Parallel transport is identity
 ///
-/// This manifold is useful as a baseline and for unconstrained optimization
-/// problems that can benefit from the Riemannian optimization framework.
+/// This manifold provides a baseline for optimization algorithms and enables
+/// unconstrained optimization within the Riemannian framework.
 ///
 /// Parameters
 /// ----------
 /// n : int
-///     Dimension of the space
-///
-/// Attributes
-/// ----------
-/// n : int
-///     Dimension of the space
-/// dim : int
-///     Intrinsic dimension (equals n)
-/// ambient_dim : int
-///     Dimension of the ambient space (equals n)
+///     Dimension of the Euclidean space
 ///
 /// Examples
 /// --------
-/// >>> import riemannopt as ro
 /// >>> import numpy as np
-/// >>>
-/// >>> # Create 10-dimensional Euclidean space
-/// >>> euclidean = ro.manifolds.Euclidean(10)
-/// >>> print(f"Dimension: {euclidean.dim}")
-/// Dimension: 10
-/// >>>
-/// >>> # All manifold operations are trivial
-/// >>> x = euclidean.random_point()
-/// >>> v = euclidean.random_tangent(x)
+/// >>> from riemannopt import Euclidean
 /// >>> 
-/// >>> # Exponential map is just addition
-/// >>> y = euclidean.exp(x, v)
+/// >>> # Create 10-dimensional Euclidean space
+/// >>> manifold = Euclidean(10)
+/// >>> 
+/// >>> # Random point
+/// >>> x = manifold.random_point()
+/// >>> 
+/// >>> # Random tangent vector
+/// >>> v = manifold.random_tangent(x)
+/// >>> 
+/// >>> # Retraction (addition)
+/// >>> y = manifold.retract(x, v)
 /// >>> assert np.allclose(y, x + v)
+/// >>> 
+/// >>> # Inner product (dot product)
+/// >>> inner = manifold.inner(x, v, v)
+/// >>> assert np.isclose(inner, np.dot(v, v))
 #[pyclass(name = "Euclidean", module = "riemannopt.manifolds")]
-#[derive(Clone)]
 pub struct PyEuclidean {
     pub(crate) inner: Euclidean<f64>,
-    n: usize,
-}
-
-impl PyManifoldBase for PyEuclidean {
-    fn manifold_name(&self) -> &'static str {
-        "Euclidean"
-    }
-    
-    fn ambient_dim(&self) -> usize {
-        self.n
-    }
-    
-    fn intrinsic_dim(&self) -> usize {
-        self.n
-    }
-    
-    fn point_type(&self) -> PointType {
-        PointType::Vector(self.n)
-    }
 }
 
 #[pymethods]
 impl PyEuclidean {
-    /// Create a new Euclidean manifold.
+    /// Create a new Euclidean manifold of dimension n.
     ///
     /// Parameters
     /// ----------
     /// n : int
-    ///     Dimension of the space (must be > 0)
+    ///     Dimension of the space (must be positive)
     ///
     /// Raises
     /// ------
     /// ValueError
-    ///     If n <= 0
+    ///     If n is 0 or negative
     #[new]
     pub fn new(n: usize) -> PyResult<Self> {
         if n == 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "n must be positive"
-            ));
+            return Err(PyValueError::new_err("Dimension must be positive"));
         }
         
-        let inner = Euclidean::<f64>::new(n)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(PyEuclidean { inner, n })
+        match Euclidean::new(n) {
+            Ok(inner) => Ok(Self { inner }),
+            Err(e) => Err(PyValueError::new_err(format!("Failed to create Euclidean manifold: {}", e)))
+        }
     }
-    
-    /// String representation of the manifold.
-    fn __repr__(&self) -> String {
-        format!(
-            "{}(ambient_dim={}, intrinsic_dim={})",
-            self.manifold_name(),
-            self.ambient_dim(),
-            self.intrinsic_dim()
-        )
-    }
-    
+
     /// Get the intrinsic dimension of the manifold.
+    ///
+    /// Returns
+    /// -------
+    /// int
+    ///     The dimension n
     #[getter]
-    fn dim(&self) -> usize {
-        self.intrinsic_dim()
+    pub fn dim(&self) -> usize {
+        self.inner.dimension()
     }
-    
-    /// Get the ambient dimension of the manifold.
+
+    /// Get the dimension of the ambient space.
+    ///
+    /// For Euclidean space, this is the same as dim.
+    ///
+    /// Returns
+    /// -------
+    /// int
+    ///     The dimension n
+    #[getter]  
+    pub fn ambient_dim(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    /// Get the name of the manifold.
+    ///
+    /// Returns
+    /// -------
+    /// str
+    ///     "Euclidean"
     #[getter]
-    fn ambient_dim(&self) -> usize {
-        PyManifoldBase::ambient_dim(self)
+    pub fn name(&self) -> &str {
+        self.inner.name()
     }
-    
-    /// Get the dimension n.
-    #[getter]
-    fn n(&self) -> usize {
-        self.n
-    }
-    
+
     /// Check if a point lies on the manifold.
     ///
-    /// For Euclidean space, all finite vectors are valid points.
-    ///
-    /// Args:
-    ///     point: Point to check
-    ///     atol: Absolute tolerance (default: 1e-10)
-    ///
-    /// Returns:
-    ///     bool: True if point is valid (always true for finite vectors)
-    #[pyo3(signature = (point, atol=1e-10))]
-    fn contains(&self, py: Python<'_>, point: PyObject, atol: f64) -> PyResult<bool> {
-        let point = self.parse_point(py, point)?;
-        self.validate_point_shape(&point)?;
-        
-        match &point {
-            PyPoint::Vector(vec) => Ok(vec.iter().all(|x| x.is_finite())),
-            _ => Err(crate::error::type_error(
-                "vector point",
-                "non-vector point",
-            )),
-        }
-    }
-    
-    /// Check if a vector is in the tangent space.
-    ///
-    /// For Euclidean space, the tangent space at any point is the whole space.
-    ///
-    /// Args:
-    ///     point: Base point on the manifold
-    ///     vector: Vector to check
-    ///     atol: Absolute tolerance (default: 1e-10)
-    ///
-    /// Returns:
-    ///     bool: True if vector is valid (always true for finite vectors)
-    #[pyo3(signature = (point, vector, atol=1e-10))]
-    fn is_tangent(&self, py: Python<'_>, point: PyObject, vector: PyObject, atol: f64) -> PyResult<bool> {
-        let point = self.parse_point(py, point)?;
-        let vector = self.parse_point(py, vector)?;
-        self.validate_point_shape(&point)?;
-        self.validate_point_shape(&vector)?;
-        
-        match (&point, &vector) {
-            (PyPoint::Vector(_), PyPoint::Vector(v)) => Ok(v.iter().all(|x| x.is_finite())),
-            _ => Err(crate::error::type_error(
-                "matching point and vector types",
-                "mismatched types",
-            )),
-        }
-    }
-    
-    /// Project a point onto the manifold (identity operation).
+    /// For Euclidean space, this only checks dimension.
     ///
     /// Parameters
     /// ----------
-    /// point : array_like, shape (n,)
+    /// point : array_like
+    ///     Point to check
+    /// tol : float, optional
+    ///     Tolerance for the check (default: 1e-10)
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     True if point has correct dimension
+    #[pyo3(signature = (point, tol=None))]
+    pub fn is_point_on_manifold(&self, point: PyReadonlyArray1<f64>, tol: Option<f64>) -> PyResult<bool> {
+        if point.len()? != self.inner.dimension() {
+            return Ok(false);
+        }
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        Ok(self.inner.is_point_on_manifold(&point, tol.unwrap_or(1e-10)))
+    }
+
+    /// Project a point onto the manifold.
+    ///
+    /// For Euclidean space, this is the identity operation.
+    ///
+    /// Parameters
+    /// ----------
+    /// point : array_like
     ///     Point to project
     ///
     /// Returns
     /// -------
-    /// array_like, shape (n,)
-    ///     Same point (identity operation)
-    pub fn project<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let point_vec = numpy_to_dvector(point)?;
+    /// ndarray
+    ///     The same point (identity projection)
+    pub fn project_point<'py>(
+        &self,
+        py: Python<'py>,
+        point: PyReadonlyArray1<f64>
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        check_dim!(point, self.inner.dimension(), "point");
         
-        // Validate dimension
-        if point_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[point_vec.len()],
-            ));
-        }
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let mut result = DVector::zeros(self.inner.dimension());
         
-        // For Euclidean space, projection is identity
-        dvector_to_numpy(py, &point_vec)
+        self.inner.project_point(&point, &mut result);
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
     }
-    
-    /// Exponential map (addition in Euclidean space).
+
+    /// Project a vector onto the tangent space at a point.
+    ///
+    /// For Euclidean space, this is the identity operation.
     ///
     /// Parameters
     /// ----------
-    /// point : array_like, shape (n,)
-    ///     Point on the manifold
-    /// tangent : array_like, shape (n,)
-    ///     Tangent vector at the point
-    ///
-    /// Returns
-    /// -------
-    /// array_like, shape (n,)
-    ///     Result of exp_point(tangent) = point + tangent
-    pub fn exp<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>, tangent: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let point_vec = numpy_to_dvector(point)?;
-        let tangent_vec = numpy_to_dvector(tangent)?;
-        
-        // Validate dimensions
-        if point_vec.len() != self.n || tangent_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[point_vec.len()],
-            ));
-        }
-        
-        // Exponential map is just addition
-        let result = &point_vec + &tangent_vec;
-        dvector_to_numpy(py, &result)
-    }
-    
-    /// Logarithmic map (subtraction in Euclidean space).
-    ///
-    /// Parameters
-    /// ----------
-    /// point : array_like, shape (n,)
-    ///     Starting point
-    /// other : array_like, shape (n,)
-    ///     Target point
-    ///
-    /// Returns
-    /// -------
-    /// array_like, shape (n,)
-    ///     Tangent vector log_point(other) = other - point
-    pub fn log<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>, other: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let point_vec = numpy_to_dvector(point)?;
-        let other_vec = numpy_to_dvector(other)?;
-        
-        // Validate dimensions
-        if point_vec.len() != self.n || other_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[point_vec.len()],
-            ));
-        }
-        
-        // Logarithmic map is just subtraction
-        let result = &other_vec - &point_vec;
-        dvector_to_numpy(py, &result)
-    }
-    
-    /// Retraction (same as exponential map for Euclidean space).
-    ///
-    /// Parameters
-    /// ----------
-    /// point : array_like, shape (n,)
-    ///     Point on the manifold
-    /// tangent : array_like, shape (n,)
-    ///     Tangent vector at the point
-    ///
-    /// Returns
-    /// -------
-    /// array_like, shape (n,)
-    ///     Retracted point = point + tangent
-    pub fn retract<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>, tangent: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        // For Euclidean space, retraction is the same as exponential map
-        self.exp(py, point, tangent)
-    }
-    
-    /// Project a vector onto the tangent space (identity operation).
-    ///
-    /// Parameters
-    /// ----------
-    /// point : array_like, shape (n,)
-    ///     Point on the manifold
-    /// vector : array_like, shape (n,)
+    /// point : array_like
+    ///     Base point (not used for Euclidean)
+    /// vector : array_like
     ///     Vector to project
     ///
     /// Returns
     /// -------
-    /// array_like, shape (n,)
-    ///     Same vector (identity operation)
-    pub fn project_tangent<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>, vector: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let point_vec = numpy_to_dvector(point)?;
-        let vector_vec = numpy_to_dvector(vector)?;
+    /// ndarray
+    ///     The same vector (identity projection)
+    pub fn project_tangent<'py>(
+        &self,
+        py: Python<'py>,
+        point: PyReadonlyArray1<f64>,
+        vector: PyReadonlyArray1<f64>
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "point", self.inner.dimension(), point.len()?))); }
+        if vector.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "vector", self.inner.dimension(), vector.len()?))); }
         
-        // Validate dimensions
-        if point_vec.len() != self.n || vector_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[point_vec.len()],
-            ));
-        }
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let vector = DVector::from_column_slice(vector.as_slice().unwrap());
+        let mut result = DVector::zeros(self.inner.dimension());
         
-        // For Euclidean space, tangent projection is identity
-        dvector_to_numpy(py, &vector_vec)
+        self.inner.project_tangent(&point, &vector, &mut result)
+            .map_err(|e| PyValueError::new_err(format!("Projection failed: {}", e)))?;
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
     }
-    
-    /// Riemannian inner product (standard dot product).
+
+    /// Compute the Riemannian inner product between two tangent vectors.
+    ///
+    /// For Euclidean space, this is the standard dot product.
     ///
     /// Parameters
     /// ----------
-    /// point : array_like, shape (n,)
-    ///     Point on the manifold (unused for Euclidean)
-    /// u : array_like, shape (n,)
+    /// point : array_like
+    ///     Base point (not used for Euclidean)
+    /// u : array_like
     ///     First tangent vector
-    /// v : array_like, shape (n,)
+    /// v : array_like
     ///     Second tangent vector
     ///
     /// Returns
     /// -------
     /// float
-    ///     Inner product <u, v> = u.T @ v
-    pub fn inner(&self, _py: Python<'_>, point: PyReadonlyArray1<'_, f64>, u: PyReadonlyArray1<'_, f64>, v: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
-        let point_vec = numpy_to_dvector(point)?;
-        let u_vec = numpy_to_dvector(u)?;
-        let v_vec = numpy_to_dvector(v)?;
+    ///     The dot product u·v
+    pub fn inner(
+        &self,
+        point: PyReadonlyArray1<f64>,
+        u: PyReadonlyArray1<f64>,
+        v: PyReadonlyArray1<f64>
+    ) -> PyResult<f64> {
+        if point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "point", self.inner.dimension(), point.len()?))); }
+        if u.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "u", self.inner.dimension(), u.len()?))); }
+        if v.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "v", self.inner.dimension(), v.len()?))); }
         
-        // Validate dimensions
-        if point_vec.len() != self.n || u_vec.len() != self.n || v_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[point_vec.len()],
-            ));
-        }
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let u = DVector::from_column_slice(u.as_slice().unwrap());
+        let v = DVector::from_column_slice(v.as_slice().unwrap());
         
-        // Standard dot product
-        Ok(u_vec.dot(&v_vec))
+        self.inner.inner_product(&point, &u, &v)
+            .map_err(|e| PyValueError::new_err(format!("Inner product failed: {}", e)))
     }
-    
-    /// Riemannian norm (standard Euclidean norm).
+
+    /// Compute the norm of a tangent vector.
+    ///
+    /// For Euclidean space, this is the standard Euclidean norm.
     ///
     /// Parameters
     /// ----------
-    /// point : array_like, shape (n,)
-    ///     Point on the manifold (unused for Euclidean)
-    /// tangent : array_like, shape (n,)
+    /// point : array_like
+    ///     Base point (not used for Euclidean)
+    /// vector : array_like
     ///     Tangent vector
     ///
     /// Returns
     /// -------
     /// float
-    ///     Norm ||tangent|| = sqrt(tangent.T @ tangent)
-    pub fn norm(&self, _py: Python<'_>, point: PyReadonlyArray1<'_, f64>, tangent: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
-        let point_vec = numpy_to_dvector(point)?;
-        let tangent_vec = numpy_to_dvector(tangent)?;
+    ///     The Euclidean norm ||v||
+    pub fn norm(
+        &self,
+        point: PyReadonlyArray1<f64>,
+        vector: PyReadonlyArray1<f64>
+    ) -> PyResult<f64> {
+        if point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "point", self.inner.dimension(), point.len()?))); }
+        if vector.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "vector", self.inner.dimension(), vector.len()?))); }
         
-        // Validate dimensions
-        if point_vec.len() != self.n || tangent_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[point_vec.len()],
-            ));
-        }
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let vector = DVector::from_column_slice(vector.as_slice().unwrap());
         
-        // Standard Euclidean norm
-        Ok(tangent_vec.norm())
+        self.inner.norm(&point, &vector)
+            .map_err(|e| PyValueError::new_err(format!("Norm computation failed: {}", e)))
     }
-    
-    /// Geodesic distance (Euclidean distance).
+
+    /// Perform a retraction from the tangent space to the manifold.
+    ///
+    /// For Euclidean space, retraction is simple addition: R_x(v) = x + v
     ///
     /// Parameters
     /// ----------
-    /// x : array_like, shape (n,)
+    /// point : array_like
+    ///     Base point
+    /// tangent : array_like
+    ///     Tangent vector
+    ///
+    /// Returns
+    /// -------
+    /// ndarray
+    ///     The retracted point x + v
+    pub fn retract<'py>(
+        &self,
+        py: Python<'py>,
+        point: PyReadonlyArray1<f64>,
+        tangent: PyReadonlyArray1<f64>
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "point", self.inner.dimension(), point.len()?))); }
+        if tangent.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "tangent", self.inner.dimension(), tangent.len()?))); }
+        
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let tangent = DVector::from_column_slice(tangent.as_slice().unwrap());
+        let mut result = DVector::zeros(self.inner.dimension());
+        
+        self.inner.retract(&point, &tangent, &mut result)
+            .map_err(|e| PyValueError::new_err(format!("Retraction failed: {}", e)))?;
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+    }
+
+    /// Compute the inverse retraction (logarithmic map).
+    ///
+    /// For Euclidean space, this is subtraction: log_x(y) = y - x
+    ///
+    /// Parameters
+    /// ----------
+    /// point : array_like
+    ///     Base point
+    /// other : array_like
+    ///     Target point
+    ///
+    /// Returns
+    /// -------
+    /// ndarray
+    ///     The tangent vector y - x
+    pub fn inverse_retract<'py>(
+        &self,
+        py: Python<'py>,
+        point: PyReadonlyArray1<f64>,
+        other: PyReadonlyArray1<f64>
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "point", self.inner.dimension(), point.len()?))); }
+        if other.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "other", self.inner.dimension(), other.len()?))); }
+        
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let other = DVector::from_column_slice(other.as_slice().unwrap());
+        let mut result = DVector::zeros(self.inner.dimension());
+        
+        self.inner.inverse_retract(&point, &other, &mut result)
+            .map_err(|e| PyValueError::new_err(format!("Inverse retraction failed: {}", e)))?;
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+    }
+
+    /// Convert Euclidean gradient to Riemannian gradient.
+    ///
+    /// For Euclidean space, these are identical.
+    ///
+    /// Parameters
+    /// ----------
+    /// point : array_like
+    ///     Base point (not used for Euclidean)
+    /// euclidean_grad : array_like
+    ///     Euclidean gradient
+    ///
+    /// Returns
+    /// -------
+    /// ndarray
+    ///     The same gradient (identity)
+    pub fn euclidean_to_riemannian_gradient<'py>(
+        &self,
+        py: Python<'py>,
+        point: PyReadonlyArray1<f64>,
+        euclidean_grad: PyReadonlyArray1<f64>
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "point", self.inner.dimension(), point.len()?))); }
+        if euclidean_grad.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "euclidean_grad", self.inner.dimension(), euclidean_grad.len()?))); }
+        
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let euclidean_grad = DVector::from_column_slice(euclidean_grad.as_slice().unwrap());
+        let mut result = DVector::zeros(self.inner.dimension());
+        
+        self.inner.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut result)
+            .map_err(|e| PyValueError::new_err(format!("Gradient conversion failed: {}", e)))?;
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+    }
+
+    /// Perform parallel transport of a vector.
+    ///
+    /// For Euclidean space (flat), parallel transport is identity.
+    ///
+    /// Parameters
+    /// ----------
+    /// from_point : array_like
+    ///     Starting point
+    /// to_point : array_like
+    ///     Ending point
+    /// vector : array_like
+    ///     Vector to transport
+    ///
+    /// Returns
+    /// -------
+    /// ndarray
+    ///     The same vector (identity transport)
+    pub fn parallel_transport<'py>(
+        &self,
+        py: Python<'py>,
+        from_point: PyReadonlyArray1<f64>,
+        to_point: PyReadonlyArray1<f64>,
+        vector: PyReadonlyArray1<f64>
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if from_point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "from_point", self.inner.dimension(), from_point.len()?))); }
+        if to_point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "to_point", self.inner.dimension(), to_point.len()?))); }
+        if vector.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "vector", self.inner.dimension(), vector.len()?))); }
+        
+        let from_point = DVector::from_column_slice(from_point.as_slice().unwrap());
+        let to_point = DVector::from_column_slice(to_point.as_slice().unwrap());
+        let vector = DVector::from_column_slice(vector.as_slice().unwrap());
+        let mut result = DVector::zeros(self.inner.dimension());
+        
+        self.inner.parallel_transport(&from_point, &to_point, &vector, &mut result)
+            .map_err(|e| PyValueError::new_err(format!("Parallel transport failed: {}", e)))?;
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+    }
+
+    /// Generate a random point on the manifold.
+    ///
+    /// Points are sampled from a standard normal distribution.
+    ///
+    /// Returns
+    /// -------
+    /// ndarray
+    ///     Random point in ℝ^n
+    pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let mut result = DVector::zeros(self.inner.dimension());
+        
+        self.inner.random_point(&mut result)
+            .map_err(|e| PyValueError::new_err(format!("Random point generation failed: {}", e)))?;
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+    }
+
+    /// Generate a random tangent vector at a point.
+    ///
+    /// Vectors are sampled from a standard normal distribution.
+    ///
+    /// Parameters
+    /// ----------
+    /// point : array_like
+    ///     Base point (not used for Euclidean)
+    ///
+    /// Returns
+    /// -------
+    /// ndarray
+    ///     Random tangent vector
+    pub fn random_tangent<'py>(
+        &self,
+        py: Python<'py>,
+        point: PyReadonlyArray1<f64>
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if point.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "point", self.inner.dimension(), point.len()?))); }
+        
+        let point = DVector::from_column_slice(point.as_slice().unwrap());
+        let mut result = DVector::zeros(self.inner.dimension());
+        
+        self.inner.random_tangent(&point, &mut result)
+            .map_err(|e| PyValueError::new_err(format!("Random tangent generation failed: {}", e)))?;
+        
+        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+    }
+
+    /// Compute the geodesic distance between two points.
+    ///
+    /// For Euclidean space, this is the standard Euclidean distance.
+    ///
+    /// Parameters
+    /// ----------
+    /// x : array_like
     ///     First point
-    /// y : array_like, shape (n,)
+    /// y : array_like
     ///     Second point
     ///
     /// Returns
     /// -------
     /// float
-    ///     Distance ||x - y||
-    pub fn distance(&self, _py: Python<'_>, x: PyReadonlyArray1<'_, f64>, y: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
-        let x_vec = numpy_to_dvector(x)?;
-        let y_vec = numpy_to_dvector(y)?;
+    ///     The Euclidean distance ||y - x||
+    pub fn distance(&self, x: PyReadonlyArray1<f64>, y: PyReadonlyArray1<f64>) -> PyResult<f64> {
+        if x.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "x", self.inner.dimension(), x.len()?))); }
+        if y.len()? != self.inner.dimension() { return Err(PyValueError::new_err(format!("Dimension mismatch for {}: expected {}, got {}", "y", self.inner.dimension(), y.len()?))); }
         
-        // Validate dimensions
-        if x_vec.len() != self.n || y_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[x_vec.len()],
-            ));
-        }
+        let x = DVector::from_column_slice(x.as_slice().unwrap());
+        let y = DVector::from_column_slice(y.as_slice().unwrap());
         
-        // Euclidean distance
-        Ok((&x_vec - &y_vec).norm())
+        self.inner.distance(&x, &y)
+            .map_err(|e| PyValueError::new_err(format!("Distance computation failed: {}", e)))
     }
-    
-    /// Generate a random point.
-    ///
-    /// Returns
-    /// -------
-    /// array_like, shape (n,)
-    ///     Random point sampled from standard normal distribution
-    pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let mut result = DVector::zeros(self.n);
-        
-        self.inner.random_point(&mut result)
-            ;
-        
-        dvector_to_numpy(py, &result)
-    }
-    
-    /// Generate a random tangent vector.
-    ///
-    /// Parameters
-    /// ----------
-    /// point : array_like, shape (n,)
-    ///     Point on the manifold (unused for Euclidean)
-    /// scale : float, default=1.0
-    ///     Scaling factor for the random vector
-    ///
-    /// Returns
-    /// -------
-    /// array_like, shape (n,)
-    ///     Random tangent vector
-    #[pyo3(signature = (point, scale=1.0))]
-    pub fn random_tangent<'py>(&self, py: Python<'py>, point: PyReadonlyArray1<'_, f64>, scale: f64) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let point_vec = numpy_to_dvector(point)?;
-        
-        // Validate dimension
-        if point_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[point_vec.len()],
-            ));
-        }
-        
-        let mut result = DVector::zeros(self.n);
-        
-        self.inner.random_tangent(&point_vec, &mut result)
-            ;
-        
-        // Scale the result if needed
-        if scale != 1.0 {
-            result *= scale;
-        }
-        
-        dvector_to_numpy(py, &result)
-    }
-    
-    /// Parallel transport (identity operation in Euclidean space).
-    ///
-    /// Parameters
-    /// ----------
-    /// from_point : array_like, shape (n,)
-    ///     Starting point
-    /// to_point : array_like, shape (n,)
-    ///     End point
-    /// tangent : array_like, shape (n,)
-    ///     Tangent vector at from_point
-    ///
-    /// Returns
-    /// -------
-    /// array_like, shape (n,)
-    ///     Same tangent vector (parallel transport is identity)
-    pub fn parallel_transport<'py>(&self, py: Python<'py>, from_point: PyReadonlyArray1<'_, f64>, to_point: PyReadonlyArray1<'_, f64>, tangent: PyReadonlyArray1<'_, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let from_vec = numpy_to_dvector(from_point)?;
-        let to_vec = numpy_to_dvector(to_point)?;
-        let tangent_vec = numpy_to_dvector(tangent)?;
-        
-        // Validate dimensions
-        if from_vec.len() != self.n || to_vec.len() != self.n || tangent_vec.len() != self.n {
-            return Err(dimension_mismatch(
-                &[self.n],
-                &[from_vec.len()],
-            ));
-        }
-        
-        // Parallel transport is identity in Euclidean space
-        dvector_to_numpy(py, &tangent_vec)
-    }
-}
 
-// Internal methods for trait implementation
-impl PyEuclidean {
-    fn parse_point(&self, py: Python<'_>, obj: PyObject) -> PyResult<PyPoint> {
-        super::base::array_to_point(py, obj)
+    /// String representation of the manifold.
+    ///
+    /// Returns
+    /// -------
+    /// str
+    ///     "Euclidean(n=<dimension>)"
+    pub fn __repr__(&self) -> String {
+        format!("Euclidean(n={})", self.inner.dimension())
     }
-    
-    fn contains_vector(&self, vec: &DVector<f64>, atol: f64) -> PyResult<bool> {
-        Ok(self.inner.is_point_on_manifold(vec, atol))
-    }
-    
-    fn is_tangent_vector(&self, point: &DVector<f64>, vector: &DVector<f64>, atol: f64) -> PyResult<bool> {
-        Ok(self.inner.is_vector_in_tangent_space(point, vector, atol))
-    }
-    
-    fn contains_matrix(&self, _mat: &DMatrix<f64>, _atol: f64) -> PyResult<bool> {
-        Err(crate::error::type_error(
-            "vector point",
-            "matrix point",
-        ))
-    }
-    
-    fn is_tangent_matrix(&self, _point: &DMatrix<f64>, _vector: &DMatrix<f64>, _atol: f64) -> PyResult<bool> {
-        Err(crate::error::type_error(
-            "vector tangent",
-            "matrix tangent",
-        ))
+
+    /// Check if the manifold is flat (zero curvature).
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     True (Euclidean space is flat)
+    pub fn is_flat(&self) -> bool {
+        true
     }
 }

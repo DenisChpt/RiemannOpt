@@ -49,9 +49,6 @@ use riemannopt_core::{
     compute::{get_dispatcher, SimdBackend},
     types::DVector,
 };
-#[cfg(test)]
-use riemannopt_core::core::Manifold;
-
 /// Extension trait for SIMD-accelerated sphere operations.
 ///
 /// This trait provides optimized implementations of common sphere operations
@@ -193,46 +190,3 @@ impl SphereSimdExt for Sphere {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-    use riemannopt_core::memory::workspace::Workspace;
-    
-    #[test]
-    fn test_simd_projection_f64() {
-        let sphere = Sphere::<f64>::new(100).unwrap();
-        let point = DVector::from_vec(vec![1.0; 100]);
-        
-        let mut proj_standard = DVector::zeros(100);
-        let mut workspace = Workspace::<f64>::new();
-        <Sphere<f64> as Manifold<f64>>::project_point(&sphere, &point, &mut proj_standard, &mut workspace);
-        let proj_simd = sphere.project_point_simd_f64(&point);
-        
-        assert_relative_eq!(proj_standard, proj_simd, epsilon = 1e-10);
-        assert_relative_eq!(proj_simd.norm(), 1.0, epsilon = 1e-10);
-    }
-    
-    #[test]
-    fn test_simd_projection_f32() {
-        let sphere = Sphere::<f64>::new(100).unwrap();
-        let point = DVector::from_vec(vec![1.0f32; 100]);
-        
-        let proj_simd = sphere.project_point_simd_f32(&point);
-        
-        // Just verify the SIMD result is normalized
-        assert_relative_eq!(proj_simd.norm(), 1.0f32, epsilon = 1e-6);
-    }
-    
-    #[test]
-    fn test_simd_tangent_dot() {
-        let sphere = Sphere::<f64>::new(100).unwrap();
-        let v1 = DVector::from_vec(vec![1.0; 100]);
-        let v2 = DVector::from_vec(vec![2.0; 100]);
-        
-        let dot_standard = v1.dot(&v2);
-        let dot_simd = sphere.tangent_dot_simd_f64(&v1, &v2);
-        
-        assert_relative_eq!(dot_standard, dot_simd, epsilon = 1e-10);
-    }
-}

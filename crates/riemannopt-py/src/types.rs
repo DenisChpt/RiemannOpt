@@ -6,7 +6,6 @@
 use pyo3::prelude::*;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use nalgebra::{DVector, DMatrix};
-use std::sync::Arc;
 
 /// Represents a point on a manifold.
 ///
@@ -107,64 +106,3 @@ impl PyPoint {
 /// to make the API clearer and type-safe.
 pub type PyTangentVector = PyPoint;
 
-/// Shared workspace for computations.
-///
-/// This struct wraps the workspace in an Arc to allow safe sharing between
-/// Python objects while maintaining Rust's memory safety guarantees.
-pub struct PyWorkspace {
-    /// The actual workspace wrapped in Arc for thread-safe sharing
-    inner: Arc<parking_lot::RwLock<riemannopt_core::memory::workspace::Workspace<f64>>>,
-}
-
-impl PyWorkspace {
-    /// Create a new workspace.
-    pub fn new() -> Self {
-        PyWorkspace {
-            inner: Arc::new(parking_lot::RwLock::new(
-                riemannopt_core::memory::workspace::Workspace::<f64>::new()
-            )),
-        }
-    }
-
-    /// Get a reference to the inner workspace.
-    pub fn with<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut riemannopt_core::memory::workspace::Workspace<f64>) -> R,
-    {
-        let mut guard = self.inner.write();
-        f(&mut *guard)
-    }
-}
-
-impl Default for PyWorkspace {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Type alias for manifold dimension information.
-pub type ManifoldDimension = usize;
-
-/// Configuration for numerical tolerances.
-#[derive(Clone, Debug)]
-pub struct NumericalConfig {
-    /// Tolerance for convergence checks
-    pub tolerance: f64,
-    /// Maximum number of iterations
-    pub max_iterations: usize,
-    /// Tolerance for line search
-    pub line_search_tolerance: f64,
-    /// Whether to use parallel computation
-    pub use_parallel: bool,
-}
-
-impl Default for NumericalConfig {
-    fn default() -> Self {
-        NumericalConfig {
-            tolerance: 1e-6,
-            max_iterations: 1000,
-            line_search_tolerance: 1e-4,
-            use_parallel: true,
-        }
-    }
-}

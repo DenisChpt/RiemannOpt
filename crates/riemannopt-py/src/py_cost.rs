@@ -21,14 +21,13 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::{ManifoldError, Result},
     memory::workspace::Workspace,
-    core::cached_cost_function_dyn::{CachedDynamicCostFunction, CacheConfig},
+    types::Scalar,
 };
 use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::{
     array_utils::{numpy_to_dvector, numpy_to_dmatrix, dvector_to_numpy, dmatrix_to_numpy},
-    error::to_py_err,
     types::{PyPoint, PyTangentVector},
 };
 
@@ -642,12 +641,51 @@ impl CostFunction<f64> for PyCostFunction {
 
     fn hessian_vector_product(
         &self,
-        _point: &Self::Point,
-        _vector: &Self::TangentVector,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
     ) -> Result<Self::TangentVector> {
-        Err(ManifoldError::not_implemented(
-            "Hessian-vector products not yet implemented for Python cost functions"
-        ))
+        // Compute Hessian-vector product using finite differences:
+        // H*v ≈ (∇f(x + ε*v) - ∇f(x)) / ε
+        // where ε = sqrt(machine epsilon) ≈ 1.49e-8
+        let epsilon = 1.4901161193847656e-8_f64; // sqrt(f64::EPSILON)
+
+        // Compute point + ε*v
+        let point_perturbed = match (point, vector) {
+            (PyPoint::Vector(p), PyTangentVector::Vector(v)) => {
+                PyPoint::Vector(p + v * epsilon)
+            }
+            (PyPoint::Matrix(p), PyTangentVector::Matrix(v)) => {
+                PyPoint::Matrix(p + v * epsilon)
+            }
+            _ => {
+                return Err(ManifoldError::numerical_error(
+                    "Point and vector types must match for Hessian-vector product"
+                ));
+            }
+        };
+
+        // Compute ∇f(x + ε*v) using cost_and_gradient_alloc
+        let (_, grad_perturbed) = self.cost_and_gradient_alloc(&point_perturbed)?;
+
+        // Compute ∇f(x) using cost_and_gradient_alloc
+        let (_, grad_original) = self.cost_and_gradient_alloc(point)?;
+
+        // Compute (∇f(x + ε*v) - ∇f(x)) / ε
+        let hv_product = match (grad_perturbed, grad_original) {
+            (PyTangentVector::Vector(gp), PyTangentVector::Vector(go)) => {
+                PyTangentVector::Vector((gp - go) / epsilon)
+            }
+            (PyTangentVector::Matrix(gp), PyTangentVector::Matrix(go)) => {
+                PyTangentVector::Matrix((gp - go) / epsilon)
+            }
+            _ => {
+                return Err(ManifoldError::numerical_error(
+                    "Gradient type mismatch in Hessian-vector product"
+                ));
+            }
+        };
+
+        Ok(hv_product)
     }
 
     fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
@@ -835,7 +873,6 @@ fn validate_gradient_implementation(
     py: Python<'_>,
     cost_fn: &PyCostFunction,
 ) -> PyResult<()> {
-    use rand::Rng;
     use rand_distr::{Distribution, StandardNormal};
     
     // Number of test points
@@ -1104,15 +1141,29 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
         gradient.copy_from(&grad);
         Ok(())
     }
-    
+
     fn hessian_vector_product(
         &self,
-        _point: &Self::Point,
-        _vector: &Self::TangentVector,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
     ) -> Result<Self::TangentVector> {
-        Err(ManifoldError::not_implemented(
-            "Hessian-vector products not yet implemented for Python cost functions"
-        ))
+        // Compute Hessian-vector product using finite differences:
+        // H*v ≈ (∇f(x + ε*v) - ∇f(x)) / ε
+        let epsilon = 1.4901161193847656e-8_f64; // sqrt(f64::EPSILON)
+
+        // Compute point + ε*v
+        let point_perturbed = point + vector * epsilon;
+
+        // Compute ∇f(x + ε*v) using cost_and_gradient_alloc
+        let (_, grad_perturbed) = self.cost_and_gradient_alloc(&point_perturbed)?;
+
+        // Compute ∇f(x) using cost_and_gradient_alloc
+        let (_, grad_original) = self.cost_and_gradient_alloc(point)?;
+
+        // Compute (∇f(x + ε*v) - ∇f(x)) / ε
+        let hv_product = (grad_perturbed - grad_original) / epsilon;
+
+        Ok(hv_product)
     }
 }
 
@@ -1254,15 +1305,29 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
         gradient.copy_from(&grad);
         Ok(())
     }
-    
+
     fn hessian_vector_product(
         &self,
-        _point: &Self::Point,
-        _vector: &Self::TangentVector,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
     ) -> Result<Self::TangentVector> {
-        Err(ManifoldError::not_implemented(
-            "Hessian-vector products not yet implemented for Python cost functions"
-        ))
+        // Compute Hessian-vector product using finite differences:
+        // H*v ≈ (∇f(x + ε*v) - ∇f(x)) / ε
+        let epsilon = 1.4901161193847656e-8_f64; // sqrt(f64::EPSILON)
+
+        // Compute point + ε*v
+        let point_perturbed = point + vector * epsilon;
+
+        // Compute ∇f(x + ε*v) using cost_and_gradient_alloc
+        let (_, grad_perturbed) = self.cost_and_gradient_alloc(&point_perturbed)?;
+
+        // Compute ∇f(x) using cost_and_gradient_alloc
+        let (_, grad_original) = self.cost_and_gradient_alloc(point)?;
+
+        // Compute (∇f(x + ε*v) - ∇f(x)) / ε
+        let hv_product = (grad_perturbed - grad_original) / epsilon;
+
+        Ok(hv_product)
     }
 }
 
@@ -1450,15 +1515,29 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
         gradient.copy_from(&grad);
         Ok(())
     }
-    
+
     fn hessian_vector_product(
         &self,
-        _point: &Self::Point,
-        _vector: &Self::TangentVector,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
     ) -> Result<Self::TangentVector> {
-        Err(ManifoldError::not_implemented(
-            "Hessian-vector products not yet implemented for Python cost functions"
-        ))
+        // Compute Hessian-vector product using finite differences:
+        // H*v ≈ (∇f(x + ε*v) - ∇f(x)) / ε
+        let epsilon = 1.4901161193847656e-8_f64; // sqrt(f64::EPSILON)
+
+        // Compute point + ε*v
+        let point_perturbed = point + vector * epsilon;
+
+        // Compute ∇f(x + ε*v) using cost_and_gradient_alloc
+        let (_, grad_perturbed) = self.cost_and_gradient_alloc(&point_perturbed)?;
+
+        // Compute ∇f(x) using cost_and_gradient_alloc
+        let (_, grad_original) = self.cost_and_gradient_alloc(point)?;
+
+        // Compute (∇f(x + ε*v) - ∇f(x)) / ε
+        let hv_product = (grad_perturbed - grad_original) / epsilon;
+
+        Ok(hv_product)
     }
 }
 

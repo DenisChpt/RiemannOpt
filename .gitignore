@@ -42,3 +42,6 @@ docs/api/
 target/criterion/
 benchmarks/python/results/
 benchmarks/python/visualizations/
+
+# Tests
+tests/

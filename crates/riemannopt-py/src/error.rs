@@ -108,11 +108,6 @@ pub fn to_py_err(err: ManifoldError) -> PyErr {
 }
 
 
-/// Convert an OptimizerError to a Python exception.
-pub fn optimization_to_py_err(err: String) -> PyErr {
-    PyRiemannOptError::Optimization(err).into()
-}
-
 /// Helper function to create a dimension mismatch error.
 pub fn dimension_mismatch(expected: &[usize], got: &[usize]) -> PyErr {
     DimensionMismatchError::new_err(format!(

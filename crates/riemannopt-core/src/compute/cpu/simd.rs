@@ -491,4 +491,130 @@ mod tests {
         assert_relative_eq!(v[0], 0.6, epsilon = 1e-10);
         assert_relative_eq!(v[1], 0.8, epsilon = 1e-10);
     }
+    
+    #[test]
+    fn test_simd_scale() {
+        let mut a = DVector::from_vec(vec![2.0_f32, 3.0, 4.0]);
+        let dispatcher = get_dispatcher::<f32>();
+        dispatcher.scale(&mut a, 2.5);
+        
+        assert_relative_eq!(a[0], 5.0, epsilon = 1e-6);
+        assert_relative_eq!(a[1], 7.5, epsilon = 1e-6);
+        assert_relative_eq!(a[2], 10.0, epsilon = 1e-6);
+    }
+    
+    #[test]
+    fn test_simd_axpy() {
+        let x = DVector::from_vec(vec![1.0_f64, 2.0, 3.0]);
+        let mut y = DVector::from_vec(vec![4.0_f64, 5.0, 6.0]);
+        let dispatcher = get_dispatcher::<f64>();
+        
+        // y = 2.0 * x + y
+        dispatcher.axpy(2.0, &x, &mut y);
+        
+        assert_relative_eq!(y[0], 6.0, epsilon = 1e-10);  // 2*1 + 4
+        assert_relative_eq!(y[1], 9.0, epsilon = 1e-10);  // 2*2 + 5
+        assert_relative_eq!(y[2], 12.0, epsilon = 1e-10); // 2*3 + 6
+    }
+    
+    #[test]
+    fn test_simd_hadamard_product() {
+        let a = DVector::from_vec(vec![2.0_f32, 3.0, 4.0]);
+        let b = DVector::from_vec(vec![5.0_f32, 6.0, 7.0]);
+        let mut result = DVector::zeros(3);
+        let dispatcher = get_dispatcher::<f32>();
+        
+        dispatcher.hadamard_product(&a, &b, &mut result);
+        
+        assert_relative_eq!(result[0], 10.0, epsilon = 1e-6);
+        assert_relative_eq!(result[1], 18.0, epsilon = 1e-6);
+        assert_relative_eq!(result[2], 28.0, epsilon = 1e-6);
+    }
+    
+    #[test]
+    fn test_simd_frobenius_norm() {
+        let matrix = DMatrix::from_row_slice(2, 3, &[
+            1.0_f64, 2.0, 3.0,
+            4.0, 5.0, 6.0
+        ]);
+        
+        // Frobenius norm = sqrt(1^2 + 2^2 + 3^2 + 4^2 + 5^2 + 6^2) = sqrt(91)
+        let expected = (91.0_f64).sqrt();
+        let dispatcher = get_dispatcher::<f64>();
+        let result = dispatcher.frobenius_norm(&matrix);
+        assert_relative_eq!(result, expected, epsilon = 1e-10);
+    }
+    
+    #[test]
+    fn test_normalize_simd() {
+        let mut point = DVector::from_vec(vec![3.0_f32, 4.0, 0.0]);
+        let dispatcher = get_dispatcher::<f32>();
+        let original_norm = dispatcher.normalize(&mut point);
+        
+        // Check that the original norm was 5
+        assert_relative_eq!(original_norm, 5.0, epsilon = 1e-6);
+        
+        // After normalization, norm should be 1
+        let norm = point.norm();
+        assert_relative_eq!(norm, 1.0, epsilon = 1e-6);
+        
+        // Check individual components
+        assert_relative_eq!(point[0], 0.6, epsilon = 1e-6);
+        assert_relative_eq!(point[1], 0.8, epsilon = 1e-6);
+        assert_relative_eq!(point[2], 0.0, epsilon = 1e-6);
+    }
+    
+    
+    #[test]
+    fn test_simd_gemv() {
+        let matrix = DMatrix::from_row_slice(2, 3, &[
+            1.0_f32, 2.0, 3.0,
+            4.0, 5.0, 6.0
+        ]);
+        let x = DVector::from_vec(vec![1.0_f32, 2.0, 3.0]);
+        let mut y = DVector::zeros(2);
+        
+        let dispatcher = get_dispatcher::<f32>();
+        dispatcher.gemv(&matrix, &x, &mut y, 1.0, 0.0);
+        
+        // y = matrix * x = [1*1 + 2*2 + 3*3, 4*1 + 5*2 + 6*3] = [14, 32]
+        assert_relative_eq!(y[0], 14.0, epsilon = 1e-6);
+        assert_relative_eq!(y[1], 32.0, epsilon = 1e-6);
+        
+        // Test with beta != 0
+        let mut y2 = DVector::from_vec(vec![10.0_f32, 20.0]);
+        dispatcher.gemv(&matrix, &x, &mut y2, 2.0, 0.5);
+        
+        // y2 = 2.0 * matrix * x + 0.5 * y2 = [2*14 + 0.5*10, 2*32 + 0.5*20] = [33, 74]
+        assert_relative_eq!(y2[0], 33.0, epsilon = 1e-6);
+        assert_relative_eq!(y2[1], 74.0, epsilon = 1e-6);
+    }
+    
+    #[test]
+    fn test_simd_operations_with_various_sizes() {
+        // Test with different vector sizes to ensure SIMD fallback works correctly
+        let sizes = vec![1, 3, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129];
+        
+        for size in sizes {
+            let a = DVector::from_vec(vec![1.0_f32; size]);
+            let b = DVector::from_vec(vec![2.0_f32; size]);
+            
+            let dispatcher = get_dispatcher::<f32>();
+            
+            // Test dot product
+            let dot = dispatcher.dot_product(&a, &b);
+            assert_relative_eq!(dot, 2.0 * size as f32, epsilon = 1e-5);
+            
+            // Test norm
+            let norm = dispatcher.norm(&a);
+            assert_relative_eq!(norm, (size as f32).sqrt(), epsilon = 1e-5);
+            
+            // Test add
+            let mut result = DVector::zeros(size);
+            dispatcher.add(&a, &b, &mut result);
+            for i in 0..size {
+                assert_relative_eq!(result[i], 3.0, epsilon = 1e-6);
+            }
+        }
+    }
 }

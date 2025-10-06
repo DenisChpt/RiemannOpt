@@ -5,20 +5,10 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use nalgebra::{DVector, DMatrix};
 use riemannopt_core::{
     optimization::{
         optimizer::{OptimizationResult as RustOptimizationResult, TerminationReason},
-        callback::{OptimizationCallback, CallbackInfo},
     },
-    types::Scalar,
-};
-use std::sync::Arc;
-use parking_lot::RwLock;
-
-use crate::{
-    array_utils::{dvector_to_numpy, dmatrix_to_numpy},
-    types::PyPoint,
 };
 
 /// Python-friendly optimization result.
@@ -200,7 +190,7 @@ impl PyOptimizationResult {
 impl PyOptimizationResult {
     /// Convert a Rust optimization result to Python format.
     pub fn from_rust_result<P>(
-        py: Python<'_>,
+        _py: Python<'_>,
         result: RustOptimizationResult<f64, P>,
         point_converter: impl FnOnce(&P) -> PyResult<PyObject>,
     ) -> PyResult<Self> {
@@ -230,130 +220,6 @@ impl PyOptimizationResult {
             termination_reason,
             history: None,  // Can be populated by callbacks
         })
-    }
-}
-
-/// Adapter that allows Python callbacks to be used with Rust optimizers.
-///
-/// This handles GIL acquisition and data conversion for Python callbacks.
-pub struct PyCallbackAdapter {
-    callback: PyObject,
-    /// Cache for converted data to minimize allocations
-    cache: Arc<RwLock<CallbackCache>>,
-}
-
-struct CallbackCache {
-    last_iteration: Option<usize>,
-    last_point: Option<PyObject>,
-}
-
-impl PyCallbackAdapter {
-    pub fn new(callback: PyObject) -> Self {
-        PyCallbackAdapter {
-            callback,
-            cache: Arc::new(RwLock::new(CallbackCache {
-                last_iteration: None,
-                last_point: None,
-            })),
-        }
-    }
-}
-
-impl<T, P, TV> OptimizationCallback<T, P, TV> for PyCallbackAdapter
-where
-    T: Scalar + numpy::Element,
-    P: Clone + std::fmt::Debug + 'static,
-    TV: Clone + std::fmt::Debug + 'static,
-{
-    fn on_optimization_start(&mut self) -> riemannopt_core::error::Result<()> {
-        Python::with_gil(|py| {
-            // Call Python callback
-            let _ = self.callback.call_method0(py, "on_optimization_start");
-        });
-        Ok(())
-    }
-    
-    fn on_iteration_end(&mut self, info: &CallbackInfo<T, P, TV>) -> riemannopt_core::error::Result<bool> {
-        let result = Python::with_gil(|py| {
-            // Check if we need to convert the point (optimization: cache if same iteration)
-            let mut cache = self.cache.write();
-            let py_point = if cache.last_iteration != Some(info.iteration) {
-                match convert_point_to_python(py, &info.point) {
-                    Ok(p) => {
-                        cache.last_iteration = Some(info.iteration);
-                        cache.last_point = Some(p.clone_ref(py));
-                        p
-                    },
-                    Err(_) => return Ok(true), // Continue on error
-                }
-            } else {
-                cache.last_point.as_ref().unwrap().clone_ref(py)
-            };
-            
-            // Create info dict
-            let info_dict = PyDict::new_bound(py);
-            let _ = info_dict.set_item("iteration", info.iteration);
-            let _ = info_dict.set_item("point", py_point);
-            let _ = info_dict.set_item("value", info.value.to_f64());
-            let _ = info_dict.set_item("gradient_norm", info.gradient_norm.map(|g| g.to_f64()));
-            let _ = info_dict.set_item("elapsed_seconds", info.elapsed.as_secs_f64());
-            let _ = info_dict.set_item("converged", info.converged);
-            
-            // Call Python callback, default to continuing if error
-            match self.callback.call_method1(py, "on_iteration_end", (info_dict,)) {
-                Ok(result) => {
-                    // If callback returns False, stop optimization
-                    Ok(result.extract::<bool>(py).unwrap_or(true))
-                },
-                Err(_) => Ok(true), // Continue on error
-            }
-        })?;
-        Ok(result)
-    }
-    
-    fn on_optimization_end(&mut self, info: &CallbackInfo<T, P, TV>) -> riemannopt_core::error::Result<()> {
-        Python::with_gil(|py| {
-            // Convert point to Python format
-            let py_point = match convert_point_to_python(py, &info.point) {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            
-            // Create info dict
-            let info_dict = PyDict::new_bound(py);
-            let _ = info_dict.set_item("point", py_point);
-            let _ = info_dict.set_item("value", info.value.to_f64());
-            let _ = info_dict.set_item("gradient_norm", info.gradient_norm.map(|g| g.to_f64()));
-            let _ = info_dict.set_item("converged", info.converged);
-            let _ = info_dict.set_item("iterations", info.iteration);
-            let _ = info_dict.set_item("elapsed_seconds", info.elapsed.as_secs_f64());
-            
-            // Call Python callback
-            let _ = self.callback.call_method1(py, "on_optimization_end", (info_dict,));
-        });
-        Ok(())
-    }
-}
-
-/// Helper function to convert manifold points to Python format.
-///
-/// This is used by callbacks and result conversion.
-fn convert_point_to_python<'a, P: 'static>(py: Python<'a>, point: &P) -> PyResult<PyObject> {
-    // This is a placeholder - actual implementation depends on the point type
-    // In practice, this would dispatch based on the actual type of P
-    if let Some(py_point) = (point as &dyn std::any::Any).downcast_ref::<PyPoint>() {
-        match py_point {
-            PyPoint::Vector(vec) => Ok(dvector_to_numpy(py, vec)?.into()),
-            PyPoint::Matrix(mat) => Ok(dmatrix_to_numpy(py, mat)?.into()),
-        }
-    } else if let Some(vec) = (point as &dyn std::any::Any).downcast_ref::<DVector<f64>>() {
-        Ok(dvector_to_numpy(py, vec)?.into())
-    } else if let Some(mat) = (point as &dyn std::any::Any).downcast_ref::<DMatrix<f64>>() {
-        Ok(dmatrix_to_numpy(py, mat)?.into())
-    } else {
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "Unsupported point type for Python conversion"
-        ))
     }
 }
 
