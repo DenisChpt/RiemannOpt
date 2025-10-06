@@ -1,215 +1,84 @@
 # RiemannOpt
 
-[![Crates.io](https://img.shields.io/crates/v/riemannopt)](https://crates.io/crates/riemannopt)
-[![Documentation](https://docs.rs/riemannopt/badge.svg)](https://docs.rs/riemannopt)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://github.com/DenisChpt/RiemannOpt/workflows/CI/badge.svg)](https://github.com/DenisChpt/RiemannOpt/actions)
-[![codecov](https://codecov.io/gh/DenisChpt/RiemannOpt/branch/main/graph/badge.svg)](https://codecov.io/gh/DenisChpt/RiemannOpt)
 
-**RiemannOpt** is a high-performance Riemannian optimization library written in Rust, providing state-of-the-art algorithms for optimization on manifolds. It offers a modern, type-safe API with first-class Python bindings, making it accessible to both researchers and practitioners in machine learning, computer vision, and scientific computing.
+**Note: This library is currently in beta and under active development. The API may change and not all planned features are fully implemented.**
 
-## 🎯 Motivation
+RiemannOpt is a Riemannian optimization library written in Rust with Python bindings. It provides algorithms for optimization on smooth manifolds, addressing problems where the optimization domain is a curved geometric space rather than flat Euclidean space.
 
-Many problems in machine learning and scientific computing involve constraints that naturally form smooth manifolds:
+## What is Riemannian Optimization?
 
-- **Neural Networks**: Weight matrices with orthogonality constraints (Stiefel manifold)
-- **Computer Vision**: Rotation matrices in 3D reconstruction (SO(3) manifold)
-- **Dimensionality Reduction**: Low-rank approximations (Grassmann manifold)
-- **Natural Language Processing**: Hyperbolic embeddings for hierarchical data
-- **Quantum Computing**: Unitary matrices for quantum gates
-- **Robotics**: Configuration spaces with geometric constraints
+Many computational problems involve optimization over spaces with geometric constraints. Rather than treating these constraints as obstacles to work around, Riemannian optimization exploits the underlying geometric structure of these spaces. The library implements optimization algorithms that move naturally along the curved surface of these manifolds, respecting their intrinsic geometry.
 
-Traditional optimization methods require expensive projection steps or Lagrange multipliers to handle these constraints. **RiemannOpt** leverages the geometric structure of manifolds to provide efficient, projection-free optimization that naturally respects constraints.
+### Problem Domains
 
-## 🚀 Key Features
+Riemannian optimization is relevant for problems involving:
 
-### Performance
-- **10-100x faster** than pure Python implementations
-- Zero-cost abstractions with Rust's ownership system
-- SIMD optimizations for matrix operations (AVX2/AVX-512)
-- CPU parallel computing with Rayon for batch operations
-- Optional GPU acceleration via CUDA with memory pooling
-- Minimal memory allocations with buffer reuse
+- **Orthogonality constraints**: Matrices whose columns must remain orthonormal, appearing in principal component analysis, dimensionality reduction, and neural network architectures
+- **Rotation and orientation**: 3D rotations in computer vision, robotics, and graphics applications
+- **Positive definiteness**: Covariance matrices and metric learning where matrices must remain symmetric and positive definite
+- **Low-rank structures**: Matrix factorization and completion problems with fixed-rank constraints
+- **Hyperbolic geometry**: Hierarchical data representation and graph embeddings that naturally live in hyperbolic space
+- **Unit norm constraints**: Directions and normalized representations in various machine learning contexts
 
-### Mathematical Rigor
-- Geometrically correct algorithms with convergence guarantees
-- Multiple retraction methods with configurable accuracy/speed tradeoffs
-- Proper parallel transport for momentum-based methods
-- Extensive property-based testing
-- Numerical stability checks throughout
+Traditional optimization approaches handle these constraints through projections or penalty methods, which can be computationally expensive or numerically unstable. Riemannian methods work directly on the constraint manifold.
 
-### Ease of Use
-- Intuitive API inspired by PyTorch optimizers
-- Comprehensive documentation with mathematical background
-- First-class Python bindings with type hints
-- Extensive examples and tutorials
-- Compatible with NumPy, PyTorch, and JAX
+## Architecture
 
-### Extensibility
-- Modular architecture for easy customization
-- Trait-based design for adding new manifolds
-- Plugin system for custom optimizers
-- Composable manifolds (products, quotients)
-- Open source with permissive MIT license
+The library follows a modular design with separate components:
 
-## 📦 Installation
+- **riemannopt-core**: Foundational traits defining manifolds, cost functions, and optimization interfaces
+- **riemannopt-manifolds**: Concrete implementations of geometric spaces (sphere, Stiefel, Grassmann, SPD, hyperbolic, and others)
+- **riemannopt-optim**: Optimization algorithms adapted to Riemannian geometry (gradient descent, Adam, L-BFGS, trust region, conjugate gradient, Newton methods)
+- **riemannopt-autodiff**: Automatic differentiation capabilities (in development)
+- **riemannopt-py**: Python bindings enabling use from Python with NumPy integration
 
-### Rust
+### Technical Approach
 
-Add to your `Cargo.toml`:
+The implementation emphasizes:
 
-```toml
-[dependencies]
-riemannopt = "0.1"
-```
+- **Type safety**: Rust's type system ensures geometric constraints are respected at compile time
+- **Memory efficiency**: Workspace-based memory management minimizes allocations in optimization loops
+- **Performance**: SIMD vectorization and parallel computing for batch operations where beneficial
+- **Correctness**: Multiple retraction methods (exponential map, QR-based, polar decomposition) with different accuracy/performance tradeoffs
+- **Numerical stability**: Built-in validation and stability checking throughout geometric computations
 
-For additional features:
+### Implemented Manifolds
 
-```toml
-[dependencies]
-riemannopt = { version = "0.1", features = ["parallel", "serde"] }
-```
+Current manifold implementations include:
 
-### Python
+- **Sphere**: Unit sphere S^(n-1) in n-dimensional space
+- **Stiefel**: Manifold of orthonormal n×p matrices
+- **Grassmann**: Space of p-dimensional subspaces in n-dimensional space
+- **SPD**: Symmetric positive definite matrices
+- **Hyperbolic**: Hyperbolic space with configurable curvature
+- **Oblique**: Product of unit spheres
+- **Product**: Cartesian products of manifolds for composite constraint structures
+- **Fixed-rank**: Matrices constrained to specific rank
+- **PSD Cone**: Positive semidefinite matrices
 
-Install via pip:
+### Optimization Algorithms
 
-```bash
-pip install riemannopt
-```
+Available optimizers include:
 
-Or with optional dependencies:
+- **Riemannian Gradient Descent**: First-order method with momentum variants
+- **Riemannian Adam**: Adaptive learning rate method
+- **L-BFGS**: Limited-memory quasi-Newton method
+- **Trust Region**: Second-order method with adaptive step sizing
+- **Conjugate Gradient**: Various conjugate gradient variants
+- **Riemannian Newton**: Newton method with conjugate gradient solver
+- **Natural Gradient**: Fisher information-based optimization
 
-```bash
-pip install riemannopt[torch,jax]  # For PyTorch/JAX integration
-```
+Each optimizer supports configurable line search strategies, step size scheduling, and callback mechanisms for monitoring convergence.
 
-## 🔧 Quick Start
+## License
 
-## 📚 Supported Manifolds
+RiemannOpt is licensed under the MIT License.
 
-| Manifold | Description | Applications |
-|----------|-------------|--------------|
-| **Sphere** | Unit sphere S^{n-1} | Normalized embeddings, directional statistics |
-| **Stiefel** | Orthonormal matrices St(n,p) | Neural network constraints, PCA |
-| **Grassmann** | Subspaces Gr(n,p) | Subspace tracking, computer vision |
-| **SPD** | Symmetric positive definite matrices | Covariance estimation, metric learning |
-| **Hyperbolic** | Hyperbolic space H^n | Hierarchical embeddings, tree-like data |
-| **SO(n)** | Special orthogonal group | Rotations, robotics, 3D vision |
-| **Product** | Cartesian products | Multi-task learning, complex constraints |
+## Contact
 
-## 🛠️ Supported Optimizers
+- Author: Denis Chaput
+- Email: denis.chaput@pm.me
+- GitHub: [@DenisChpt](https://github.com/DenisChpt)
 
-| Algorithm | Type | Best For |
-|-----------|------|----------|
-| **SGD** | First-order | Large-scale problems, online learning |
-| **Adam** | Adaptive first-order | Non-stationary objectives, deep learning |
-| **L-BFGS** | Quasi-Newton | Small-medium problems, high accuracy |
-| **Trust Region** | Second-order | Robust convergence, ill-conditioned problems |
-| **CG** | First-order | Large-scale, sparse problems |
-
-## 🏗️ Architecture
-
-RiemannOpt follows a modular architecture:
-
-```
-riemannopt/
-├── riemannopt-core/      # Core traits and types
-├── riemannopt-manifolds/ # Manifold implementations
-├── riemannopt-optim/     # Optimization algorithms
-├── riemannopt-autodiff/  # Automatic differentiation
-└── riemannopt-py/        # Python bindings
-```
-
-This design allows you to:
-- Use only the components you need
-- Easily extend with custom manifolds
-- Minimize dependencies
-- Maintain type safety
-
-## 🔬 Mathematical Background
-
-RiemannOpt implements optimization on Riemannian manifolds, which are smooth spaces with a notion of distance and angles. Key concepts:
-
-- **Tangent Spaces**: Linear approximations of the manifold at each point
-- **Riemannian Metric**: Inner product on tangent spaces
-- **Geodesics**: Shortest paths on the manifold
-- **Parallel Transport**: Moving vectors along curves while preserving angles
-- **Retractions**: Smooth maps from tangent spaces to the manifold
-
-For detailed mathematical exposition, see our [documentation](https://docs.rs/riemannopt).
-
-## 📊 Benchmarks
-
-Performance comparison with existing libraries (lower is better):
-
-| Operation | RiemannOpt | Pymanopt | Manopt.jl | Speedup |
-|-----------|------------|----------|-----------|---------|
-| Stiefel Retraction (100×10) | 0.8 μs | 45 μs | 12 μs | 56x |
-| Grassmann Log (50×10) | 2.1 μs | 89 μs | 18 μs | 42x |
-| SPD Metric (20×20) | 1.5 μs | 67 μs | 15 μs | 45x |
-| Full SGD Step | 5.2 μs | 234 μs | 48 μs | 45x |
-
-Benchmarks run on: Intel i9-12900K, 32GB RAM, Ubuntu 22.04
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-Areas where we especially welcome help:
-- Implementing additional manifolds
-- Optimizing existing algorithms
-- Improving documentation
-- Creating examples and tutorials
-- Reporting bugs and suggesting features
-
-## 📖 Documentation
-
-- [API Documentation](https://docs.rs/riemannopt)
-- [User Guide](https://denischpt.github.io/RiemannOpt/)
-- [Mathematical Background](docs/math.md)
-- [Performance Guide](docs/performance.md)
-- [FAQ](docs/faq.md)
-
-## 🎓 Citation
-
-If you use RiemannOpt in your research, please cite:
-
-```bibtex
-@software{riemannopt2025,
-  author = {Chaput, Denis},
-  title = {RiemannOpt: High-Performance Riemannian Optimization in Rust},
-  year = {2025},
-  url = {https://github.com/DenisChpt/RiemannOpt}
-}
-```
-
-## 📄 License
-
-RiemannOpt is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
-## 🙏 Acknowledgments
-
-RiemannOpt is inspired by several excellent projects:
-- [Manopt](https://www.manopt.org/) (MATLAB)
-- [Pymanopt](https://pymanopt.org/) (Python)
-- [Geomstats](https://geomstats.github.io/) (Python)
-- [Manifolds.jl](https://juliamanifolds.github.io/Manifolds.jl/) (Julia)
-
-## 🗺️ Roadmap
-
-- [ ] Core manifolds and optimizers
-- [ ] Python bindings
-- [ ] GPU acceleration
-- [ ] Automatic differentiation
-- [ ] Distributed optimization
-- [ ] Integration with deep learning frameworks
-- [ ] Riemannian neural networks
-
-## 📬 Contact
-
-- **Author**: Denis Chaput
-- **Email**: denis.chaput77@gmail.com
-- **GitHub**: [@DenisChpt](https://github.com/DenisChpt)
-
-For questions and discussions, please use [GitHub Issues](https://github.com/DenisChpt/RiemannOpt/issues) or [Discussions](https://github.com/DenisChpt/RiemannOpt/discussions).
+For bug reports and feature requests, please use [GitHub Issues](https://github.com/DenisChpt/RiemannOpt/issues).
