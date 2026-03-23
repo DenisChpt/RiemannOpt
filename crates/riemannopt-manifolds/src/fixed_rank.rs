@@ -83,6 +83,7 @@
 //!
 //! ```rust,no_run
 //! use riemannopt_manifolds::FixedRank;
+//! use riemannopt_manifolds::fixed_rank::FixedRankPoint;
 //! use riemannopt_core::manifold::Manifold;
 //! use nalgebra::DMatrix;
 //!
@@ -90,11 +91,11 @@
 //! let manifold = FixedRank::new(4, 3, 2)?;
 //!
 //! // Random rank-2 matrix
-//! let x = manifold.random_point();
+//! let mut x = FixedRankPoint::<f64>::default();
+//! manifold.random_point(&mut x)?;
 //!
 //! // Convert to matrix form
 //! let x_mat = x.to_matrix();
-//! assert_eq!(x_mat.rank(1e-10), 2);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
@@ -552,7 +553,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random orthogonal matrices
@@ -587,7 +588,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
     }
 
     fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random matrices for the tangent components

@@ -96,7 +96,7 @@ where
 {
     let n = point.dimension();
     let mut gradient = point.zeros_like();
-    let h = <T as Float>::sqrt(T::epsilon());
+    let h = T::fd_epsilon();
     
     // Get the SIMD dispatcher
     let _dispatcher = get_dispatcher::<T>();
@@ -145,7 +145,7 @@ where
     F: Fn(&P) -> Result<T>,
 {
     let n = point.dimension();
-    let h = <T as Float>::sqrt(T::epsilon());
+    let h = T::fd_epsilon();
     
     // Clear gradient
     *gradient = point.zeros_like();
@@ -194,7 +194,7 @@ where
         return gradient_fd_simd_alloc(cost_fn, point);
     }
     
-    let h = <T as Float>::sqrt(T::epsilon());
+    let h = T::fd_epsilon();
     let gradient_parts = Arc::new(Mutex::new(vec![T::zero(); n]));
     
     // Determine chunk size for parallel execution
@@ -253,7 +253,7 @@ where
     F: Fn(&nalgebra::DVector<T>) -> Result<T>,
 {
     let n = point.len();
-    let h = <T as Float>::sqrt(T::epsilon());
+    let h = T::fd_epsilon();
     
     // Pre-allocate buffers if needed
     workspace.preallocate_vector(BufferId::Gradient, n);

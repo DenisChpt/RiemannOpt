@@ -133,7 +133,7 @@ impl PyProductManifold {
         
         // Collect manifolds and compute total dimensions
         for item in manifolds.iter() {
-            let manifold = item.to_object(py);
+            let manifold = item.unbind();
             
             // Get dimension using Python attribute access
             let dim: usize = manifold.getattr(py, "dim")?.extract(py)?;
@@ -176,7 +176,7 @@ impl PyProductManifold {
     /// Get the component manifolds.
     #[getter]
     fn manifolds(&self, py: Python<'_>) -> PyResult<PyObject> {
-        Ok(PyList::new_bound(py, &self.manifolds).into())
+        Ok(PyList::new(py, &self.manifolds)?.into())
     }
     
     /// Get the number of component manifolds.
@@ -236,7 +236,7 @@ impl PyProductManifold {
             .map(|manifold| manifold.call_method0(py, "random_point"))
             .collect::<PyResult<Vec<_>>>()?;
         
-        Ok(PyTuple::new_bound(py, components).into())
+        Ok(PyTuple::new(py, components)?.into())
     }
     
     /// Project a point onto the manifold.
@@ -270,7 +270,7 @@ impl PyProductManifold {
             })
             .collect::<PyResult<Vec<_>>>()?;
         
-        Ok(PyTuple::new_bound(py, projected).into())
+        Ok(PyTuple::new(py, projected)?.into())
     }
     
     /// Exponential map on the product manifold.
@@ -307,7 +307,7 @@ impl PyProductManifold {
             })
             .collect::<PyResult<Vec<_>>>()?;
         
-        Ok(PyTuple::new_bound(py, results).into())
+        Ok(PyTuple::new(py, results)?.into())
     }
     
     
@@ -340,7 +340,7 @@ impl PyProductManifold {
             })
             .collect::<PyResult<Vec<_>>>()?;
         
-        Ok(PyTuple::new_bound(py, tangents).into())
+        Ok(PyTuple::new(py, tangents)?.into())
     }
     
     /// Project a tangent vector onto the tangent space.
@@ -377,7 +377,7 @@ impl PyProductManifold {
             })
             .collect::<PyResult<Vec<_>>>()?;
         
-        Ok(PyTuple::new_bound(py, projected).into())
+        Ok(PyTuple::new(py, projected)?.into())
     }
     
     /// Retract a tangent vector.
@@ -414,7 +414,7 @@ impl PyProductManifold {
             })
             .collect::<PyResult<Vec<_>>>()?;
         
-        Ok(PyTuple::new_bound(py, retracted).into())
+        Ok(PyTuple::new(py, retracted)?.into())
     }
     
     /// Compute the inner product in the tangent space.
@@ -523,7 +523,7 @@ impl PyProductManifold {
     }
 }
 
-// Internal methods would handle the complexity of mixed point types
+#[allow(dead_code)]
 impl PyProductManifold {
     /// Convert a tuple of component points to a concatenated vector representation
     fn tuple_to_vector(&self, _py: Python<'_>, tuple: &Bound<'_, PyTuple>) -> PyResult<DVector<f64>> {
@@ -629,6 +629,6 @@ impl PyProductManifold {
             offset += ambient_dim;
         }
         
-        Ok(PyTuple::new_bound(py, components).into())
+        Ok(PyTuple::new(py, components)?.into())
     }
 }

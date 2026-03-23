@@ -98,14 +98,15 @@
 //! // Create OB(3,2) - two unit vectors in ℝ³
 //! let oblique = Oblique::new(3, 2)?;
 //!
-//! // Random point with unit-norm columns  
-//! let x = oblique.random_point();
+//! // Random point with unit-norm columns
+//! let mut x = DMatrix::<f64>::zeros(3, 2);
+//! oblique.random_point(&mut x)?;
 //! for j in 0..2 {
 //!     assert!((x.column(j).norm() - 1.0).abs() < 1e-14);
 //! }
 //!
 //! // Tangent vector
-//! let mut v = DMatrix::zeros(3, 2);
+//! let mut v = DMatrix::<f64>::zeros(3, 2);
 //! oblique.random_tangent(&x, &mut v)?;
 //!
 //! // Verify orthogonality: x_j^T v_j = 0
@@ -675,7 +676,7 @@ impl<T: Scalar> Manifold<T> for Oblique {
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         result.resize_mut(self.n, self.p, T::zero());
@@ -701,7 +702,7 @@ impl<T: Scalar> Manifold<T> for Oblique {
         point: &Self::Point,
         result: &mut Self::TangentVector,
     ) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random matrix

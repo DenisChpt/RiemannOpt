@@ -323,7 +323,7 @@ impl<T: Scalar> TrustRegion<T> {
         C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
         M: Manifold<T>,
     {
-        let eps = <T as Float>::sqrt(T::epsilon());
+        let eps = T::fd_epsilon();
         let norm = <T as Float>::sqrt(
             manifold.inner_product(point, direction, direction)?
         );

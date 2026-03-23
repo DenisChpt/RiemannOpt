@@ -46,17 +46,19 @@
 //! use nalgebra::DVector;
 //!
 //! // Create 10-dimensional Euclidean space
-//! let manifold = Euclidean::<f64>::new(10);
+//! let manifold = Euclidean::<f64>::new(10)?;
 //!
 //! // Random point
-//! let x = manifold.random_point();
+//! let mut x = DVector::zeros(10);
+//! manifold.random_point(&mut x)?;
 //!
 //! // Random tangent vector
-//! let v = manifold.random_tangent(&x);
+//! let mut v = DVector::zeros(10);
+//! manifold.random_tangent(&x, &mut v)?;
 //!
-//! // Exponential map is just addition
-//! let y = manifold.exp(&x, &v)?;
-//! assert_eq!(y, x + v);
+//! // Retraction is just addition
+//! let mut y = DVector::zeros(10);
+//! manifold.retract(&x, &v, &mut y)?;
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
@@ -188,7 +190,7 @@ where
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         
         // Ensure result has correct size
         if result.len() != self.n {

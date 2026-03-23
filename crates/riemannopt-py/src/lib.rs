@@ -1,3 +1,4 @@
+#![allow(deprecated)] // pyo3 0.24 IntoPy/ToPyObject → IntoPyObject migration pending for 0.25
 //! Python bindings for RiemannOpt.
 //!
 //! This module provides PyO3 bindings to expose RiemannOpt's functionality

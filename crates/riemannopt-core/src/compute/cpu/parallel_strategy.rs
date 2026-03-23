@@ -26,7 +26,7 @@ impl Default for ParallelizationMetrics {
             sequential_time_per_element: Duration::from_nanos(100),
             parallel_time_per_element: Duration::from_nanos(50),
             parallel_overhead: Duration::from_micros(10),
-            num_cores: num_cpus::get(),
+            num_cores: std::thread::available_parallelism().map_or(1, |n| n.get()),
         }
     }
 }
@@ -157,6 +157,74 @@ pub fn get_adaptive_strategy() -> &'static AdaptiveParallelStrategy {
     })
 }
 
+// ---------------------------------------------------------------------------
+// BLAS / OpenMP thread management
+// ---------------------------------------------------------------------------
+
+/// RAII guard that sets `OMP_NUM_THREADS=1` (and the equivalent for MKL and
+/// OpenBLAS) for the duration of its lifetime.
+///
+/// This prevents nested parallelism when Rayon is driving the outer loop and
+/// a BLAS call inside each work-unit would otherwise spawn its own threads,
+/// creating massive over-subscription.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use riemannopt_core::compute::cpu::parallel_strategy::BlasThreadGuard;
+/// use rayon::prelude::*;
+///
+/// let _guard = BlasThreadGuard::single_threaded();
+/// (0..1000).into_par_iter().for_each(|_| {
+///     // BLAS calls here will use a single thread
+/// });
+/// // On drop, the original thread counts are restored.
+/// ```
+pub struct BlasThreadGuard {
+    prev_omp: Option<String>,
+    prev_mkl: Option<String>,
+    prev_openblas: Option<String>,
+}
+
+impl BlasThreadGuard {
+    /// Restrict BLAS to a single thread.
+    pub fn single_threaded() -> Self {
+        Self::with_threads(1)
+    }
+
+    /// Set BLAS thread count to `n`.
+    pub fn with_threads(n: usize) -> Self {
+        let prev_omp = std::env::var("OMP_NUM_THREADS").ok();
+        let prev_mkl = std::env::var("MKL_NUM_THREADS").ok();
+        let prev_openblas = std::env::var("OPENBLAS_NUM_THREADS").ok();
+
+        let val = n.to_string();
+        std::env::set_var("OMP_NUM_THREADS", &val);
+        std::env::set_var("MKL_NUM_THREADS", &val);
+        std::env::set_var("OPENBLAS_NUM_THREADS", &val);
+
+        Self {
+            prev_omp,
+            prev_mkl,
+            prev_openblas,
+        }
+    }
+}
+
+impl Drop for BlasThreadGuard {
+    fn drop(&mut self) {
+        fn restore(key: &str, prev: &Option<String>) {
+            match prev {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        restore("OMP_NUM_THREADS", &self.prev_omp);
+        restore("MKL_NUM_THREADS", &self.prev_mkl);
+        restore("OPENBLAS_NUM_THREADS", &self.prev_openblas);
+    }
+}
+
 /// Simple benchmark function for sequential execution.
 fn benchmark_sequential<T: Scalar>(dimension: usize) -> T {
     let mut sum = T::zero();
@@ -170,7 +238,10 @@ fn benchmark_sequential<T: Scalar>(dimension: usize) -> T {
 /// Simple benchmark function for parallel execution.
 fn benchmark_parallel<T: Scalar + std::iter::Sum>(dimension: usize) -> T {
     use rayon::prelude::*;
-    
+
+    // Suppress BLAS threads during Rayon parallelism to avoid over-subscription.
+    let _guard = BlasThreadGuard::single_threaded();
+
     (0..dimension)
         .into_par_iter()
         .map(|i| {

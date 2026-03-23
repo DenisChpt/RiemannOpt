@@ -127,7 +127,7 @@ impl PyAdam {
     /// Get optimizer configuration as a dictionary.
     #[getter]
     fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("learning_rate", self.learning_rate)?;
         dict.set_item("beta1", self.beta1)?;
         dict.set_item("beta2", self.beta2)?;

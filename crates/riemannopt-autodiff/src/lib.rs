@@ -1,48 +1,53 @@
-//! Automatic differentiation for Riemannian optimization.
-//!
-//! This crate provides a minimal autodiff engine tailored for Riemannian
-//! optimization. It supports forward and reverse mode differentiation with
-//! special handling for manifold operations.
-//!
-//! # Features
-//!
-//! - **Computation graphs**: Dynamic graph construction for flexible models
-//! - **Reverse mode AD**: Efficient gradient computation via backpropagation
-//! - **Manifold awareness**: Special operations for Riemannian manifolds
-//! - **Memory efficiency**: Gradient checkpointing and graph optimization
+//! Tape-based reverse-mode automatic differentiation for Riemannian
+//! optimization.
 //!
 //! # Architecture
 //!
-//! The autodiff engine is built around three core components:
+//! The engine uses a **Wengert list** (tape) stored as a flat `Vec<TapeEntry>`.
+//! During the forward pass entries are appended in topological order.
+//! The backward pass simply iterates in reverse — no graph traversal, no
+//! `HashMap`, no `RefCell` on the hot path.
 //!
-//! 1. **Graph**: Manages the computation graph structure
-//! 2. **Operations**: Defines forward and backward operations
-//! 3. **Backward**: Implements the backpropagation algorithm
+//! # Quick Start
+//!
+//! ```
+//! use riemannopt_autodiff::{Tape, TapeGuard, Var, backward};
+//!
+//! let mut tape = Tape::new();
+//! let _g = TapeGuard::new(&mut tape);
+//!
+//! // f(x) = ‖x‖² = x · x
+//! let x = tape.var(&[1.0, 2.0, 3.0], (3, 1));
+//! let f = x.dot(x);                         // records on the tape
+//!
+//! let grads = backward(&tape, f);
+//! let df_dx = grads.wrt(x);                 // [2, 4, 6]
+//! assert!((df_dx[0] - 2.0).abs() < 1e-12);
+//! assert!((df_dx[1] - 4.0).abs() < 1e-12);
+//! assert!((df_dx[2] - 6.0).abs() < 1e-12);
+//! ```
+//!
+//! # Integration with Optimizers
+//!
+//! Use [`AutoDiffCostFunction`] to plug an AD-defined objective into any
+//! RiemannOpt optimizer:
+//!
+//! ```rust,no_run
+//! use riemannopt_autodiff::AutoDiffCostFunction;
+//!
+//! let cost_fn = AutoDiffCostFunction::new(10, |x| {
+//!     // x^T A x  written with AD primitives
+//!     x.dot(x)
+//! });
+//! // `cost_fn` implements `CostFunction<f64>` — pass it to any optimizer.
+//! ```
 
-pub mod graph;
-pub mod ops;
+pub mod tape;
+pub mod var;
 pub mod backward;
-pub mod manifold_ops;
-pub mod broadcast;
-pub mod integration;
+pub mod cost_function;
 
-// Re-export key types
-pub use graph::{Graph, Node, NodeId, Tensor, Variable};
-pub use ops::{Op, OpType};
-pub use backward::{backward, GradientMap};
-pub use manifold_ops::{
-    TangentProjection, StiefelProjection, SphereProjection,
-    SphereTangentProjection, ManifoldInnerProduct, ExponentialMap, LogarithmicMap,
-};
-pub use broadcast::{BroadcastAdd, BroadcastMultiply, broadcast_binary, unbroadcast};
-pub use integration::{ManifoldGraph, ManifoldFunction, ManifoldOptimizationProblem};
-
-/// Prelude module for convenient imports.
-pub mod prelude {
-    pub use crate::graph::{Graph, Node, NodeId, Tensor, Variable};
-    pub use crate::ops::{Op, OpType};
-    pub use crate::backward::{backward, GradientMap};
-    pub use crate::manifold_ops::*;
-    pub use crate::broadcast::{BroadcastAdd, BroadcastMultiply};
-    pub use crate::integration::{ManifoldGraph, ManifoldFunction, ManifoldOptimizationProblem};
-}
+pub use tape::{Tape, TapeGuard, NodeIdx, OpCode, TapeEntry};
+pub use var::Var;
+pub use backward::{backward, Gradients, check_gradient};
+pub use cost_function::{AutoDiffCostFunction, AutoDiffMatCostFunction};

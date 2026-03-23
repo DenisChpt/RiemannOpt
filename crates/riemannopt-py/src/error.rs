@@ -7,7 +7,7 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyTypeError, PyRuntimeError, PyIndexError, PyException};
 use pyo3::create_exception;
-use riemannopt_core::error::ManifoldError;
+use riemannopt_core::error::{ManifoldError, OptimizerError};
 use std::fmt;
 
 // Create custom Python exceptions for RiemannOpt
@@ -25,7 +25,9 @@ create_exception!(_riemannopt, NotImplementedMethodError, RiemannOptError, "Meth
 pub enum PyRiemannOptError {
     /// Manifold-related errors
     Manifold(ManifoldError),
-    /// Optimization-related errors
+    /// Optimizer-related errors (preserves the structured variant)
+    Optimizer(OptimizerError),
+    /// Optimization-related errors (plain string)
     Optimization(String),
     /// Array conversion errors
     ArrayConversion(crate::array_utils::ArrayConversionError),
@@ -43,6 +45,7 @@ impl fmt::Display for PyRiemannOptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PyRiemannOptError::Manifold(e) => write!(f, "Manifold error: {}", e),
+            PyRiemannOptError::Optimizer(e) => write!(f, "Optimizer error: {}", e),
             PyRiemannOptError::Optimization(e) => write!(f, "Optimization error: {}", e),
             PyRiemannOptError::ArrayConversion(e) => write!(f, "Array conversion error: {}", e),
             PyRiemannOptError::TypeError(msg) => write!(f, "Type error: {}", msg),
@@ -61,6 +64,15 @@ impl From<ManifoldError> for PyRiemannOptError {
     }
 }
 
+
+impl From<OptimizerError> for PyRiemannOptError {
+    fn from(err: OptimizerError) -> Self {
+        match err {
+            OptimizerError::ManifoldError(e) => PyRiemannOptError::Manifold(e),
+            other => PyRiemannOptError::Optimizer(other),
+        }
+    }
+}
 
 impl From<crate::array_utils::ArrayConversionError> for PyRiemannOptError {
     fn from(err: crate::array_utils::ArrayConversionError) -> Self {
@@ -86,6 +98,23 @@ impl From<PyRiemannOptError> for PyErr {
                 }
                 ManifoldError::NotImplemented { .. } => {
                     NotImplementedMethodError::new_err(e.to_string())
+                }
+            },
+            PyRiemannOptError::Optimizer(e) => match &e {
+                OptimizerError::LineSearchFailed { .. } => {
+                    LineSearchError::new_err(e.to_string())
+                }
+                OptimizerError::MaxIterationsReached { .. } => {
+                    ConvergenceError::new_err(e.to_string())
+                }
+                OptimizerError::InvalidConfiguration { .. } => {
+                    PyValueError::new_err(e.to_string())
+                }
+                OptimizerError::ManifoldError(me) => {
+                    PyRiemannOptError::Manifold(me.clone()).into()
+                }
+                OptimizerError::InvalidSearchDirection => {
+                    LineSearchError::new_err(e.to_string())
                 }
             },
             PyRiemannOptError::Optimization(e) => {
@@ -128,14 +157,14 @@ pub fn value_error(msg: impl Into<String>) -> PyErr {
 
 /// Register all custom exceptions with the Python module.
 pub fn register_exceptions(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add("RiemannOptError", module.py().get_type_bound::<RiemannOptError>())?;
-    module.add("ManifoldValidationError", module.py().get_type_bound::<ManifoldValidationError>())?;
-    module.add("OptimizationFailedError", module.py().get_type_bound::<OptimizationFailedError>())?;
-    module.add("ConvergenceError", module.py().get_type_bound::<ConvergenceError>())?;
-    module.add("LineSearchError", module.py().get_type_bound::<LineSearchError>())?;
-    module.add("DimensionMismatchError", module.py().get_type_bound::<DimensionMismatchError>())?;
-    module.add("NumericalError", module.py().get_type_bound::<NumericalError>())?;
-    module.add("NotImplementedMethodError", module.py().get_type_bound::<NotImplementedMethodError>())?;
+    module.add("RiemannOptError", module.py().get_type::<RiemannOptError>())?;
+    module.add("ManifoldValidationError", module.py().get_type::<ManifoldValidationError>())?;
+    module.add("OptimizationFailedError", module.py().get_type::<OptimizationFailedError>())?;
+    module.add("ConvergenceError", module.py().get_type::<ConvergenceError>())?;
+    module.add("LineSearchError", module.py().get_type::<LineSearchError>())?;
+    module.add("DimensionMismatchError", module.py().get_type::<DimensionMismatchError>())?;
+    module.add("NumericalError", module.py().get_type::<NumericalError>())?;
+    module.add("NotImplementedMethodError", module.py().get_type::<NotImplementedMethodError>())?;
     Ok(())
 }
 

@@ -21,7 +21,6 @@ use riemannopt_core::{
     cost_function::CostFunction,
     error::{ManifoldError, Result},
     memory::workspace::Workspace,
-    types::Scalar,
 };
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -139,7 +138,7 @@ impl PyCostFunction {
     #[getter]
     fn eval_counts(&self, py: Python<'_>) -> PyResult<PyObject> {
         let counts = self.eval_count.read();
-        let dict = pyo3::types::PyDict::new_bound(py);
+        let dict = pyo3::types::PyDict::new(py);
         dict.set_item("cost", counts.cost)?;
         dict.set_item("gradient", counts.gradient)?;
         dict.set_item("cost_and_gradient", counts.cost_and_gradient)?;
@@ -843,17 +842,17 @@ pub fn create_cost_function(
     
     // Print info message if using finite differences
     if cost_fn.use_finite_differences && !detected_tuple {
-        py.run_bound(
-            r#"print("[RiemannOpt] Note: No gradient function provided. Using finite differences approximation.\n              For better performance, consider providing a gradient function or returning (cost, gradient) tuple.")"#,
+        py.run(
+            c"print('[RiemannOpt] Note: No gradient function provided. Using finite differences approximation.\\n              For better performance, consider providing a gradient function or returning (cost, gradient) tuple.')",
             None,
             None
-        ).ok(); // Ignore print errors
+        ).ok();
     } else if detected_tuple {
-        py.run_bound(
-            r#"print("[RiemannOpt] Detected that cost function returns (cost, gradient) tuple. Using it for optimization.")"#,
+        py.run(
+            c"print('[RiemannOpt] Detected that cost function returns (cost, gradient) tuple. Using it for optimization.')",
             None,
             None
-        ).ok(); // Ignore print errors
+        ).ok();
     }
     
     // Optionally validate the gradient implementation
@@ -882,7 +881,7 @@ fn validate_gradient_implementation(
     // Absolute tolerance for gradient comparison
     const ATOL: f64 = 1e-8;
     
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut max_relative_error: f64 = 0.0;
     let mut max_absolute_error: f64 = 0.0;
     let mut errors = Vec::new();
@@ -993,7 +992,7 @@ fn validate_gradient_implementation(
         );
         
         // Import Python warnings module to issue a warning
-        let warnings = py.import_bound("warnings")?;
+        let warnings = py.import("warnings")?;
         warnings.call_method1("warn", (error_msg, "UserWarning"))?;
     } else {
         // Success message

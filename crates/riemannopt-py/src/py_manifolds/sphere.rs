@@ -122,10 +122,9 @@ impl PySphere {
             ));
         }
         
-        let mut result = DVector::zeros(self.dimension);
-        self.inner.retract(&point_vec, &tangent_vec, &mut result)
+        let result = self.inner.exp_map(&point_vec, &tangent_vec)
             .map_err(to_py_err)?;
-        
+
         dvector_to_numpy(py, &result)
     }
 

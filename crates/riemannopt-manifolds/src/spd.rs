@@ -121,22 +121,23 @@
 //! let spd = SPD::<f64>::new(3)?;
 //!
 //! // Random SPD matrix
-//! let p = spd.random_point();
-//! 
+//! let mut p = DMatrix::<f64>::zeros(3, 3);
+//! spd.random_point(&mut p)?;
+//!
 //! // Verify positive definiteness
 //! let eigen = p.clone().symmetric_eigen();
-//! assert!(eigen.eigenvalues.iter().all(|&λ| λ > 0.0));
+//! assert!(eigen.eigenvalues.iter().all(|&l| l > 0.0));
 //!
 //! // Tangent vector (symmetric)
 //! let v = DMatrix::from_fn(3, 3, |i, j| {
-//!     let val = (i + j) as f64;
-//!     if i <= j { val } else { v[(j, i)] } // Ensure symmetry
+//!     (i + j) as f64
 //! });
+//! let v_sym = (&v + v.transpose()) * 0.5;
 //!
-//! // Exponential map
-//! let mut q = DMatrix::zeros(3, 3);
-//! spd.retract(&p, &v, &mut q)?;
-//! 
+//! // Retraction
+//! let mut q = DMatrix::<f64>::zeros(3, 3);
+//! spd.retract(&p, &v_sym, &mut q)?;
+//!
 //! // Verify result is SPD
 //! assert!(spd.is_point_on_manifold(&q, 1e-10));
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
@@ -774,7 +775,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random matrix
@@ -800,7 +801,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
     ) -> Result<()> {
         self.check_point(point)?;
         
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random symmetric matrix

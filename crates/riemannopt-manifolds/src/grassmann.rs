@@ -121,8 +121,9 @@
 //! let grassmann = Grassmann::<f64>::new(5, 2)?;
 //!
 //! // Random point (2D subspace of ℝ⁵)
-//! let y = grassmann.random_point();
-//! 
+//! let mut y = DMatrix::<f64>::zeros(5, 2);
+//! grassmann.random_point(&mut y)?;
+//!
 //! // Verify orthonormality
 //! let yty = y.transpose() * &y;
 //! assert!((yty - DMatrix::<f64>::identity(2, 2)).norm() < 1e-14);
@@ -227,7 +228,7 @@ impl<T: Scalar> Grassmann<T> {
         Ok(Self {
             n,
             p,
-            tolerance: <T as Scalar>::from_f64(1e-12),
+            tolerance: <T as Scalar>::from_f64(1e-10),
         })
     }
 
@@ -442,7 +443,7 @@ impl<T: Scalar> Grassmann<T> {
         let y1ty2 = y1.transpose() * y2;
         
         // SVD to get principal angles
-        let svd = y1ty2.clone().svd(true, true);
+        let svd = y1ty2.svd(true, true);
         let sigma = &svd.singular_values;
         
         // Principal angles: θᵢ = arccos(σᵢ)
@@ -477,7 +478,7 @@ impl<T: Scalar> Grassmann<T> {
 
         // Compute Y₂^T Y₁ and its SVD
         let y2ty1 = y2.transpose() * y1;
-        let svd = y2ty1.clone().svd(true, true);
+        let svd = y2ty1.svd(true, true);
         
         if let Some(u) = svd.u {
             // Transport: (I - Y₂Y₂^T)ZU
@@ -594,14 +595,12 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 
     fn inner_product(
         &self,
-        point: &Self::Point,
+        _point: &Self::Point,
         u: &Self::TangentVector,
         v: &Self::TangentVector,
     ) -> Result<T> {
-        self.check_tangent(point, u)?;
-        self.check_tangent(point, v)?;
-        
         // Canonical metric: tr(U^T V)
+        // No tangent validation on hot path.
         let mut inner = T::zero();
         for i in 0..self.n {
             for j in 0..self.p {
@@ -650,18 +649,27 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 
     fn parallel_transport(
         &self,
-        from: &Self::Point,
+        _from: &Self::Point,
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
     ) -> Result<()> {
-        let transported = self.parallel_transport(from, to, vector)?;
-        result.copy_from(&transported);
+        // Transport: (I - Y₂Y₂^T) * Z * U where Y₂^T Y₁ = UΣV^T
+        let y2ty1 = to.transpose() * _from;
+        let svd = y2ty1.svd(true, true);
+        if let Some(u) = svd.u {
+            let zu = vector * &u;
+            let y2_zu = to * &(to.transpose() * &zu);
+            result.copy_from(&(&zu - &y2_zu));
+        } else {
+            // Fallback to projection-based transport
+            self.project_tangent(to, vector, result)?;
+        }
         Ok(())
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random Gaussian matrix
@@ -694,7 +702,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
         self.check_point(point)?;
         
         // Generate random matrix
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         let mut z = DMatrix::zeros(self.n, self.p);

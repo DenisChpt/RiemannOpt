@@ -1,587 +1,392 @@
-"""
-Helper functions and high-level API for RiemannOpt.
+"""High-level convenience API for RiemannOpt.
 
-This module provides convenient Python wrappers and utilities that
-complement the core Rust implementations.
+Provides Pythonic wrappers around the Rust optimization engine.
 """
 
-import numpy as np
-from typing import Callable, Dict, Any, Optional, Union, Tuple, List
+from __future__ import annotations
+
 import time
 import warnings
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import numpy as np
 
 from . import _riemannopt
-# Import create_cost_function directly so the helpers can reuse it
 from ._riemannopt import create_cost_function as _create_cost_function
 
 
-def create_cost_function(cost_fn: Callable, 
-                        gradient_fn: Optional[Callable] = None,
-                        validate_gradient: bool = False,
-                        dimension: Optional[Union[int, Tuple[int, int]]] = None) -> '_riemannopt.PyCostFunction':
-    """
-    Create a cost function wrapper for optimization.
-    
+# ---------------------------------------------------------------------------
+# Cost function helper
+# ---------------------------------------------------------------------------
+
+def create_cost_function(
+    cost_fn: Callable[..., Any],
+    gradient_fn: Optional[Callable[..., Any]] = None,
+    validate_gradient: bool = False,
+    dimension: Optional[Union[int, Tuple[int, int]]] = None,
+) -> _riemannopt.CostFunction:
+    """Create a cost function wrapper for optimization.
+
     Parameters
     ----------
     cost_fn : callable
-        Function that computes the cost. Should accept a numpy array and return a float,
-        or return a tuple (cost, gradient) if gradient_fn is None.
+        Function computing the cost.  Accepts a numpy array, returns either a
+        float **or** a ``(float, ndarray)`` tuple when *gradient_fn* is ``None``.
     gradient_fn : callable, optional
-        Function that computes the gradient. Should accept a numpy array and return 
-        a numpy array of the same shape. If None, cost_fn should return (cost, gradient).
-    validate_gradient : bool, default=False
-        Whether to validate the gradient using finite differences.
-    dimension : int or tuple of int, optional
-        Problem dimension. For vector problems, pass an int. For matrix problems,
-        pass a tuple (rows, cols). If None, will be inferred during first call.
-    
+        Explicit gradient function ``point -> ndarray``.
+    validate_gradient : bool
+        Compare the analytical gradient against finite differences.
+    dimension : int or (int, int), optional
+        Problem dimension; inferred from the first call when omitted.
+
     Returns
     -------
-    cost_function : PyCostFunction
-        Wrapped cost function that can be used with optimizers.
-    
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import riemannopt as ro
-    >>> 
-    >>> # Cost function only
-    >>> def cost(x):
-    ...     return 0.5 * np.sum(x**2)
-    >>> cost_fn = ro.create_cost_function(cost)
-    >>> 
-    >>> # Cost and gradient
-    >>> def cost_and_grad(x):
-    ...     cost = 0.5 * np.sum(x**2)
-    ...     grad = x
-    ...     return cost, grad
-    >>> cost_fn = ro.create_cost_function(cost_and_grad)
-    >>> 
-    >>> # Separate cost and gradient functions
-    >>> def cost(x):
-    ...     return 0.5 * np.sum(x**2)
-    >>> def grad(x):
-    ...     return x
-    >>> cost_fn = ro.create_cost_function(cost, grad, validate_gradient=True)
+    CostFunction
+        Wrapped cost function usable by any optimizer.
     """
     return _create_cost_function(
-        cost=cost_fn, 
-        gradient=gradient_fn, 
+        cost=cost_fn,
+        gradient=gradient_fn,
         dimension=dimension,
-        validate=validate_gradient
+        validate=validate_gradient,
     )
 
 
-def optimize(manifold,
-             cost_function, 
-             initial_point: np.ndarray,
-             optimizer: str = "Adam",
-             max_iterations: int = 1000,
-             gradient_tolerance: float = 1e-6,
-             callback: Optional[Callable] = None,
-             **optimizer_kwargs) -> 'OptimizationResult':
-    """
-    High-level optimization interface.
-    
-    This function provides a unified interface for all Riemannian optimizers,
-    automatically handling manifold types, cost function wrapping, and result conversion.
-    
+# ---------------------------------------------------------------------------
+# High-level optimize
+# ---------------------------------------------------------------------------
+
+def optimize(
+    manifold: Any,
+    cost_function: Any,
+    initial_point: np.ndarray,
+    optimizer: str = "Adam",
+    max_iterations: int = 1000,
+    gradient_tolerance: float = 1e-6,
+    callback: Optional[Callable[..., Any]] = None,
+    **optimizer_kwargs: Any,
+) -> Any:
+    """Minimize a cost function on a Riemannian manifold.
+
     Parameters
     ----------
     manifold : Manifold
-        The manifold on which to optimize.
-    cost_function : PyCostFunction or callable
-        Cost function to minimize. If callable, will be wrapped automatically.
-        The function should accept a numpy array and return either:
-        - A scalar cost value
-        - A tuple (cost, gradient)
+        Target manifold (e.g. ``riemannopt.manifolds.Sphere(n)``).
+    cost_function : CostFunction or callable
+        Objective to minimize.  Plain callables are wrapped automatically.
     initial_point : array_like
-        Starting point for optimization. Must be on the manifold.
-    optimizer : str, default="Adam"
-        Name of the optimizer to use. Options: "SGD", "Adam", "LBFGS", 
-        "ConjugateGradient", "TrustRegion", "Newton".
-    max_iterations : int, default=1000
-        Maximum number of optimization iterations.
-    gradient_tolerance : float, default=1e-6
-        Tolerance for gradient norm convergence criterion.
+        Starting point (must lie on *manifold*).
+    optimizer : str
+        One of ``"SGD"``, ``"Adam"``, ``"LBFGS"``, ``"ConjugateGradient"``
+        (or ``"CG"``), ``"TrustRegion"``, ``"Newton"``, ``"NaturalGradient"``.
+    max_iterations : int
+        Maximum number of iterations.
+    gradient_tolerance : float
+        Convergence threshold on the Riemannian gradient norm.
     callback : callable, optional
-        Callback function called at each iteration. Should accept:
-        (iteration, point, cost, grad_norm) and return bool (continue?).
+        ``(iteration, point, cost, grad_norm) -> bool``.  Return ``False``
+        to stop early.
     **optimizer_kwargs
-        Additional keyword arguments for the optimizer.
-    
+        Forwarded to the optimizer constructor (e.g. ``learning_rate=0.01``).
+
     Returns
     -------
-    result : OptimizationResult
-        Optimization result object with attributes:
-        - point: Final point (numpy array)
-        - value/cost: Final cost value
-        - gradient_norm: Final gradient norm
-        - converged: Whether the optimization converged
-        - iterations: Number of iterations performed
-        - time_seconds: Total optimization time
-        - termination_reason: Why the optimization stopped
-    
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import riemannopt as ro
-    >>> 
-    >>> # Create manifold and cost function
-    >>> sphere = ro.manifolds.Sphere(10)
-    >>> def cost(x):
-    ...     return 0.5 * np.sum(x**2)
-    >>> 
-    >>> # Optimize
-    >>> x0 = sphere.random_point()
-    >>> result = ro.optimize(sphere, cost, x0, optimizer="Adam", learning_rate=0.01)
-    >>> print(f"Converged: {result.converged}, Final cost: {result.cost:.6f}")
-    >>> 
-    >>> # With callback
-    >>> def callback(iter, x, cost, grad_norm):
-    ...     if iter % 10 == 0:
-    ...         print(f"Iter {iter}: cost={cost:.4f}")
-    ...     return True  # Continue
-    >>> 
-    >>> result = ro.optimize(sphere, cost, x0, callback=callback)
+    OptimizationResult
+        Result object with ``.point``, ``.cost``, ``.converged``, etc.
     """
-    # Convert cost function if needed
-    if not hasattr(cost_function, 'cost'):
-        # Infer dimension from manifold and initial point
+    # Wrap raw callables
+    if not isinstance(cost_function, _riemannopt.CostFunction):
         if initial_point.ndim == 1:
-            dimension = len(initial_point)
+            dim: Any = len(initial_point)
         elif initial_point.ndim == 2:
-            dimension = initial_point.shape
+            dim = initial_point.shape
         else:
             raise ValueError(f"Unsupported point dimension: {initial_point.ndim}")
-        
-        # Create cost function wrapper (will auto-detect if it returns gradient)
-        cost_function = create_cost_function(cost_function, dimension=dimension)
-    
-    # Validate initial point is on manifold
-    if hasattr(manifold, 'contains'):
-        if not manifold.contains(initial_point):
-            warnings.warn("Initial point is not on the manifold. Projecting...", UserWarning)
-            if hasattr(manifold, 'project'):
-                initial_point = manifold.project(initial_point)
-            else:
-                raise ValueError("Initial point is not on the manifold and no projection available")
-    
-    # Create optimizer (handle case-insensitive names)
-    optimizer_map = {
-        'sgd': 'SGD',
-        'adam': 'Adam',
-        'lbfgs': 'LBFGS',
-        'conjugategradient': 'ConjugateGradient',
-        'cg': 'ConjugateGradient',
-        'trustregion': 'TrustRegion',
-        'newton': 'Newton',
-        'riemanniannewton': 'Newton'
+        cost_function = create_cost_function(cost_function, dimension=dim)
+
+    # Auto-project if off manifold
+    if hasattr(manifold, "contains") and not manifold.contains(initial_point):
+        warnings.warn(
+            "Initial point is not on the manifold. Projecting.", UserWarning, stacklevel=2
+        )
+        initial_point = manifold.project(initial_point)
+
+    # Resolve optimizer name
+    _ALIASES = {
+        "sgd": "SGD",
+        "adam": "Adam",
+        "lbfgs": "LBFGS",
+        "conjugategradient": "ConjugateGradient",
+        "cg": "ConjugateGradient",
+        "trustregion": "TrustRegion",
+        "newton": "Newton",
+        "naturalgradient": "NaturalGradient",
     }
-    
-    optimizer_name = optimizer_map.get(optimizer.lower(), optimizer)
-    
+    optimizer_name = _ALIASES.get(optimizer.lower(), optimizer)
+
     try:
         optimizer_class = getattr(_riemannopt.optimizers, optimizer_name)
     except AttributeError:
-        available = list(optimizer_map.values())
-        raise ValueError(f"Unknown optimizer: {optimizer}. Available: {', '.join(available)}")
-    
-    # Set default hyperparameters based on optimizer type
-    defaults = {
-        'SGD': {'learning_rate': 0.01},
-        'Adam': {'learning_rate': 0.001, 'beta1': 0.9, 'beta2': 0.999},
-        'LBFGS': {'memory_size': 10},
-        'ConjugateGradient': {},
-        'TrustRegion': {'initial_radius': 1.0},
-        'Newton': {'regularization': 1e-6}
-    }
-    
-    # Merge defaults with user kwargs
-    final_kwargs = defaults.get(optimizer_name, {}).copy()
-    final_kwargs.update(optimizer_kwargs)
-    
-    opt = optimizer_class(**final_kwargs)
-    
-    # Prepare optimization parameters
-    opt_params = {
-        'cost_function': cost_function,
-        'initial_point': initial_point,
-        'max_iterations': max_iterations,
-    }
-    
-    # Check if the optimizer method accepts gradient_tolerance
-    # Only add it if the method signature includes it
-    if gradient_tolerance is not None and optimizer_name in ['Adam', 'LBFGS', 'ConjugateGradient', 'TrustRegion', 'Newton']:
-        opt_params['gradient_tolerance'] = gradient_tolerance
-    
-    # Handle callbacks if provided
-    callback_wrapper = None
-    if callback is not None:
-        # Wrap Python callback for Rust
-        callback_wrapper = CallbackWrapper(callback)
-        opt_params['callback'] = callback_wrapper
-    
-    # Determine manifold type and call appropriate method
-    manifold_name = type(manifold).__name__.lower()
-    
-    # Try to find the appropriate optimize method
-    method_name = f"optimize_{manifold_name}"
-    if hasattr(opt, method_name):
-        method = getattr(opt, method_name)
-        # Add manifold parameter based on manifold type
-        opt_params[manifold_name] = manifold
-        result = method(**opt_params)
-    else:
-        # Try generic methods based on point type
-        if initial_point.ndim == 1:
-            # Vector manifold - assume Sphere for now
-            if hasattr(opt, 'optimize_sphere'):
-                opt_params['sphere'] = manifold
-                result = opt.optimize_sphere(**opt_params)
-            else:
-                raise ValueError(f"Optimizer {optimizer_name} does not support vector manifolds")
-        elif initial_point.ndim == 2:
-            # Matrix manifold - try Stiefel first
-            if hasattr(opt, 'optimize_stiefel'):
-                opt_params['stiefel'] = manifold
-                result = opt.optimize_stiefel(**opt_params)
-            elif hasattr(opt, 'optimize_matrix'):
-                opt_params['matrix_manifold'] = manifold
-                result = opt.optimize_matrix(**opt_params)
-            else:
-                raise ValueError(f"Optimizer {optimizer_name} does not support matrix manifolds")
-        else:
-            raise ValueError(f"Unsupported point dimension: {initial_point.ndim}")
-    
-    # The result should be an OptimizationResult object from Rust
-    # Add callback history if available
-    if callback_wrapper and hasattr(callback_wrapper, 'history'):
-        if hasattr(result, 'history'):
-            result.history = callback_wrapper.history
-    
-    return result
+        avail = sorted(set(_ALIASES.values()))
+        raise ValueError(
+            f"Unknown optimizer: {optimizer!r}. Available: {', '.join(avail)}"
+        ) from None
 
+    opt = optimizer_class(**optimizer_kwargs)
+
+    # Wrap plain callback
+    cb = CallbackWrapper(callback) if callback is not None else None
+
+    return opt.optimize(
+        cost_function=cost_function,
+        manifold=manifold,
+        initial_point=initial_point,
+        max_iterations=max_iterations,
+        gradient_tolerance=gradient_tolerance,
+        callback=cb,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Callbacks
+# ---------------------------------------------------------------------------
 
 class CallbackWrapper:
-    """Wrapper to adapt Python callbacks for Rust optimizers."""
-    
-    def __init__(self, callback):
-        self.callback = callback
-        self.history = []
-        self.should_stop = False
-    
-    def __call__(self, iteration, point, cost, grad_norm):
-        """Called at each iteration by the optimizer."""
-        # Store history
-        self.history.append({
-            'iteration': iteration,
-            'cost': cost,
-            'grad_norm': grad_norm
-        })
-        
-        # Call user callback
+    """Adapts a plain ``(iter, point, cost, grad_norm) -> bool`` callable for
+    the Rust optimizer callback protocol."""
+
+    def __init__(self, fn: Callable[..., Any]) -> None:
+        self._fn = fn
+        self.history: list[dict[str, Any]] = []
+
+    def __call__(
+        self, iteration: int, point: np.ndarray, cost: float, grad_norm: float
+    ) -> bool:
+        self.history.append(
+            {"iteration": iteration, "cost": cost, "grad_norm": grad_norm}
+        )
         try:
-            result = self.callback(iteration, point, cost, grad_norm)
-            # If callback returns False, signal to stop
-            if result is False:
-                self.should_stop = True
-                return False
+            result = self._fn(iteration, point, cost, grad_norm)
+            return result is not False
+        except Exception as exc:
+            warnings.warn(
+                f"Callback error at iteration {iteration}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             return True
-        except Exception as e:
-            warnings.warn(f"Callback error at iteration {iteration}: {e}", RuntimeWarning)
-            return True  # Continue optimization despite callback error
 
 
-def gradient_check(cost_function, 
-                  point: np.ndarray,
-                  epsilon: float = 1e-8,
-                  tolerance: float = 1e-5) -> Tuple[bool, float]:
-    """
-    Check gradient accuracy using finite differences.
-    
-    Parameters
-    ----------
-    cost_function : PyCostFunction
-        Cost function with gradient.
-    point : array_like
-        Point at which to check the gradient.
-    epsilon : float, default=1e-8
-        Step size for finite differences.
-    tolerance : float, default=1e-5
-        Tolerance for gradient accuracy.
-    
-    Returns
-    -------
-    is_accurate : bool
-        True if gradient is accurate within tolerance.
-    max_error : float
-        Maximum relative error found.
-    """
-    # Get analytical gradient
-    analytical_grad = cost_function.gradient(point)
-    
-    # Compute finite difference gradient
-    finite_diff_grad = np.zeros_like(point)
-    
-    for i in range(len(point.flat)):
-        point_plus = point.copy()
-        point_minus = point.copy()
-        
-        point_plus.flat[i] += epsilon
-        point_minus.flat[i] -= epsilon
-        
-        cost_plus = cost_function.cost(point_plus)
-        cost_minus = cost_function.cost(point_minus)
-        
-        finite_diff_grad.flat[i] = (cost_plus - cost_minus) / (2 * epsilon)
-    
-    # Compute relative error
-    diff = np.abs(analytical_grad - finite_diff_grad)
-    scale = np.maximum(np.abs(analytical_grad), np.abs(finite_diff_grad))
-    relative_error = np.divide(diff, scale, out=np.zeros_like(diff), where=scale!=0)
-    
-    max_error = np.max(relative_error)
-    is_accurate = max_error < tolerance
-    
-    return is_accurate, max_error
-
-
-# Callback classes for optimization
 class OptimizationCallback:
-    """Base class for optimization callbacks."""
-    
-    def __init__(self):
-        self.history = []
-    
-    def __call__(self, iteration: int, point: np.ndarray, cost: float, grad_norm: float) -> bool:
-        """
-        Called at each optimization iteration.
-        
-        Parameters
-        ----------
-        iteration : int
-            Current iteration number.
-        point : array_like
-            Current point.
-        cost : float
-            Current cost value.
-        grad_norm : float
-            Current gradient norm.
-        
-        Returns
-        -------
-        continue_optimization : bool
-            True to continue optimization, False to stop.
-        """
-        self.history.append({
-            'iteration': iteration,
-            'point': point.copy(),
-            'cost': cost,
-            'grad_norm': grad_norm
-        })
-        return self._callback(iteration, point, cost, grad_norm)
-    
-    def _callback(self, iteration: int, point: np.ndarray, cost: float, grad_norm: float) -> bool:
-        """Override this method in subclasses."""
+    """Base class for optimization callbacks with automatic history tracking."""
+
+    def __init__(self) -> None:
+        self.history: list[dict[str, Any]] = []
+
+    def __call__(
+        self, iteration: int, point: np.ndarray, cost: float, grad_norm: float
+    ) -> bool:
+        self.history.append(
+            {
+                "iteration": iteration,
+                "point": point.copy(),
+                "cost": cost,
+                "grad_norm": grad_norm,
+            }
+        )
+        return self.on_step(iteration, point, cost, grad_norm)
+
+    def on_step(
+        self, iteration: int, point: np.ndarray, cost: float, grad_norm: float
+    ) -> bool:
+        """Override in subclasses.  Return ``False`` to stop."""
         return True
 
 
 class ProgressCallback(OptimizationCallback):
-    """Callback that prints optimization progress."""
-    
-    def __init__(self, print_every: int = 10):
+    """Print optimization progress every *n* iterations."""
+
+    def __init__(self, every: int = 10) -> None:
         super().__init__()
-        self.print_every = print_every
-        self.start_time = None
-    
-    def _callback(self, iteration: int, point: np.ndarray, cost: float, grad_norm: float) -> bool:
-        if self.start_time is None:
-            self.start_time = time.time()
-        
-        if iteration % self.print_every == 0:
-            elapsed = time.time() - self.start_time
-            print(f"Iter {iteration:4d}: cost = {cost:.6e}, grad_norm = {grad_norm:.3e}, time = {elapsed:.2f}s")
-        
+        self.every = every
+        self._t0: Optional[float] = None
+
+    def on_step(
+        self, iteration: int, point: np.ndarray, cost: float, grad_norm: float
+    ) -> bool:
+        if self._t0 is None:
+            self._t0 = time.monotonic()
+        if iteration % self.every == 0:
+            elapsed = time.monotonic() - self._t0
+            print(
+                f"iter {iteration:5d}  cost {cost: .6e}  "
+                f"|grad| {grad_norm:.3e}  [{elapsed:.2f}s]"
+            )
         return True
 
 
 class EarlyStoppingCallback(OptimizationCallback):
-    """Callback that implements early stopping based on cost improvement."""
-    
-    def __init__(self, patience: int = 10, min_improvement: float = 1e-8):
+    """Stop when cost improvement stalls for *patience* iterations."""
+
+    def __init__(self, patience: int = 10, min_improvement: float = 1e-8) -> None:
         super().__init__()
         self.patience = patience
         self.min_improvement = min_improvement
-        self.best_cost = float('inf')
-        self.patience_counter = 0
-    
-    def _callback(self, iteration: int, point: np.ndarray, cost: float, grad_norm: float) -> bool:
-        if cost < self.best_cost - self.min_improvement:
-            self.best_cost = cost
-            self.patience_counter = 0
+        self._best = float("inf")
+        self._wait = 0
+
+    def on_step(
+        self, iteration: int, point: np.ndarray, cost: float, grad_norm: float
+    ) -> bool:
+        if cost < self._best - self.min_improvement:
+            self._best = cost
+            self._wait = 0
         else:
-            self.patience_counter += 1
-        
-        if self.patience_counter >= self.patience:
-            print(f"Early stopping at iteration {iteration}: no improvement for {self.patience} iterations")
+            self._wait += 1
+        if self._wait >= self.patience:
             return False
-        
         return True
 
 
-def plot_convergence(history: List[Dict], 
-                    figsize: Tuple[int, int] = (12, 4),
-                    log_scale: bool = True):
-    """
-    Plot optimization convergence history.
-    
+# ---------------------------------------------------------------------------
+# Gradient check
+# ---------------------------------------------------------------------------
+
+def gradient_check(
+    cost_function: _riemannopt.CostFunction,
+    point: np.ndarray,
+    epsilon: float = 1e-7,
+    tolerance: float = 1e-4,
+) -> Tuple[bool, float]:
+    """Compare the analytical gradient with a central-difference approximation.
+
     Parameters
     ----------
-    history : list of dict
-        Optimization history from a callback.
-    figsize : tuple, default=(12, 4)
-        Figure size.
-    log_scale : bool, default=True
-        Whether to use log scale for y-axis.
+    cost_function : CostFunction
+        Must expose ``.cost()`` and ``.gradient()``.
+    point : ndarray
+        Evaluation point.
+    epsilon : float
+        Finite-difference step.
+    tolerance : float
+        Maximum acceptable relative error.
+
+    Returns
+    -------
+    ok : bool
+    max_relative_error : float
     """
+    grad_a = np.asarray(cost_function.gradient(point), dtype=float)
+    grad_fd = np.zeros_like(grad_a)
+
+    for idx in range(grad_a.size):
+        p_plus = point.copy()
+        p_minus = point.copy()
+        p_plus.flat[idx] += epsilon
+        p_minus.flat[idx] -= epsilon
+        grad_fd.flat[idx] = (
+            cost_function.cost(p_plus) - cost_function.cost(p_minus)
+        ) / (2.0 * epsilon)
+
+    diff = np.abs(grad_a - grad_fd)
+    scale = np.maximum(np.abs(grad_a), np.abs(grad_fd))
+    rel = np.divide(diff, scale, out=np.zeros_like(diff), where=scale > 0)
+    max_err = float(np.max(rel))
+    return max_err < tolerance, max_err
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+def plot_convergence(
+    history: List[Dict[str, Any]],
+    figsize: Tuple[int, int] = (12, 4),
+    log_scale: bool = True,
+) -> None:
+    """Plot cost and gradient norm from a callback history list."""
     try:
         import matplotlib.pyplot as plt
     except ImportError:
-        raise ImportError("matplotlib is required for plotting")
-    
-    iterations = [h['iteration'] for h in history]
-    costs = [h['cost'] for h in history]
-    grad_norms = [h['grad_norm'] for h in history]
-    
+        raise ImportError("matplotlib is required for plot_convergence") from None
+
+    iters = [h["iteration"] for h in history]
+    costs = [h["cost"] for h in history]
+    gnorms = [h.get("grad_norm", 0.0) for h in history]
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
-    
-    # Plot cost
-    ax1.plot(iterations, costs, 'b-', linewidth=2)
-    ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('Cost')
-    ax1.set_title('Cost vs Iteration')
+    ax1.plot(iters, costs, "b-", lw=2)
+    ax1.set(xlabel="Iteration", ylabel="Cost", title="Cost")
     ax1.grid(True, alpha=0.3)
     if log_scale and min(costs) > 0:
-        ax1.set_yscale('log')
-    
-    # Plot gradient norm
-    ax2.plot(iterations, grad_norms, 'r-', linewidth=2)
-    ax2.set_xlabel('Iteration')
-    ax2.set_ylabel('Gradient Norm')
-    ax2.set_title('Gradient Norm vs Iteration')
+        ax1.set_yscale("log")
+
+    ax2.plot(iters, gnorms, "r-", lw=2)
+    ax2.set(xlabel="Iteration", ylabel="|grad|", title="Gradient norm")
     ax2.grid(True, alpha=0.3)
-    if log_scale and min(grad_norms) > 0:
-        ax2.set_yscale('log')
-    
-    plt.tight_layout()
+    if log_scale and gnorms and min(gnorms) > 0:
+        ax2.set_yscale("log")
+
+    fig.tight_layout()
     plt.show()
 
 
-def benchmark_optimizers(manifold,
-                        cost_function,
-                        initial_point: np.ndarray,
-                        optimizers: Optional[List[str]] = None,
-                        max_iterations: int = 100,
-                        n_runs: int = 5) -> Dict[str, Dict]:
-    """
-    Benchmark multiple optimizers on the same problem.
-    
-    Parameters
-    ----------
-    manifold : Manifold
-        The manifold for optimization.
-    cost_function : PyCostFunction
-        Cost function to minimize.
-    initial_point : array_like
-        Starting point (same for all optimizers).
-    optimizers : list of str, optional
-        List of optimizer names. If None, uses ["SGD", "Adam", "LBFGS"].
-    max_iterations : int, default=100
-        Maximum iterations for each run.
-    n_runs : int, default=5
-        Number of runs for each optimizer (for statistical robustness).
-    
-    Returns
-    -------
-    results : dict
-        Benchmark results for each optimizer.
-    """
+# ---------------------------------------------------------------------------
+# Benchmarking
+# ---------------------------------------------------------------------------
+
+def benchmark_optimizers(
+    manifold: Any,
+    cost_function: Any,
+    initial_point: np.ndarray,
+    optimizers: Optional[List[str]] = None,
+    max_iterations: int = 200,
+    n_runs: int = 3,
+) -> Dict[str, Dict[str, Any]]:
+    """Run several optimizers on the same problem and compare."""
     if optimizers is None:
-        optimizers = ["SGD", "Adam", "LBFGS"]
-    
-    results = {}
-    
-    for opt_name in optimizers:
-        print(f"Benchmarking {opt_name}...")
-        
-        run_results = []
-        run_times = []
-        
-        for run in range(n_runs):
-            start_time = time.time()
-            
+        optimizers = ["SGD", "Adam", "ConjugateGradient"]
+
+    results: Dict[str, Dict[str, Any]] = {}
+    for name in optimizers:
+        times, costs_list, iters_list = [], [], []
+        for _ in range(n_runs):
+            t0 = time.monotonic()
             try:
-                result = optimize(
-                    manifold, cost_function, initial_point.copy(),
-                    optimizer=opt_name,
-                    max_iterations=max_iterations
+                res = optimize(
+                    manifold,
+                    cost_function,
+                    initial_point.copy(),
+                    optimizer=name,
+                    max_iterations=max_iterations,
                 )
-                
-                end_time = time.time()
-                
-                run_results.append(result)
-                run_times.append(end_time - start_time)
-                
-            except Exception as e:
-                print(f"  Run {run+1} failed: {e}")
+                costs_list.append(res.cost)
+                iters_list.append(res.iterations)
+            except Exception:
                 continue
-        
-        if run_results:
-            # Compute statistics
-            final_costs = [r['cost'] for r in run_results]
-            iterations = [r['iterations'] for r in run_results]
-            converged = [r['converged'] for r in run_results]
-            
-            results[opt_name] = {
-                'mean_cost': np.mean(final_costs),
-                'std_cost': np.std(final_costs),
-                'mean_iterations': np.mean(iterations),
-                'std_iterations': np.std(iterations),
-                'mean_time': np.mean(run_times),
-                'std_time': np.std(run_times),
-                'convergence_rate': np.mean(converged),
-                'n_runs': len(run_results)
+            times.append(time.monotonic() - t0)
+
+        if costs_list:
+            results[name] = {
+                "mean_cost": float(np.mean(costs_list)),
+                "mean_iters": float(np.mean(iters_list)),
+                "mean_time": float(np.mean(times)),
+                "n_runs": len(costs_list),
             }
         else:
-            results[opt_name] = {'error': 'All runs failed'}
-    
-    # Print summary
-    print("\nBenchmark Results:")
-    print("-" * 80)
-    print(f"{'Optimizer':<15} {'Mean Cost':<12} {'Mean Iter':<10} {'Mean Time':<10} {'Conv Rate':<10}")
-    print("-" * 80)
-    
-    for opt_name, result in results.items():
-        if 'error' in result:
-            print(f"{opt_name:<15} {'FAILED':<12}")
-        else:
-            print(f"{opt_name:<15} {result['mean_cost']:<12.6f} "
-                  f"{result['mean_iterations']:<10.1f} {result['mean_time']:<10.3f} "
-                  f"{result['convergence_rate']:<10.1%}")
-    
+            results[name] = {"error": "all runs failed"}
+
     return results
 
 
-# Version information
 __all__ = [
-    'create_cost_function',
-    'optimize', 
-    'gradient_check',
-    'OptimizationCallback',
-    'ProgressCallback',
-    'EarlyStoppingCallback',
-    'plot_convergence',
-    'benchmark_optimizers'
+    "create_cost_function",
+    "optimize",
+    "gradient_check",
+    "CallbackWrapper",
+    "OptimizationCallback",
+    "ProgressCallback",
+    "EarlyStoppingCallback",
+    "plot_convergence",
+    "benchmark_optimizers",
 ]

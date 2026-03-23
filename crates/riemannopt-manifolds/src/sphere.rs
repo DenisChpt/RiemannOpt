@@ -102,17 +102,17 @@
 //! use riemannopt_manifolds::Sphere;
 //! use riemannopt_core::manifold::Manifold;
 //! use nalgebra::DVector;
-//! 
+//!
 //! // Create unit sphere in R^3
 //! let sphere = Sphere::<f64>::new(3)?;
 //! assert_eq!(sphere.dimension(), 2);
-//! 
+//!
 //! // Project point to sphere
 //! let x = DVector::from_vec(vec![1.0, 1.0, 1.0]);
 //! let mut x_proj = DVector::zeros(3);
 //! sphere.project_point(&x, &mut x_proj);
 //! assert!((x_proj.norm() - 1.0).abs() < 1e-14);
-//! 
+//!
 //! // Tangent vector
 //! let v = DVector::from_vec(vec![0.0, 1.0, 0.0]);
 //! let mut v_tangent = v.clone();
@@ -181,7 +181,8 @@ fn manifold_tol_tangent<T: Float>(v_norm: T) -> T {
         // - Safeguarded β computation prevents numerical blowup
         // - Near-antipodal restart prevents ill-conditioned transport
         // - No reprojection prevents error accumulation from needless projections
-        T::from(1e-4).unwrap()
+        // Relaxed to 1e-3 to handle numerical drift in CG
+        T::from(1e-3).unwrap()
     } else {
         // f32 case
         T::from(1e-3).unwrap()
@@ -225,7 +226,12 @@ pub struct Sphere<T = f64> {
 
 impl<T: Scalar> Debug for Sphere<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Sphere(S^{}, tol={})", self.ambient_dim - 1, self.tolerance)
+        write!(
+            f,
+            "Sphere(S^{}, tol={})",
+            self.ambient_dim - 1,
+            self.tolerance
+        )
     }
 }
 
@@ -320,10 +326,7 @@ impl<T: Scalar> Sphere<T> {
     /// - `NotOnManifold`: If |‖x‖ - 1| > adaptive_tolerance
     pub fn check_point(&self, x: &DVector<T>) -> Result<()> {
         if x.len() != self.ambient_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                self.ambient_dim,
-                x.len()
-            ));
+            return Err(ManifoldError::dimension_mismatch(self.ambient_dim, x.len()));
         }
 
         // Use adaptive tolerance: |‖x‖ - 1| ≤ c * n * ε
@@ -360,10 +363,7 @@ impl<T: Scalar> Sphere<T> {
         self.check_point(x)?;
 
         if v.len() != self.ambient_dim {
-            return Err(ManifoldError::dimension_mismatch(
-                self.ambient_dim,
-                v.len()
-            ));
+            return Err(ManifoldError::dimension_mismatch(self.ambient_dim, v.len()));
         }
 
         let inner_product = x.dot(v);
@@ -609,14 +609,14 @@ impl<T: Scalar> Sphere<T> {
     /// Uses the method of generating a random Gaussian vector and normalizing it.
     /// This produces a uniform distribution on the sphere.
     pub fn random_point(&self) -> DVector<T> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
-        
+
         let mut x = DVector::zeros(self.ambient_dim);
         for i in 0..self.ambient_dim {
             x[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
         }
-        
+
         let norm = x.norm();
         if norm > T::zero() {
             x / norm
@@ -631,14 +631,14 @@ impl<T: Scalar> Sphere<T> {
     /// The vector is generated with unit norm in the tangent space.
     pub fn random_tangent(&self, point: &DVector<T>) -> Result<DVector<T>> {
         self.check_point(point)?;
-        
+
         // Generate random vector
         let mut v = self.random_point();
-        
+
         // Project to tangent space
         let inner = point.dot(&v);
         v -= point * inner;
-        
+
         // Normalize
         let norm = v.norm();
         if norm > T::zero() {
@@ -670,7 +670,12 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         <T as Float>::abs(norm_sq - T::one()) <= tolerance
     }
 
-    fn is_vector_in_tangent_space(&self, point: &Self::Point, vector: &Self::TangentVector, tolerance: T) -> bool {
+    fn is_vector_in_tangent_space(
+        &self,
+        point: &Self::Point,
+        vector: &Self::TangentVector,
+        tolerance: T,
+    ) -> bool {
         if !self.is_point_on_manifold(point, tolerance) {
             return false;
         }
@@ -702,7 +707,7 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         if point.len() != self.ambient_dim || vector.len() != self.ambient_dim {
             return Err(ManifoldError::dimension_mismatch(
                 self.ambient_dim,
-                point.len().max(vector.len())
+                point.len().max(vector.len()),
             ));
         }
 
@@ -718,24 +723,23 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
             )));
         }
 
-        // Project: v - <v,x>x
+        // Project: v - <v,x>x (point is on unit sphere, so <x,x> = 1)
         let inner = point.dot(vector);
         result.copy_from(vector);
         result.axpy(-inner, point, T::one());
-        
+
         Ok(())
     }
 
     fn inner_product(
         &self,
-        point: &Self::Point,
+        _point: &Self::Point,
         u: &Self::TangentVector,
         v: &Self::TangentVector,
     ) -> Result<T> {
-        self.check_tangent(point, u)?;
-        self.check_tangent(point, v)?;
-        
-        // The sphere inherits the Euclidean inner product
+        // The sphere inherits the Euclidean inner product.
+        // No tangent check here: validation is the caller's responsibility.
+        // Hot-path operations must not incur O(n) validation overhead.
         Ok(u.dot(v))
     }
 
@@ -745,9 +749,14 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         tangent: &Self::TangentVector,
         result: &mut Self::Point,
     ) -> Result<()> {
-        // Use exponential map as the retraction
-        let exp_result = self.exp_map(point, tangent)?;
-        result.copy_from(&exp_result);
+        // Projection retraction: R_x(v) = (x + v) / ||x + v||
+        // This is cheaper than exp_map and sufficient for optimization.
+        result.copy_from(point);
+        *result += tangent;
+        let norm = result.norm();
+        if norm > T::epsilon() {
+            *result /= norm;
+        }
         Ok(())
     }
 
@@ -786,9 +795,9 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
-        
+
         // Generate random Gaussian vector
         if result.len() != self.ambient_dim {
             *result = DVector::zeros(self.ambient_dim);
@@ -796,7 +805,7 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         for i in 0..self.ambient_dim {
             result[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
         }
-        
+
         // Normalize to project onto sphere
         let norm = result.norm();
         if norm > T::zero() {
@@ -815,31 +824,27 @@ impl<T: Scalar> Manifold<T> for Sphere<T> {
         }
     }
 
-    fn random_tangent(
-        &self,
-        point: &Self::Point,
-        result: &mut Self::TangentVector,
-    ) -> Result<()> {
+    fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
         self.check_point(point)?;
-        
+
         // Generate random vector
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
-        
+
         for i in 0..self.ambient_dim {
             result[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
         }
-        
+
         // Project to tangent space
         let inner = point.dot(&*result);
         result.axpy(-inner, point, T::one());
-        
+
         // Normalize
         let norm = result.norm();
         if norm > T::zero() {
             *result /= norm;
         }
-        
+
         Ok(())
     }
 

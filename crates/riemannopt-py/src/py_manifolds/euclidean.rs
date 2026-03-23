@@ -172,7 +172,7 @@ impl PyEuclidean {
         
         self.inner.project_point(&point, &mut result);
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Project a vector onto the tangent space at a point.
@@ -206,7 +206,7 @@ impl PyEuclidean {
         self.inner.project_tangent(&point, &vector, &mut result)
             .map_err(|e| PyValueError::new_err(format!("Projection failed: {}", e)))?;
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Compute the Riemannian inner product between two tangent vectors.
@@ -305,7 +305,7 @@ impl PyEuclidean {
         self.inner.retract(&point, &tangent, &mut result)
             .map_err(|e| PyValueError::new_err(format!("Retraction failed: {}", e)))?;
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Compute the inverse retraction (logarithmic map).
@@ -339,7 +339,7 @@ impl PyEuclidean {
         self.inner.inverse_retract(&point, &other, &mut result)
             .map_err(|e| PyValueError::new_err(format!("Inverse retraction failed: {}", e)))?;
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Convert Euclidean gradient to Riemannian gradient.
@@ -373,7 +373,7 @@ impl PyEuclidean {
         self.inner.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut result)
             .map_err(|e| PyValueError::new_err(format!("Gradient conversion failed: {}", e)))?;
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Perform parallel transport of a vector.
@@ -412,7 +412,7 @@ impl PyEuclidean {
         self.inner.parallel_transport(&from_point, &to_point, &vector, &mut result)
             .map_err(|e| PyValueError::new_err(format!("Parallel transport failed: {}", e)))?;
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Generate a random point on the manifold.
@@ -429,7 +429,7 @@ impl PyEuclidean {
         self.inner.random_point(&mut result)
             .map_err(|e| PyValueError::new_err(format!("Random point generation failed: {}", e)))?;
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Generate a random tangent vector at a point.
@@ -458,7 +458,7 @@ impl PyEuclidean {
         self.inner.random_tangent(&point, &mut result)
             .map_err(|e| PyValueError::new_err(format!("Random tangent generation failed: {}", e)))?;
         
-        Ok(result.as_slice().to_vec().into_pyarray_bound(py))
+        Ok(result.as_slice().to_vec().into_pyarray(py))
     }
 
     /// Compute the geodesic distance between two points.

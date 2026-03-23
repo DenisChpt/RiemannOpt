@@ -17,11 +17,11 @@ riemannopt = { path = "../riemannopt", version = "0.1.0", features = ["full"] }
 riemannopt-core = { path = "../riemannopt-core", version = "0.1.0" }
 riemannopt-manifolds = { path = "../riemannopt-manifolds", version = "0.1.0" }
 riemannopt-optim = { path = "../riemannopt-optim", version = "0.1.0" }
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
-numpy = "0.22"
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+numpy = "0.24"
 nalgebra = { workspace = true }
-rand = "0.8"
-rand_distr = "0.4"
+rand = { workspace = true }
+rand_distr = { workspace = true }
 parking_lot = "0.12"
 
 [features]

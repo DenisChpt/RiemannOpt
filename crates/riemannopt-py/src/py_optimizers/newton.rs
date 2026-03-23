@@ -157,7 +157,7 @@ impl PyNewton {
     /// Get optimizer configuration as a dictionary.
     #[getter]
     fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("max_cg_iterations", self.max_cg_iterations)?;
         dict.set_item("cg_tolerance", self.cg_tolerance)?;
         dict.set_item("use_line_search", self.use_line_search)?;

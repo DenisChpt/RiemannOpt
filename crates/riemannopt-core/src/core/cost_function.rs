@@ -325,31 +325,26 @@ where
     fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
         let n = point.len();
         let mut gradient = Self::TangentVector::zeros_generic(point.shape_generic().0, nalgebra::U1);
-        let h = <T as Float>::sqrt(T::epsilon());
+        let h = T::fd_epsilon();
+
+        // Reuse a single perturbation buffer instead of allocating per iteration.
+        let mut perturbed = point.clone();
 
         for i in 0..n {
-            let mut e_i = Self::TangentVector::zeros_generic(point.shape_generic().0, nalgebra::U1);
-            if let Some(elem) = e_i.get_mut(i) {
-                *elem = T::one();
-            } else {
-                return Err(ManifoldError::invalid_parameter(
-                    format!("Index {} out of bounds for dimension {}", i, n),
-                ));
-            }
+            let orig = perturbed[i];
 
-            let point_plus = point + &e_i * h;
-            let point_minus = point - &e_i * h;
+            // f(x + h·eᵢ)
+            perturbed[i] = orig + h;
+            let f_plus = self.cost(&perturbed)?;
 
-            let f_plus = self.cost(&point_plus)?;
-            let f_minus = self.cost(&point_minus)?;
+            // f(x − h·eᵢ)
+            perturbed[i] = orig - h;
+            let f_minus = self.cost(&perturbed)?;
 
-            if let Some(grad_elem) = gradient.get_mut(i) {
-                *grad_elem = (f_plus - f_minus) / (h + h);
-            } else {
-                return Err(ManifoldError::invalid_parameter(
-                    format!("Index {} out of bounds for gradient", i),
-                ));
-            }
+            // Restore
+            perturbed[i] = orig;
+
+            gradient[i] = (f_plus - f_minus) / (h + h);
         }
 
         Ok(gradient)
@@ -510,7 +505,7 @@ where
     F: Fn(&nalgebra::DVector<T>) -> Result<T>,
 {
     let n = point.len();
-    let h = <T as Float>::sqrt(T::epsilon());
+    let h = T::fd_epsilon();
     
     // Pre-allocate buffers if needed
     workspace.preallocate_vector(BufferId::Gradient, n);

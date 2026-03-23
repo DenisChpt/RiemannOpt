@@ -136,7 +136,7 @@ impl PyLBFGS {
     /// Get optimizer configuration as a dictionary.
     #[getter]
     fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("memory_size", self.memory_size)?;
         dict.set_item("max_line_search_iterations", self.max_line_search_iterations)?;
         dict.set_item("c1", self.c1)?;
