@@ -107,12 +107,12 @@
 //! # use riemannopt_core::prelude::*;
 //! let mut line_search = BacktrackingLineSearch::new();
 //! let params = LineSearchParams::backtracking();
-//! 
+//!
 //! let result = line_search.search(
-//!     &cost_fn, &manifold, &point, value, 
+//!     &cost_fn, &manifold, &point, value,
 //!     &gradient, &direction, &params
 //! )?;
-//! 
+//!
 //! if result.success {
 //!     println!("Step size: {}, New value: {}", result.step_size, result.new_value);
 //! }
@@ -125,7 +125,7 @@
 //! # use riemannopt_core::prelude::*;
 //! let mut line_search = StrongWolfeLineSearch::new();
 //! let params = LineSearchParams::strong_wolfe();
-//! 
+//!
 //! // Ensures good curvature properties for BFGS updates
 //! let result = line_search.search(
 //!     &cost_fn, &manifold, &point, value,
@@ -134,10 +134,10 @@
 //! ```
 
 use crate::{
-    core::{cost_function::CostFunction, manifold::Manifold},
-    error::{ManifoldError, Result},
-    memory::workspace::Workspace,
-    types::Scalar,
+	core::{cost_function::CostFunction, manifold::Manifold},
+	error::{ManifoldError, Result},
+	memory::workspace::Workspace,
+	types::Scalar,
 };
 use std::fmt::Debug;
 
@@ -156,28 +156,28 @@ use std::fmt::Debug;
 #[derive(Debug, Clone)]
 pub struct LineSearchResult<T, P, TV>
 where
-    T: Scalar,
+	T: Scalar,
 {
-    /// The accepted step size α satisfying sufficient decrease conditions
-    pub step_size: T,
+	/// The accepted step size α satisfying sufficient decrease conditions
+	pub step_size: T,
 
-    /// The new point y = R_x(α η) ∈ ℳ after retraction
-    pub new_point: P,
+	/// The new point y = R_x(α η) ∈ ℳ after retraction
+	pub new_point: P,
 
-    /// The objective function value f(y) at the new point
-    pub new_value: T,
+	/// The objective function value f(y) at the new point
+	pub new_value: T,
 
-    /// The Riemannian gradient grad f(y) ∈ T_y ℳ (if computed during line search)
-    pub new_gradient: Option<TV>,
+	/// The Riemannian gradient grad f(y) ∈ T_y ℳ (if computed during line search)
+	pub new_gradient: Option<TV>,
 
-    /// Total number of objective function evaluations f(·) performed
-    pub function_evals: usize,
+	/// Total number of objective function evaluations f(·) performed
+	pub function_evals: usize,
 
-    /// Total number of gradient evaluations grad f(·) performed  
-    pub gradient_evals: usize,
+	/// Total number of gradient evaluations grad f(·) performed  
+	pub gradient_evals: usize,
 
-    /// True if line search found acceptable step satisfying convergence conditions
-    pub success: bool,
+	/// True if line search found acceptable step satisfying convergence conditions
+	pub success: bool,
 }
 
 /// Mathematical and computational parameters for line search algorithms.
@@ -233,202 +233,202 @@ where
 #[derive(Debug, Clone)]
 pub struct LineSearchParams<T>
 where
-    T: Scalar,
+	T: Scalar,
 {
-    /// Initial step size α₀ for line search start
-    pub initial_step_size: T,
+	/// Initial step size α₀ for line search start
+	pub initial_step_size: T,
 
-    /// Maximum allowable step size to prevent overshooting
-    pub max_step_size: T,
+	/// Maximum allowable step size to prevent overshooting
+	pub max_step_size: T,
 
-    /// Minimum step size threshold before declaring line search failure
-    pub min_step_size: T,
+	/// Minimum step size threshold before declaring line search failure
+	pub min_step_size: T,
 
-    /// Maximum number of line search iterations before termination
-    pub max_iterations: usize,
+	/// Maximum number of line search iterations before termination
+	pub max_iterations: usize,
 
-    /// Armijo parameter c₁ ∈ (0,1) for sufficient decrease condition
-    /// f(R_x(αη)) ≤ f(x) + c₁α⟨grad f(x), η⟩_g
-    pub c1: T,
+	/// Armijo parameter c₁ ∈ (0,1) for sufficient decrease condition
+	/// f(R_x(αη)) ≤ f(x) + c₁α⟨grad f(x), η⟩_g
+	pub c1: T,
 
-    /// Wolfe parameter c₂ ∈ (c₁,1) for curvature condition
-    /// |⟨grad f(R_x(αη)), T(η)⟩_g| ≤ c₂|⟨grad f(x), η⟩_g|
-    pub c2: T,
+	/// Wolfe parameter c₂ ∈ (c₁,1) for curvature condition
+	/// |⟨grad f(R_x(αη)), T(η)⟩_g| ≤ c₂|⟨grad f(x), η⟩_g|
+	pub c2: T,
 
-    /// Backtracking reduction factor ρ ∈ (0,1) for step size reduction
-    /// α_{i+1} = ρ α_i when Armijo condition fails
-    pub rho: T,
+	/// Backtracking reduction factor ρ ∈ (0,1) for step size reduction
+	/// α_{i+1} = ρ α_i when Armijo condition fails
+	pub rho: T,
 }
 
 impl<T> Default for LineSearchParams<T>
 where
-    T: Scalar,
+	T: Scalar,
 {
-    fn default() -> Self {
-        Self {
-            initial_step_size: T::one(),
-            max_step_size: <T as Scalar>::from_f64(10.0),
-            min_step_size: <T as Scalar>::from_f64(1e-10),
-            max_iterations: 50,
-            c1: <T as Scalar>::from_f64(1e-4),
-            c2: <T as Scalar>::from_f64(0.9),
-            rho: <T as Scalar>::from_f64(0.5),
-        }
-    }
+	fn default() -> Self {
+		Self {
+			initial_step_size: T::one(),
+			max_step_size: <T as Scalar>::from_f64(10.0),
+			min_step_size: <T as Scalar>::from_f64(1e-10),
+			max_iterations: 50,
+			c1: <T as Scalar>::from_f64(1e-4),
+			c2: <T as Scalar>::from_f64(0.9),
+			rho: <T as Scalar>::from_f64(0.5),
+		}
+	}
 }
 
 impl<T> LineSearchParams<T>
 where
-    T: Scalar,
+	T: Scalar,
 {
-    /// Validates line search parameters against mathematical requirements.
-    ///
-    /// Ensures all parameters satisfy the theoretical conditions required
-    /// for convergence guarantees and numerical stability.
-    ///
-    /// # Mathematical Validation
-    ///
-    /// ## Step Size Constraints
-    /// - All step sizes must be positive
-    /// - min_step_size < max_step_size (proper ordering)
-    /// - initial_step_size should be reasonable
-    ///
-    /// ## Wolfe Parameter Constraints
-    /// - 0 < c₁ < 1 (sufficient decrease parameter)
-    /// - c₁ < c₂ < 1 (proper curvature parameter ordering)
-    /// - These ensure both progress and termination
-    ///
-    /// ## Computational Constraints
-    /// - 0 < ρ < 1 (backtracking must reduce step size)
-    /// - max_iterations > 0 (must allow at least one iteration)
-    ///
-    /// # Errors
-    ///
-    /// Returns `ManifoldError::InvalidParameter` if:
-    /// - Step sizes violate positivity or ordering constraints
-    /// - Wolfe constants don't satisfy 0 < c₁ < c₂ < 1
-    /// - Backtracking factor ρ ∉ (0, 1)
-    /// - Maximum iterations is zero
-    /// 
-    /// # Usage
-    ///
-    /// ```rust,no_run
-    /// # use riemannopt_core::prelude::*;
-    /// let params = LineSearchParams::<f64>::default();
-    /// params.validate()?; // Ensure mathematical validity
-    /// # Ok::<(), riemannopt_core::error::ManifoldError>(())
-    /// ```
-    pub fn validate(&self) -> Result<()> {
-        // Validate step sizes
-        if self.initial_step_size <= T::zero() {
-            return Err(ManifoldError::invalid_parameter(
-                "Initial step size must be positive",
-            ));
-        }
-        
-        if self.min_step_size <= T::zero() {
-            return Err(ManifoldError::invalid_parameter(
-                "Minimum step size must be positive",
-            ));
-        }
-        
-        if self.max_step_size <= self.min_step_size {
-            return Err(ManifoldError::invalid_parameter(
-                "Maximum step size must be greater than minimum step size",
-            ));
-        }
-        
-        // Validate Wolfe constants
-        if self.c1 <= T::zero() || self.c1 >= T::one() {
-            return Err(ManifoldError::invalid_parameter(
-                "Armijo constant c1 must be in (0, 1)",
-            ));
-        }
-        
-        if self.c2 <= self.c1 || self.c2 >= T::one() {
-            return Err(ManifoldError::invalid_parameter(
-                "Wolfe constant c2 must satisfy c1 < c2 < 1",
-            ));
-        }
-        
-        // Validate backtracking factor
-        if self.rho <= T::zero() || self.rho >= T::one() {
-            return Err(ManifoldError::invalid_parameter(
-                "Backtracking factor rho must be in (0, 1)",
-            ));
-        }
-        
-        // Validate iterations
-        if self.max_iterations == 0 {
-            return Err(ManifoldError::invalid_parameter(
-                "Maximum iterations must be at least 1",
-            ));
-        }
-        
-        Ok(())
-    }
+	/// Validates line search parameters against mathematical requirements.
+	///
+	/// Ensures all parameters satisfy the theoretical conditions required
+	/// for convergence guarantees and numerical stability.
+	///
+	/// # Mathematical Validation
+	///
+	/// ## Step Size Constraints
+	/// - All step sizes must be positive
+	/// - min_step_size < max_step_size (proper ordering)
+	/// - initial_step_size should be reasonable
+	///
+	/// ## Wolfe Parameter Constraints
+	/// - 0 < c₁ < 1 (sufficient decrease parameter)
+	/// - c₁ < c₂ < 1 (proper curvature parameter ordering)
+	/// - These ensure both progress and termination
+	///
+	/// ## Computational Constraints
+	/// - 0 < ρ < 1 (backtracking must reduce step size)
+	/// - max_iterations > 0 (must allow at least one iteration)
+	///
+	/// # Errors
+	///
+	/// Returns `ManifoldError::InvalidParameter` if:
+	/// - Step sizes violate positivity or ordering constraints
+	/// - Wolfe constants don't satisfy 0 < c₁ < c₂ < 1
+	/// - Backtracking factor ρ ∉ (0, 1)
+	/// - Maximum iterations is zero
+	///
+	/// # Usage
+	///
+	/// ```rust,no_run
+	/// # use riemannopt_core::prelude::*;
+	/// let params = LineSearchParams::<f64>::default();
+	/// params.validate()?; // Ensure mathematical validity
+	/// # Ok::<(), riemannopt_core::error::ManifoldError>(())
+	/// ```
+	pub fn validate(&self) -> Result<()> {
+		// Validate step sizes
+		if self.initial_step_size <= T::zero() {
+			return Err(ManifoldError::invalid_parameter(
+				"Initial step size must be positive",
+			));
+		}
 
-    /// Creates parameters optimized for strong Wolfe line search.
-    ///
-    /// These parameters are designed for quasi-Newton methods (BFGS, L-BFGS)
-    /// that require high-quality step sizes with good curvature properties.
-    ///
-    /// # Parameter Values
-    /// - c₁ = 10⁻⁴ (tight sufficient decrease)
-    /// - c₂ = 0.9 (loose curvature for quasi-Newton)
-    /// - Other parameters: conservative defaults
-    ///
-    /// # Applications
-    /// - BFGS and L-BFGS optimization
-    /// - Newton-type methods requiring curvature information
-    /// - High-precision optimization
-    pub fn strong_wolfe() -> Self {
-        Self::default()
-    }
+		if self.min_step_size <= T::zero() {
+			return Err(ManifoldError::invalid_parameter(
+				"Minimum step size must be positive",
+			));
+		}
 
-    /// Creates parameters optimized for weak Wolfe line search.
-    ///
-    /// Similar to strong Wolfe but with relaxed curvature condition.
-    /// Suitable for methods that don't require strict curvature properties.
-    ///
-    /// # Parameter Values
-    /// - c₁ = 10⁻⁴ (sufficient decrease)
-    /// - c₂ = 0.9 (standard curvature parameter)
-    ///
-    /// # Applications
-    /// - Conjugate gradient methods
-    /// - Algorithms with theoretical convergence guarantees
-    /// - Methods where weak Wolfe conditions suffice
-    pub fn weak_wolfe() -> Self {
-        Self {
-            c2: <T as Scalar>::from_f64(0.9),
-            ..Self::default()
-        }
-    }
+		if self.max_step_size <= self.min_step_size {
+			return Err(ManifoldError::invalid_parameter(
+				"Maximum step size must be greater than minimum step size",
+			));
+		}
 
-    /// Creates parameters optimized for backtracking line search.
-    ///
-    /// These parameters emphasize simplicity and robustness over optimality.
-    /// Suitable for gradient descent and other first-order methods.
-    ///
-    /// # Parameter Values
-    /// - c₁ = 0.5 (relaxed sufficient decrease)
-    /// - ρ = 0.5 (halve step size each iteration)
-    /// - max_iterations = 20 (quick termination)
-    ///
-    /// # Applications
-    /// - Steepest descent optimization
-    /// - First-order methods
-    /// - Robust optimization with guaranteed progress
-    pub fn backtracking() -> Self {
-        Self {
-            c1: <T as Scalar>::from_f64(0.5),
-            c2: <T as Scalar>::from_f64(0.9), // Set to valid value even if not used
-            rho: <T as Scalar>::from_f64(0.5),
-            max_iterations: 20,
-            ..Self::default()
-        }
-    }
+		// Validate Wolfe constants
+		if self.c1 <= T::zero() || self.c1 >= T::one() {
+			return Err(ManifoldError::invalid_parameter(
+				"Armijo constant c1 must be in (0, 1)",
+			));
+		}
+
+		if self.c2 <= self.c1 || self.c2 >= T::one() {
+			return Err(ManifoldError::invalid_parameter(
+				"Wolfe constant c2 must satisfy c1 < c2 < 1",
+			));
+		}
+
+		// Validate backtracking factor
+		if self.rho <= T::zero() || self.rho >= T::one() {
+			return Err(ManifoldError::invalid_parameter(
+				"Backtracking factor rho must be in (0, 1)",
+			));
+		}
+
+		// Validate iterations
+		if self.max_iterations == 0 {
+			return Err(ManifoldError::invalid_parameter(
+				"Maximum iterations must be at least 1",
+			));
+		}
+
+		Ok(())
+	}
+
+	/// Creates parameters optimized for strong Wolfe line search.
+	///
+	/// These parameters are designed for quasi-Newton methods (BFGS, L-BFGS)
+	/// that require high-quality step sizes with good curvature properties.
+	///
+	/// # Parameter Values
+	/// - c₁ = 10⁻⁴ (tight sufficient decrease)
+	/// - c₂ = 0.9 (loose curvature for quasi-Newton)
+	/// - Other parameters: conservative defaults
+	///
+	/// # Applications
+	/// - BFGS and L-BFGS optimization
+	/// - Newton-type methods requiring curvature information
+	/// - High-precision optimization
+	pub fn strong_wolfe() -> Self {
+		Self::default()
+	}
+
+	/// Creates parameters optimized for weak Wolfe line search.
+	///
+	/// Similar to strong Wolfe but with relaxed curvature condition.
+	/// Suitable for methods that don't require strict curvature properties.
+	///
+	/// # Parameter Values
+	/// - c₁ = 10⁻⁴ (sufficient decrease)
+	/// - c₂ = 0.9 (standard curvature parameter)
+	///
+	/// # Applications
+	/// - Conjugate gradient methods
+	/// - Algorithms with theoretical convergence guarantees
+	/// - Methods where weak Wolfe conditions suffice
+	pub fn weak_wolfe() -> Self {
+		Self {
+			c2: <T as Scalar>::from_f64(0.9),
+			..Self::default()
+		}
+	}
+
+	/// Creates parameters optimized for backtracking line search.
+	///
+	/// These parameters emphasize simplicity and robustness over optimality.
+	/// Suitable for gradient descent and other first-order methods.
+	///
+	/// # Parameter Values
+	/// - c₁ = 0.5 (relaxed sufficient decrease)
+	/// - ρ = 0.5 (halve step size each iteration)
+	/// - max_iterations = 20 (quick termination)
+	///
+	/// # Applications
+	/// - Steepest descent optimization
+	/// - First-order methods
+	/// - Robust optimization with guaranteed progress
+	pub fn backtracking() -> Self {
+		Self {
+			c1: <T as Scalar>::from_f64(0.5),
+			c2: <T as Scalar>::from_f64(0.9), // Set to valid value even if not used
+			rho: <T as Scalar>::from_f64(0.5),
+			max_iterations: 20,
+			..Self::default()
+		}
+	}
 }
 
 /// Context container for line search operations on Riemannian manifolds.
@@ -455,7 +455,7 @@ where
 /// ```rust,ignore
 /// # use riemannopt_core::prelude::*;
 /// let ctx = LineSearchContext::new(&cost_fn, &manifold);
-/// 
+///
 /// let result = line_search.search_with_context(
 ///     &ctx, &point, value, &gradient, &direction, &params
 /// )?;
@@ -464,45 +464,45 @@ where
 #[derive(Debug)]
 pub struct LineSearchContext<'a, T, C, M>
 where
-    T: Scalar,
-    C: CostFunction<T>,
-    M: Manifold<T>,
+	T: Scalar,
+	C: CostFunction<T>,
+	M: Manifold<T>,
 {
-    /// The objective function f: ℳ → ℝ to minimize
-    pub cost_fn: &'a C,
-    /// The Riemannian manifold ℳ defining the constraint set
-    pub manifold: &'a M,
-    /// Type parameter phantom data for proper trait resolution
-    _phantom: std::marker::PhantomData<T>,
+	/// The objective function f: ℳ → ℝ to minimize
+	pub cost_fn: &'a C,
+	/// The Riemannian manifold ℳ defining the constraint set
+	pub manifold: &'a M,
+	/// Type parameter phantom data for proper trait resolution
+	_phantom: std::marker::PhantomData<T>,
 }
 
 impl<'a, T, C, M> LineSearchContext<'a, T, C, M>
 where
-    T: Scalar,
-    C: CostFunction<T>,
-    M: Manifold<T>,
+	T: Scalar,
+	C: CostFunction<T>,
+	M: Manifold<T>,
 {
-    /// Creates a new line search context binding a cost function to a manifold.
-    ///
-    /// This establishes the mathematical setting for line search operations
-    /// by pairing the objective function f: ℳ → ℝ with the manifold ℳ.
-    ///
-    /// # Arguments
-    ///
-    /// * `cost_fn` - Objective function to minimize
-    /// * `manifold` - Riemannian manifold constraining the optimization
-    ///
-    /// # Type Safety
-    ///
-    /// The context ensures that the cost function's Point and TangentVector
-    /// types match the manifold's associated types, preventing runtime errors.
-    pub fn new(cost_fn: &'a C, manifold: &'a M) -> Self {
-        Self {
-            cost_fn,
-            manifold,
-            _phantom: std::marker::PhantomData,
-        }
-    }
+	/// Creates a new line search context binding a cost function to a manifold.
+	///
+	/// This establishes the mathematical setting for line search operations
+	/// by pairing the objective function f: ℳ → ℝ with the manifold ℳ.
+	///
+	/// # Arguments
+	///
+	/// * `cost_fn` - Objective function to minimize
+	/// * `manifold` - Riemannian manifold constraining the optimization
+	///
+	/// # Type Safety
+	///
+	/// The context ensures that the cost function's Point and TangentVector
+	/// types match the manifold's associated types, preventing runtime errors.
+	pub fn new(cost_fn: &'a C, manifold: &'a M) -> Self {
+		Self {
+			cost_fn,
+			manifold,
+			_phantom: std::marker::PhantomData,
+		}
+	}
 }
 
 /// Universal interface for line search algorithms on Riemannian manifolds.
@@ -551,218 +551,225 @@ where
 /// Clean API using bundled parameters for complex optimization loops
 pub trait LineSearch<T>: Debug
 where
-    T: Scalar,
+	T: Scalar,
 {
-    /// Performs line search to find optimal step size along search direction.
-    ///
-    /// This is the primary line search interface that computes the directional
-    /// derivative internally and finds a step size satisfying sufficient decrease
-    /// conditions. It provides a complete solution for most optimization algorithms.
-    ///
-    /// # Mathematical Process
-    ///
-    /// 1. **Validate inputs**: Ensure descent direction ⟨grad f(x), η⟩_g < 0
-    /// 2. **Compute directional derivative**: d₀ = ⟨grad f(x), η⟩_g
-    /// 3. **Search for step size**: Find α satisfying Armijo/Wolfe conditions
-    /// 4. **Return result**: New point y = R_x(α η) and metadata
-    ///
-    /// # Arguments
-    ///
-    /// * `cost_fn` - Objective function f: ℳ → ℝ to minimize
-    /// * `manifold` - Riemannian manifold ℳ with retraction R_x
-    /// * `point` - Current point x ∈ ℳ
-    /// * `value` - Current function value f(x)
-    /// * `gradient` - Current Riemannian gradient grad f(x) ∈ T_x ℳ
-    /// * `direction` - Search direction η ∈ T_x ℳ (must be descent: ⟨grad f(x), η⟩_g < 0)
-    /// * `params` - Line search parameters (step sizes, Wolfe constants, etc.)
-    ///
-    /// # Returns
-    ///
-    /// `LineSearchResult` containing:
-    /// - Accepted step size α and new point y = R_x(α η)
-    /// - Function value f(y) and optionally gradient grad f(y)
-    /// - Computational statistics (function/gradient evaluations)
-    /// - Success flag indicating whether sufficient decrease was achieved
-    ///
-    /// # Errors
-    ///
-    /// Returns errors for:
-    /// - Non-descent direction: ⟨grad f(x), η⟩_g ≥ 0
-    /// - Invalid parameters: violating mathematical constraints
-    /// - Line search failure: no acceptable step size found
-    /// - Manifold operation failures: retraction or transport errors
-    /// - Numerical issues: NaN, infinity, or precision loss
-    ///
-    /// # Performance Notes
-    ///
-    /// This method computes the directional derivative, which requires one
-    /// inner product evaluation. For repeated line searches, consider using
-    /// `search_with_deriv` to avoid redundant computations.
-    #[allow(clippy::too_many_arguments)]
-    fn search<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        point: &M::Point,
-        value: T,
-        gradient: &M::TangentVector,
-        direction: &M::TangentVector,
-        params: &LineSearchParams<T>,
-    ) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>,
-    {
-        // Default implementation: compute directional derivative and use efficient method
-        let directional_deriv = manifold.inner_product(point, gradient, direction)?;
-        self.search_with_deriv(cost_fn, manifold, point, value, direction, directional_deriv, params)
-    }
-    
-    /// Efficient line search with pre-computed directional derivative.
-    ///
-    /// This optimized interface avoids redundant computation of the directional
-    /// derivative when it has already been computed. This is particularly valuable
-    /// in optimization algorithms that reuse gradient information.
-    ///
-    /// # Mathematical Foundation
-    ///
-    /// The directional derivative d₀ = ⟨grad f(x), η⟩_g represents the instantaneous
-    /// rate of change of f along direction η. It must be negative for η to be
-    /// a descent direction.
-    ///
-    /// # Efficiency Benefits
-    ///
-    /// - Saves one Riemannian inner product computation per line search
-    /// - Enables algorithmic optimizations (gradient reuse, direction caching)
-    /// - Reduces computational overhead in iteration-heavy algorithms
-    ///
-    /// # Arguments
-    ///
-    /// * `cost_fn` - Objective function f: ℳ → ℝ to minimize
-    /// * `manifold` - Riemannian manifold ℳ with geometric operations
-    /// * `point` - Current point x ∈ ℳ on the manifold
-    /// * `value` - Current objective value f(x)
-    /// * `direction` - Search direction η ∈ T_x ℳ
-    /// * `directional_deriv` - Pre-computed directional derivative ⟨grad f(x), η⟩_g < 0
-    /// * `params` - Line search algorithm parameters
-    ///
-    /// # Returns
-    ///
-    /// Complete `LineSearchResult` with step size, new point, and statistics.
-    ///
-    /// # Preconditions
-    ///
-    /// - `directional_deriv` must equal ⟨grad f(x), η⟩_g
-    /// - `directional_deriv` < 0 (descent direction)
-    /// - `point` must lie on the manifold
-    /// - `direction` must be in the tangent space T_x ℳ
-    ///
-    /// # Usage
-    ///
-    /// ```rust,ignore
-    /// # use riemannopt_core::prelude::*;
-    /// // Compute directional derivative once
-    /// let dir_deriv = manifold.inner_product(&point, &gradient, &direction)?;
-    /// 
-    /// // Use in line search without recomputation
-    /// let result = line_search.search_with_deriv(
-    ///     &cost_fn, &manifold, &point, value, 
-    ///     &direction, dir_deriv, &params
-    /// )?;
-    /// # Ok::<(), riemannopt_core::error::ManifoldError>(())
-    /// ```
-    #[allow(clippy::too_many_arguments)]
-    fn search_with_deriv<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        point: &M::Point,
-        value: T,
-        direction: &M::TangentVector,
-        directional_deriv: T,
-        params: &LineSearchParams<T>,
-    ) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>;
-    
+	/// Performs line search to find optimal step size along search direction.
+	///
+	/// This is the primary line search interface that computes the directional
+	/// derivative internally and finds a step size satisfying sufficient decrease
+	/// conditions. It provides a complete solution for most optimization algorithms.
+	///
+	/// # Mathematical Process
+	///
+	/// 1. **Validate inputs**: Ensure descent direction ⟨grad f(x), η⟩_g < 0
+	/// 2. **Compute directional derivative**: d₀ = ⟨grad f(x), η⟩_g
+	/// 3. **Search for step size**: Find α satisfying Armijo/Wolfe conditions
+	/// 4. **Return result**: New point y = R_x(α η) and metadata
+	///
+	/// # Arguments
+	///
+	/// * `cost_fn` - Objective function f: ℳ → ℝ to minimize
+	/// * `manifold` - Riemannian manifold ℳ with retraction R_x
+	/// * `point` - Current point x ∈ ℳ
+	/// * `value` - Current function value f(x)
+	/// * `gradient` - Current Riemannian gradient grad f(x) ∈ T_x ℳ
+	/// * `direction` - Search direction η ∈ T_x ℳ (must be descent: ⟨grad f(x), η⟩_g < 0)
+	/// * `params` - Line search parameters (step sizes, Wolfe constants, etc.)
+	///
+	/// # Returns
+	///
+	/// `LineSearchResult` containing:
+	/// - Accepted step size α and new point y = R_x(α η)
+	/// - Function value f(y) and optionally gradient grad f(y)
+	/// - Computational statistics (function/gradient evaluations)
+	/// - Success flag indicating whether sufficient decrease was achieved
+	///
+	/// # Errors
+	///
+	/// Returns errors for:
+	/// - Non-descent direction: ⟨grad f(x), η⟩_g ≥ 0
+	/// - Invalid parameters: violating mathematical constraints
+	/// - Line search failure: no acceptable step size found
+	/// - Manifold operation failures: retraction or transport errors
+	/// - Numerical issues: NaN, infinity, or precision loss
+	///
+	/// # Performance Notes
+	///
+	/// This method computes the directional derivative, which requires one
+	/// inner product evaluation. For repeated line searches, consider using
+	/// `search_with_deriv` to avoid redundant computations.
+	#[allow(clippy::too_many_arguments)]
+	fn search<C, M>(
+		&mut self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		value: T,
+		gradient: &M::TangentVector,
+		direction: &M::TangentVector,
+		params: &LineSearchParams<T>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		// Default implementation: compute directional derivative and use efficient method
+		let directional_deriv = manifold.inner_product(point, gradient, direction)?;
+		self.search_with_deriv(
+			cost_fn,
+			manifold,
+			point,
+			value,
+			direction,
+			directional_deriv,
+			params,
+		)
+	}
 
-    /// Returns a human-readable name identifying the line search algorithm.
-    ///
-    /// Used for logging, debugging, and algorithm selection. Examples:
-    /// "Backtracking", "StrongWolfe", "FixedStep", "Cubic", "MoreThuente".
-    fn name(&self) -> &str;
-    
-    /// Line search using bundled context for cleaner API.
-    ///
-    /// This interface provides syntactic convenience by bundling the cost function
-    /// and manifold into a context object. It's particularly useful in complex
-    /// optimization loops where the context remains constant.
-    ///
-    /// # API Benefits
-    ///
-    /// - Reduces parameter count for cleaner method signatures
-    /// - Enables method chaining and functional composition
-    /// - Improves code readability in optimization implementations
-    /// - Maintains type safety through compile-time verification
-    ///
-    /// # Arguments
-    ///
-    /// * `ctx` - Line search context bundling cost function and manifold
-    /// * `point` - Current point x ∈ ℳ on the manifold
-    /// * `value` - Current objective function value f(x)
-    /// * `gradient` - Current Riemannian gradient grad f(x) ∈ T_x ℳ
-    /// * `direction` - Search direction η ∈ T_x ℳ (must satisfy descent condition)
-    /// * `params` - Line search algorithm parameters
-    ///
-    /// # Returns
-    ///
-    /// Complete `LineSearchResult` equivalent to the standard `search` method.
-    ///
-    /// # Usage
-    ///
-    /// ```rust,ignore
-    /// # use riemannopt_core::prelude::*;
-    /// let ctx = LineSearchContext::new(&cost_fn, &manifold);
-    /// 
-    /// for iteration in 0..max_iterations {
-    ///     let result = line_search.search_with_context(
-    ///         &ctx, &point, value, &gradient, &direction, &params
-    ///     )?;
-    ///     
-    ///     // Update optimization state...
-    /// }
-    /// # Ok::<(), riemannopt_core::error::ManifoldError>(())
-    /// ```
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation delegates to the standard `search` method,
-    /// so implementing this method is optional for most line search algorithms.
-    fn search_with_context<C, M>(
-        &mut self,
-        ctx: &LineSearchContext<T, C, M>,
-        point: &M::Point,
-        value: T,
-        gradient: &M::TangentVector,
-        direction: &M::TangentVector,
-        params: &LineSearchParams<T>,
-    ) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>,
-    {
-        // Default implementation delegates to the old method
-        self.search(
-            ctx.cost_fn,
-            ctx.manifold,
-            point,
-            value,
-            gradient,
-            direction,
-            params,
-        )
-    }
+	/// Efficient line search with pre-computed directional derivative.
+	///
+	/// This optimized interface avoids redundant computation of the directional
+	/// derivative when it has already been computed. This is particularly valuable
+	/// in optimization algorithms that reuse gradient information.
+	///
+	/// # Mathematical Foundation
+	///
+	/// The directional derivative d₀ = ⟨grad f(x), η⟩_g represents the instantaneous
+	/// rate of change of f along direction η. It must be negative for η to be
+	/// a descent direction.
+	///
+	/// # Efficiency Benefits
+	///
+	/// - Saves one Riemannian inner product computation per line search
+	/// - Enables algorithmic optimizations (gradient reuse, direction caching)
+	/// - Reduces computational overhead in iteration-heavy algorithms
+	///
+	/// # Arguments
+	///
+	/// * `cost_fn` - Objective function f: ℳ → ℝ to minimize
+	/// * `manifold` - Riemannian manifold ℳ with geometric operations
+	/// * `point` - Current point x ∈ ℳ on the manifold
+	/// * `value` - Current objective value f(x)
+	/// * `direction` - Search direction η ∈ T_x ℳ
+	/// * `directional_deriv` - Pre-computed directional derivative ⟨grad f(x), η⟩_g < 0
+	/// * `params` - Line search algorithm parameters
+	///
+	/// # Returns
+	///
+	/// Complete `LineSearchResult` with step size, new point, and statistics.
+	///
+	/// # Preconditions
+	///
+	/// - `directional_deriv` must equal ⟨grad f(x), η⟩_g
+	/// - `directional_deriv` < 0 (descent direction)
+	/// - `point` must lie on the manifold
+	/// - `direction` must be in the tangent space T_x ℳ
+	///
+	/// # Usage
+	///
+	/// ```rust,ignore
+	/// # use riemannopt_core::prelude::*;
+	/// // Compute directional derivative once
+	/// let dir_deriv = manifold.inner_product(&point, &gradient, &direction)?;
+	///
+	/// // Use in line search without recomputation
+	/// let result = line_search.search_with_deriv(
+	///     &cost_fn, &manifold, &point, value,
+	///     &direction, dir_deriv, &params
+	/// )?;
+	/// # Ok::<(), riemannopt_core::error::ManifoldError>(())
+	/// ```
+	#[allow(clippy::too_many_arguments)]
+	fn search_with_deriv<C, M>(
+		&mut self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		value: T,
+		direction: &M::TangentVector,
+		directional_deriv: T,
+		params: &LineSearchParams<T>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>;
+
+	/// Returns a human-readable name identifying the line search algorithm.
+	///
+	/// Used for logging, debugging, and algorithm selection. Examples:
+	/// "Backtracking", "StrongWolfe", "FixedStep", "Cubic", "MoreThuente".
+	fn name(&self) -> &str;
+
+	/// Line search using bundled context for cleaner API.
+	///
+	/// This interface provides syntactic convenience by bundling the cost function
+	/// and manifold into a context object. It's particularly useful in complex
+	/// optimization loops where the context remains constant.
+	///
+	/// # API Benefits
+	///
+	/// - Reduces parameter count for cleaner method signatures
+	/// - Enables method chaining and functional composition
+	/// - Improves code readability in optimization implementations
+	/// - Maintains type safety through compile-time verification
+	///
+	/// # Arguments
+	///
+	/// * `ctx` - Line search context bundling cost function and manifold
+	/// * `point` - Current point x ∈ ℳ on the manifold
+	/// * `value` - Current objective function value f(x)
+	/// * `gradient` - Current Riemannian gradient grad f(x) ∈ T_x ℳ
+	/// * `direction` - Search direction η ∈ T_x ℳ (must satisfy descent condition)
+	/// * `params` - Line search algorithm parameters
+	///
+	/// # Returns
+	///
+	/// Complete `LineSearchResult` equivalent to the standard `search` method.
+	///
+	/// # Usage
+	///
+	/// ```rust,ignore
+	/// # use riemannopt_core::prelude::*;
+	/// let ctx = LineSearchContext::new(&cost_fn, &manifold);
+	///
+	/// for iteration in 0..max_iterations {
+	///     let result = line_search.search_with_context(
+	///         &ctx, &point, value, &gradient, &direction, &params
+	///     )?;
+	///     
+	///     // Update optimization state...
+	/// }
+	/// # Ok::<(), riemannopt_core::error::ManifoldError>(())
+	/// ```
+	///
+	/// # Default Implementation
+	///
+	/// The default implementation delegates to the standard `search` method,
+	/// so implementing this method is optional for most line search algorithms.
+	fn search_with_context<C, M>(
+		&mut self,
+		ctx: &LineSearchContext<T, C, M>,
+		point: &M::Point,
+		value: T,
+		gradient: &M::TangentVector,
+		direction: &M::TangentVector,
+		params: &LineSearchParams<T>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		// Default implementation delegates to the old method
+		self.search(
+			ctx.cost_fn,
+			ctx.manifold,
+			point,
+			value,
+			gradient,
+			direction,
+			params,
+		)
+	}
 }
 
 /// Backtracking line search with Armijo sufficient decrease condition.
@@ -817,88 +824,88 @@ where
 pub struct BacktrackingLineSearch;
 
 impl BacktrackingLineSearch {
-    /// Creates a new backtracking line search with default parameters.
-    ///
-    /// Uses standard Armijo condition with conservative default parameters
-    /// suitable for most gradient-based optimization algorithms.
-    pub fn new() -> Self {
-        Self
-    }
+	/// Creates a new backtracking line search with default parameters.
+	///
+	/// Uses standard Armijo condition with conservative default parameters
+	/// suitable for most gradient-based optimization algorithms.
+	pub fn new() -> Self {
+		Self
+	}
 }
 
 impl Default for BacktrackingLineSearch {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl<T> LineSearch<T> for BacktrackingLineSearch
 where
-    T: Scalar,
+	T: Scalar,
 {
-    fn search_with_deriv<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        point: &M::Point,
-        value: T,
-        direction: &M::TangentVector,
-        directional_deriv: T,
-        params: &LineSearchParams<T>,
-    ) -> Result<LineSearchResult<T, M::Point, M::TangentVector>> 
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>,
-    {
-        // Validate parameters
-        params.validate()?;
+	fn search_with_deriv<C, M>(
+		&mut self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		value: T,
+		direction: &M::TangentVector,
+		directional_deriv: T,
+		params: &LineSearchParams<T>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		// Validate parameters
+		params.validate()?;
 
-        if directional_deriv >= T::zero() {
-            return Err(ManifoldError::numerical_error(
-                "Search direction is not a descent direction",
-            ));
-        }
+		if directional_deriv >= T::zero() {
+			return Err(ManifoldError::numerical_error(
+				"Search direction is not a descent direction",
+			));
+		}
 
-        // For now, provide a simplified implementation
-        // Full implementation would require proper handling of generic point/tangent types
-        let step_size = params.initial_step_size;
-        let _workspace: Workspace<T> = Workspace::new();
-        
-        // Create new point - this requires the manifold to handle allocation
-        let mut new_point = point.clone();
-        let _scaled_direction = direction.clone();
-        
-        // Scale direction - requires proper trait bounds
-        // scaled_direction *= step_size;
-        
-        // Use manifold's retract with a simple step
-        manifold.retract(point, direction, &mut new_point)?;
-        
-        // Evaluate at new point
-        let new_value = cost_fn.cost(&new_point)?;
-        
-        // Simple Armijo check
-        let expected_decrease = params.c1 * step_size * directional_deriv;
-        if new_value <= value + expected_decrease {
-            Ok(LineSearchResult {
-                step_size,
-                new_point,
-                new_value,
-                new_gradient: None,
-                function_evals: 1,
-                gradient_evals: 0,
-                success: true,
-            })
-        } else {
-            Err(ManifoldError::numerical_error(
-                "Backtracking line search failed: Armijo condition not satisfied",
-            ))
-        }
-    }
+		// For now, provide a simplified implementation
+		// Full implementation would require proper handling of generic point/tangent types
+		let step_size = params.initial_step_size;
+		let _workspace: Workspace<T> = Workspace::new();
 
-    fn name(&self) -> &str {
-        "Backtracking"
-    }
+		// Create new point - this requires the manifold to handle allocation
+		let mut new_point = point.clone();
+		let _scaled_direction = direction.clone();
+
+		// Scale direction - requires proper trait bounds
+		// scaled_direction *= step_size;
+
+		// Use manifold's retract with a simple step
+		manifold.retract(point, direction, &mut new_point)?;
+
+		// Evaluate at new point
+		let new_value = cost_fn.cost(&new_point)?;
+
+		// Simple Armijo check
+		let expected_decrease = params.c1 * step_size * directional_deriv;
+		if new_value <= value + expected_decrease {
+			Ok(LineSearchResult {
+				step_size,
+				new_point,
+				new_value,
+				new_gradient: None,
+				function_evals: 1,
+				gradient_evals: 0,
+				success: true,
+			})
+		} else {
+			Err(ManifoldError::numerical_error(
+				"Backtracking line search failed: Armijo condition not satisfied",
+			))
+		}
+	}
+
+	fn name(&self) -> &str {
+		"Backtracking"
+	}
 }
 
 /// Line search satisfying strong Wolfe conditions for high-quality steps.
@@ -961,79 +968,79 @@ where
 /// - Essential for maintaining quasi-Newton Hessian approximation quality
 #[derive(Debug, Clone)]
 pub struct StrongWolfeLineSearch {
-    /// Tolerance for the line search
-    tolerance: f64,
+	/// Tolerance for the line search
+	tolerance: f64,
 }
 
 impl StrongWolfeLineSearch {
-    /// Creates a new strong Wolfe line search with default tolerance.
-    ///
-    /// Initializes the algorithm with standard parameters optimized for
-    /// quasi-Newton methods requiring high-quality step sizes.
-    pub fn new() -> Self {
-        Self { tolerance: 1e-10 }
-    }
+	/// Creates a new strong Wolfe line search with default tolerance.
+	///
+	/// Initializes the algorithm with standard parameters optimized for
+	/// quasi-Newton methods requiring high-quality step sizes.
+	pub fn new() -> Self {
+		Self { tolerance: 1e-10 }
+	}
 
-    /// Configures numerical tolerance for convergence testing.
-    ///
-    /// This tolerance affects the precision of the bracketing and zoom
-    /// phases, trading computational cost for step size accuracy.
-    pub fn with_tolerance(mut self, tol: f64) -> Self {
-        self.tolerance = tol;
-        self
-    }
+	/// Configures numerical tolerance for convergence testing.
+	///
+	/// This tolerance affects the precision of the bracketing and zoom
+	/// phases, trading computational cost for step size accuracy.
+	pub fn with_tolerance(mut self, tol: f64) -> Self {
+		self.tolerance = tol;
+		self
+	}
 }
 
 impl Default for StrongWolfeLineSearch {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl<T> LineSearch<T> for StrongWolfeLineSearch
 where
-    T: Scalar,
+	T: Scalar,
 {
-    fn search_with_deriv<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        point: &M::Point,
-        value: T,
-        direction: &M::TangentVector,
-        directional_deriv: T,
-        params: &LineSearchParams<T>,
-    ) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>,
-    {
-        // Validate parameters
-        params.validate()?;
+	fn search_with_deriv<C, M>(
+		&mut self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		value: T,
+		direction: &M::TangentVector,
+		directional_deriv: T,
+		params: &LineSearchParams<T>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		// Validate parameters
+		params.validate()?;
 
-        if directional_deriv >= T::zero() {
-            return Err(ManifoldError::numerical_error(
-                "Search direction is not a descent direction",
-            ));
-        }
+		if directional_deriv >= T::zero() {
+			return Err(ManifoldError::numerical_error(
+				"Search direction is not a descent direction",
+			));
+		}
 
-        // For now, delegate to backtracking with tighter parameters
-        // Full strong Wolfe implementation requires complex bracketing and zoom
-        let mut backtracking = BacktrackingLineSearch::new();
-        backtracking.search_with_deriv(
-            cost_fn,
-            manifold,
-            point,
-            value,
-            direction,
-            directional_deriv,
-            params,
-        )
-    }
+		// For now, delegate to backtracking with tighter parameters
+		// Full strong Wolfe implementation requires complex bracketing and zoom
+		let mut backtracking = BacktrackingLineSearch::new();
+		backtracking.search_with_deriv(
+			cost_fn,
+			manifold,
+			point,
+			value,
+			direction,
+			directional_deriv,
+			params,
+		)
+	}
 
-    fn name(&self) -> &str {
-        "StrongWolfe"
-    }
+	fn name(&self) -> &str {
+		"StrongWolfe"
+	}
 }
 
 /// Fixed step size strategy for algorithms with predetermined step lengths.
@@ -1104,284 +1111,284 @@ where
 /// solutions are acceptable.
 #[derive(Debug, Clone, Copy)]
 pub struct FixedStepSize<T> {
-    step_size: T,
+	step_size: T,
 }
 
 impl<T: Scalar> FixedStepSize<T> {
-    /// Creates a fixed step size strategy with specified step length.
-    ///
-    /// # Arguments
-    ///
-    /// * `step_size` - Fixed step size α > 0 to use for all iterations
-    ///
-    /// # Mathematical Note
-    ///
-    /// The step size should be chosen based on problem characteristics:
-    /// - For Lipschitz gradients: α ≤ 1/L where L is the Lipschitz constant
-    /// - For stochastic methods: α_k = O(1/k) or O(1/√k)
-    /// - For trust region methods: α determined by trust region radius
-    pub fn new(step_size: T) -> Self {
-        Self { step_size }
-    }
+	/// Creates a fixed step size strategy with specified step length.
+	///
+	/// # Arguments
+	///
+	/// * `step_size` - Fixed step size α > 0 to use for all iterations
+	///
+	/// # Mathematical Note
+	///
+	/// The step size should be chosen based on problem characteristics:
+	/// - For Lipschitz gradients: α ≤ 1/L where L is the Lipschitz constant
+	/// - For stochastic methods: α_k = O(1/k) or O(1/√k)
+	/// - For trust region methods: α determined by trust region radius
+	pub fn new(step_size: T) -> Self {
+		Self { step_size }
+	}
 }
 
 impl<T> LineSearch<T> for FixedStepSize<T>
 where
-    T: Scalar,
+	T: Scalar,
 {
-    fn search_with_deriv<C, M>(
-        &mut self,
-        cost_fn: &C,
-        manifold: &M,
-        point: &M::Point,
-        _value: T,
-        direction: &M::TangentVector,
-        _directional_deriv: T,
-        _params: &LineSearchParams<T>,
-    ) -> Result<LineSearchResult<T, M::Point, M::TangentVector>> 
-    where
-        C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-        M: Manifold<T>,
-    {
-        let _workspace: Workspace<T> = Workspace::new();
-        let mut new_point = point.clone();
-        
-        // Use manifold's retract - scaling would require trait bounds on TangentVector
-        manifold.retract(point, direction, &mut new_point)?;
-        let new_value = cost_fn.cost(&new_point)?;
+	fn search_with_deriv<C, M>(
+		&mut self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		_value: T,
+		direction: &M::TangentVector,
+		_directional_deriv: T,
+		_params: &LineSearchParams<T>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		let _workspace: Workspace<T> = Workspace::new();
+		let mut new_point = point.clone();
 
-        Ok(LineSearchResult {
-            step_size: self.step_size,
-            new_point,
-            new_value,
-            new_gradient: None,
-            function_evals: 1,
-            gradient_evals: 0,
-            success: true,
-        })
-    }
+		// Use manifold's retract - scaling would require trait bounds on TangentVector
+		manifold.retract(point, direction, &mut new_point)?;
+		let new_value = cost_fn.cost(&new_point)?;
 
-    fn name(&self) -> &str {
-        "FixedStep"
-    }
+		Ok(LineSearchResult {
+			step_size: self.step_size,
+			new_point,
+			new_value,
+			new_gradient: None,
+			function_evals: 1,
+			gradient_evals: 0,
+			success: true,
+		})
+	}
+
+	fn name(&self) -> &str {
+		"FixedStep"
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    // Tests temporarily commented - need to be rewritten with new trait structure
-    /*
-    use super::*;
-    use crate::{core::cost_function::QuadraticCost, types::DVector};
-    use approx::assert_relative_eq;
-    use nalgebra::Dyn;
+	// Tests temporarily commented - need to be rewritten with new trait structure
+	/*
+	use super::*;
+	use crate::{core::cost_function::QuadraticCost, types::DVector};
+	use approx::assert_relative_eq;
+	use nalgebra::Dyn;
 
-    // Simple Euclidean manifold for testing
-    #[derive(Debug)]
-    struct EuclideanManifold {
-        dim: usize,
-    }
+	// Simple Euclidean manifold for testing
+	#[derive(Debug)]
+	struct EuclideanManifold {
+		dim: usize,
+	}
 
-    impl Manifold<f64> for EuclideanManifold {
-        fn name(&self) -> &str {
-            "Euclidean"
-        }
-        fn dimension(&self) -> usize {
-            self.dim
-        }
-        fn is_point_on_manifold(&self, _point: &DVector<f64>, _tol: f64) -> bool {
-            true
-        }
-        fn is_vector_in_tangent_space(
-            &self,
-            _point: &DVector<f64>,
-            _vector: &DVector<f64>,
-            _tol: f64,
-        ) -> bool {
-            true
-        }
-        fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
-            result.copy_from(point);
-        }
-        fn project_tangent(
-            &self,
-            _point: &DVector<f64>,
-            vector: &DVector<f64>,
-            result: &mut DVector<f64>,
-            _workspace: &mut Workspace<f64>,
-        ) -> Result<()> {
-            result.copy_from(vector);
-            Ok(())
-        }
-        fn inner_product(
-            &self,
-            _point: &DVector<f64>,
-            u: &DVector<f64>,
-            v: &DVector<f64>,
-        ) -> Result<f64> {
-            Ok(u.dot(v))
-        }
-        fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
-            result.copy_from(&(point + tangent));
-            Ok(())
-        }
-        fn inverse_retract(
-            &self,
-            point: &DVector<f64>,
-            other: &DVector<f64>,
-            result: &mut DVector<f64>,
-            _workspace: &mut Workspace<f64>,
-        ) -> Result<()> {
-            result.copy_from(&(other - point));
-            Ok(())
-        }
-        fn euclidean_to_riemannian_gradient(
-            &self,
-            _point: &DVector<f64>,
-            euclidean_grad: &DVector<f64>,
-            result: &mut DVector<f64>,
-            _workspace: &mut Workspace<f64>,
-        ) -> Result<()> {
-            result.copy_from(euclidean_grad);
-            Ok(())
-        }
-        fn random_point(&self) -> DVector<f64> {
-            DVector::zeros(self.dim)
-        }
-        fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
-            result.fill(0.0);
-            Ok(())
-        }
-    }
+	impl Manifold<f64> for EuclideanManifold {
+		fn name(&self) -> &str {
+			"Euclidean"
+		}
+		fn dimension(&self) -> usize {
+			self.dim
+		}
+		fn is_point_on_manifold(&self, _point: &DVector<f64>, _tol: f64) -> bool {
+			true
+		}
+		fn is_vector_in_tangent_space(
+			&self,
+			_point: &DVector<f64>,
+			_vector: &DVector<f64>,
+			_tol: f64,
+		) -> bool {
+			true
+		}
+		fn project_point(&self, point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) {
+			result.copy_from(point);
+		}
+		fn project_tangent(
+			&self,
+			_point: &DVector<f64>,
+			vector: &DVector<f64>,
+			result: &mut DVector<f64>,
+			_workspace: &mut Workspace<f64>,
+		) -> Result<()> {
+			result.copy_from(vector);
+			Ok(())
+		}
+		fn inner_product(
+			&self,
+			_point: &DVector<f64>,
+			u: &DVector<f64>,
+			v: &DVector<f64>,
+		) -> Result<f64> {
+			Ok(u.dot(v))
+		}
+		fn retract(&self, point: &DVector<f64>, tangent: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
+			result.copy_from(&(point + tangent));
+			Ok(())
+		}
+		fn inverse_retract(
+			&self,
+			point: &DVector<f64>,
+			other: &DVector<f64>,
+			result: &mut DVector<f64>,
+			_workspace: &mut Workspace<f64>,
+		) -> Result<()> {
+			result.copy_from(&(other - point));
+			Ok(())
+		}
+		fn euclidean_to_riemannian_gradient(
+			&self,
+			_point: &DVector<f64>,
+			euclidean_grad: &DVector<f64>,
+			result: &mut DVector<f64>,
+			_workspace: &mut Workspace<f64>,
+		) -> Result<()> {
+			result.copy_from(euclidean_grad);
+			Ok(())
+		}
+		fn random_point(&self) -> DVector<f64> {
+			DVector::zeros(self.dim)
+		}
+		fn random_tangent(&self, _point: &DVector<f64>, result: &mut DVector<f64>, _workspace: &mut Workspace<f64>) -> Result<()> {
+			result.fill(0.0);
+			Ok(())
+		}
+	}
 
-    #[test]
-    fn test_backtracking_line_search() {
-        let manifold = EuclideanManifold { dim: 2 };
-        let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
+	#[test]
+	fn test_backtracking_line_search() {
+		let manifold = EuclideanManifold { dim: 2 };
+		let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
-        let point = DVector::from_vec(vec![1.0, 1.0]);
-        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
-        let direction = -&gradient; // Steepest descent direction
+		let point = DVector::from_vec(vec![1.0, 1.0]);
+		let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
+		let direction = -&gradient; // Steepest descent direction
 
-        let mut ls = BacktrackingLineSearch::new();
-        let params = LineSearchParams::backtracking();
+		let mut ls = BacktrackingLineSearch::new();
+		let params = LineSearchParams::backtracking();
 
-        let result = ls
-            .search(
-                &cost,
-                &manifold,
-                &point,
-                value,
-                &gradient,
-                &direction,
-                &params,
-            )
-            .unwrap();
+		let result = ls
+			.search(
+				&cost,
+				&manifold,
+				&point,
+				value,
+				&gradient,
+				&direction,
+				&params,
+			)
+			.unwrap();
 
-        assert!(result.success);
-        assert!(result.step_size > 0.0);
-        assert!(result.new_value < value);
-    }
+		assert!(result.success);
+		assert!(result.step_size > 0.0);
+		assert!(result.new_value < value);
+	}
 
-    #[test]
-    fn test_backtracking_descent_check() {
-        let manifold = EuclideanManifold { dim: 2 };
-        let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
+	#[test]
+	fn test_backtracking_descent_check() {
+		let manifold = EuclideanManifold { dim: 2 };
+		let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
-        let point = DVector::from_vec(vec![1.0, 1.0]);
-        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
-        let bad_direction = gradient.clone(); // Ascent direction
+		let point = DVector::from_vec(vec![1.0, 1.0]);
+		let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
+		let bad_direction = gradient.clone(); // Ascent direction
 
-        let mut ls = BacktrackingLineSearch::new();
-        let params = LineSearchParams::backtracking();
+		let mut ls = BacktrackingLineSearch::new();
+		let params = LineSearchParams::backtracking();
 
-        let result = ls.search(
-            &cost,
-            &manifold,
-            &point,
-            value,
-            &gradient,
-            &bad_direction,
-            &params,
-        );
+		let result = ls.search(
+			&cost,
+			&manifold,
+			&point,
+			value,
+			&gradient,
+			&bad_direction,
+			&params,
+		);
 
-        assert!(result.is_err());
-    }
+		assert!(result.is_err());
+	}
 
-    #[test]
-    fn test_strong_wolfe_line_search() {
-        let manifold = EuclideanManifold { dim: 2 };
-        let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
+	#[test]
+	fn test_strong_wolfe_line_search() {
+		let manifold = EuclideanManifold { dim: 2 };
+		let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
-        let point = DVector::from_vec(vec![2.0, 3.0]);
-        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
-        let direction = -&gradient;
+		let point = DVector::from_vec(vec![2.0, 3.0]);
+		let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
+		let direction = -&gradient;
 
-        let mut ls = StrongWolfeLineSearch::new();
-        let params = LineSearchParams::strong_wolfe();
+		let mut ls = StrongWolfeLineSearch::new();
+		let params = LineSearchParams::strong_wolfe();
 
-        let result = ls
-            .search(
-                &cost,
-                &manifold,
-                &point,
-                value,
-                &gradient,
-                &direction,
-                &params,
-            )
-            .unwrap();
+		let result = ls
+			.search(
+				&cost,
+				&manifold,
+				&point,
+				value,
+				&gradient,
+				&direction,
+				&params,
+			)
+			.unwrap();
 
-        assert!(result.success);
-        assert!(result.new_gradient.is_some());
-        assert!(result.new_value < value);
+		assert!(result.success);
+		assert!(result.new_gradient.is_some());
+		assert!(result.new_value < value);
 
-        // For quadratic function, optimal step size is 1.0
-        assert_relative_eq!(result.step_size, 1.0, epsilon = 0.1);
-    }
+		// For quadratic function, optimal step size is 1.0
+		assert_relative_eq!(result.step_size, 1.0, epsilon = 0.1);
+	}
 
-    #[test]
-    fn test_fixed_step_size() {
-        let manifold = EuclideanManifold { dim: 2 };
-        let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
+	#[test]
+	fn test_fixed_step_size() {
+		let manifold = EuclideanManifold { dim: 2 };
+		let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
 
-        let point = DVector::from_vec(vec![1.0, 1.0]);
-        let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
-        let direction = -&gradient;
+		let point = DVector::from_vec(vec![1.0, 1.0]);
+		let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
+		let direction = -&gradient;
 
-        let mut ls = FixedStepSize::new(0.1);
-        let params = LineSearchParams::default();
+		let mut ls = FixedStepSize::new(0.1);
+		let params = LineSearchParams::default();
 
-        let result = ls
-            .search(
-                &cost,
-                &manifold,
-                &point,
-                value,
-                &gradient,
-                &direction,
-                &params,
-            )
-            .unwrap();
+		let result = ls
+			.search(
+				&cost,
+				&manifold,
+				&point,
+				value,
+				&gradient,
+				&direction,
+				&params,
+			)
+			.unwrap();
 
-        assert!(result.success);
-        assert_eq!(result.step_size, 0.1);
-        assert_eq!(result.function_evals, 1);
+		assert!(result.success);
+		assert_eq!(result.step_size, 0.1);
+		assert_eq!(result.function_evals, 1);
 
-        // New point should be point + 0.1 * direction
-        let expected = &point + &direction * 0.1;
-        assert_relative_eq!(result.new_point, expected);
-    }
+		// New point should be point + 0.1 * direction
+		let expected = &point + &direction * 0.1;
+		assert_relative_eq!(result.new_point, expected);
+	}
 
-    #[test]
-    fn test_line_search_params() {
-        let params = LineSearchParams::<f64>::strong_wolfe();
-        assert_eq!(params.c1, 1e-4);
-        assert_eq!(params.c2, 0.9);
+	#[test]
+	fn test_line_search_params() {
+		let params = LineSearchParams::<f64>::strong_wolfe();
+		assert_eq!(params.c1, 1e-4);
+		assert_eq!(params.c2, 0.9);
 
-        let params = LineSearchParams::<f64>::backtracking();
-        assert_eq!(params.c1, 0.5);
-        assert_eq!(params.rho, 0.5);
-        assert_eq!(params.max_iterations, 20);
-    }
-    */
+		let params = LineSearchParams::<f64>::backtracking();
+		assert_eq!(params.c1, 0.5);
+		assert_eq!(params.rho, 0.5);
+		assert_eq!(params.max_iterations, 20);
+	}
+	*/
 }

@@ -1,19 +1,12 @@
 //! Memory management utilities for optimization algorithms.
 
+pub mod cache;
 pub mod pool;
 pub mod workspace;
-pub mod cache;
 
 // Re-export key items
+pub use cache::{CacheKey, CacheStats, Cacheable, CachedValue, L1Cache, L2Cache, MultiLevelCache};
 pub use pool::{
-    VectorPool, MatrixPool, PooledVector, PooledMatrix,
-    get_pooled_vector, get_pooled_matrix,
+	get_pooled_matrix, get_pooled_vector, MatrixPool, PooledMatrix, PooledVector, VectorPool,
 };
-pub use workspace::{
-    Workspace, WorkspaceBuilder, BufferId,
-};
-pub use cache::{
-    CacheKey, Cacheable, CachedValue, 
-    L1Cache, L2Cache, MultiLevelCache,
-    CacheStats,
-};
+pub use workspace::{BufferId, Workspace, WorkspaceBuilder};

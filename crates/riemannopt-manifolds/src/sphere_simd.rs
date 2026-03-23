@@ -46,8 +46,8 @@
 
 use crate::Sphere;
 use riemannopt_core::{
-    compute::{get_dispatcher, SimdBackend},
-    types::DVector,
+	compute::{get_dispatcher, SimdBackend},
+	types::DVector,
 };
 /// Extension trait for SIMD-accelerated sphere operations.
 ///
@@ -55,138 +55,137 @@ use riemannopt_core::{
 /// using SIMD instructions when available. The implementations automatically
 /// select the best available instruction set at runtime.
 pub trait SphereSimdExt {
-    /// Projects a point onto the sphere using SIMD operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - Vector to project onto the unit sphere
-    ///
-    /// # Returns
-    ///
-    /// Normalized vector with unit length
-    ///
-    /// # Performance
-    ///
-    /// Uses SIMD for vectors with ≥ 4 elements. Falls back to scalar
-    /// operations for smaller vectors.
-    fn project_point_simd_f64(&self, point: &DVector<f64>) -> DVector<f64>;
-    
-    /// Projects a point onto the sphere using SIMD operations (f32 version).
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - Vector to project onto the unit sphere
-    ///
-    /// # Returns
-    ///
-    /// Normalized vector with unit length
-    ///
-    /// # Performance
-    ///
-    /// Uses SIMD for vectors with ≥ 8 elements. Falls back to scalar
-    /// operations for smaller vectors.
-    fn project_point_simd_f32(&self, point: &DVector<f32>) -> DVector<f32>;
-    
-    /// Computes dot product of tangent vectors using SIMD.
-    ///
-    /// # Arguments
-    ///
-    /// * `v1` - First tangent vector
-    /// * `v2` - Second tangent vector
-    ///
-    /// # Returns
-    ///
-    /// The Euclidean inner product v1^T v2
-    ///
-    /// # Performance
-    ///
-    /// Uses SIMD for vectors with ≥ 4 elements.
-    fn tangent_dot_simd_f64(&self, v1: &DVector<f64>, v2: &DVector<f64>) -> f64;
-    
-    /// Computes dot product of tangent vectors using SIMD (f32 version).
-    ///
-    /// # Arguments
-    ///
-    /// * `v1` - First tangent vector
-    /// * `v2` - Second tangent vector
-    ///
-    /// # Returns
-    ///
-    /// The Euclidean inner product v1^T v2
-    ///
-    /// # Performance
-    ///
-    /// Uses SIMD for vectors with ≥ 8 elements.
-    fn tangent_dot_simd_f32(&self, v1: &DVector<f32>, v2: &DVector<f32>) -> f32;
+	/// Projects a point onto the sphere using SIMD operations.
+	///
+	/// # Arguments
+	///
+	/// * `point` - Vector to project onto the unit sphere
+	///
+	/// # Returns
+	///
+	/// Normalized vector with unit length
+	///
+	/// # Performance
+	///
+	/// Uses SIMD for vectors with ≥ 4 elements. Falls back to scalar
+	/// operations for smaller vectors.
+	fn project_point_simd_f64(&self, point: &DVector<f64>) -> DVector<f64>;
+
+	/// Projects a point onto the sphere using SIMD operations (f32 version).
+	///
+	/// # Arguments
+	///
+	/// * `point` - Vector to project onto the unit sphere
+	///
+	/// # Returns
+	///
+	/// Normalized vector with unit length
+	///
+	/// # Performance
+	///
+	/// Uses SIMD for vectors with ≥ 8 elements. Falls back to scalar
+	/// operations for smaller vectors.
+	fn project_point_simd_f32(&self, point: &DVector<f32>) -> DVector<f32>;
+
+	/// Computes dot product of tangent vectors using SIMD.
+	///
+	/// # Arguments
+	///
+	/// * `v1` - First tangent vector
+	/// * `v2` - Second tangent vector
+	///
+	/// # Returns
+	///
+	/// The Euclidean inner product v1^T v2
+	///
+	/// # Performance
+	///
+	/// Uses SIMD for vectors with ≥ 4 elements.
+	fn tangent_dot_simd_f64(&self, v1: &DVector<f64>, v2: &DVector<f64>) -> f64;
+
+	/// Computes dot product of tangent vectors using SIMD (f32 version).
+	///
+	/// # Arguments
+	///
+	/// * `v1` - First tangent vector
+	/// * `v2` - Second tangent vector
+	///
+	/// # Returns
+	///
+	/// The Euclidean inner product v1^T v2
+	///
+	/// # Performance
+	///
+	/// Uses SIMD for vectors with ≥ 8 elements.
+	fn tangent_dot_simd_f32(&self, v1: &DVector<f32>, v2: &DVector<f32>) -> f32;
 }
 
 impl SphereSimdExt for Sphere {
-    fn project_point_simd_f64(&self, point: &DVector<f64>) -> DVector<f64> {
-        if point.len() >= 4 {
-            // Use SIMD for larger vectors
-            let mut result = point.clone();
-            let dispatcher = get_dispatcher::<f64>();
-            let norm = dispatcher.normalize(&mut result);
-            if norm < f64::EPSILON {
-                // Handle zero vector
-                result = DVector::zeros(self.ambient_dimension());
-                result[0] = 1.0;
-            }
-            result
-        } else {
-            // Fall back to standard implementation for small vectors
-            let norm = point.norm();
-            if norm < f64::EPSILON {
-                let mut result = DVector::zeros(self.ambient_dimension());
-                result[0] = 1.0;
-                result
-            } else {
-                point / norm
-            }
-        }
-    }
-    
-    fn project_point_simd_f32(&self, point: &DVector<f32>) -> DVector<f32> {
-        if point.len() >= 8 {
-            // Use SIMD for larger vectors
-            let mut result = point.clone();
-            let dispatcher = get_dispatcher::<f32>();
-            let norm = dispatcher.normalize(&mut result);
-            if norm < f32::EPSILON {
-                // Handle zero vector
-                result = DVector::zeros(self.ambient_dimension());
-                result[0] = 1.0;
-            }
-            result
-        } else {
-            // Fall back to standard implementation for small vectors
-            let norm = point.norm();
-            if norm < f32::EPSILON {
-                let mut result = DVector::zeros(self.ambient_dimension());
-                result[0] = 1.0;
-                result
-            } else {
-                point / norm
-            }
-        }
-    }
-    
-    fn tangent_dot_simd_f64(&self, v1: &DVector<f64>, v2: &DVector<f64>) -> f64 {
-        if v1.len() >= 4 && v1.len() == v2.len() {
-            let dispatcher = get_dispatcher::<f64>();
-            dispatcher.dot_product(v1, v2)
-        } else {
-            v1.dot(v2)
-        }
-    }
-    
-    fn tangent_dot_simd_f32(&self, v1: &DVector<f32>, v2: &DVector<f32>) -> f32 {
-        if v1.len() >= 8 && v1.len() == v2.len() {
-            let dispatcher = get_dispatcher::<f32>();
-            dispatcher.dot_product(v1, v2)
-        } else {
-            v1.dot(v2)
-        }
-    }
-}
+	fn project_point_simd_f64(&self, point: &DVector<f64>) -> DVector<f64> {
+		if point.len() >= 4 {
+			// Use SIMD for larger vectors
+			let mut result = point.clone();
+			let dispatcher = get_dispatcher::<f64>();
+			let norm = dispatcher.normalize(&mut result);
+			if norm < f64::EPSILON {
+				// Handle zero vector
+				result = DVector::zeros(self.ambient_dimension());
+				result[0] = 1.0;
+			}
+			result
+		} else {
+			// Fall back to standard implementation for small vectors
+			let norm = point.norm();
+			if norm < f64::EPSILON {
+				let mut result = DVector::zeros(self.ambient_dimension());
+				result[0] = 1.0;
+				result
+			} else {
+				point / norm
+			}
+		}
+	}
 
+	fn project_point_simd_f32(&self, point: &DVector<f32>) -> DVector<f32> {
+		if point.len() >= 8 {
+			// Use SIMD for larger vectors
+			let mut result = point.clone();
+			let dispatcher = get_dispatcher::<f32>();
+			let norm = dispatcher.normalize(&mut result);
+			if norm < f32::EPSILON {
+				// Handle zero vector
+				result = DVector::zeros(self.ambient_dimension());
+				result[0] = 1.0;
+			}
+			result
+		} else {
+			// Fall back to standard implementation for small vectors
+			let norm = point.norm();
+			if norm < f32::EPSILON {
+				let mut result = DVector::zeros(self.ambient_dimension());
+				result[0] = 1.0;
+				result
+			} else {
+				point / norm
+			}
+		}
+	}
+
+	fn tangent_dot_simd_f64(&self, v1: &DVector<f64>, v2: &DVector<f64>) -> f64 {
+		if v1.len() >= 4 && v1.len() == v2.len() {
+			let dispatcher = get_dispatcher::<f64>();
+			dispatcher.dot_product(v1, v2)
+		} else {
+			v1.dot(v2)
+		}
+	}
+
+	fn tangent_dot_simd_f32(&self, v1: &DVector<f32>, v2: &DVector<f32>) -> f32 {
+		if v1.len() >= 8 && v1.len() == v2.len() {
+			let dispatcher = get_dispatcher::<f32>();
+			dispatcher.dot_product(v1, v2)
+		} else {
+			v1.dot(v2)
+		}
+	}
+}

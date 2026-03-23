@@ -24,47 +24,47 @@ pub struct NodeIdx(pub(crate) u32);
 /// their operands so the backward pass can look them up in O(1).
 #[derive(Debug, Clone, Copy)]
 pub enum OpCode {
-    /// Leaf: user-provided input or constant.
-    Input,
+	/// Leaf: user-provided input or constant.
+	Input,
 
-    // -- binary element-wise --
-    Add(NodeIdx, NodeIdx),
-    Sub(NodeIdx, NodeIdx),
-    Mul(NodeIdx, NodeIdx),
-    Div(NodeIdx, NodeIdx),
+	// -- binary element-wise --
+	Add(NodeIdx, NodeIdx),
+	Sub(NodeIdx, NodeIdx),
+	Mul(NodeIdx, NodeIdx),
+	Div(NodeIdx, NodeIdx),
 
-    // -- unary element-wise --
-    Neg(NodeIdx),
-    Exp(NodeIdx),
-    Log(NodeIdx),
-    Sqrt(NodeIdx),
-    Sin(NodeIdx),
-    Cos(NodeIdx),
-    Abs(NodeIdx),
-    /// `x.pow(n)` where `n` is a compile-time constant.
-    Pow(NodeIdx, u64),
+	// -- unary element-wise --
+	Neg(NodeIdx),
+	Exp(NodeIdx),
+	Log(NodeIdx),
+	Sqrt(NodeIdx),
+	Sin(NodeIdx),
+	Cos(NodeIdx),
+	Abs(NodeIdx),
+	/// `x.pow(n)` where `n` is a compile-time constant.
+	Pow(NodeIdx, u64),
 
-    // -- reductions (always produce a scalar (1,1)) --
-    /// Sum of all elements.
-    Sum(NodeIdx),
-    /// Mean of all elements.
-    Mean(NodeIdx),
-    /// Euclidean dot product  `a · b`.
-    Dot(NodeIdx, NodeIdx),
-    /// L2 norm  `‖a‖₂`.
-    Norm(NodeIdx),
+	// -- reductions (always produce a scalar (1,1)) --
+	/// Sum of all elements.
+	Sum(NodeIdx),
+	/// Mean of all elements.
+	Mean(NodeIdx),
+	/// Euclidean dot product  `a · b`.
+	Dot(NodeIdx, NodeIdx),
+	/// L2 norm  `‖a‖₂`.
+	Norm(NodeIdx),
 
-    // -- linear algebra --
-    /// `A(m,k) × B(k,n)` — shapes stored to avoid parent lookup in backward.
-    MatMul(NodeIdx, NodeIdx, u32, u32, u32),
-    /// Trace of a square matrix → scalar.
-    Trace(NodeIdx),
+	// -- linear algebra --
+	/// `A(m,k) × B(k,n)` — shapes stored to avoid parent lookup in backward.
+	MatMul(NodeIdx, NodeIdx, u32, u32, u32),
+	/// Trace of a square matrix → scalar.
+	Trace(NodeIdx),
 
-    // -- scalar–tensor broadcast --
-    /// `scalar * tensor`  (first operand is `(1,1)`).
-    ScalarMul(NodeIdx, NodeIdx),
-    /// `scalar + tensor`  (first operand is `(1,1)`).
-    ScalarAdd(NodeIdx, NodeIdx),
+	// -- scalar–tensor broadcast --
+	/// `scalar * tensor`  (first operand is `(1,1)`).
+	ScalarMul(NodeIdx, NodeIdx),
+	/// `scalar + tensor`  (first operand is `(1,1)`).
+	ScalarAdd(NodeIdx, NodeIdx),
 }
 
 // ---------------------------------------------------------------------------
@@ -74,13 +74,13 @@ pub enum OpCode {
 /// A single recorded computation.
 #[derive(Debug)]
 pub struct TapeEntry {
-    pub op: OpCode,
-    /// Forward-pass value stored as a flat column-major buffer.
-    pub value: Vec<f64>,
-    /// `(rows, cols)`.  Scalars are `(1, 1)`, column vectors `(n, 1)`.
-    pub shape: (usize, usize),
-    /// Propagate gradients through this node?
-    pub requires_grad: bool,
+	pub op: OpCode,
+	/// Forward-pass value stored as a flat column-major buffer.
+	pub value: Vec<f64>,
+	/// `(rows, cols)`.  Scalars are `(1, 1)`, column vectors `(n, 1)`.
+	pub shape: (usize, usize),
+	/// Propagate gradients through this node?
+	pub requires_grad: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -92,61 +92,61 @@ pub struct TapeEntry {
 /// All entries are in topological order by construction: each entry only
 /// references earlier entries.
 pub struct Tape {
-    pub(crate) entries: Vec<TapeEntry>,
+	pub(crate) entries: Vec<TapeEntry>,
 }
 
 impl Tape {
-    /// Create a new empty tape.
-    pub fn new() -> Self {
-        Self {
-            entries: Vec::with_capacity(256),
-        }
-    }
+	/// Create a new empty tape.
+	pub fn new() -> Self {
+		Self {
+			entries: Vec::with_capacity(256),
+		}
+	}
 
-    /// Number of entries.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
+	/// Number of entries.
+	#[inline]
+	pub fn len(&self) -> usize {
+		self.entries.len()
+	}
 
-    /// Is the tape empty?
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
+	/// Is the tape empty?
+	#[inline]
+	pub fn is_empty(&self) -> bool {
+		self.entries.is_empty()
+	}
 
-    /// Append an entry, returning its index.
-    #[inline]
-    pub(crate) fn push(&mut self, entry: TapeEntry) -> NodeIdx {
-        let idx = NodeIdx(self.entries.len() as u32);
-        self.entries.push(entry);
-        idx
-    }
+	/// Append an entry, returning its index.
+	#[inline]
+	pub(crate) fn push(&mut self, entry: TapeEntry) -> NodeIdx {
+		let idx = NodeIdx(self.entries.len() as u32);
+		self.entries.push(entry);
+		idx
+	}
 
-    /// Read the value stored at `idx`.
-    #[inline]
-    pub fn value(&self, idx: NodeIdx) -> &[f64] {
-        &self.entries[idx.0 as usize].value
-    }
+	/// Read the value stored at `idx`.
+	#[inline]
+	pub fn value(&self, idx: NodeIdx) -> &[f64] {
+		&self.entries[idx.0 as usize].value
+	}
 
-    /// Read the scalar value stored at `idx` (panics if not `(1,1)`).
-    #[inline]
-    pub fn scalar(&self, idx: NodeIdx) -> f64 {
-        debug_assert_eq!(self.entries[idx.0 as usize].shape, (1, 1));
-        self.entries[idx.0 as usize].value[0]
-    }
+	/// Read the scalar value stored at `idx` (panics if not `(1,1)`).
+	#[inline]
+	pub fn scalar(&self, idx: NodeIdx) -> f64 {
+		debug_assert_eq!(self.entries[idx.0 as usize].shape, (1, 1));
+		self.entries[idx.0 as usize].value[0]
+	}
 
-    /// Shape of the value at `idx`.
-    #[inline]
-    pub fn shape(&self, idx: NodeIdx) -> (usize, usize) {
-        self.entries[idx.0 as usize].shape
-    }
+	/// Shape of the value at `idx`.
+	#[inline]
+	pub fn shape(&self, idx: NodeIdx) -> (usize, usize) {
+		self.entries[idx.0 as usize].shape
+	}
 }
 
 impl Default for Tape {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ impl Default for Tape {
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static ACTIVE_TAPE: RefCell<Option<*mut Tape>> = const { RefCell::new(None) };
+	static ACTIVE_TAPE: RefCell<Option<*mut Tape>> = const { RefCell::new(None) };
 }
 
 /// RAII guard that sets the thread-local active tape for the duration of its
@@ -166,29 +166,29 @@ thread_local! {
 /// - The `Tape` outlives the guard (guaranteed by borrow rules).
 /// - Only one guard is active per thread at a time (enforced by `set`).
 pub struct TapeGuard {
-    prev: Option<*mut Tape>,
+	prev: Option<*mut Tape>,
 }
 
 impl TapeGuard {
-    /// Activate `tape` as the current recording target.
-    ///
-    /// # Panics
-    ///
-    /// Panics if another tape is already active on this thread.
-    pub fn new(tape: &mut Tape) -> Self {
-        let prev = ACTIVE_TAPE.with(|cell| {
-            let prev = cell.borrow().clone();
-            *cell.borrow_mut() = Some(tape as *mut Tape);
-            prev
-        });
-        Self { prev }
-    }
+	/// Activate `tape` as the current recording target.
+	///
+	/// # Panics
+	///
+	/// Panics if another tape is already active on this thread.
+	pub fn new(tape: &mut Tape) -> Self {
+		let prev = ACTIVE_TAPE.with(|cell| {
+			let prev = cell.borrow().clone();
+			*cell.borrow_mut() = Some(tape as *mut Tape);
+			prev
+		});
+		Self { prev }
+	}
 }
 
 impl Drop for TapeGuard {
-    fn drop(&mut self) {
-        ACTIVE_TAPE.with(|cell| *cell.borrow_mut() = self.prev);
-    }
+	fn drop(&mut self) {
+		ACTIVE_TAPE.with(|cell| *cell.borrow_mut() = self.prev);
+	}
 }
 
 /// Execute `f` with mutable access to the active tape.
@@ -199,15 +199,15 @@ impl Drop for TapeGuard {
 #[inline]
 pub fn with_tape<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut Tape) -> R,
+	F: FnOnce(&mut Tape) -> R,
 {
-    ACTIVE_TAPE.with(|cell| {
-        let ptr = cell
-            .borrow()
-            .expect("No active tape — wrap operations in a TapeGuard scope");
-        // SAFETY: The TapeGuard guarantees the pointer is valid for the
-        // duration of any Var operation.
-        let tape = unsafe { &mut *ptr };
-        f(tape)
-    })
+	ACTIVE_TAPE.with(|cell| {
+		let ptr = cell
+			.borrow()
+			.expect("No active tape — wrap operations in a TapeGuard scope");
+		// SAFETY: The TapeGuard guarantees the pointer is valid for the
+		// duration of any Var operation.
+		let tape = unsafe { &mut *ptr };
+		f(tape)
+	})
 }

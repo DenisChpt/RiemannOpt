@@ -3,32 +3,32 @@
 //! Conjugate Gradient methods are among the most efficient for large-scale
 //! optimization, requiring only first-order information.
 
+use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use numpy::{PyReadonlyArray1, PyReadonlyArray2};
-use riemannopt_optim::{ConjugateGradient, CGConfig, ConjugateGradientMethod};
 use riemannopt_core::{
-    optimizer::{Optimizer, StoppingCriterion},
-    line_search::LineSearchParams,
+	line_search::LineSearchParams,
+	optimizer::{Optimizer, StoppingCriterion},
 };
+use riemannopt_optim::{CGConfig, ConjugateGradient, ConjugateGradientMethod};
 
-use crate::{
-    py_manifolds::{
-        sphere::PySphere,
-        stiefel::PyStiefel,
-        grassmann::PyGrassmann,
-        spd::PySPD,
-        hyperbolic::PyHyperbolic,
-        oblique::PyOblique,
-        // fixed_rank::PyFixedRank,  // TODO: Fix FixedRankPoint representation mismatch
-        psd_cone::PyPSDCone,
-    },
-    py_cost::PyCostFunction,
-    array_utils::{numpy_to_dvector, numpy_to_dmatrix, dvector_to_numpy, dmatrix_to_numpy},
-    error::to_py_err,
-    impl_optimizer_generic_default,
-};
 use super::base::{PyOptimizationResult, PyOptimizerBase};
+use crate::{
+	array_utils::{dmatrix_to_numpy, dvector_to_numpy, numpy_to_dmatrix, numpy_to_dvector},
+	error::to_py_err,
+	impl_optimizer_generic_default,
+	py_cost::PyCostFunction,
+	py_manifolds::{
+		grassmann::PyGrassmann,
+		hyperbolic::PyHyperbolic,
+		oblique::PyOblique,
+		// fixed_rank::PyFixedRank,  // TODO: Fix FixedRankPoint representation mismatch
+		psd_cone::PyPSDCone,
+		spd::PySPD,
+		sphere::PySphere,
+		stiefel::PyStiefel,
+	},
+};
 
 /// Conjugate Gradient optimizer for Riemannian manifolds.
 ///
@@ -58,14 +58,14 @@ use super::base::{PyOptimizationResult, PyOptimizerBase};
 /// >>>
 /// >>> sphere = ro.manifolds.Sphere(100)
 /// >>> optimizer = ro.optimizers.ConjugateGradient(method="PolakRibiere")
-/// >>> 
+/// >>>
 /// >>> # Define quadratic cost
 /// >>> Q = np.random.randn(100, 100)
 /// >>> Q = Q.T @ Q  # Positive definite
-/// >>> 
+/// >>>
 /// >>> def cost(x):
 /// ...     return x.T @ Q @ x
-/// >>> 
+/// >>>
 /// >>> x0 = sphere.random_point()
 /// >>> result = optimizer.optimize(
 /// ...     cost_function=cost,
@@ -76,191 +76,210 @@ use super::base::{PyOptimizationResult, PyOptimizerBase};
 #[pyclass(name = "ConjugateGradient", module = "riemannopt.optimizers")]
 #[derive(Clone)]
 pub struct PyConjugateGradient {
-    pub method: String,
-    pub reset_every: Option<usize>,
-    pub max_line_search_iterations: usize,
-    pub c1: f64,
-    pub c2: f64,
+	pub method: String,
+	pub reset_every: Option<usize>,
+	pub max_line_search_iterations: usize,
+	pub c1: f64,
+	pub c2: f64,
 }
 
 #[pymethods]
 impl PyConjugateGradient {
-    #[new]
-    #[pyo3(signature = (method="FletcherReeves", reset_every=None, max_line_search_iterations=20, c1=1e-4, c2=0.1))]
-    fn new(
-        method: &str,
-        reset_every: Option<usize>,
-        max_line_search_iterations: usize,
-        c1: f64,
-        c2: f64,
-    ) -> PyResult<Self> {
-        // Validate method
-        let valid_methods = ["FletcherReeves", "PolakRibiere", "HestenesStiefel", "DaiYuan"];
-        if !valid_methods.contains(&method) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Invalid method '{}'. Choose from: {:?}", method, valid_methods)
-            ));
-        }
-        
-        // Validate parameters
-        if max_line_search_iterations == 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "max_line_search_iterations must be positive"
-            ));
-        }
-        if c1 <= 0.0 || c1 >= 1.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "c1 must be in (0, 1)"
-            ));
-        }
-        if c2 <= c1 || c2 >= 1.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "c2 must be in (c1, 1)"
-            ));
-        }
-        
-        Ok(PyConjugateGradient {
-            method: method.to_string(),
-            reset_every,
-            max_line_search_iterations,
-            c1,
-            c2,
-        })
-    }
-    
-    fn __repr__(&self) -> String {
-        format!(
+	#[new]
+	#[pyo3(signature = (method="FletcherReeves", reset_every=None, max_line_search_iterations=20, c1=1e-4, c2=0.1))]
+	fn new(
+		method: &str,
+		reset_every: Option<usize>,
+		max_line_search_iterations: usize,
+		c1: f64,
+		c2: f64,
+	) -> PyResult<Self> {
+		// Validate method
+		let valid_methods = [
+			"FletcherReeves",
+			"PolakRibiere",
+			"HestenesStiefel",
+			"DaiYuan",
+		];
+		if !valid_methods.contains(&method) {
+			return Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"Invalid method '{}'. Choose from: {:?}",
+				method, valid_methods
+			)));
+		}
+
+		// Validate parameters
+		if max_line_search_iterations == 0 {
+			return Err(pyo3::exceptions::PyValueError::new_err(
+				"max_line_search_iterations must be positive",
+			));
+		}
+		if c1 <= 0.0 || c1 >= 1.0 {
+			return Err(pyo3::exceptions::PyValueError::new_err(
+				"c1 must be in (0, 1)",
+			));
+		}
+		if c2 <= c1 || c2 >= 1.0 {
+			return Err(pyo3::exceptions::PyValueError::new_err(
+				"c2 must be in (c1, 1)",
+			));
+		}
+
+		Ok(PyConjugateGradient {
+			method: method.to_string(),
+			reset_every,
+			max_line_search_iterations,
+			c1,
+			c2,
+		})
+	}
+
+	fn __repr__(&self) -> String {
+		format!(
             "ConjugateGradient(method='{}', reset_every={:?}, max_line_search_iterations={}, c1={}, c2={})",
             self.method, self.reset_every, self.max_line_search_iterations, self.c1, self.c2
         )
-    }
-    
-    /// Get optimizer configuration as a dictionary.
-    #[getter]
-    fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new(py);
-        dict.set_item("method", &self.method)?;
-        dict.set_item("reset_every", self.reset_every)?;
-        dict.set_item("max_line_search_iterations", self.max_line_search_iterations)?;
-        dict.set_item("c1", self.c1)?;
-        dict.set_item("c2", self.c2)?;
-        Ok(dict.into())
-    }
+	}
 
-    /// Unified optimize method that accepts any supported manifold.
-    ///
-    /// Parameters
-    /// ----------
-    /// cost_function : CostFunction
-    ///     The cost function to minimize
-    /// manifold : Manifold
-    ///     The Riemannian manifold to optimize on (Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, or PSDCone)
-    /// initial_point : array_like
-    ///     Starting point for optimization (shape must match manifold requirements)
-    /// max_iterations : int
-    ///     Maximum number of iterations
-    /// gradient_tolerance : float, optional
-    ///     Gradient norm tolerance for convergence
-    /// callback : callable, optional
-    ///     Function called after each iteration
-    /// target_value : float, optional
-    ///     Target cost value to stop optimization early
-    /// max_time : float, optional
-    ///     Maximum optimization time in seconds
-    ///
-    /// Returns
-    /// -------
-    /// OptimizationResult
-    ///     Object containing the optimized point, final cost, and optimization statistics
-    #[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None, callback=None, target_value=None, max_time=None))]
-    pub fn optimize(
-        &mut self,
-        py: Python<'_>,
-        cost_function: PyRef<'_, PyCostFunction>,
-        manifold: PyObject,
-        initial_point: PyObject,
-        max_iterations: usize,
-        gradient_tolerance: Option<f64>,
-        callback: Option<PyObject>,
-        target_value: Option<f64>,
-        max_time: Option<f64>,
-    ) -> PyResult<PyObject> {
-        // Use the generic dispatcher to route to the correct manifold implementation
-        use super::generic::optimize_dispatcher;
-        optimize_dispatcher(
-            self,
-            py,
-            cost_function,
-            manifold,
-            initial_point,
-            max_iterations,
-            gradient_tolerance,
-            callback,
-            target_value,
-            max_time,
-        )
-    }
+	/// Get optimizer configuration as a dictionary.
+	#[getter]
+	fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
+		let dict = PyDict::new(py);
+		dict.set_item("method", &self.method)?;
+		dict.set_item("reset_every", self.reset_every)?;
+		dict.set_item(
+			"max_line_search_iterations",
+			self.max_line_search_iterations,
+		)?;
+		dict.set_item("c1", self.c1)?;
+		dict.set_item("c2", self.c2)?;
+		Ok(dict.into())
+	}
+
+	/// Unified optimize method that accepts any supported manifold.
+	///
+	/// Parameters
+	/// ----------
+	/// cost_function : CostFunction
+	///     The cost function to minimize
+	/// manifold : Manifold
+	///     The Riemannian manifold to optimize on (Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, or PSDCone)
+	/// initial_point : array_like
+	///     Starting point for optimization (shape must match manifold requirements)
+	/// max_iterations : int
+	///     Maximum number of iterations
+	/// gradient_tolerance : float, optional
+	///     Gradient norm tolerance for convergence
+	/// callback : callable, optional
+	///     Function called after each iteration
+	/// target_value : float, optional
+	///     Target cost value to stop optimization early
+	/// max_time : float, optional
+	///     Maximum optimization time in seconds
+	///
+	/// Returns
+	/// -------
+	/// OptimizationResult
+	///     Object containing the optimized point, final cost, and optimization statistics
+	#[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None, callback=None, target_value=None, max_time=None))]
+	pub fn optimize(
+		&mut self,
+		py: Python<'_>,
+		cost_function: PyRef<'_, PyCostFunction>,
+		manifold: PyObject,
+		initial_point: PyObject,
+		max_iterations: usize,
+		gradient_tolerance: Option<f64>,
+		callback: Option<PyObject>,
+		target_value: Option<f64>,
+		max_time: Option<f64>,
+	) -> PyResult<PyObject> {
+		// Use the generic dispatcher to route to the correct manifold implementation
+		use super::generic::optimize_dispatcher;
+		optimize_dispatcher(
+			self,
+			py,
+			cost_function,
+			manifold,
+			initial_point,
+			max_iterations,
+			gradient_tolerance,
+			callback,
+			target_value,
+			max_time,
+		)
+	}
 }
 
 // Implement the base trait
 impl PyOptimizerBase for PyConjugateGradient {
-    fn name(&self) -> &'static str {
-        "ConjugateGradient"
-    }
-    
-    fn validate_config(&self) -> PyResult<()> {
-        let valid_methods = ["FletcherReeves", "PolakRibiere", "HestenesStiefel", "DaiYuan"];
-        if !valid_methods.contains(&self.method.as_str()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Invalid method '{}'. Choose from: {:?}", self.method, valid_methods)
-            ));
-        }
-        if self.max_line_search_iterations == 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "max_line_search_iterations must be positive"
-            ));
-        }
-        if self.c1 <= 0.0 || self.c1 >= 1.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "c1 must be in (0, 1)"
-            ));
-        }
-        if self.c2 <= self.c1 || self.c2 >= 1.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "c2 must be in (c1, 1)"
-            ));
-        }
-        Ok(())
-    }
+	fn name(&self) -> &'static str {
+		"ConjugateGradient"
+	}
+
+	fn validate_config(&self) -> PyResult<()> {
+		let valid_methods = [
+			"FletcherReeves",
+			"PolakRibiere",
+			"HestenesStiefel",
+			"DaiYuan",
+		];
+		if !valid_methods.contains(&self.method.as_str()) {
+			return Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"Invalid method '{}'. Choose from: {:?}",
+				self.method, valid_methods
+			)));
+		}
+		if self.max_line_search_iterations == 0 {
+			return Err(pyo3::exceptions::PyValueError::new_err(
+				"max_line_search_iterations must be positive",
+			));
+		}
+		if self.c1 <= 0.0 || self.c1 >= 1.0 {
+			return Err(pyo3::exceptions::PyValueError::new_err(
+				"c1 must be in (0, 1)",
+			));
+		}
+		if self.c2 <= self.c1 || self.c2 >= 1.0 {
+			return Err(pyo3::exceptions::PyValueError::new_err(
+				"c2 must be in (c1, 1)",
+			));
+		}
+		Ok(())
+	}
 }
 
 // Implement generic optimizer interface
-impl_optimizer_generic_default!(PyConjugateGradient, ConjugateGradient<f64>, CGConfig<f64>, |opt: &PyConjugateGradient| {
-    let cg_method = match opt.method.as_str() {
-        "FletcherReeves" => ConjugateGradientMethod::FletcherReeves,
-        "PolakRibiere" => ConjugateGradientMethod::PolakRibiere,
-        "HestenesStiefel" => ConjugateGradientMethod::HestenesStiefel,
-        "DaiYuan" => ConjugateGradientMethod::DaiYuan,
-        _ => ConjugateGradientMethod::FletcherReeves,
-    };
-    
-    let line_search_params = LineSearchParams {
-        initial_step_size: 1.0,
-        max_step_size: 100.0,
-        min_step_size: 1e-10,
-        max_iterations: opt.max_line_search_iterations,
-        c1: opt.c1,
-        c2: opt.c2,
-        rho: 0.5,
-    };
-    
-    CGConfig {
-        method: cg_method,
-        restart_period: opt.reset_every.unwrap_or(100), // Default restart period
-        use_pr_plus: false,
-        min_beta: None,
-        max_beta: None,
-        line_search_params,
-    }
-});
+impl_optimizer_generic_default!(
+	PyConjugateGradient,
+	ConjugateGradient<f64>,
+	CGConfig<f64>,
+	|opt: &PyConjugateGradient| {
+		let cg_method = match opt.method.as_str() {
+			"FletcherReeves" => ConjugateGradientMethod::FletcherReeves,
+			"PolakRibiere" => ConjugateGradientMethod::PolakRibiere,
+			"HestenesStiefel" => ConjugateGradientMethod::HestenesStiefel,
+			"DaiYuan" => ConjugateGradientMethod::DaiYuan,
+			_ => ConjugateGradientMethod::FletcherReeves,
+		};
 
+		let line_search_params = LineSearchParams {
+			initial_step_size: 1.0,
+			max_step_size: 100.0,
+			min_step_size: 1e-10,
+			max_iterations: opt.max_line_search_iterations,
+			c1: opt.c1,
+			c2: opt.c2,
+			rho: 0.5,
+		};
+
+		CGConfig {
+			method: cg_method,
+			restart_period: opt.reset_every.unwrap_or(100), // Default restart period
+			use_pr_plus: false,
+			min_beta: None,
+			max_beta: None,
+			line_search_params,
+		}
+	}
+);

@@ -18,73 +18,78 @@
 //! ```rust,ignore
 //! use riemannopt_optim::{SGD, SGDConfig};
 //! use riemannopt_core::prelude::*;
-//! 
+//!
 //! // Create SGD optimizer with momentum
 //! let mut optimizer = SGD::new(
 //!     SGDConfig::new()
 //!         .with_constant_step_size(0.01)
 //!         .with_classical_momentum(0.9)
 //! );
-//! 
+//!
 //! // Set up stopping criteria
 //! let stopping_criterion = StoppingCriterion::new()
 //!     .with_max_iterations(1000)
 //!     .with_gradient_tolerance(1e-6);
-//! 
+//!
 //! // Run optimization (cost_fn, manifold, initial_point defined elsewhere)
 //! // let result = optimizer.optimize(&cost_fn, &manifold, &initial_point, &stopping_criterion)?;
 //! ```
 
-pub mod sgd;
 pub mod adam;
-pub mod lbfgs;
-pub mod trust_region;
 pub mod conjugate_gradient;
-pub mod newton;
+pub mod lbfgs;
 pub mod natural_gradient;
+pub mod newton;
+pub mod sgd;
+pub mod trust_region;
 // pub mod parallel_sgd;
 
 mod utils;
 
 // Re-export main optimizers for convenience
-pub use sgd::{SGD, SGDConfig, MomentumMethod, MomentumState};
 pub use adam::{Adam, AdamConfig, AdamState, AdamStateBuilder};
-pub use lbfgs::{LBFGS, LBFGSConfig, LBFGSState};
-pub use trust_region::{TrustRegion, TrustRegionConfig};
+pub use conjugate_gradient::{
+	CGConfig, ConjugateGradient, ConjugateGradientMethod, ConjugateGradientState,
+};
+pub use lbfgs::{LBFGSConfig, LBFGSState, LBFGS};
+pub use natural_gradient::{FisherApproximation, NaturalGradient, NaturalGradientConfig};
 pub use newton::{Newton, NewtonConfig};
-pub use natural_gradient::{NaturalGradient, NaturalGradientConfig, FisherApproximation};
-pub use conjugate_gradient::{ConjugateGradient, CGConfig, ConjugateGradientState, ConjugateGradientMethod};
+pub use sgd::{MomentumMethod, MomentumState, SGDConfig, SGD};
+pub use trust_region::{TrustRegion, TrustRegionConfig};
 // pub use natural_gradient::{NaturalGradient, NaturalGradientConfig};
 // pub use parallel_sgd::ParallelSGDUtils;
 // pub use newton::{Newton, NewtonConfig}; // Temporarily disabled - needs refactoring
 
 // Re-export commonly used items from core
 pub use riemannopt_core::optimization::{
-    step_size::StepSizeSchedule,
-    preconditioner::{Preconditioner, IdentityPreconditioner},
-    line_search::{
-        LineSearch, LineSearchParams, LineSearchResult,
-        BacktrackingLineSearch, StrongWolfeLineSearch, FixedStepSize,
-    },
+	line_search::{
+		BacktrackingLineSearch, FixedStepSize, LineSearch, LineSearchParams, LineSearchResult,
+		StrongWolfeLineSearch,
+	},
+	preconditioner::{IdentityPreconditioner, Preconditioner},
+	step_size::StepSizeSchedule,
 };
 
 // pub use riemannopt_core::manifold_ops::fisher::FisherApproximation;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_exports() {
-        // Test that we can create optimizers from re-exports
-        let _config = SGDConfig::<f64>::new();
-        let _schedule = StepSizeSchedule::Constant(0.01_f64);
-        let _momentum = MomentumMethod::Classical { coefficient: 0.9_f64 };
-        
-        // Test state exports
-        // let _momentum_state = MomentumState::<f64, ()>::new(0.9, false);
-        let _adam_state = AdamState::<f64, ()>::new(0.9, 0.999, 1e-8, false);
-        let _lbfgs_state = LBFGSState::<f64, ()>::new(10);
-        let _cg_state = ConjugateGradientState::<f64, ()>::new(ConjugateGradientMethod::FletcherReeves, 10);
-    }
+	use super::*;
+
+	#[test]
+	fn test_exports() {
+		// Test that we can create optimizers from re-exports
+		let _config = SGDConfig::<f64>::new();
+		let _schedule = StepSizeSchedule::Constant(0.01_f64);
+		let _momentum = MomentumMethod::Classical {
+			coefficient: 0.9_f64,
+		};
+
+		// Test state exports
+		// let _momentum_state = MomentumState::<f64, ()>::new(0.9, false);
+		let _adam_state = AdamState::<f64, ()>::new(0.9, 0.999, 1e-8, false);
+		let _lbfgs_state = LBFGSState::<f64, ()>::new(10);
+		let _cg_state =
+			ConjugateGradientState::<f64, ()>::new(ConjugateGradientMethod::FletcherReeves, 10);
+	}
 }

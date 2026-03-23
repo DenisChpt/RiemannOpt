@@ -13,4 +13,4 @@ pub use parallel::*;
 pub use parallel_strategy::*;
 // Only export necessary SIMD types, not internal implementations
 pub use simd::{SimdOps, SimdVector};
-pub use simd_dispatch::{SimdBackend, SimdDispatcher, get_dispatcher};
+pub use simd_dispatch::{get_dispatcher, SimdBackend, SimdDispatcher};
