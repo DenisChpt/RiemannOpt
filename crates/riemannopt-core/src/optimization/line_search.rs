@@ -139,6 +139,7 @@ use crate::{
 	memory::workspace::Workspace,
 	types::Scalar,
 };
+use num_traits::Float;
 use std::fmt::Debug;
 
 /// Comprehensive result of a Riemannian line search operation.
@@ -427,6 +428,29 @@ where
 			rho: <T as Scalar>::from_f64(0.5),
 			max_iterations: 20,
 			..Self::default()
+		}
+	}
+
+	/// Creates parameters optimized for nonlinear conjugate gradient methods.
+	///
+	/// CG requires a tight curvature condition (c₂ ≈ 0.1) to maintain
+	/// conjugacy of successive search directions. Using c₂ = 0.9 (as for
+	/// quasi-Newton) allows steps that destroy conjugacy, causing stagnation
+	/// at large dimensions.
+	///
+	/// # Parameter Values
+	/// - c₁ = 10⁻⁴ (standard sufficient decrease)
+	/// - c₂ = 0.4 (tight curvature — preserves conjugacy on Riemannian manifolds)
+	/// - max_iterations = 30
+	pub fn for_conjugate_gradient() -> Self {
+		Self {
+			c1: <T as Scalar>::from_f64(1e-4),
+			c2: <T as Scalar>::from_f64(0.4),
+			initial_step_size: T::one(),
+			max_step_size: <T as Scalar>::from_f64(10.0),
+			min_step_size: <T as Scalar>::from_f64(1e-12),
+			rho: <T as Scalar>::from_f64(0.5),
+			max_iterations: 30,
 		}
 	}
 }
@@ -860,10 +884,18 @@ where
 		// Validate parameters
 		params.validate()?;
 
-		if directional_deriv >= T::zero() {
-			return Err(ManifoldError::numerical_error(
-				"Search direction is not a descent direction",
-			));
+		// Near-zero or non-descent directional derivative: return current point
+		let min_deriv = <T as Scalar>::from_f64(1e-30);
+		if directional_deriv >= T::zero() || <T as Float>::abs(directional_deriv) < min_deriv {
+			return Ok(LineSearchResult {
+				step_size: T::zero(),
+				new_point: point.clone(),
+				new_value: value,
+				new_gradient: None,
+				function_evals: 0,
+				gradient_evals: 0,
+				success: false,
+			});
 		}
 
 		// For now, provide a simplified implementation
@@ -966,28 +998,263 @@ where
 /// - Higher-quality steps lead to fewer optimization iterations
 /// - Better convergence rates offset additional line search cost
 /// - Essential for maintaining quasi-Newton Hessian approximation quality
+/// Cubic interpolation for step size selection in the zoom phase.
+///
+/// Fits a cubic polynomial through two points with function values and
+/// derivatives, then returns the minimizer. Falls back to bisection
+/// when the cubic has no real minimum (negative discriminant).
+///
+/// The result is safeguarded to lie within `[lo + 0.1*(hi-lo), hi - 0.1*(hi-lo)]`
+/// to prevent the interpolant from collapsing to a bracket endpoint.
+fn cubic_interpolation<T: Scalar>(
+	alpha_lo: T,
+	alpha_hi: T,
+	phi_lo: T,
+	phi_hi: T,
+	dphi_lo: T,
+	dphi_hi: T,
+) -> T {
+	let d = alpha_hi - alpha_lo;
+	if <T as Float>::abs(d) < <T as Scalar>::from_f64(1e-20) {
+		return (alpha_lo + alpha_hi) / <T as Scalar>::from_f64(2.0);
+	}
+
+	// Cubic interpolation coefficients (Nocedal & Wright, pp. 59-60)
+	let d1 = dphi_lo + dphi_hi - <T as Scalar>::from_f64(3.0) * (phi_hi - phi_lo) / d;
+	let disc = d1 * d1 - dphi_lo * dphi_hi;
+
+	let alpha = if disc < T::zero() {
+		// No real minimum — fall back to bisection
+		(alpha_lo + alpha_hi) / <T as Scalar>::from_f64(2.0)
+	} else {
+		let d2 = <T as Float>::sqrt(disc);
+		// Minimizer of the cubic
+		alpha_hi - d * (dphi_hi + d2 - d1) / (dphi_hi - dphi_lo + <T as Scalar>::from_f64(2.0) * d2)
+	};
+
+	// Safeguard: keep result well within [lo, hi]
+	let margin = <T as Scalar>::from_f64(0.1) * <T as Float>::abs(d);
+	let lo = <T as Float>::min(alpha_lo, alpha_hi) + margin;
+	let hi = <T as Float>::max(alpha_lo, alpha_hi) - margin;
+	<T as Float>::max(lo, <T as Float>::min(hi, alpha))
+}
+
+/// Line search satisfying strong Wolfe conditions via bracketing and zoom.
+///
+/// Implements Nocedal & Wright Algorithms 3.5 (bracketing) and 3.6 (zoom),
+/// adapted for Riemannian manifolds using retraction and vector transport.
+///
+/// # Algorithm
+///
+/// **Phase 1 — Bracketing**: Grow step size until an interval `[α_lo, α_hi]`
+/// is found that must contain a step satisfying both Wolfe conditions.
+///
+/// **Phase 2 — Zoom**: Narrow the bracket using cubic interpolation until
+/// a step satisfying both conditions is found.
+///
+/// # Strong Wolfe Conditions on Manifolds
+///
+/// 1. **Armijo**: f(R_x(αη)) ≤ f(x) + c₁α⟨∇f(x), η⟩_x
+/// 2. **Curvature**: |⟨∇f(R_x(αη)), T_{x→y}(η)⟩_y| ≤ c₂|⟨∇f(x), η⟩_x|
+///
+/// where R_x is retraction and T_{x→y} is vector transport.
 #[derive(Debug, Clone)]
 pub struct StrongWolfeLineSearch {
-	/// Tolerance for the line search
-	tolerance: f64,
+	/// Maximum iterations in the zoom phase
+	max_zoom_iterations: usize,
 }
 
 impl StrongWolfeLineSearch {
-	/// Creates a new strong Wolfe line search with default tolerance.
-	///
-	/// Initializes the algorithm with standard parameters optimized for
-	/// quasi-Newton methods requiring high-quality step sizes.
+	/// Creates a new strong Wolfe line search.
 	pub fn new() -> Self {
-		Self { tolerance: 1e-10 }
+		Self {
+			max_zoom_iterations: 10,
+		}
 	}
 
-	/// Configures numerical tolerance for convergence testing.
-	///
-	/// This tolerance affects the precision of the bracketing and zoom
-	/// phases, trading computational cost for step size accuracy.
-	pub fn with_tolerance(mut self, tol: f64) -> Self {
-		self.tolerance = tol;
+	/// Sets the maximum number of zoom iterations.
+	pub fn with_max_zoom_iterations(mut self, n: usize) -> Self {
+		self.max_zoom_iterations = n;
 		self
+	}
+
+	/// Evaluates φ(α) = f(R_x(α·η)) by retracting along the search direction.
+	///
+	/// Returns (cost_value, new_point).
+	fn evaluate_phi<T, C, M>(
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		direction: &M::TangentVector,
+		alpha: T,
+	) -> Result<(T, M::Point)>
+	where
+		T: Scalar,
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		let mut scaled_dir = direction.clone();
+		manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
+		let mut trial_point = point.clone();
+		manifold.retract(point, &scaled_dir, &mut trial_point)?;
+		let cost = cost_fn.cost(&trial_point)?;
+		Ok((cost, trial_point))
+	}
+
+	/// Computes the directional derivative φ'(α) at a trial point.
+	///
+	/// Evaluates the gradient at trial_point, converts to Riemannian gradient,
+	/// transports the search direction from the base point, and returns the
+	/// inner product ⟨grad f(y), T_{x→y}(η)⟩_y.
+	///
+	/// Returns (directional_derivative, riemannian_gradient_at_trial).
+	#[allow(clippy::too_many_arguments)]
+	fn evaluate_dphi<T, C, M>(
+		cost_fn: &C,
+		manifold: &M,
+		base_point: &M::Point,
+		trial_point: &M::Point,
+		direction: &M::TangentVector,
+	) -> Result<(T, M::TangentVector)>
+	where
+		T: Scalar,
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		// Compute Euclidean gradient at trial point, then convert
+		let mut workspace = Workspace::new();
+		let mut euc_grad = direction.clone();
+		cost_fn.cost_and_gradient(trial_point, &mut workspace, &mut euc_grad)?;
+		let mut riem_grad = euc_grad.clone();
+		manifold.euclidean_to_riemannian_gradient(trial_point, &euc_grad, &mut riem_grad)?;
+
+		// Transport search direction from base to trial
+		let mut transported_dir = direction.clone();
+		manifold.parallel_transport(base_point, trial_point, direction, &mut transported_dir)?;
+
+		// Directional derivative at trial point
+		let dphi = manifold.inner_product(trial_point, &riem_grad, &transported_dir)?;
+		Ok((dphi, riem_grad))
+	}
+
+	/// Zoom phase (Nocedal & Wright Algorithm 3.6).
+	///
+	/// Given a bracket [α_lo, α_hi] known to contain a Wolfe-satisfying step,
+	/// narrows it using cubic interpolation until the conditions are met.
+	#[allow(clippy::too_many_arguments)]
+	fn zoom<T, C, M>(
+		&self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		direction: &M::TangentVector,
+		phi_0: T,
+		dphi_0: T,
+		c1: T,
+		c2: T,
+		mut alpha_lo: T,
+		mut alpha_hi: T,
+		mut phi_lo: T,
+		mut phi_hi: T,
+		mut dphi_lo: T,
+		dphi_hi: T,
+		// Best result found before entering zoom (fallback)
+		best_result: &mut Option<LineSearchResult<T, M::Point, M::TangentVector>>,
+		func_evals: &mut usize,
+		grad_evals: &mut usize,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		T: Scalar,
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		let abs_dphi_0 = <T as Float>::abs(dphi_0);
+		let mut _dphi_hi = dphi_hi;
+
+		for _ in 0..self.max_zoom_iterations {
+			// Pick trial step via cubic interpolation
+			let alpha_j =
+				cubic_interpolation(alpha_lo, alpha_hi, phi_lo, phi_hi, dphi_lo, _dphi_hi);
+
+			// Evaluate φ(α_j)
+			let (phi_j, trial_point) =
+				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha_j)?;
+			*func_evals += 1;
+
+			if phi_j > phi_0 + c1 * alpha_j * dphi_0 || phi_j >= phi_lo {
+				// Armijo violated or no improvement over lo — shrink from hi side
+				alpha_hi = alpha_j;
+				phi_hi = phi_j;
+				// dphi_hi is stale but cubic_interpolation handles it
+				// We don't compute gradient here to save evaluations
+				_dphi_hi = dphi_lo; // Approximate — will be corrected if we enter the else branch
+			} else {
+				// Armijo satisfied and phi_j < phi_lo — check curvature
+				let (dphi_j, grad_j) =
+					Self::evaluate_dphi(cost_fn, manifold, point, &trial_point, direction)?;
+				*grad_evals += 1;
+				*func_evals += 1; // cost_and_gradient counts as both
+
+				// Track best result seen
+				*best_result = Some(LineSearchResult {
+					step_size: alpha_j,
+					new_point: trial_point.clone(),
+					new_value: phi_j,
+					new_gradient: Some(grad_j.clone()),
+					function_evals: *func_evals,
+					gradient_evals: *grad_evals,
+					success: false,
+				});
+
+				// Strong Wolfe curvature condition
+				if <T as Float>::abs(dphi_j) <= c2 * abs_dphi_0 {
+					return Ok(LineSearchResult {
+						step_size: alpha_j,
+						new_point: trial_point,
+						new_value: phi_j,
+						new_gradient: Some(grad_j),
+						function_evals: *func_evals,
+						gradient_evals: *grad_evals,
+						success: true,
+					});
+				}
+
+				// Update bracket
+				if dphi_j * (alpha_hi - alpha_lo) >= T::zero() {
+					alpha_hi = alpha_lo;
+					phi_hi = phi_lo;
+					_dphi_hi = dphi_lo;
+				}
+
+				alpha_lo = alpha_j;
+				phi_lo = phi_j;
+				dphi_lo = dphi_j;
+			}
+
+			// Check if bracket has collapsed
+			if <T as Float>::abs(alpha_hi - alpha_lo) < <T as Scalar>::from_f64(1e-12) {
+				break;
+			}
+		}
+
+		// Zoom exhausted — return best result found
+		if let Some(result) = best_result.take() {
+			Ok(result)
+		} else {
+			// Fallback: evaluate at alpha_lo (which satisfies Armijo)
+			let (phi, new_point) =
+				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha_lo)?;
+			*func_evals += 1;
+			Ok(LineSearchResult {
+				step_size: alpha_lo,
+				new_point,
+				new_value: phi,
+				new_gradient: None,
+				function_evals: *func_evals,
+				gradient_evals: *grad_evals,
+				success: false,
+			})
+		}
 	}
 }
 
@@ -1015,27 +1282,157 @@ where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		M: Manifold<T>,
 	{
-		// Validate parameters
 		params.validate()?;
 
-		if directional_deriv >= T::zero() {
-			return Err(ManifoldError::numerical_error(
-				"Search direction is not a descent direction",
-			));
+		// Near-zero directional derivative means gradient ≈ 0 (stationary point)
+		// Return current point as-is rather than erroring
+		let min_deriv = <T as Scalar>::from_f64(1e-30);
+		if directional_deriv >= T::zero() || <T as Float>::abs(directional_deriv) < min_deriv {
+			return Ok(LineSearchResult {
+				step_size: T::zero(),
+				new_point: point.clone(),
+				new_value: value,
+				new_gradient: None,
+				function_evals: 0,
+				gradient_evals: 0,
+				success: false,
+			});
 		}
 
-		// For now, delegate to backtracking with tighter parameters
-		// Full strong Wolfe implementation requires complex bracketing and zoom
-		let mut backtracking = BacktrackingLineSearch::new();
-		backtracking.search_with_deriv(
-			cost_fn,
-			manifold,
-			point,
-			value,
-			direction,
-			directional_deriv,
-			params,
-		)
+		let phi_0 = value;
+		let dphi_0 = directional_deriv;
+		let abs_dphi_0 = <T as Float>::abs(dphi_0);
+		let c1 = params.c1;
+		let c2 = params.c2;
+		let alpha_max = params.max_step_size;
+		let two = <T as Scalar>::from_f64(2.0);
+
+		let mut func_evals: usize = 0;
+		let mut grad_evals: usize = 0;
+
+		let mut alpha_prev = T::zero();
+		let mut phi_prev = phi_0;
+		let mut dphi_prev = dphi_0;
+
+		let mut alpha = params.initial_step_size;
+
+		// Track the best Armijo-satisfying result as fallback
+		let mut best_result: Option<LineSearchResult<T, M::Point, M::TangentVector>> = None;
+
+		// ── Phase 1: Bracketing (Nocedal & Wright Algorithm 3.5) ──
+		for i in 0..params.max_iterations {
+			let (phi, trial_point) =
+				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha)?;
+			func_evals += 1;
+
+			// Check Armijo condition
+			let armijo_bound = phi_0 + c1 * alpha * dphi_0;
+
+			if phi > armijo_bound || (phi >= phi_prev && i > 0) {
+				// Bracket found: [alpha_prev, alpha]
+				return self.zoom(
+					cost_fn,
+					manifold,
+					point,
+					direction,
+					phi_0,
+					dphi_0,
+					c1,
+					c2,
+					alpha_prev,
+					alpha,
+					phi_prev,
+					phi,
+					dphi_prev,
+					dphi_prev, // approximate dphi_hi
+					&mut best_result,
+					&mut func_evals,
+					&mut grad_evals,
+				);
+			}
+
+			// Armijo satisfied — check curvature
+			let (dphi, grad) =
+				Self::evaluate_dphi(cost_fn, manifold, point, &trial_point, direction)?;
+			grad_evals += 1;
+			func_evals += 1; // cost_and_gradient
+
+			// Track as best result
+			best_result = Some(LineSearchResult {
+				step_size: alpha,
+				new_point: trial_point.clone(),
+				new_value: phi,
+				new_gradient: Some(grad.clone()),
+				function_evals: func_evals,
+				gradient_evals: grad_evals,
+				success: false,
+			});
+
+			// Strong Wolfe curvature condition satisfied?
+			if <T as Float>::abs(dphi) <= c2 * abs_dphi_0 {
+				return Ok(LineSearchResult {
+					step_size: alpha,
+					new_point: trial_point,
+					new_value: phi,
+					new_gradient: Some(grad),
+					function_evals: func_evals,
+					gradient_evals: grad_evals,
+					success: true,
+				});
+			}
+
+			// Curvature flipped — bracket found: [alpha, alpha_prev]
+			if dphi >= T::zero() {
+				return self.zoom(
+					cost_fn,
+					manifold,
+					point,
+					direction,
+					phi_0,
+					dphi_0,
+					c1,
+					c2,
+					alpha,
+					alpha_prev,
+					phi,
+					phi_prev,
+					dphi,
+					dphi_prev,
+					&mut best_result,
+					&mut func_evals,
+					&mut grad_evals,
+				);
+			}
+
+			// Grow step size
+			alpha_prev = alpha;
+			phi_prev = phi;
+			dphi_prev = dphi;
+			alpha = <T as Float>::min(alpha * two, alpha_max);
+
+			// If we've hit the maximum step size, stop growing
+			if alpha >= alpha_max {
+				break;
+			}
+		}
+
+		// Bracketing exhausted — return best result found
+		if let Some(mut result) = best_result {
+			result.function_evals = func_evals;
+			result.gradient_evals = grad_evals;
+			Ok(result)
+		} else {
+			// Nothing worked — return initial point unchanged with zero step
+			Ok(LineSearchResult {
+				step_size: T::zero(),
+				new_point: point.clone(),
+				new_value: value,
+				new_gradient: None,
+				function_evals: func_evals,
+				gradient_evals: grad_evals,
+				success: false,
+			})
+		}
 	}
 
 	fn name(&self) -> &str {

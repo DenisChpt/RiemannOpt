@@ -616,10 +616,25 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
 	) -> Result<()> {
-		// Use QR retraction by default
-		let retracted = self.qr_retraction(point, tangent)?;
-		result.copy_from(&retracted);
-		Ok(())
+		// Polar retraction via SVD: Y = X + G;  U Σ V^T = SVD(Y);  return U V^T
+		// This is the standard choice in pymanopt and manopt (grassmannfactory.m lines 165-188).
+		// Polar retraction is compatible with projection-based vector transport,
+		// unlike QR retraction which is representation-dependent.
+		let y = point + tangent;
+		let svd = y.svd(true, true);
+		match (svd.u, svd.v_t) {
+			(Some(u), Some(vt)) => {
+				let polar = &u * &vt;
+				result.copy_from(&polar);
+				Ok(())
+			}
+			_ => {
+				// Fallback to QR if SVD fails (shouldn't happen in practice)
+				let retracted = self.qr_retraction(point, tangent)?;
+				result.copy_from(&retracted);
+				Ok(())
+			}
+		}
 	}
 
 	fn inverse_retract(
@@ -654,18 +669,10 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		// Transport: (I - Y₂Y₂^T) * Z * U where Y₂^T Y₁ = UΣV^T
-		let y2ty1 = to.transpose() * _from;
-		let svd = y2ty1.svd(true, true);
-		if let Some(u) = svd.u {
-			let zu = vector * &u;
-			let y2_zu = to * &(to.transpose() * &zu);
-			result.copy_from(&(&zu - &y2_zu));
-		} else {
-			// Fallback to projection-based transport
-			self.project_tangent(to, vector, result)?;
-		}
-		Ok(())
+		// Projection-based vector transport: τ_Y(Z) = Π_Y(Z) = Z - Y(Y^T Z)
+		// This is the standard choice in pymanopt and manopt (grassmannfactory.m line 310).
+		// It is compatible with the polar retraction and sufficient for quotient geometry.
+		self.project_tangent(to, vector, result)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {

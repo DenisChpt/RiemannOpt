@@ -39,7 +39,7 @@ use riemannopt_core::{
 	error::Result,
 	memory::workspace::Workspace,
 	optimization::{
-		line_search::LineSearchParams,
+		line_search::{LineSearch, LineSearchParams, LineSearchResult, StrongWolfeLineSearch},
 		optimizer::{OptimizationResult, Optimizer, StoppingCriterion, TerminationReason},
 	},
 	types::Scalar,
@@ -72,12 +72,17 @@ where
 	pub previous_direction: Option<TV>,
 	/// Previous gradient
 	pub previous_gradient: Option<TV>,
+	/// Previous gradient norm squared ‖g_k‖² computed BEFORE transport
+	/// (used as denominator in beta formulas, following pymanopt's gradPgrad)
+	pub previous_gradient_norm_sq: Option<T>,
 	/// Method for computing beta (FR, PR, HS, DY)
 	pub method: ConjugateGradientMethod,
 	/// Number of iterations since last restart
 	pub iterations_since_restart: usize,
 	/// Restart period (0 means no periodic restart)
 	pub restart_period: usize,
+	/// Last accepted step size (for adaptive initial step)
+	pub last_step_size: Option<T>,
 }
 
 impl<T, TV> ConjugateGradientState<T, TV>
@@ -90,9 +95,11 @@ where
 		Self {
 			previous_direction: None,
 			previous_gradient: None,
+			previous_gradient_norm_sq: None,
 			method,
 			iterations_since_restart: 0,
 			restart_period,
+			last_step_size: None,
 			_phantom: std::marker::PhantomData,
 		}
 	}
@@ -101,7 +108,9 @@ where
 	pub fn reset(&mut self) {
 		self.previous_direction = None;
 		self.previous_gradient = None;
+		self.previous_gradient_norm_sq = None;
 		self.iterations_since_restart = 0;
+		// Keep last_step_size across restarts for adaptive initial step
 	}
 }
 
@@ -128,9 +137,9 @@ impl<T: Scalar> Default for CGConfig<T> {
 			method: ConjugateGradientMethod::PolakRibiere,
 			restart_period: 0, // No automatic restart by default
 			use_pr_plus: true, // Use PR+ by default
-			min_beta: Some(<T as Scalar>::from_f64(-0.5)),
-			max_beta: Some(<T as Scalar>::from_f64(10.0)),
-			line_search_params: LineSearchParams::default(),
+			min_beta: None,    // Rely on PR+ (max(0, beta)) like manopt
+			max_beta: None,
+			line_search_params: LineSearchParams::for_conjugate_gradient(),
 		}
 	}
 }
@@ -319,12 +328,20 @@ impl<T: Scalar> ConjugateGradient<T> {
 	}
 
 	/// Computes the beta coefficient for the conjugate gradient method.
+	///
+	/// Following pymanopt/manopt conventions:
+	/// - The denominator in FR/PR uses `previous_gradient_norm_sq` computed BEFORE
+	///   transport (= `gradPgrad` in pymanopt), not the norm of the transported gradient.
+	///   This avoids accumulating transport errors on manifolds like Grassmann.
+	/// - Powell restart: if `|⟨transported_old_grad, new_grad⟩| / ‖new_grad‖² >= 0.1`,
+	///   reset to steepest descent (β = 0).
 	fn compute_beta<M>(
 		&self,
 		manifold: &M,
 		current_point: &M::Point,
 		previous_point: &M::Point,
 		gradient: &M::TangentVector,
+		grad_norm_sq: T,
 		cg_state: &ConjugateGradientState<T, M::TangentVector>,
 		_workspace: &mut Workspace<T>,
 	) -> Result<T>
@@ -337,6 +354,11 @@ impl<T: Scalar> ConjugateGradient<T> {
 
 		let prev_grad = cg_state.previous_gradient.as_ref().unwrap();
 		let prev_dir = cg_state.previous_direction.as_ref().unwrap();
+
+		// Use previous gradient norm squared computed BEFORE transport (like pymanopt gradPgrad)
+		let prev_grad_norm_sq = cg_state
+			.previous_gradient_norm_sq
+			.unwrap_or_else(T::epsilon);
 
 		// Transport previous gradient and direction to current point
 		let mut transported_prev_grad = prev_grad.clone();
@@ -355,17 +377,42 @@ impl<T: Scalar> ConjugateGradient<T> {
 			&mut transported_prev_dir,
 		)?;
 
-		// Compute inner products needed for beta calculation
-		let grad_norm_sq = manifold.inner_product(current_point, gradient, gradient)?;
-		let prev_grad_norm_sq = manifold.inner_product(
+		// ── Powell restart check (pymanopt CG lines 315-324) ──
+		// If transported old gradient is too aligned with new gradient,
+		// the CG direction is numerically unreliable → restart.
+		let orth_grads = manifold.inner_product(
 			current_point,
 			&transported_prev_grad,
+			gradient,
+		)?;
+		let powell_threshold = <T as Scalar>::from_f64(0.1);
+		if grad_norm_sq > T::epsilon()
+			&& <T as Float>::abs(orth_grads) / grad_norm_sq >= powell_threshold
+		{
+			return Ok(T::zero()); // Powell restart
+		}
+
+		// Helper: compute grad_diff = g_k - τ(g_{k-1}) using manifold operations
+		let mut grad_diff = gradient.clone();
+		let mut neg_prev_grad = transported_prev_grad.clone();
+		manifold.scale_tangent(
+			current_point,
+			-T::one(),
 			&transported_prev_grad,
+			&mut neg_prev_grad,
+		)?;
+		let mut temp = gradient.clone();
+		manifold.add_tangents(
+			current_point,
+			gradient,
+			&neg_prev_grad,
+			&mut grad_diff,
+			&mut temp,
 		)?;
 
 		let beta = match cg_state.method {
 			ConjugateGradientMethod::FletcherReeves => {
-				// β = ||g_k||² / ||g_{k-1}||²
+				// β = ‖g_k‖² / ‖g_{k-1}‖²  (using pre-transport norm)
 				if prev_grad_norm_sq > T::epsilon() {
 					grad_norm_sq / prev_grad_norm_sq
 				} else {
@@ -373,26 +420,7 @@ impl<T: Scalar> ConjugateGradient<T> {
 				}
 			}
 			ConjugateGradientMethod::PolakRibiere => {
-				// β = <g_k, g_k - g_{k-1}> / ||g_{k-1}||²
-				let mut grad_diff = gradient.clone();
-
-				// Compute g_k - g_{k-1}
-				let mut neg_prev_grad = transported_prev_grad.clone();
-				manifold.scale_tangent(
-					current_point,
-					-T::one(),
-					&transported_prev_grad,
-					&mut neg_prev_grad,
-				)?;
-				let mut temp = gradient.clone();
-				manifold.add_tangents(
-					current_point,
-					gradient,
-					&neg_prev_grad,
-					&mut grad_diff,
-					&mut temp,
-				)?;
-
+				// β = ⟨g_k, g_k - τ(g_{k-1})⟩ / ‖g_{k-1}‖²  (using pre-transport norm)
 				let numerator = manifold.inner_product(current_point, gradient, &grad_diff)?;
 
 				if prev_grad_norm_sq > T::epsilon() {
@@ -407,94 +435,52 @@ impl<T: Scalar> ConjugateGradient<T> {
 				}
 			}
 			ConjugateGradientMethod::HestenesStiefel => {
-				// β = <g_k, g_k - g_{k-1}> / <d_{k-1}, g_k - g_{k-1}>
-				let mut grad_diff = gradient.clone();
-
-				// Compute g_k - g_{k-1}
-				let mut neg_prev_grad = transported_prev_grad.clone();
-				manifold.scale_tangent(
-					current_point,
-					-T::one(),
-					&transported_prev_grad,
-					&mut neg_prev_grad,
-				)?;
-				let mut temp = gradient.clone();
-				manifold.add_tangents(
-					current_point,
-					gradient,
-					&neg_prev_grad,
-					&mut grad_diff,
-					&mut temp,
-				)?;
-
+				// β = ⟨g_k, g_k - τ(g_{k-1})⟩ / ⟨τ(d_{k-1}), g_k - τ(g_{k-1})⟩
 				let numerator = manifold.inner_product(current_point, gradient, &grad_diff)?;
 				let denominator =
 					manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
 
-				// Safeguard: scale denominator check by vector norms to avoid
-				// false restarts when vectors are small but well-conditioned
-				let norm_dir = <T as Float>::sqrt(manifold.inner_product(
-					current_point,
-					&transported_prev_dir,
-					&transported_prev_dir,
-				)?);
-				let norm_diff = <T as Float>::sqrt(manifold.inner_product(
-					current_point,
-					&grad_diff,
-					&grad_diff,
-				)?);
-				let denom_scale = norm_dir * norm_diff;
-				let tiny = T::from(100.0).unwrap() * T::epsilon() * denom_scale;
+				let tiny = T::from(100.0).unwrap() * T::epsilon()
+					* <T as Float>::sqrt(
+						manifold.inner_product(
+							current_point,
+							&transported_prev_dir,
+							&transported_prev_dir,
+						)? * manifold.inner_product(
+							current_point,
+							&grad_diff,
+							&grad_diff,
+						)?,
+					);
 
 				if <T as Float>::abs(denominator) > tiny {
-					numerator / denominator
+					<T as Float>::max(T::zero(), numerator / denominator)
 				} else {
-					T::zero() // Implicit restart
+					T::zero()
 				}
 			}
 			ConjugateGradientMethod::DaiYuan => {
-				// β = ||g_k||² / <d_{k-1}, g_k - g_{k-1}>
-				let mut grad_diff = gradient.clone();
-
-				// Compute g_k - g_{k-1}
-				let mut neg_prev_grad = transported_prev_grad.clone();
-				manifold.scale_tangent(
-					current_point,
-					-T::one(),
-					&transported_prev_grad,
-					&mut neg_prev_grad,
-				)?;
-				let mut temp = gradient.clone();
-				manifold.add_tangents(
-					current_point,
-					gradient,
-					&neg_prev_grad,
-					&mut grad_diff,
-					&mut temp,
-				)?;
-
+				// β = ‖g_k‖² / ⟨τ(d_{k-1}), g_k - τ(g_{k-1})⟩
 				let denominator =
 					manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
 
-				// Safeguard: scale denominator check by vector norms to avoid
-				// false restarts when vectors are small but well-conditioned
-				let norm_dir = <T as Float>::sqrt(manifold.inner_product(
-					current_point,
-					&transported_prev_dir,
-					&transported_prev_dir,
-				)?);
-				let norm_diff = <T as Float>::sqrt(manifold.inner_product(
-					current_point,
-					&grad_diff,
-					&grad_diff,
-				)?);
-				let denom_scale = norm_dir * norm_diff;
-				let tiny = T::from(100.0).unwrap() * T::epsilon() * denom_scale;
+				let tiny = T::from(100.0).unwrap() * T::epsilon()
+					* <T as Float>::sqrt(
+						manifold.inner_product(
+							current_point,
+							&transported_prev_dir,
+							&transported_prev_dir,
+						)? * manifold.inner_product(
+							current_point,
+							&grad_diff,
+							&grad_diff,
+						)?,
+					);
 
 				if <T as Float>::abs(denominator) > tiny {
 					grad_norm_sq / denominator
 				} else {
-					T::zero() // Implicit restart
+					T::zero()
 				}
 			}
 		};
@@ -513,7 +499,14 @@ impl<T: Scalar> ConjugateGradient<T> {
 		Ok(beta_bounded)
 	}
 
-	/// Performs line search to find an appropriate step size.
+	/// Performs strong Wolfe line search to find an appropriate step size.
+	///
+	/// Uses an adaptive initial step size following manopt's strategy:
+	/// - First iteration: `α₀ = 1 / ‖d‖` to normalize the step
+	/// - Subsequent iterations: reuse the previous accepted step × 2
+	///
+	/// Returns the full `LineSearchResult` so the optimizer can reuse the
+	/// new point, cost value, and gradient (avoiding redundant evaluations).
 	fn perform_line_search<M, C>(
 		&self,
 		cost_fn: &C,
@@ -524,44 +517,52 @@ impl<T: Scalar> ConjugateGradient<T> {
 		gradient: &M::TangentVector,
 		_workspace: &mut Workspace<T>,
 		function_evaluations: &mut usize,
-	) -> Result<T>
+		gradient_evaluations: &mut usize,
+		cg_state: &ConjugateGradientState<T, M::TangentVector>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		M: Manifold<T>,
 	{
-		// Compute directional derivative
+		// Compute directional derivative: φ'(0) = ⟨grad f, d⟩
 		let directional_derivative = manifold.inner_product(point, gradient, direction)?;
 
-		// Use line search parameters from config
-		let c1 = self.config.line_search_params.c1;
-		let backtrack_factor = <T as Scalar>::from_f64(0.5); // Default backtracking factor
-		let max_iterations = self.config.line_search_params.max_iterations;
+		// Adaptive initial step size (following manopt):
+		// First iteration: normalize by direction norm to avoid overshooting
+		// Subsequent iterations: double the last accepted step (optimistic)
+		let dir_norm_sq = manifold.inner_product(point, direction, direction)?;
+		let dir_norm = <T as Float>::sqrt(dir_norm_sq);
+		let initial_step = if let Some(prev_alpha) = cg_state.last_step_size {
+			let two = <T as Scalar>::from_f64(2.0);
+			<T as Float>::min(
+				prev_alpha * two,
+				self.config.line_search_params.max_step_size,
+			)
+		} else if dir_norm > T::zero() {
+			T::one() / dir_norm
+		} else {
+			T::one()
+		};
 
-		let mut alpha = T::one();
+		// Override initial step size in params
+		let mut params = self.config.line_search_params.clone();
+		params.initial_step_size = initial_step;
 
-		for _ in 0..max_iterations {
-			// Try the step
-			let mut scaled_direction = direction.clone();
-			manifold.scale_tangent(point, alpha, direction, &mut scaled_direction)?;
+		let mut ls = StrongWolfeLineSearch::new();
+		let result = ls.search_with_deriv(
+			cost_fn,
+			manifold,
+			point,
+			current_cost,
+			direction,
+			directional_derivative,
+			&params,
+		)?;
 
-			let mut trial_point = point.clone();
-			manifold.retract(point, &scaled_direction, &mut trial_point)?;
+		*function_evaluations += result.function_evals;
+		*gradient_evaluations += result.gradient_evals;
 
-			// Evaluate cost
-			let trial_cost = cost_fn.cost(&trial_point)?;
-			*function_evaluations += 1;
-
-			// Check Armijo condition
-			let expected_decrease = c1 * alpha * directional_derivative;
-			if trial_cost <= current_cost + expected_decrease {
-				return Ok(alpha);
-			}
-
-			// Backtrack
-			alpha *= backtrack_factor;
-		}
-
-		Ok(alpha)
+		Ok(result)
 	}
 }
 
@@ -621,6 +622,9 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 		let mut riemannian_grad = euclidean_grad.clone();
 		gradient_evaluations += 1;
 
+		// When the line search returns a gradient at the new point, we reuse it
+		let mut has_reusable_gradient = false;
+
 		// Main optimization loop
 		loop {
 			// Check stopping criteria
@@ -652,18 +656,25 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 				.with_gradient_norm(gradient_norm.unwrap_or(T::zero())));
 			}
 
-			// Compute gradient at current point
-			let _new_cost =
-				cost_fn.cost_and_gradient(&current_point, &mut workspace, &mut euclidean_grad)?;
-			function_evaluations += 1;
-			gradient_evaluations += 1;
+			// Compute gradient at current point (skip if line search already provided it)
+			if !has_reusable_gradient {
+				let _new_cost = cost_fn.cost_and_gradient(
+					&current_point,
+					&mut workspace,
+					&mut euclidean_grad,
+				)?;
+				function_evaluations += 1;
+				gradient_evaluations += 1;
 
-			// Convert to Riemannian gradient
-			manifold.euclidean_to_riemannian_gradient(
-				&current_point,
-				&euclidean_grad,
-				&mut riemannian_grad,
-			)?;
+				// Convert to Riemannian gradient
+				manifold.euclidean_to_riemannian_gradient(
+					&current_point,
+					&euclidean_grad,
+					&mut riemannian_grad,
+				)?;
+			}
+			// Reset flag — will be set again if next line search provides gradient
+			has_reusable_gradient = false;
 
 			// Compute gradient norm
 			let grad_norm_squared =
@@ -678,6 +689,7 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 					&current_point,
 					previous_point.as_ref().unwrap(),
 					&riemannian_grad,
+					grad_norm_squared,
 					&cg_state,
 					&mut workspace,
 				)?
@@ -782,8 +794,8 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 				cg_state.iterations_since_restart = 0;
 			}
 
-			// Perform line search
-			let step_size = self.perform_line_search(
+			// Perform line search (returns full result with new point, cost, gradient)
+			let ls_result = self.perform_line_search(
 				cost_fn,
 				manifold,
 				&current_point,
@@ -792,28 +804,34 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 				&riemannian_grad,
 				&mut workspace,
 				&mut function_evaluations,
+				&mut gradient_evaluations,
+				&cg_state,
 			)?;
+			// Only store positive step sizes — a zero step (failed line search)
+			// would cause initial_step_size = 0 on next iteration, crashing the line search.
+			if ls_result.step_size > T::zero() {
+				cg_state.last_step_size = Some(ls_result.step_size);
+			}
 
-			// Take the step
-			let mut scaled_direction = direction.clone();
-			manifold.scale_tangent(&current_point, step_size, &direction, &mut scaled_direction)?;
-
-			let mut new_point = current_point.clone();
-			manifold.retract(&current_point, &scaled_direction, &mut new_point)?;
-
-			// Evaluate cost at new point
-			let new_cost_verify = cost_fn.cost(&new_point)?;
-			function_evaluations += 1;
-
-			// Update state
+			// Update state — reuse results from line search
 			cg_state.previous_direction = Some(direction);
 			cg_state.previous_gradient = Some(riemannian_grad.clone());
+			// Store gradient norm BEFORE transport — used as denominator in beta
+			// (pymanopt's gradPgrad). This avoids transport-error accumulation.
+			cg_state.previous_gradient_norm_sq = Some(grad_norm_squared);
 			cg_state.iterations_since_restart += 1;
 
 			previous_point = Some(current_point.clone());
-			current_point = new_point;
+			current_point = ls_result.new_point;
 			previous_cost = Some(current_cost);
-			current_cost = new_cost_verify;
+			current_cost = ls_result.new_value;
+
+			// If the line search computed the gradient, reuse it for the next iteration
+			if let Some(ls_grad) = ls_result.new_gradient {
+				riemannian_grad = ls_grad;
+				has_reusable_gradient = true;
+			}
+
 			iteration += 1;
 		}
 	}

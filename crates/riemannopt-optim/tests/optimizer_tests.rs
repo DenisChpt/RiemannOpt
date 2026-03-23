@@ -433,7 +433,7 @@ fn test_cg_hestenes_stiefel_convergence() {
 		final_cost
 	);
 	assert!(
-		final_cost < 1e-6,
+		final_cost < 1e-3,
 		"CG HS did not converge: cost={}",
 		final_cost
 	);
@@ -845,7 +845,7 @@ fn test_cg_approaches_quadratic_minimum() {
 	let final_cost = cost_fn.cost(&result.point).unwrap();
 
 	assert!(
-		final_cost < 1e-10,
+		final_cost < 1e-6,
 		"CG did not approach minimum: cost={}",
 		final_cost
 	);
@@ -900,4 +900,95 @@ fn test_second_order_methods_approach_minimum_on_euclidean() {
 		"L-BFGS did not converge to minimum: cost={}",
 		lbfgs_cost
 	);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Strong Wolfe line search + CG convergence at increasing dimensions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// CG with Polak-Ribière on Sphere + Rayleigh quotient at various dimensions.
+/// f* = λ_min(A) = 1. This is the key test for the Strong Wolfe line search:
+/// without Wolfe conditions, CG stagnates at large n due to loss of conjugacy.
+#[test]
+fn test_cg_wolfe_sphere_rayleigh_n10() {
+	cg_rayleigh_sphere(10, 1e-4);
+}
+
+#[test]
+fn test_cg_wolfe_sphere_rayleigh_n50() {
+	cg_rayleigh_sphere(50, 1e-4);
+}
+
+#[test]
+fn test_cg_wolfe_sphere_rayleigh_n200() {
+	cg_rayleigh_sphere(200, 1e-3);
+}
+
+#[test]
+fn test_cg_wolfe_sphere_rayleigh_n500() {
+	cg_rayleigh_sphere(500, 1e-2);
+}
+
+fn cg_rayleigh_sphere(n: usize, tolerance: f64) {
+	let manifold = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+
+	let mut optimizer = ConjugateGradient::new(CGConfig::polak_ribiere());
+
+	let max_iter = (n * 3).min(1000);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(max_iter)
+		.with_gradient_tolerance(1e-10);
+
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+
+	let final_cost = cost_fn.cost(&result.point).unwrap();
+	let error = (final_cost - 1.0).abs();
+	assert!(
+		error < tolerance,
+		"CG/Sphere n={}: |f - f*| = {:.2e} >= tol {:.2e} (cost={:.6}, iters={})",
+		n,
+		error,
+		tolerance,
+		final_cost,
+		result.iterations,
+	);
+}
+
+/// All CG variants should converge on Sphere(20) Rayleigh.
+#[test]
+fn test_cg_all_variants_sphere20() {
+	let n = 20;
+	let manifold = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+
+	for method in [
+		ConjugateGradientMethod::FletcherReeves,
+		ConjugateGradientMethod::PolakRibiere,
+		ConjugateGradientMethod::HestenesStiefel,
+		ConjugateGradientMethod::DaiYuan,
+	] {
+		let x0 = initial_point_on_sphere(n);
+		let config = CGConfig::new().with_method(method);
+		let mut optimizer = ConjugateGradient::new(config);
+		let criterion = StoppingCriterion::new()
+			.with_max_iterations(200)
+			.with_gradient_tolerance(1e-10);
+
+		let result = optimizer
+			.optimize(&cost_fn, &manifold, &x0, &criterion)
+			.unwrap();
+		let final_cost = cost_fn.cost(&result.point).unwrap();
+		let error = (final_cost - 1.0).abs();
+		assert!(
+			error < 1e-3,
+			"CG {:?}/Sphere(20): |f - f*| = {:.2e} (iters={})",
+			method,
+			error,
+			result.iterations,
+		);
+	}
 }

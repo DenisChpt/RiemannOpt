@@ -3,20 +3,22 @@
 //! L-BFGS (Limited-memory Broyden-Fletcher-Goldfarb-Shanno) is a quasi-Newton optimization
 //! algorithm that approximates the inverse Hessian using a limited history of past gradient
 //! and position updates. This implementation extends L-BFGS to Riemannian manifolds by
-//! properly handling parallel transport of stored vectors.
+//! transporting all stored vectors to the current tangent space after each step.
 //!
 //! # Algorithm Overview
 //!
 //! The Riemannian L-BFGS algorithm:
 //! 1. Stores m most recent gradient differences and position differences
-//! 2. Approximates the inverse Hessian-vector product using two-loop recursion
-//! 3. Computes search direction as negative approximate Newton direction
-//! 4. Performs line search to find suitable step size
-//! 5. Updates position using retraction
+//! 2. After each step, transports ALL stored vectors to the new tangent space
+//! 3. Approximates the inverse Hessian-vector product using two-loop recursion
+//! 4. Computes search direction as negative approximate Newton direction
+//! 5. Performs line search to find suitable step size
+//! 6. Updates position using retraction
 //!
 //! ## Two-Loop Recursion Algorithm
 //!
-//! The core of L-BFGS is the two-loop recursion that efficiently computes H_k * grad_f(x_k):
+//! Since all stored vectors are maintained in the current tangent space,
+//! the recursion is the standard L-BFGS two-loop (no transport needed):
 //!
 //! ```text
 //! q = grad_f(x_k)
@@ -35,16 +37,18 @@
 //!
 //! ## Riemannian Adaptations
 //!
-//! The key challenge in Riemannian L-BFGS is handling vectors from different tangent spaces:
-//! - **Vector Transport**: Historical vectors must be transported to the current tangent space
-//! - **Metric Awareness**: Inner products use the Riemannian metric
-//! - **Retraction**: Updates use retraction instead of vector addition
+//! The key adaptation for Riemannian manifolds follows the manopt rlbfgs.m pattern:
+//! - **Eager transport**: After each iteration, ALL stored (s_i, y_i) pairs are
+//!   transported from the old tangent space to the new tangent space
+//! - **No transport in recursion**: The two-loop recursion operates purely in the
+//!   current tangent space, avoiding inconsistency errors
+//! - **Cautious updates**: Pairs are only stored if they satisfy a curvature condition
+//! - **Normalization**: s_k and y_k are normalized by ‖s_k‖ before storage
 //!
 //! # Key Features
 //!
 //! - **Limited memory**: Only stores m vector pairs (typically 5-20)
 //! - **Superlinear convergence**: Near optimal points with good initial Hessian approximation
-//! - **Vector transport**: Properly handles curvature when transporting stored vectors
 //! - **Automatic scaling**: Initial Hessian approximation based on most recent update
 //! - **Strong Wolfe line search**: Ensures sufficient decrease and curvature conditions
 //!
@@ -53,6 +57,7 @@
 //! - Nocedal & Wright, "Numerical Optimization" (2006)
 //! - Huang et al., "A Riemannian BFGS Method" (2015)
 //! - Sato, "Riemannian Optimization and Its Applications" (2021)
+//! - Boumal, "An Introduction to Optimization on Smooth Manifolds" (2023)
 
 use num_traits::Float;
 use riemannopt_core::{
@@ -70,15 +75,18 @@ use std::fmt::Debug;
 use std::time::Instant;
 
 /// Storage for one iteration's L-BFGS data.
+///
+/// All vectors are maintained in the current tangent space. After each iteration,
+/// all stored entries are transported to the new tangent space.
 #[derive(Debug)]
 pub struct LBFGSHistoryEntry<T, TV>
 where
 	T: Scalar,
 	TV: Clone + Debug + Send + Sync,
 {
-	/// Position difference vector s_k (in tangent space at x_k)
+	/// Position difference vector s_k (normalized, in current tangent space)
 	s: TV,
-	/// Gradient difference vector y_k (in tangent space at x_{k+1})
+	/// Gradient difference vector y_k (normalized, in current tangent space)
 	y: TV,
 	/// Inner product rho_k = 1 / <y_k, s_k>
 	rho: T,
@@ -192,8 +200,8 @@ impl<T: Scalar> LBFGSConfig<T> {
 /// Riemannian L-BFGS optimizer.
 ///
 /// This optimizer adapts the classical L-BFGS algorithm to Riemannian manifolds
-/// by properly handling the transport of stored vector pairs and using the
-/// manifold's metric for inner products.
+/// by eagerly transporting all stored vector pairs to the current tangent space
+/// after each iteration, following the manopt rlbfgs.m pattern.
 ///
 /// # Examples
 ///
@@ -311,6 +319,9 @@ impl<T: Scalar> LBFGS<T> {
 	}
 
 	/// Computes the L-BFGS search direction using the two-loop recursion.
+	///
+	/// All stored (s_i, y_i) vectors are already in the current tangent space,
+	/// so no transport is needed during the recursion.
 	fn compute_lbfgs_direction_inplace<M>(
 		&self,
 		manifold: &M,
@@ -319,7 +330,6 @@ impl<T: Scalar> LBFGS<T> {
 		lbfgs_state: &LBFGSState<T, M::TangentVector>,
 		direction: &mut M::TangentVector,
 		_workspace: &mut Workspace<T>,
-		point_history: &Vec<M::Point>,
 	) -> Result<()>
 	where
 		M: Manifold<T>,
@@ -338,157 +348,61 @@ impl<T: Scalar> LBFGS<T> {
 		// Initialize q = gradient
 		let mut q = gradient.clone();
 
-		// First loop: compute alpha[i] and update q
+		// First loop (backward): compute alpha[i] and update q
 		for i in (0..m).rev() {
 			let entry = &lbfgs_state.history[i];
 
-			// Transport s_i and y_i to current tangent space
-			let history_idx = point_history.len() - m + i;
-			if history_idx < point_history.len() - 1 {
-				// Transport from the point where the entry was created
-				let mut transported_s = entry.s.clone();
-				let mut transported_y = entry.y.clone();
+			// alpha[i] = rho[i] * <s[i], q>
+			let s_dot_q = manifold.inner_product(current_point, &entry.s, &q)?;
+			alpha[i] = entry.rho * s_dot_q;
 
-				// s was in tangent space at x_k, transport to current point
-				manifold.parallel_transport(
-					&point_history[history_idx],
-					current_point,
-					&entry.s,
-					&mut transported_s,
-				)?;
-
-				// y was in tangent space at x_{k+1}, transport to current point
-				manifold.parallel_transport(
-					&point_history[history_idx + 1],
-					current_point,
-					&entry.y,
-					&mut transported_y,
-				)?;
-
-				// alpha[i] = rho[i] * <s[i], q>
-				let s_dot_q = manifold.inner_product(current_point, &transported_s, &q)?;
-				alpha[i] = entry.rho * s_dot_q;
-
-				// q = q - alpha[i] * y[i]
-				let mut scaled_y = transported_y.clone();
-				manifold.scale_tangent(current_point, -alpha[i], &transported_y, &mut scaled_y)?;
-				let temp_q = q.clone();
-				let mut temp_add = q.clone();
-				manifold.add_tangents(current_point, &temp_q, &scaled_y, &mut q, &mut temp_add)?;
-			} else {
-				// For the most recent entry, vectors are already in current tangent space
-				let s_dot_q = manifold.inner_product(current_point, &entry.s, &q)?;
-				alpha[i] = entry.rho * s_dot_q;
-
-				let mut scaled_y = entry.y.clone();
-				manifold.scale_tangent(current_point, -alpha[i], &entry.y, &mut scaled_y)?;
-				let temp_q = q.clone();
-				let mut temp_add = q.clone();
-				manifold.add_tangents(current_point, &temp_q, &scaled_y, &mut q, &mut temp_add)?;
-			}
+			// q = q - alpha[i] * y[i]
+			let mut scaled_y = entry.y.clone();
+			manifold.scale_tangent(current_point, -alpha[i], &entry.y, &mut scaled_y)?;
+			let temp_q = q.clone();
+			let mut temp_add = q.clone();
+			manifold.add_tangents(current_point, &temp_q, &scaled_y, &mut q, &mut temp_add)?;
 		}
 
-		// Compute initial Hessian approximation H_0
+		// Compute initial Hessian approximation: r = gamma * q
+		// where gamma = <s_{m-1}, y_{m-1}> / <y_{m-1}, y_{m-1}>
 		let mut r = q.clone();
-		if m > 0 {
-			// Use the most recent entry for scaling
+		{
 			let last_entry = &lbfgs_state.history[m - 1];
+			let s_dot_y =
+				manifold.inner_product(current_point, &last_entry.s, &last_entry.y)?;
+			let y_dot_y =
+				manifold.inner_product(current_point, &last_entry.y, &last_entry.y)?;
 
-			// Transport vectors to current point if needed
-			let history_idx = point_history.len() - 1;
-			if history_idx > 0 && history_idx < point_history.len() {
-				let mut transported_s = last_entry.s.clone();
-				let mut transported_y = last_entry.y.clone();
-
-				manifold.parallel_transport(
-					&point_history[history_idx - 1],
-					current_point,
-					&last_entry.s,
-					&mut transported_s,
-				)?;
-
-				manifold.parallel_transport(
-					&point_history[history_idx],
-					current_point,
-					&last_entry.y,
-					&mut transported_y,
-				)?;
-
-				// H_0 = gamma * I where gamma = <s_{m-1}, y_{m-1}> / <y_{m-1}, y_{m-1}>
-				let s_dot_y =
-					manifold.inner_product(current_point, &transported_s, &transported_y)?;
-				let y_dot_y =
-					manifold.inner_product(current_point, &transported_y, &transported_y)?;
-
-				if y_dot_y > T::zero() {
-					let gamma = s_dot_y / y_dot_y;
-					manifold.scale_tangent(current_point, gamma, &q, &mut r)?;
-				}
-			} else {
-				// Use vectors as they are (already in current tangent space)
-				let s_dot_y =
-					manifold.inner_product(current_point, &last_entry.s, &last_entry.y)?;
-				let y_dot_y =
-					manifold.inner_product(current_point, &last_entry.y, &last_entry.y)?;
-
-				if y_dot_y > T::zero() {
-					let gamma = s_dot_y / y_dot_y;
-					manifold.scale_tangent(current_point, gamma, &q, &mut r)?;
-				}
+			if y_dot_y > T::zero() {
+				let gamma = s_dot_y / y_dot_y;
+				manifold.scale_tangent(current_point, gamma, &q, &mut r)?;
 			}
 		}
 
-		// Second loop: compute search direction
+		// Second loop (forward): update r
 		for i in 0..m {
 			let entry = &lbfgs_state.history[i];
 
-			// Transport vectors if needed
-			let history_idx = point_history.len() - m + i;
-			if history_idx < point_history.len() - 1 {
-				let mut transported_s = entry.s.clone();
-				let mut transported_y = entry.y.clone();
+			// beta = rho[i] * <y[i], r>
+			let y_dot_r = manifold.inner_product(current_point, &entry.y, &r)?;
+			let beta = entry.rho * y_dot_r;
 
-				manifold.parallel_transport(
-					&point_history[history_idx],
-					current_point,
-					&entry.s,
-					&mut transported_s,
-				)?;
-
-				manifold.parallel_transport(
-					&point_history[history_idx + 1],
-					current_point,
-					&entry.y,
-					&mut transported_y,
-				)?;
-
-				// beta = rho[i] * <y[i], r>
-				let y_dot_r = manifold.inner_product(current_point, &transported_y, &r)?;
-				let beta = entry.rho * y_dot_r;
-
-				// r = r + (alpha[i] - beta) * s[i]
-				let coeff = alpha[i] - beta;
-				let mut scaled_s = transported_s.clone();
-				manifold.scale_tangent(current_point, coeff, &transported_s, &mut scaled_s)?;
-				let temp_r = r.clone();
-				let mut temp_add = r.clone();
-				manifold.add_tangents(current_point, &temp_r, &scaled_s, &mut r, &mut temp_add)?;
-			} else {
-				// Use vectors as they are
-				let y_dot_r = manifold.inner_product(current_point, &entry.y, &r)?;
-				let beta = entry.rho * y_dot_r;
-
-				let coeff = alpha[i] - beta;
-				let mut scaled_s = entry.s.clone();
-				manifold.scale_tangent(current_point, coeff, &entry.s, &mut scaled_s)?;
-				let temp_r = r.clone();
-				let mut temp_add = r.clone();
-				manifold.add_tangents(current_point, &temp_r, &scaled_s, &mut r, &mut temp_add)?;
-			}
+			// r = r + (alpha[i] - beta) * s[i]
+			let coeff = alpha[i] - beta;
+			let mut scaled_s = entry.s.clone();
+			manifold.scale_tangent(current_point, coeff, &entry.s, &mut scaled_s)?;
+			let temp_r = r.clone();
+			let mut temp_add = r.clone();
+			manifold.add_tangents(current_point, &temp_r, &scaled_s, &mut r, &mut temp_add)?;
 		}
 
 		// Return negative direction for descent
 		manifold.scale_tangent(current_point, -T::one(), &r, direction)?;
+
+		// Project result back to the tangent space for numerical safety
+		let direction_copy = direction.clone();
+		manifold.project_tangent(current_point, &direction_copy, direction)?;
 
 		Ok(())
 	}
@@ -593,6 +507,10 @@ impl<T: Scalar> LBFGS<T> {
 	}
 
 	/// Updates the L-BFGS history with new information.
+	///
+	/// After computing the new (s_k, y_k) pair in the new tangent space,
+	/// transports ALL previously stored vectors to the new tangent space.
+	/// This ensures all stored vectors are always in the same (current) tangent space.
 	fn update_lbfgs_history<M>(
 		&self,
 		manifold: &M,
@@ -602,16 +520,21 @@ impl<T: Scalar> LBFGS<T> {
 		new_gradient: &M::TangentVector,
 		direction: &M::TangentVector,
 		step_size: T,
+		grad_norm: T,
 		lbfgs_state: &mut LBFGSState<T, M::TangentVector>,
 		_workspace: &mut Workspace<T>,
 		iteration: usize,
-	) -> Result<()>
+	) -> Result<bool>
 	where
 		M: Manifold<T>,
 	{
 		// Compute s_k = step_size * direction (in tangent space at old_point)
 		let mut s_k = direction.clone();
 		manifold.scale_tangent(old_point, step_size, direction, &mut s_k)?;
+
+		// Transport s_k to new_point's tangent space
+		let mut transported_s_k = s_k.clone();
+		manifold.parallel_transport(old_point, new_point, &s_k, &mut transported_s_k)?;
 
 		// Transport old gradient to new point's tangent space
 		let mut transported_old_grad = old_gradient.clone();
@@ -640,25 +563,90 @@ impl<T: Scalar> LBFGS<T> {
 			&mut temp_add,
 		)?;
 
-		// Transport s_k to new_point for inner product computation
-		let mut transported_s_k = s_k.clone();
-		manifold.parallel_transport(old_point, new_point, &s_k, &mut transported_s_k)?;
+		// Compute ||s_k|| for normalization (manopt rlbfgs.m lines 371-373)
+		let s_k_norm_sq =
+			manifold.inner_product(new_point, &transported_s_k, &transported_s_k)?;
+		let s_k_norm = <T as Float>::sqrt(s_k_norm_sq);
 
-		// Compute rho_k = 1 / <y_k, s_k>
-		let y_dot_s = manifold.inner_product(new_point, &y_k, &transported_s_k)?;
-
-		// Check if update satisfies curvature condition
-		let min_curvature = <T as Scalar>::from_f64(1e-8);
-		if <T as Float>::abs(y_dot_s) > min_curvature
-			&& (!self.config.use_cautious_updates || y_dot_s > T::zero())
-		{
-			let rho = T::one() / y_dot_s;
-
-			// Add the new entry (s_k stored at old_point, y_k stored at new_point)
-			lbfgs_state.add_entry(s_k, y_k, rho, iteration);
+		if s_k_norm < <T as Scalar>::from_f64(1e-15) {
+			// Step was too small, skip this update
+			return Ok(false);
 		}
 
-		Ok(())
+		// Compute <s_k, y_k> before normalization for the cautious update check
+		let s_dot_y = manifold.inner_product(new_point, &y_k, &transported_s_k)?;
+
+		// Cautious update check (manopt rlbfgs.m line 386):
+		// Only store if <s_k, y_k> / ||s_k||^2 >= 1e-4 * ||grad||
+		if self.config.use_cautious_updates {
+			let cautious_threshold = <T as Scalar>::from_f64(1e-4) * grad_norm;
+			let curvature_ratio = s_dot_y / s_k_norm_sq;
+			if curvature_ratio < cautious_threshold {
+				return Ok(false);
+			}
+		} else {
+			// Basic curvature check
+			let min_curvature = <T as Scalar>::from_f64(1e-8);
+			if <T as Float>::abs(s_dot_y) <= min_curvature || s_dot_y <= T::zero() {
+				return Ok(false);
+			}
+		}
+
+		// Normalize s_k and y_k by ||s_k|| for numerical stability (manopt rlbfgs.m lines 371-373)
+		let inv_s_norm = T::one() / s_k_norm;
+		let mut normalized_s = transported_s_k.clone();
+		manifold.scale_tangent(new_point, inv_s_norm, &transported_s_k, &mut normalized_s)?;
+		let mut normalized_y = y_k.clone();
+		manifold.scale_tangent(new_point, inv_s_norm, &y_k, &mut normalized_y)?;
+
+		// Recompute rho after normalization: rho = 1 / <y_norm, s_norm> = ||s_k||^2 / <y_k, s_k>
+		let normalized_s_dot_y =
+			manifold.inner_product(new_point, &normalized_y, &normalized_s)?;
+
+		if <T as Float>::abs(normalized_s_dot_y) < <T as Scalar>::from_f64(1e-15) {
+			return Ok(false);
+		}
+
+		let rho = T::one() / normalized_s_dot_y;
+
+		// Transport ALL previously stored s_i and y_i to the new tangent space
+		for entry in lbfgs_state.history.iter_mut() {
+			let old_s = entry.s.clone();
+			let old_y = entry.y.clone();
+
+			// Transport from old_point to new_point
+			// (all existing entries are in old_point's tangent space)
+			if manifold
+				.parallel_transport(old_point, new_point, &old_s, &mut entry.s)
+				.is_err()
+			{
+				// If transport fails, clear history and fall back to steepest descent
+				lbfgs_state.clear();
+				return Ok(false);
+			}
+			if manifold
+				.parallel_transport(old_point, new_point, &old_y, &mut entry.y)
+				.is_err()
+			{
+				lbfgs_state.clear();
+				return Ok(false);
+			}
+
+			// Recompute rho after transport for numerical consistency
+			let new_s_dot_y =
+				manifold.inner_product(new_point, &entry.y, &entry.s)?;
+			if <T as Float>::abs(new_s_dot_y) < <T as Scalar>::from_f64(1e-15) {
+				// This entry became degenerate after transport; clear history
+				lbfgs_state.clear();
+				return Ok(false);
+			}
+			entry.rho = T::one() / new_s_dot_y;
+		}
+
+		// Add the new entry (already in new_point's tangent space)
+		lbfgs_state.add_entry(normalized_s, normalized_y, rho, iteration);
+
+		Ok(true)
 	}
 }
 
@@ -708,10 +696,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 		let mut iteration = 0;
 		let mut function_evaluations = 1;
 		let mut gradient_evaluations = 0;
-
-		// Keep track of point history for transport operations
-		let mut point_history: Vec<M::Point> = Vec::new();
-		point_history.push(initial_point.clone());
 
 		// Compute initial gradient to get the right type
 		let mut euclidean_grad = cost_fn.gradient(&initial_point)?;
@@ -777,7 +761,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 				&lbfgs_state,
 				&mut direction,
 				&mut workspace,
-				&point_history,
 			)?;
 
 			// Perform line search
@@ -815,21 +798,20 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 				&mut new_riemannian_grad,
 			)?;
 
-			// Update L-BFGS history
-			if iteration > 0 || previous_point.is_some() {
-				self.update_lbfgs_history(
-					manifold,
-					&current_point,
-					&new_point,
-					&riemannian_grad,
-					&new_riemannian_grad,
-					&direction,
-					step_size,
-					&mut lbfgs_state,
-					&mut workspace,
-					iteration,
-				)?;
-			}
+			// Update L-BFGS history: compute new (s_k, y_k) and transport all stored vectors
+			let _updated = self.update_lbfgs_history(
+				manifold,
+				&current_point,
+				&new_point,
+				&riemannian_grad,
+				&new_riemannian_grad,
+				&direction,
+				step_size,
+				grad_norm,
+				&mut lbfgs_state,
+				&mut workspace,
+				iteration,
+			)?;
 
 			// Update state
 			previous_point = Some(current_point.clone());
@@ -837,14 +819,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 			previous_cost = Some(current_cost);
 			current_cost = new_cost_verify;
 			iteration += 1;
-
-			// Update point history
-			point_history.push(current_point.clone());
-
-			// Keep point history size bounded
-			if point_history.len() > self.config.memory_size + 2 {
-				point_history.remove(0);
-			}
 		}
 	}
 }

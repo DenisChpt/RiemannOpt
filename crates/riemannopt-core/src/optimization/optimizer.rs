@@ -349,8 +349,8 @@ where
 			max_time: None,
 			max_function_evaluations: None,
 			gradient_tolerance: Some(<T as Scalar>::from_f64(1e-6)),
-			function_tolerance: Some(<T as Scalar>::from_f64(1e-9)),
-			point_tolerance: Some(<T as Scalar>::from_f64(1e-9)),
+			function_tolerance: None,
+			point_tolerance: None,
 			target_value: None,
 		}
 	}

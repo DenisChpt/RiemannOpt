@@ -1,18 +1,35 @@
 //! Reverse-mode backward pass over the tape.
+//!
+//! Gradients are stored in a single contiguous `Vec<f64>` that mirrors the
+//! tape's arena layout — no per-node heap allocation.
 
 use crate::tape::{OpCode, Tape};
 use crate::Var;
 
 /// Accumulated gradients for every tape entry.
+///
+/// All gradient data lives in a single contiguous buffer that mirrors the
+/// tape's arena layout.  Accessing a node's gradient is a simple slice
+/// operation with O(1) offset lookup.
 pub struct Gradients {
-	pub(crate) grads: Vec<Vec<f64>>,
+	/// Contiguous gradient storage (same total length as `Tape::arena`).
+	data: Vec<f64>,
+	/// Per-node offset into `data`.
+	offsets: Vec<u32>,
+	/// Per-node element count.
+	lengths: Vec<u32>,
+	/// Tracks which nodes had gradients accumulated (avoids O(n) zero-checks).
+	has_grad: Vec<bool>,
 }
 
 impl Gradients {
 	/// Gradient w.r.t. the variable `v` as a flat slice.
 	#[inline]
 	pub fn wrt(&self, v: Var) -> &[f64] {
-		&self.grads[v.idx.0 as usize]
+		let i = v.idx.0 as usize;
+		let off = self.offsets[i] as usize;
+		let len = self.lengths[i] as usize;
+		&self.data[off..off + len]
 	}
 
 	/// Gradient as a `nalgebra::DVector`.
@@ -24,6 +41,14 @@ impl Gradients {
 	pub fn wrt_mat(&self, v: Var, rows: usize, cols: usize) -> nalgebra::DMatrix<f64> {
 		nalgebra::DMatrix::from_column_slice(rows, cols, self.wrt(v))
 	}
+
+	/// Mutable gradient slice for node `i`.
+	#[inline]
+	fn grad_mut(&mut self, i: usize) -> &mut [f64] {
+		let off = self.offsets[i] as usize;
+		let len = self.lengths[i] as usize;
+		&mut self.data[off..off + len]
+	}
 }
 
 /// Run the reverse sweep starting from `output`.
@@ -31,155 +56,178 @@ impl Gradients {
 /// `output` should be a scalar `(1,1)` node (the loss).
 pub fn backward(tape: &Tape, output: Var) -> Gradients {
 	let n = tape.entries.len();
-	let mut grads: Vec<Vec<f64>> = vec![Vec::new(); n];
+	let arena_len = tape.arena_len();
 
-	// Seed
-	grads[output.idx.0 as usize] = vec![1.0];
+	// Build offset/length tables from tape entries.
+	let mut offsets = Vec::with_capacity(n);
+	let mut lengths = Vec::with_capacity(n);
+	for e in &tape.entries {
+		offsets.push(e.value_offset);
+		lengths.push(e.value_len);
+	}
+
+	let mut grads = Gradients {
+		data: vec![0.0; arena_len],
+		offsets,
+		lengths,
+		has_grad: vec![false; n],
+	};
+
+	// Seed the output gradient to 1.0.
+	let out_idx = output.idx.0 as usize;
+	grads.grad_mut(out_idx)[0] = 1.0;
+	grads.has_grad[out_idx] = true;
 
 	// Reusable scratch buffers to avoid per-node allocations.
 	let mut scratch_a: Vec<f64> = Vec::new();
 	let mut scratch_b: Vec<f64> = Vec::new();
+	let mut grad_buf: Vec<f64> = Vec::new();
 
 	for i in (0..n).rev() {
 		let entry = &tape.entries[i];
-		if grads[i].is_empty() || !entry.requires_grad {
+		if !grads.has_grad[i] || !entry.requires_grad {
 			continue;
 		}
 
-		// For Input nodes, the gradient must remain in place so callers can
-		// read it via `Gradients::wrt()`.  For all other ops we take ownership
-		// without cloning — we never revisit index i in the reverse sweep.
+		// Input nodes: keep gradient in place for callers to read via `wrt()`.
 		if matches!(entry.op, OpCode::Input) {
 			continue;
 		}
-		let grad = std::mem::take(&mut grads[i]);
+
+		// Copy current node's gradient to a temporary buffer so we can
+		// mutably accumulate into parent nodes without aliasing.
+		let off = entry.value_offset as usize;
+		let len = entry.value_len as usize;
+		grad_buf.clear();
+		grad_buf.extend_from_slice(&grads.data[off..off + len]);
 
 		match entry.op {
 			OpCode::Input => unreachable!(),
 
 			// ── binary element-wise ────────────────────────────────
 			OpCode::Add(a, b) => {
-				accum(&mut grads[a.0 as usize], &grad);
-				accum(&mut grads[b.0 as usize], &grad);
+				accum(&mut grads, a.0 as usize, &grad_buf);
+				accum(&mut grads, b.0 as usize, &grad_buf);
 			}
 			OpCode::Sub(a, b) => {
-				accum(&mut grads[a.0 as usize], &grad);
-				fill_mapped(&mut scratch_a, &grad, |g| -g);
-				accum(&mut grads[b.0 as usize], &scratch_a);
+				accum(&mut grads, a.0 as usize, &grad_buf);
+				fill_mapped(&mut scratch_a, &grad_buf, |g| -g);
+				accum(&mut grads, b.0 as usize, &scratch_a);
 			}
 			OpCode::Mul(a, b) => {
-				let av = &tape.entries[a.0 as usize].value;
-				let bv = &tape.entries[b.0 as usize].value;
-				fill_mapped2(&mut scratch_a, &grad, bv, |g, b| g * b);
-				fill_mapped2(&mut scratch_b, &grad, av, |g, a| g * a);
-				accum(&mut grads[a.0 as usize], &scratch_a);
-				accum(&mut grads[b.0 as usize], &scratch_b);
+				let av = tape.entry_value(a.0 as usize);
+				let bv = tape.entry_value(b.0 as usize);
+				fill_mapped2(&mut scratch_a, &grad_buf, bv, |g, b| g * b);
+				fill_mapped2(&mut scratch_b, &grad_buf, av, |g, a| g * a);
+				accum(&mut grads, a.0 as usize, &scratch_a);
+				accum(&mut grads, b.0 as usize, &scratch_b);
 			}
 			OpCode::Div(a, b) => {
-				let av = &tape.entries[a.0 as usize].value;
-				let bv = &tape.entries[b.0 as usize].value;
-				fill_mapped2(&mut scratch_a, &grad, bv, |g, b| g / b);
+				let av = tape.entry_value(a.0 as usize);
+				let bv = tape.entry_value(b.0 as usize);
+				fill_mapped2(&mut scratch_a, &grad_buf, bv, |g, b| g / b);
 				scratch_b.clear();
 				scratch_b.extend(
-					grad.iter()
+					grad_buf
+						.iter()
 						.zip(av.iter().zip(bv))
 						.map(|(g, (a, b))| -g * a / (b * b)),
 				);
-				accum(&mut grads[a.0 as usize], &scratch_a);
-				accum(&mut grads[b.0 as usize], &scratch_b);
+				accum(&mut grads, a.0 as usize, &scratch_a);
+				accum(&mut grads, b.0 as usize, &scratch_b);
 			}
 
 			// ── unary element-wise ─────────────────────────────────
 			OpCode::Neg(a) => {
-				fill_mapped(&mut scratch_a, &grad, |g| -g);
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				fill_mapped(&mut scratch_a, &grad_buf, |g| -g);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Exp(a) => {
-				let out = &entry.value;
-				fill_mapped2(&mut scratch_a, &grad, out, |g, v| g * v);
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				let out = tape.entry_value(i);
+				fill_mapped2(&mut scratch_a, &grad_buf, out, |g, v| g * v);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Log(a) => {
-				let av = &tape.entries[a.0 as usize].value;
-				fill_mapped2(&mut scratch_a, &grad, av, |g, a| g / a);
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				let av = tape.entry_value(a.0 as usize);
+				fill_mapped2(&mut scratch_a, &grad_buf, av, |g, a| g / a);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Sqrt(a) => {
-				let out = &entry.value;
-				fill_mapped2(&mut scratch_a, &grad, out, |g, v| g * 0.5 / v);
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				let out = tape.entry_value(i);
+				fill_mapped2(&mut scratch_a, &grad_buf, out, |g, v| g * 0.5 / v);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Sin(a) => {
-				let av = &tape.entries[a.0 as usize].value;
-				fill_mapped2(&mut scratch_a, &grad, av, |g, a| g * a.cos());
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				let av = tape.entry_value(a.0 as usize);
+				fill_mapped2(&mut scratch_a, &grad_buf, av, |g, a| g * a.cos());
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Cos(a) => {
-				let av = &tape.entries[a.0 as usize].value;
-				fill_mapped2(&mut scratch_a, &grad, av, |g, a| -g * a.sin());
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				let av = tape.entry_value(a.0 as usize);
+				fill_mapped2(&mut scratch_a, &grad_buf, av, |g, a| -g * a.sin());
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Abs(a) => {
-				let av = &tape.entries[a.0 as usize].value;
-				fill_mapped2(&mut scratch_a, &grad, av, |g, a| g * a.signum());
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				let av = tape.entry_value(a.0 as usize);
+				fill_mapped2(&mut scratch_a, &grad_buf, av, |g, a| g * a.signum());
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Pow(a, n) => {
-				let av = &tape.entries[a.0 as usize].value;
+				let av = tape.entry_value(a.0 as usize);
 				let nf = n as f64;
 				scratch_a.clear();
 				scratch_a.extend(
-					grad.iter()
+					grad_buf
+						.iter()
 						.zip(av)
 						.map(|(g, a)| g * nf * a.powi(n as i32 - 1)),
 				);
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 
 			// ── reductions ─────────────────────────────────────────
 			OpCode::Sum(a) => {
-				let len = tape.entries[a.0 as usize].value.len();
-				let g0 = grad[0];
+				let parent_len = tape.entries[a.0 as usize].value_len as usize;
+				let g0 = grad_buf[0];
 				scratch_a.clear();
-				scratch_a.resize(len, g0);
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				scratch_a.resize(parent_len, g0);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Mean(a) => {
-				let len = tape.entries[a.0 as usize].value.len();
-				let g0 = grad[0] / len as f64;
+				let parent_len = tape.entries[a.0 as usize].value_len as usize;
+				let g0 = grad_buf[0] / parent_len as f64;
 				scratch_a.clear();
-				scratch_a.resize(len, g0);
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				scratch_a.resize(parent_len, g0);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 			OpCode::Dot(a, b) => {
-				let av = &tape.entries[a.0 as usize].value;
-				let bv = &tape.entries[b.0 as usize].value;
-				let g0 = grad[0];
+				let av = tape.entry_value(a.0 as usize);
+				let bv = tape.entry_value(b.0 as usize);
+				let g0 = grad_buf[0];
 				fill_mapped(&mut scratch_a, bv, |b| g0 * b);
 				fill_mapped(&mut scratch_b, av, |a| g0 * a);
-				accum(&mut grads[a.0 as usize], &scratch_a);
-				accum(&mut grads[b.0 as usize], &scratch_b);
+				accum(&mut grads, a.0 as usize, &scratch_a);
+				accum(&mut grads, b.0 as usize, &scratch_b);
 			}
 			OpCode::Norm(a) => {
-				let av = &tape.entries[a.0 as usize].value;
-				let norm_val = entry.value[0];
-				let g0 = grad[0];
+				let av = tape.entry_value(a.0 as usize);
+				let norm_val = tape.entry_value(i)[0];
+				let g0 = grad_buf[0];
 				if norm_val > 1e-30 {
 					fill_mapped(&mut scratch_a, av, |a| g0 * a / norm_val);
-					accum(&mut grads[a.0 as usize], &scratch_a);
+					accum(&mut grads, a.0 as usize, &scratch_a);
 				}
 			}
 
 			// ── linear algebra ─────────────────────────────────────
 			OpCode::MatMul(a, b, m, k, n_cols) => {
 				let (m, k, n_cols) = (m as usize, k as usize, n_cols as usize);
-				let av = &tape.entries[a.0 as usize].value;
-				let bv = &tape.entries[b.0 as usize].value;
+				let av = tape.entry_value(a.0 as usize);
+				let bv = tape.entry_value(b.0 as usize);
 
-				// Use nalgebra for MatMul gradients instead of naive triple loops.
-				// Column-major layout matches nalgebra's internal representation.
+				// Use nalgebra for MatMul gradients.
 				let grad_out = nalgebra::DMatrixView::from_slice_generic(
-					&grad,
+					&grad_buf,
 					nalgebra::Dyn(m),
 					nalgebra::Dyn(n_cols),
 				);
@@ -199,55 +247,53 @@ pub fn backward(tape: &Tape, output: Var) -> Gradients {
 				// grad_B = A^T * grad_out
 				let gb_mat = a_mat.transpose() * &grad_out;
 
-				accum(&mut grads[a.0 as usize], ga_mat.as_slice());
-				accum(&mut grads[b.0 as usize], gb_mat.as_slice());
+				accum(&mut grads, a.0 as usize, ga_mat.as_slice());
+				accum(&mut grads, b.0 as usize, gb_mat.as_slice());
 			}
 			OpCode::Trace(a) => {
 				let (r, _) = tape.entries[a.0 as usize].shape;
-				let g0 = grad[0];
+				let g0 = grad_buf[0];
 				scratch_a.clear();
 				scratch_a.resize(r * r, 0.0);
 				for ii in 0..r {
 					scratch_a[ii + ii * r] = g0;
 				}
-				accum(&mut grads[a.0 as usize], &scratch_a);
+				accum(&mut grads, a.0 as usize, &scratch_a);
 			}
 
 			// ── scalar–tensor broadcast ────────────────────────────
 			OpCode::ScalarMul(s, t) => {
-				let sv = tape.entries[s.0 as usize].value[0];
-				let tv = &tape.entries[t.0 as usize].value;
-				let gs_val: f64 = grad.iter().zip(tv).map(|(g, v)| g * v).sum();
+				let sv = tape.entry_value(s.0 as usize)[0];
+				let tv = tape.entry_value(t.0 as usize);
+				let gs_val: f64 = grad_buf.iter().zip(tv).map(|(g, v)| g * v).sum();
 				scratch_a.clear();
 				scratch_a.push(gs_val);
-				fill_mapped(&mut scratch_b, &grad, |g| g * sv);
-				accum(&mut grads[s.0 as usize], &scratch_a);
-				accum(&mut grads[t.0 as usize], &scratch_b);
+				fill_mapped(&mut scratch_b, &grad_buf, |g| g * sv);
+				accum(&mut grads, s.0 as usize, &scratch_a);
+				accum(&mut grads, t.0 as usize, &scratch_b);
 			}
 			OpCode::ScalarAdd(s, t) => {
-				let gs_val: f64 = grad.iter().sum();
+				let gs_val: f64 = grad_buf.iter().sum();
 				scratch_a.clear();
 				scratch_a.push(gs_val);
-				accum(&mut grads[s.0 as usize], &scratch_a);
-				accum(&mut grads[t.0 as usize], &grad);
+				accum(&mut grads, s.0 as usize, &scratch_a);
+				accum(&mut grads, t.0 as usize, &grad_buf);
 			}
 		}
 	}
 
-	Gradients { grads }
+	grads
 }
 
-/// Accumulate `src` into `dst`, initialising if empty.
+/// Accumulate `src` into the gradient slot for node `node_idx`.
 #[inline]
-fn accum(dst: &mut Vec<f64>, src: &[f64]) {
-	if dst.is_empty() {
-		*dst = src.to_vec();
-	} else {
-		debug_assert_eq!(dst.len(), src.len());
-		for (d, s) in dst.iter_mut().zip(src) {
-			*d += s;
-		}
+fn accum(grads: &mut Gradients, node_idx: usize, src: &[f64]) {
+	let dst = grads.grad_mut(node_idx);
+	debug_assert_eq!(dst.len(), src.len());
+	for (d, s) in dst.iter_mut().zip(src) {
+		*d += s;
 	}
+	grads.has_grad[node_idx] = true;
 }
 
 /// Fill `buf` by applying `f` element-wise to `src`, reusing the allocation.
@@ -265,6 +311,9 @@ fn fill_mapped2(buf: &mut Vec<f64>, a: &[f64], b: &[f64], f: impl Fn(f64, f64) -
 }
 
 /// Finite-difference gradient check.  Returns the maximum relative error.
+///
+/// Reuses a single [`Tape`] across all perturbations to avoid repeated
+/// heap allocations.
 pub fn check_gradient<F>(f: F, x: &[f64], shape: (usize, usize), eps: f64) -> f64
 where
 	F: Fn(Var) -> Var,
@@ -278,27 +327,30 @@ where
 	let ad_grad = grads.wrt(v).to_vec();
 	drop(_guard);
 
-	// Finite-difference gradient
+	// Finite-difference gradient — reuse tape and perturbation buffers
 	let n = x.len();
 	let mut fd_grad = vec![0.0; n];
+	let mut xp = x.to_vec();
+	let mut xm = x.to_vec();
+
 	for i in 0..n {
-		let mut xp = x.to_vec();
-		let mut xm = x.to_vec();
+		xp.copy_from_slice(x);
+		xm.copy_from_slice(x);
 		xp[i] += eps;
 		xm[i] -= eps;
 
-		let mut tp = Tape::new();
-		let _g = crate::TapeGuard::new(&mut tp);
-		let vp = tp.var(&xp, shape);
+		tape.clear();
+		let _g = crate::TapeGuard::new(&mut tape);
+		let vp = tape.var(&xp, shape);
 		let op = f(vp);
-		let fp = tp.scalar(op.idx());
+		let fp = tape.scalar(op.idx());
 		drop(_g);
 
-		let mut tm = Tape::new();
-		let _g = crate::TapeGuard::new(&mut tm);
-		let vm = tm.var(&xm, shape);
+		tape.clear();
+		let _g = crate::TapeGuard::new(&mut tape);
+		let vm = tape.var(&xm, shape);
 		let om = f(vm);
-		let fm = tm.scalar(om.idx());
+		let fm = tape.scalar(om.idx());
 		drop(_g);
 
 		fd_grad[i] = (fp - fm) / (2.0 * eps);

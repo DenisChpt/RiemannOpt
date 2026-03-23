@@ -1,4 +1,7 @@
 //! Generic optimizer implementation for all manifolds.
+//!
+//! Uses an enum-based dispatch to route optimization to the correct manifold
+//! type, replacing fragile `if/else if` chains with exhaustive `match`.
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
@@ -6,22 +9,63 @@ use pyo3::prelude::*;
 use crate::{
 	py_cost::PyCostFunction,
 	py_manifolds::{
-		euclidean::PyEuclidean,
-		grassmann::PyGrassmann,
-		hyperbolic::PyHyperbolic,
-		oblique::PyOblique,
-		// fixed_rank::PyFixedRank,  // TODO: Fix FixedRankPoint representation mismatch
-		psd_cone::PyPSDCone,
-		spd::PySPD,
-		sphere::PySphere,
-		stiefel::PyStiefel,
+		euclidean::PyEuclidean, grassmann::PyGrassmann, hyperbolic::PyHyperbolic,
+		oblique::PyOblique, psd_cone::PyPSDCone, spd::PySPD, sphere::PySphere, stiefel::PyStiefel,
 	},
 };
 
 use super::base::PyOptimizationResult;
 
-/// Generic dispatcher function that routes optimization to the correct manifold implementation
-/// This eliminates the need for duplicate if/elif chains in each optimizer's optimize method
+// ---------------------------------------------------------------------------
+// Manifold / point enum dispatch
+// ---------------------------------------------------------------------------
+
+/// Extracted manifold reference, avoiding long `if/else if` chains.
+pub enum ManifoldKind<'py> {
+	Sphere(PyRef<'py, PySphere>),
+	Stiefel(PyRef<'py, PyStiefel>),
+	Grassmann(PyRef<'py, PyGrassmann>),
+	SPD(PyRef<'py, PySPD>),
+	Hyperbolic(PyRef<'py, PyHyperbolic>),
+	Oblique(PyRef<'py, PyOblique>),
+	PSDCone(PyRef<'py, PyPSDCone>),
+	Euclidean(PyRef<'py, PyEuclidean>),
+}
+
+impl<'py> ManifoldKind<'py> {
+	/// Try to extract a manifold from a Python object.
+	pub fn extract(py: Python<'py>, obj: &'py PyObject) -> PyResult<Self> {
+		if let Ok(m) = obj.extract::<PyRef<PySphere>>(py) {
+			return Ok(Self::Sphere(m));
+		}
+		if let Ok(m) = obj.extract::<PyRef<PyStiefel>>(py) {
+			return Ok(Self::Stiefel(m));
+		}
+		if let Ok(m) = obj.extract::<PyRef<PyGrassmann>>(py) {
+			return Ok(Self::Grassmann(m));
+		}
+		if let Ok(m) = obj.extract::<PyRef<PySPD>>(py) {
+			return Ok(Self::SPD(m));
+		}
+		if let Ok(m) = obj.extract::<PyRef<PyHyperbolic>>(py) {
+			return Ok(Self::Hyperbolic(m));
+		}
+		if let Ok(m) = obj.extract::<PyRef<PyOblique>>(py) {
+			return Ok(Self::Oblique(m));
+		}
+		if let Ok(m) = obj.extract::<PyRef<PyPSDCone>>(py) {
+			return Ok(Self::PSDCone(m));
+		}
+		if let Ok(m) = obj.extract::<PyRef<PyEuclidean>>(py) {
+			return Ok(Self::Euclidean(m));
+		}
+		Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+			"Unsupported manifold type. Supported: Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, PSDCone, Euclidean",
+		))
+	}
+}
+
+/// Generic dispatcher function that routes optimization to the correct manifold implementation.
 pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 	optimizer: &mut O,
 	py: Python<'_>,
@@ -36,147 +80,161 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 ) -> PyResult<PyObject> {
 	use numpy::{PyArray1, PyArray2, PyArrayMethods};
 
-	// Dispatch based on manifold type
-	if let Ok(sphere) = manifold.extract::<PyRef<PySphere>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray1<f64>>(py) {
+	let kind = ManifoldKind::extract(py, &manifold)?;
+
+	match kind {
+		ManifoldKind::Sphere(sphere) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray1<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 1D numpy array for Sphere manifold",
+					)
+				})?;
 			optimizer
 				.optimize_sphere_impl(
 					py,
 					&*cost_function,
 					&*sphere,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 1D numpy array for Sphere manifold",
-			))
 		}
-	} else if let Ok(stiefel) = manifold.extract::<PyRef<PyStiefel>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+		ManifoldKind::Stiefel(stiefel) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray2<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 2D numpy array for Stiefel manifold",
+					)
+				})?;
 			optimizer
 				.optimize_stiefel_impl(
 					py,
 					&*cost_function,
 					&*stiefel,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 2D numpy array for Stiefel manifold",
-			))
 		}
-	} else if let Ok(grassmann) = manifold.extract::<PyRef<PyGrassmann>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+		ManifoldKind::Grassmann(grassmann) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray2<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 2D numpy array for Grassmann manifold",
+					)
+				})?;
 			optimizer
 				.optimize_grassmann_impl(
 					py,
 					&*cost_function,
 					&*grassmann,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 2D numpy array for Grassmann manifold",
-			))
 		}
-	} else if let Ok(spd) = manifold.extract::<PyRef<PySPD>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+		ManifoldKind::SPD(spd) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray2<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 2D numpy array for SPD manifold",
+					)
+				})?;
 			optimizer
 				.optimize_spd_impl(
 					py,
 					&*cost_function,
 					&*spd,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 2D numpy array for SPD manifold",
-			))
 		}
-	} else if let Ok(hyperbolic) = manifold.extract::<PyRef<PyHyperbolic>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray1<f64>>(py) {
+		ManifoldKind::Hyperbolic(hyperbolic) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray1<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 1D numpy array for Hyperbolic manifold",
+					)
+				})?;
 			optimizer
 				.optimize_hyperbolic_impl(
 					py,
 					&*cost_function,
 					&*hyperbolic,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 1D numpy array for Hyperbolic manifold",
-			))
 		}
-	} else if let Ok(oblique) = manifold.extract::<PyRef<PyOblique>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+		ManifoldKind::Oblique(oblique) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray2<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 2D numpy array for Oblique manifold",
+					)
+				})?;
 			optimizer
 				.optimize_oblique_impl(
 					py,
 					&*cost_function,
 					&*oblique,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 2D numpy array for Oblique manifold",
-			))
 		}
-	} else if let Ok(psd_cone) = manifold.extract::<PyRef<PyPSDCone>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray2<f64>>(py) {
+		ManifoldKind::PSDCone(psd_cone) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray2<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 2D numpy array for PSDCone manifold",
+					)
+				})?;
 			optimizer
 				.optimize_psd_cone_impl(
 					py,
 					&*cost_function,
 					&*psd_cone,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 2D numpy array for PSDCone manifold",
-			))
 		}
-	} else if let Ok(euclidean) = manifold.extract::<PyRef<PyEuclidean>>(py) {
-		if let Ok(initial_array) = initial_point.downcast_bound::<PyArray1<f64>>(py) {
+		ManifoldKind::Euclidean(euclidean) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray1<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 1D numpy array for Euclidean manifold",
+					)
+				})?;
 			optimizer
 				.optimize_euclidean_impl(
 					py,
 					&*cost_function,
 					&*euclidean,
-					initial_array.readonly(),
+					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
 				)
 				.map(|r| r.into_py(py))
-		} else {
-			Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-				"initial_point must be a 1D numpy array for Euclidean manifold",
-			))
 		}
-	} else {
-		Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "Unsupported manifold type. Supported manifolds: Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, PSDCone, Euclidean"
-        ))
 	}
 }
 
@@ -280,6 +338,19 @@ pub trait PyOptimizerGeneric {
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
+
+	/// Try to run optimization with a native Rust cost function.
+	/// Returns Ok(Some(result)) if native, Ok(None) to fall back to Python callbacks.
+	#[allow(clippy::too_many_arguments, dead_code)]
+	fn try_native_optimize(
+		&mut self,
+		py: Python<'_>,
+		cost_function: &PyObject,
+		manifold: &PyObject,
+		initial_point: &PyObject,
+		max_iterations: usize,
+		gradient_tolerance: Option<f64>,
+	) -> PyResult<Option<PyObject>>;
 }
 
 /// Macro to generate optimize methods for all manifolds
@@ -287,6 +358,48 @@ pub trait PyOptimizerGeneric {
 #[macro_export]
 macro_rules! impl_optimizer_methods {
     () => {
+            /// Unified optimize method accepting both native Rust and Python cost functions.
+            ///
+            /// Native cost functions (RayleighQuotient, TraceMinimization, etc.) run
+            /// entirely in Rust with zero Python callback overhead. Python cost functions
+            /// (created via create_cost_function) are still supported via callbacks.
+            #[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None))]
+            pub fn optimize(
+                &mut self,
+                py: Python<'_>,
+                cost_function: PyObject,
+                manifold: PyObject,
+                initial_point: PyObject,
+                max_iterations: usize,
+                gradient_tolerance: Option<f64>,
+            ) -> PyResult<PyObject> {
+                use crate::py_optimizers::generic::optimize_dispatcher;
+
+                // Try native cost functions first (pure Rust, no GIL overhead)
+                if let Some(result) = self.try_native_optimize(
+                    py,
+                    &cost_function,
+                    &manifold,
+                    &initial_point,
+                    max_iterations,
+                    gradient_tolerance,
+                )? {
+                    return Ok(result);
+                }
+
+                // Fall back to Python callback cost function
+                let py_cf = cost_function.extract::<PyRef<'_, PyCostFunction>>(py)?;
+                optimize_dispatcher(
+                    self,
+                    py,
+                    py_cf,
+                    manifold,
+                    initial_point,
+                    max_iterations,
+                    gradient_tolerance,
+                    None, None, None,
+                )
+            }
             /// Optimize on a Sphere manifold
             #[pyo3(signature = (cost_function, sphere, initial_point, max_iterations, gradient_tolerance=None))]
             pub fn optimize_sphere(
@@ -734,6 +847,161 @@ macro_rules! impl_optimizer_generic_default {
 				PyOptimizationResult::from_rust_result(py, result, |point| {
 					Ok(dvector_to_numpy(py, point)?.into())
 				})
+			}
+
+			#[allow(clippy::too_many_arguments)]
+			fn try_native_optimize(
+				&mut self,
+				py: Python<'_>,
+				cost_function: &PyObject,
+				manifold: &PyObject,
+				initial_point: &PyObject,
+				max_iterations: usize,
+				gradient_tolerance: Option<f64>,
+			) -> PyResult<Option<PyObject>> {
+				use crate::native_cost::*;
+				use crate::py_optimizers::generic::ManifoldKind;
+				use numpy::{PyArray1, PyArray2, PyArrayMethods};
+
+				let kind = match ManifoldKind::extract(py, manifold) {
+					Ok(k) => k,
+					Err(_) => return Ok(None),
+				};
+
+				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
+				if let Some(tol) = gradient_tolerance {
+					criterion = criterion.with_gradient_tolerance(tol);
+				}
+
+				// Helper macro to reduce repetition
+				macro_rules! run_native_vec {
+					($cost_fn:expr, $manifold_inner:expr, $x0:expr) => {{
+						use riemannopt_core::core::CachedDynamicCostFunction;
+						let config: $config_type = $create_config(self);
+						let mut optimizer = <$rust_optimizer>::new(config);
+						let cost_fn = CachedDynamicCostFunction::new($cost_fn);
+						let x0 = $x0;
+						let manifold_ref = $manifold_inner;
+						let result = py
+							.allow_threads(|| {
+								optimizer.optimize(&cost_fn, manifold_ref, &x0, &criterion)
+							})
+							.map_err(to_py_err)?;
+						let py_result =
+							PyOptimizationResult::from_rust_result(py, result, |point| {
+								Ok(dvector_to_numpy(py, point)?.into())
+							})?;
+						return Ok(Some(py_result.into_py(py)));
+					}};
+				}
+
+				macro_rules! run_native_mat {
+					($cost_fn:expr, $manifold_inner:expr, $x0:expr) => {{
+						let config: $config_type = $create_config(self);
+						let mut optimizer = <$rust_optimizer>::new(config);
+						let cost_fn = $cost_fn;
+						let x0 = $x0;
+						let manifold_ref = $manifold_inner;
+						let result = py
+							.allow_threads(|| {
+								optimizer.optimize(&cost_fn, manifold_ref, &x0, &criterion)
+							})
+							.map_err(to_py_err)?;
+						let py_result =
+							PyOptimizationResult::from_rust_result(py, result, |point| {
+								Ok(dmatrix_to_numpy(py, point)?.into())
+							})?;
+						return Ok(Some(py_result.into_py(py)));
+					}};
+				}
+
+				// ── RayleighQuotient + Sphere ──
+				if let Ok(cf) = cost_function.extract::<PyRef<PyRayleighQuotient>>(py) {
+					if let ManifoldKind::Sphere(sphere) = kind {
+						let arr =
+							initial_point
+								.downcast_bound::<PyArray1<f64>>(py)
+								.map_err(|_| {
+									PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+										"initial_point must be a 1D array",
+									)
+								})?;
+						let x0 = numpy_to_dvector(arr.readonly())?;
+						run_native_vec!(cf.clone(), &sphere.inner, x0);
+					}
+				}
+
+				// ── Quadratic + Euclidean ──
+				if let Ok(cf) = cost_function.extract::<PyRef<PyQuadratic>>(py) {
+					if let ManifoldKind::Euclidean(euclidean) = kind {
+						let arr =
+							initial_point
+								.downcast_bound::<PyArray1<f64>>(py)
+								.map_err(|_| {
+									PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+										"initial_point must be a 1D array",
+									)
+								})?;
+						let x0 = numpy_to_dvector(arr.readonly())?;
+						run_native_vec!(cf.clone(), &euclidean.inner, x0);
+					}
+				}
+
+				// ── TraceMinimization + Grassmann/Stiefel ──
+				if let Ok(cf) = cost_function.extract::<PyRef<PyTraceMinimization>>(py) {
+					let arr = initial_point
+						.downcast_bound::<PyArray2<f64>>(py)
+						.map_err(|_| {
+							PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+								"initial_point must be a 2D array",
+							)
+						})?;
+					let x0 = numpy_to_dmatrix(arr.readonly())?;
+					match kind {
+						ManifoldKind::Grassmann(gr) => {
+							run_native_mat!(cf.clone(), &gr.inner, x0);
+						}
+						ManifoldKind::Stiefel(st) => {
+							run_native_mat!(cf.clone(), &st.inner, x0);
+						}
+						_ => {}
+					}
+				}
+
+				// ── Brockett + Stiefel ──
+				if let Ok(cf) = cost_function.extract::<PyRef<PyBrockett>>(py) {
+					if let ManifoldKind::Stiefel(st) = kind {
+						let arr =
+							initial_point
+								.downcast_bound::<PyArray2<f64>>(py)
+								.map_err(|_| {
+									PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+										"initial_point must be a 2D array",
+									)
+								})?;
+						let x0 = numpy_to_dmatrix(arr.readonly())?;
+						run_native_mat!(cf.clone(), &st.inner, x0);
+					}
+				}
+
+				// ── LogDetDivergence + SPD ──
+				if let Ok(cf) = cost_function.extract::<PyRef<PyLogDetDivergence>>(py) {
+					if let ManifoldKind::SPD(spd) = kind {
+						let arr =
+							initial_point
+								.downcast_bound::<PyArray2<f64>>(py)
+								.map_err(|_| {
+									PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+										"initial_point must be a 2D array",
+									)
+								})?;
+						let x0 = numpy_to_dmatrix(arr.readonly())?;
+						run_native_mat!(cf.clone(), &spd.inner, x0);
+					}
+				}
+
+				// Not a native cost function
+				Ok(None)
 			}
 		}
 	};

@@ -163,97 +163,51 @@ pub fn get_adaptive_strategy() -> &'static AdaptiveParallelStrategy {
 // BLAS / OpenMP thread management
 // ---------------------------------------------------------------------------
 
-/// Mutex that serializes access to BLAS thread environment variables.
+/// Ensures BLAS thread counts are configured correctly at startup.
 ///
-/// Modifying environment variables from multiple threads is inherently
-/// unsafe (data race on the process-level environment).  This mutex
-/// prevents *our* code from doing so concurrently.  It does **not**
-/// protect against other libraries reading the variables at the same
-/// time, which is a fundamental limitation of environment-based
-/// thread control.  For robust BLAS thread management, prefer setting
-/// `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS`
-/// **before** spawning any threads (e.g., at program startup).
-static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// RAII guard that sets `OMP_NUM_THREADS=1` (and the equivalent for MKL and
-/// OpenBLAS) for the duration of its lifetime.
+/// Calling `std::env::set_var` at runtime in a multi-threaded program is
+/// **undefined behavior** (it became `unsafe` in Rust 1.80+) because the C
+/// runtime's `getenv` is not thread-safe.  Instead of modifying environment
+/// variables at runtime, configure BLAS threads **before** spawning any
+/// threads:
 ///
-/// This prevents nested parallelism when Rayon is driving the outer loop and
-/// a BLAS call inside each work-unit would otherwise spawn its own threads,
-/// creating massive over-subscription.
+/// ```bash
+/// OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./my_program
+/// ```
 ///
-/// # Safety considerations
-///
-/// Modifying environment variables at runtime in a multi-threaded program is
-/// inherently problematic.  This guard serializes its own access via a mutex,
-/// but cannot prevent data races with external code that reads or writes env
-/// vars concurrently.  Prefer configuring BLAS threads at process startup
-/// whenever possible.
-///
-/// # Example
+/// Or call this function at the very beginning of `main()`, before Rayon or
+/// any BLAS library has initialized:
 ///
 /// ```rust,no_run
-/// use riemannopt_core::compute::cpu::parallel_strategy::BlasThreadGuard;
-/// use rayon::prelude::*;
-///
-/// let _guard = BlasThreadGuard::single_threaded();
-/// (0..1000).into_par_iter().for_each(|_| {
-///     // BLAS calls here will use a single thread
-/// });
-/// // On drop, the original thread counts are restored.
+/// riemannopt_core::compute::cpu::parallel_strategy::configure_blas_threads(1);
 /// ```
-pub struct BlasThreadGuard {
-	prev_omp: Option<String>,
-	prev_mkl: Option<String>,
-	prev_openblas: Option<String>,
-	/// Held for the guard's lifetime to serialize env var access.
-	_lock: std::sync::MutexGuard<'static, ()>,
-}
+///
+/// # Panics
+///
+/// Panics if called after threads have been spawned (detected via Rayon's
+/// global thread pool initialization state).
+pub fn configure_blas_threads(n: usize) {
+	// Rayon lazily initializes its thread pool on first use.  If we can
+	// still build a custom global pool, no Rayon threads exist yet — it is
+	// safe to touch env vars from the single main thread.
+	//
+	// If the global pool is already initialized, we refuse to proceed
+	// because other threads may be reading the environment concurrently.
+	let pool_result = rayon::ThreadPoolBuilder::new().build_global();
+	let is_early_enough = pool_result.is_ok();
 
-impl BlasThreadGuard {
-	/// Restrict BLAS to a single thread.
-	pub fn single_threaded() -> Self {
-		Self::with_threads(1)
-	}
+	assert!(
+		is_early_enough,
+		"configure_blas_threads() must be called before any threads are spawned. \
+		 Set OMP_NUM_THREADS / MKL_NUM_THREADS / OPENBLAS_NUM_THREADS in the \
+		 environment before starting the program instead."
+	);
 
-	/// Set BLAS thread count to `n`.
-	pub fn with_threads(n: usize) -> Self {
-		let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-
-		let prev_omp = std::env::var("OMP_NUM_THREADS").ok();
-		let prev_mkl = std::env::var("MKL_NUM_THREADS").ok();
-		let prev_openblas = std::env::var("OPENBLAS_NUM_THREADS").ok();
-
-		let val = n.to_string();
-		// Note: env var modification is serialized by ENV_MUTEX.
-		// The remaining risk is external code reading env vars concurrently,
-		// which is an inherent limitation of environment-based BLAS thread control.
-		std::env::set_var("OMP_NUM_THREADS", &val);
-		std::env::set_var("MKL_NUM_THREADS", &val);
-		std::env::set_var("OPENBLAS_NUM_THREADS", &val);
-
-		Self {
-			prev_omp,
-			prev_mkl,
-			prev_openblas,
-			_lock: lock,
-		}
-	}
-}
-
-impl Drop for BlasThreadGuard {
-	fn drop(&mut self) {
-		// Lock is already held via _lock field
-		fn restore(key: &str, prev: &Option<String>) {
-			match prev {
-				Some(v) => std::env::set_var(key, v),
-				None => std::env::remove_var(key),
-			}
-		}
-		restore("OMP_NUM_THREADS", &self.prev_omp);
-		restore("MKL_NUM_THREADS", &self.prev_mkl);
-		restore("OPENBLAS_NUM_THREADS", &self.prev_openblas);
-	}
+	let val = n.to_string();
+	// SAFETY: No other threads exist yet (verified above).
+	std::env::set_var("OMP_NUM_THREADS", &val);
+	std::env::set_var("MKL_NUM_THREADS", &val);
+	std::env::set_var("OPENBLAS_NUM_THREADS", &val);
 }
 
 /// Simple benchmark function for sequential execution.
@@ -269,9 +223,6 @@ fn benchmark_sequential<T: Scalar>(dimension: usize) -> T {
 /// Simple benchmark function for parallel execution.
 fn benchmark_parallel<T: Scalar + std::iter::Sum>(dimension: usize) -> T {
 	use rayon::prelude::*;
-
-	// Suppress BLAS threads during Rayon parallelism to avoid over-subscription.
-	let _guard = BlasThreadGuard::single_threaded();
 
 	(0..dimension)
 		.into_par_iter()
