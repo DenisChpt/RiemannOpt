@@ -147,6 +147,7 @@ pub mod prelude {
 		ParallelSGD,
 		PointBatch,
 		// From simd_dispatch
+		ScalarDispatch,
 		SimdBackend,
 		SimdDispatcher,
 		// From simd

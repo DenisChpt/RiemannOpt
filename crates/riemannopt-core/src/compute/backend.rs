@@ -389,24 +389,27 @@ impl<T: Scalar> ComputeBackend<T> for CpuBackend<T> {
 	}
 
 	fn batch_dot(&self, pairs: &[(DVector<T>, DVector<T>)]) -> Result<Vec<T>> {
-		// For small batches, sequential is fine
-		if pairs.len() < 4 {
+		// Parallelization overhead exceeds benefit for small batches.
+		// Dot products are fast (O(n) FLOPs), so we need enough pairs
+		// to amortize Rayon's scheduling cost (~10-50 us).
+		const PARALLEL_THRESHOLD: usize = 256;
+
+		if pairs.len() < PARALLEL_THRESHOLD {
 			pairs.iter().map(|(a, b)| self.dot(a, b)).collect()
 		} else {
-			// Use parallel computation for larger batches
 			use rayon::prelude::*;
 			pairs.par_iter().map(|(a, b)| self.dot(a, b)).collect()
 		}
 	}
 
 	fn batch_normalize(&self, vectors: &mut [DVector<T>]) -> Result<()> {
-		// For small batches, sequential is fine
-		if vectors.len() < 4 {
+		const PARALLEL_THRESHOLD: usize = 256;
+
+		if vectors.len() < PARALLEL_THRESHOLD {
 			for v in vectors {
 				self.normalize(v)?;
 			}
 		} else {
-			// Use parallel computation for larger batches
 			use rayon::prelude::*;
 			vectors.par_iter_mut().try_for_each(|v| self.normalize(v))?;
 		}

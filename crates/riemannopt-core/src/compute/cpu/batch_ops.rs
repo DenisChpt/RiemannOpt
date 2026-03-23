@@ -255,30 +255,20 @@ impl CacheFriendlyBatch {
 		// Validate dimensions
 		Self::validate_dimensions(points, output)?;
 
-		// For optimal performance with zero allocations
-		let n_points = points.ncols();
 		let dim = points.nrows();
 
-		// Use rayon's parallel iterator with column indices
-		let indices: Vec<_> = (0..n_points).collect();
-		indices.par_iter().for_each(|&i| {
-			// Get input view
-			let point_view = points.column(i);
+		// Split output into non-overlapping column slices for safe parallel mutation.
+		// DMatrix is column-major, so chunks_mut(dim) yields each column.
+		let output_cols: Vec<&mut [T]> = output.as_mut_slice().chunks_mut(dim).collect();
 
-			// Get mutable output column
-			// SAFETY: We access different columns in parallel, which is safe
-			// because columns are non-overlapping memory regions
-			unsafe {
-				let output_ptr = output.as_ptr() as *mut T;
-				let col_start = i * dim;
-				let col_ptr = output_ptr.add(col_start);
-				let col_slice = std::slice::from_raw_parts_mut(col_ptr, dim);
-				let col_view = DVectorViewMut::from_slice(col_slice, dim);
-
-				// Apply the gradient function
+		output_cols
+			.into_par_iter()
+			.enumerate()
+			.for_each(|(i, col)| {
+				let point_view = points.column(i);
+				let col_view = DVectorViewMut::from_slice(col, dim);
 				grad_func(point_view, col_view);
-			}
-		});
+			});
 
 		Ok(())
 	}
@@ -300,25 +290,18 @@ impl CacheFriendlyBatch {
 		// Validate dimensions
 		Self::validate_dimensions(points, output)?;
 
-		// Zero-allocation parallel processing
-		let n_points = points.ncols();
 		let dim = points.nrows();
 
-		// Use rayon's parallel iterator with column indices
-		let indices: Vec<_> = (0..n_points).collect();
-		indices.par_iter().for_each(|&i| {
-			let point_view = points.column(i);
+		let output_cols: Vec<&mut [T]> = output.as_mut_slice().chunks_mut(dim).collect();
 
-			unsafe {
-				let output_ptr = output.as_ptr() as *mut T;
-				let col_start = i * dim;
-				let col_ptr = output_ptr.add(col_start);
-				let col_slice = std::slice::from_raw_parts_mut(col_ptr, dim);
-				let col_view = DVectorViewMut::from_slice(col_slice, dim);
-
+		output_cols
+			.into_par_iter()
+			.enumerate()
+			.for_each(|(i, col)| {
+				let point_view = points.column(i);
+				let col_view = DVectorViewMut::from_slice(col, dim);
 				op(point_view, col_view);
-			}
-		});
+			});
 
 		Ok(())
 	}
@@ -352,26 +335,19 @@ impl CacheFriendlyBatch {
 		}
 		Self::validate_dimensions(points, output)?;
 
-		// Zero-allocation parallel processing
-		let n_points = points.ncols();
 		let dim = points.nrows();
 
-		// Use rayon's parallel iterator with column indices
-		let indices: Vec<_> = (0..n_points).collect();
-		indices.par_iter().for_each(|&i| {
-			let point_view = points.column(i);
-			let tangent_view = tangents.column(i);
+		let output_cols: Vec<&mut [T]> = output.as_mut_slice().chunks_mut(dim).collect();
 
-			unsafe {
-				let output_ptr = output.as_ptr() as *mut T;
-				let col_start = i * dim;
-				let col_ptr = output_ptr.add(col_start);
-				let col_slice = std::slice::from_raw_parts_mut(col_ptr, dim);
-				let col_view = DVectorViewMut::from_slice(col_slice, dim);
-
+		output_cols
+			.into_par_iter()
+			.enumerate()
+			.for_each(|(i, col)| {
+				let point_view = points.column(i);
+				let tangent_view = tangents.column(i);
+				let col_view = DVectorViewMut::from_slice(col, dim);
 				op(point_view, tangent_view, col_view);
-			}
-		});
+			});
 
 		Ok(())
 	}

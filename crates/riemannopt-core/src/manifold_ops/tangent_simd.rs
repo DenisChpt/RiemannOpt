@@ -1,9 +1,9 @@
 //! SIMD-optimized tangent space operations.
 
 use crate::{
-	compute::cpu::{get_dispatcher, SimdBackend},
+	compute::cpu::{get_dispatcher, ScalarDispatch, SimdBackend},
 	error::Result,
-	types::{DMatrix, DVector, Scalar},
+	types::{DMatrix, DVector},
 };
 use num_traits::Float;
 
@@ -13,7 +13,7 @@ use num_traits::Float;
 /// with SIMD acceleration for better numerical stability and performance.
 pub fn gram_schmidt_simd<T>(vectors: &mut [DVector<T>]) -> Result<()>
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 {
 	if vectors.is_empty() {
 		return Ok(());
@@ -55,7 +55,7 @@ where
 /// the manifold's tangent space constraints.
 pub fn project_tangent_simd_dvec<T>(vector: &mut DVector<T>, basis: &[DVector<T>]) -> Result<()>
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 {
 	if basis.is_empty() {
 		return Ok(());
@@ -83,7 +83,7 @@ pub fn normalize_tangent_simd_dvec<T>(
 	metric: Option<&DMatrix<T>>,
 ) -> Result<T>
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 {
 	let dispatcher = get_dispatcher::<T>();
 

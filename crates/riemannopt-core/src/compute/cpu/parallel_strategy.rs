@@ -163,12 +163,32 @@ pub fn get_adaptive_strategy() -> &'static AdaptiveParallelStrategy {
 // BLAS / OpenMP thread management
 // ---------------------------------------------------------------------------
 
+/// Mutex that serializes access to BLAS thread environment variables.
+///
+/// Modifying environment variables from multiple threads is inherently
+/// unsafe (data race on the process-level environment).  This mutex
+/// prevents *our* code from doing so concurrently.  It does **not**
+/// protect against other libraries reading the variables at the same
+/// time, which is a fundamental limitation of environment-based
+/// thread control.  For robust BLAS thread management, prefer setting
+/// `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS`
+/// **before** spawning any threads (e.g., at program startup).
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// RAII guard that sets `OMP_NUM_THREADS=1` (and the equivalent for MKL and
 /// OpenBLAS) for the duration of its lifetime.
 ///
 /// This prevents nested parallelism when Rayon is driving the outer loop and
 /// a BLAS call inside each work-unit would otherwise spawn its own threads,
 /// creating massive over-subscription.
+///
+/// # Safety considerations
+///
+/// Modifying environment variables at runtime in a multi-threaded program is
+/// inherently problematic.  This guard serializes its own access via a mutex,
+/// but cannot prevent data races with external code that reads or writes env
+/// vars concurrently.  Prefer configuring BLAS threads at process startup
+/// whenever possible.
 ///
 /// # Example
 ///
@@ -186,6 +206,8 @@ pub struct BlasThreadGuard {
 	prev_omp: Option<String>,
 	prev_mkl: Option<String>,
 	prev_openblas: Option<String>,
+	/// Held for the guard's lifetime to serialize env var access.
+	_lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl BlasThreadGuard {
@@ -196,11 +218,16 @@ impl BlasThreadGuard {
 
 	/// Set BLAS thread count to `n`.
 	pub fn with_threads(n: usize) -> Self {
+		let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
 		let prev_omp = std::env::var("OMP_NUM_THREADS").ok();
 		let prev_mkl = std::env::var("MKL_NUM_THREADS").ok();
 		let prev_openblas = std::env::var("OPENBLAS_NUM_THREADS").ok();
 
 		let val = n.to_string();
+		// Note: env var modification is serialized by ENV_MUTEX.
+		// The remaining risk is external code reading env vars concurrently,
+		// which is an inherent limitation of environment-based BLAS thread control.
 		std::env::set_var("OMP_NUM_THREADS", &val);
 		std::env::set_var("MKL_NUM_THREADS", &val);
 		std::env::set_var("OPENBLAS_NUM_THREADS", &val);
@@ -209,12 +236,14 @@ impl BlasThreadGuard {
 			prev_omp,
 			prev_mkl,
 			prev_openblas,
+			_lock: lock,
 		}
 	}
 }
 
 impl Drop for BlasThreadGuard {
 	fn drop(&mut self) {
+		// Lock is already held via _lock field
 		fn restore(key: &str, prev: &Option<String>) {
 			match prev {
 				Some(v) => std::env::set_var(key, v),

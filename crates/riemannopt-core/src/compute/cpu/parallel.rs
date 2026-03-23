@@ -7,7 +7,7 @@ use crate::compute::cpu::{
 	batch_ops::{BatchError, CacheFriendlyBatch},
 	get_dispatcher,
 	parallel_strategy::BlasThreadGuard,
-	SimdBackend,
+	ScalarDispatch, SimdBackend,
 };
 use crate::simd::SimdOps;
 use crate::types::Scalar;
@@ -328,7 +328,7 @@ impl SimdParallelOps {
 	/// Parallel dot product with SIMD for large batches
 	pub fn batch_dot_product<T>(a_batch: &PointBatch<T>, b_batch: &PointBatch<T>) -> Vec<T>
 	where
-		T: Scalar + SimdOps + 'static,
+		T: Scalar + SimdOps + ScalarDispatch,
 	{
 		assert_eq!(a_batch.ncols(), b_batch.ncols());
 
@@ -351,7 +351,7 @@ impl SimdParallelOps {
 	/// Parallel normalization with SIMD
 	pub fn batch_normalize<T>(points: &mut PointBatch<T>) -> Vec<T>
 	where
-		T: Scalar + SimdOps + 'static,
+		T: Scalar + SimdOps + ScalarDispatch,
 	{
 		let n_points = points.ncols();
 		let dispatcher = get_dispatcher::<T>();
@@ -366,26 +366,17 @@ impl SimdParallelOps {
 			})
 			.collect();
 
-		// Pass 2: Normalize in parallel (write-only)
-		// We need to collect indices to iterate in parallel
-		let indices: Vec<_> = (0..n_points).collect();
-		indices
-			.par_iter()
-			.zip(norms.par_iter())
-			.for_each(|(&i, &norm)| {
-				if norm > T::zero() {
-					// SAFETY: We're accessing different columns in parallel, which is safe
-					// because columns are non-overlapping memory regions
-					unsafe {
-						let points_ptr = points.as_ptr() as *mut T;
-						let col_start = i * points.nrows();
-						let col_ptr = points_ptr.add(col_start);
-						let col_slice = std::slice::from_raw_parts_mut(col_ptr, points.nrows());
+		// Pass 2: Normalize in parallel using safe column splitting
+		let dim = points.nrows();
+		let cols: Vec<&mut [T]> = points.as_mut_slice().chunks_mut(dim).collect();
 
-						let inv_norm = T::one() / norm;
-						for elem in col_slice.iter_mut() {
-							*elem *= inv_norm;
-						}
+		cols.into_par_iter()
+			.zip(norms.par_iter())
+			.for_each(|(col, &norm)| {
+				if norm > T::zero() {
+					let inv_norm = T::one() / norm;
+					for elem in col.iter_mut() {
+						*elem *= inv_norm;
 					}
 				}
 			});
@@ -404,7 +395,7 @@ impl SimdParallelOps {
 		beta: T,
 	) -> Vec<DVector<T>>
 	where
-		T: Scalar + SimdOps + 'static,
+		T: Scalar + SimdOps + ScalarDispatch,
 	{
 		assert_eq!(matrices.len(), vectors.len());
 
@@ -425,7 +416,7 @@ impl SimdParallelOps {
 	/// Parallel Frobenius norm computation with SIMD
 	pub fn batch_frobenius_norm<T>(matrices: &[DMatrix<T>]) -> Vec<T>
 	where
-		T: Scalar + SimdOps + 'static,
+		T: Scalar + SimdOps + ScalarDispatch,
 	{
 		let dispatcher = get_dispatcher::<T>();
 
