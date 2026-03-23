@@ -4,8 +4,8 @@
 //! to ensure consistent and efficient data handling between Python and Rust.
 
 use pyo3::prelude::*;
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
-use nalgebra::{DVector, DMatrix};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use nalgebra::{DMatrix, DVector};
 
 /// Represents a point on a manifold.
 ///
@@ -27,17 +27,18 @@ impl PyPoint {
     }
 
     /// Create a PyPoint from a 2D NumPy array.
+    ///
+    /// Handles both C-contiguous (row-major) and F-contiguous (column-major)
+    /// arrays correctly by delegating to [`numpy_to_dmatrix`].
     pub fn from_numpy_2d(array: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
-        let shape = array.shape();
-        let data = array.as_slice()?;
-        let mat = DMatrix::from_row_slice(shape[0], shape[1], data);
+        let mat = crate::array_utils::numpy_to_dmatrix(array)?;
         Ok(PyPoint::Matrix(mat))
     }
 
     /// Convert to a 1D NumPy array (for vector points).
     pub fn to_numpy_1d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         match self {
-            PyPoint::Vector(vec) => Ok(PyArray1::from_slice_bound(py, vec.as_slice())),
+            PyPoint::Vector(vec) => Ok(PyArray1::from_slice(py, vec.as_slice())),
             PyPoint::Matrix(_) => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "Cannot convert matrix point to 1D array"
             )),
@@ -47,18 +48,7 @@ impl PyPoint {
     /// Convert to a 2D NumPy array (for matrix points).
     pub fn to_numpy_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         match self {
-            PyPoint::Matrix(mat) => {
-                let shape = (mat.nrows(), mat.ncols());
-                let mut vec2d = Vec::with_capacity(shape.0);
-                for i in 0..shape.0 {
-                    let mut row = Vec::with_capacity(shape.1);
-                    for j in 0..shape.1 {
-                        row.push(mat[(i, j)]);
-                    }
-                    vec2d.push(row);
-                }
-                Ok(PyArray2::from_vec2_bound(py, &vec2d)?)
-            },
+            PyPoint::Matrix(mat) => crate::array_utils::dmatrix_to_numpy(py, mat),
             PyPoint::Vector(_) => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "Cannot convert vector point to 2D array"
             )),

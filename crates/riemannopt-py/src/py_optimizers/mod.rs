@@ -524,7 +524,7 @@ pub fn optimize(
 
 /// Register all optimizer classes with the Python module.
 pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(parent.py(), "optimizers")?;
+    let m = PyModule::new(parent.py(), "optimizers")?;
     
     // Register optimizer classes
     m.add_class::<PySGD>()?;

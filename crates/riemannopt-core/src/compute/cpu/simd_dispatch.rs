@@ -328,12 +328,12 @@ impl<T: Scalar> SimdBackend<T> for SimdDispatcher<T> {
 }
 
 /// Global SIMD dispatcher for f32.
-static F32_DISPATCHER: once_cell::sync::Lazy<SimdDispatcher<f32>> = 
-    once_cell::sync::Lazy::new(|| SimdDispatcher::<f32>::new());
+static F32_DISPATCHER: std::sync::LazyLock<SimdDispatcher<f32>> =
+    std::sync::LazyLock::new(|| SimdDispatcher::<f32>::new());
 
 /// Global SIMD dispatcher for f64.
-static F64_DISPATCHER: once_cell::sync::Lazy<SimdDispatcher<f64>> = 
-    once_cell::sync::Lazy::new(|| SimdDispatcher::<f64>::new());
+static F64_DISPATCHER: std::sync::LazyLock<SimdDispatcher<f64>> =
+    std::sync::LazyLock::new(|| SimdDispatcher::<f64>::new());
 
 /// Get the global SIMD dispatcher for a given type.
 pub fn get_dispatcher<T: Scalar + 'static>() -> &'static SimdDispatcher<T> {

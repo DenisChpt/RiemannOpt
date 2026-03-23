@@ -45,6 +45,20 @@ pub trait Scalar:
     /// Minimum value for line search step size.
     const MIN_STEP_SIZE: Self;
 
+    /// Optimal step size for central-difference finite differences.
+    ///
+    /// For a function with machine-epsilon `ε`, the optimal step is `ε^(1/3)`
+    /// for central differences (balancing truncation and rounding errors).
+    /// We use `√ε` as a practical compromise that works well for both `f32`
+    /// and `f64`.
+    const FD_EPSILON: Self;
+
+    /// Returns [`Self::FD_EPSILON`] — convenience method for generic code.
+    #[inline]
+    fn fd_epsilon() -> Self {
+        Self::FD_EPSILON
+    }
+
     /// Convert from f64 (for constants).
     /// 
     /// # Panics
@@ -102,6 +116,8 @@ impl Scalar for f32 {
     const ORTHOGONALITY_TOLERANCE: Self = 1e-6;
     const MAX_STEP_SIZE: Self = 1e3;
     const MIN_STEP_SIZE: Self = 1e-10;
+    // √(f32::EPSILON) ≈ 3.45e-4
+    const FD_EPSILON: Self = 3.4526698e-4;
 }
 
 impl Scalar for f64 {
@@ -112,6 +128,8 @@ impl Scalar for f64 {
     const ORTHOGONALITY_TOLERANCE: Self = 1e-12;
     const MAX_STEP_SIZE: Self = 1e6;
     const MIN_STEP_SIZE: Self = 1e-16;
+    // √(f64::EPSILON) ≈ 1.49e-8
+    const FD_EPSILON: Self = 1.4901161193847656e-8;
 }
 
 /// Type alias for a dynamically-sized matrix.
@@ -202,6 +220,11 @@ pub mod constants {
     /// Get orthogonality checking tolerance.
     pub fn orthogonality_tolerance<T: Scalar>() -> T {
         T::ORTHOGONALITY_TOLERANCE
+    }
+
+    /// Get the optimal finite-difference step size.
+    pub fn fd_epsilon<T: Scalar>() -> T {
+        T::FD_EPSILON
     }
 
     /// Get maximum step size for line search.

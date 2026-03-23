@@ -5,8 +5,6 @@ use crate::{
     memory::{Workspace, BufferId},
     types::Scalar,
 };
-use num_traits::Float;
-
 /// Compute gradient using finite differences with a workspace.
 ///
 /// This version avoids allocations by using pre-allocated buffers from the workspace.
@@ -22,7 +20,7 @@ where
 {
     
     let n = point.len();
-    let h = <T as Float>::sqrt(T::epsilon());
+    let h = T::fd_epsilon();
     
     gradient.fill(T::zero());
     
@@ -89,7 +87,7 @@ where
 {
     use crate::memory::BufferId;
     
-    let eps = <T as Float>::sqrt(T::epsilon());
+    let eps = T::fd_epsilon();
     let norm = vector.norm();
     
     let n = point.len();

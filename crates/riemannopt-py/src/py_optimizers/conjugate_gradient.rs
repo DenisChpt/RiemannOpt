@@ -138,7 +138,7 @@ impl PyConjugateGradient {
     /// Get optimizer configuration as a dictionary.
     #[getter]
     fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("method", &self.method)?;
         dict.set_item("reset_every", self.reset_every)?;
         dict.set_item("max_line_search_iterations", self.max_line_search_iterations)?;

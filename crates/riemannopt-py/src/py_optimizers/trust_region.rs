@@ -162,7 +162,7 @@ impl PyTrustRegion {
     /// Get optimizer configuration as a dictionary.
     #[getter]
     fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("initial_radius", self.initial_radius)?;
         dict.set_item("max_radius", self.max_radius)?;
         dict.set_item("eta", self.eta)?;

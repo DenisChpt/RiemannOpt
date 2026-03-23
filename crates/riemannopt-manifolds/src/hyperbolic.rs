@@ -105,13 +105,14 @@
 //! let hyperbolic = Hyperbolic::<f64>::new(2)?;
 //!
 //! // Random point in the ball
-//! let x = hyperbolic.random_point();
+//! let mut x = DVector::zeros(2);
+//! hyperbolic.random_point(&mut x)?;
 //! assert!(x.norm() < 1.0);
 //!
 //! // Tangent vector
 //! let v = DVector::from_vec(vec![0.1, 0.2]);
 //!
-//! // Exponential map
+//! // Retraction
 //! let mut y = DVector::zeros(2);
 //! hyperbolic.retract(&x, &v, &mut y)?;
 //!
@@ -517,7 +518,7 @@ impl<T: Scalar> Hyperbolic<T> {
 
     /// Generates a random point in the Poincare ball.
     fn random_poincare_point(&self, result: &mut DVector<T>) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         
         // Generate random direction
         result.resize_vertically_mut(self.n, T::zero());
@@ -772,7 +773,7 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
             ));
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut tangent = DVector::<T>::zeros(self.n);
         
         for i in 0..self.n {

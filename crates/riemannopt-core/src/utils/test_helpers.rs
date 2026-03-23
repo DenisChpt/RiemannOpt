@@ -112,20 +112,20 @@ impl Manifold<f64> for TestSphere {
     }
 
     fn random_point(&self, result: &mut DVector<f64>) -> Result<()> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
-            v[i] = rng.gen::<f64>() * 2.0 - 1.0;
+            v[i] = rng.random::<f64>() * 2.0 - 1.0;
         }
         self.project_point(&v, result);
         Ok(())
     }
 
     fn random_tangent(&self, point: &DVector<f64>, result: &mut DVector<f64>) -> Result<()> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut v = DVector::zeros(self.dim);
         for i in 0..self.dim {
-            v[i] = rng.gen::<f64>() * 2.0 - 1.0;
+            v[i] = rng.random::<f64>() * 2.0 - 1.0;
         }
         self.project_tangent(point, &v, result)
     }
@@ -200,8 +200,8 @@ pub struct RayleighQuotient {
 
 impl RayleighQuotient {
     pub fn new(dim: usize) -> Self {
-        let mut rng = thread_rng();
-        let mut matrix = DMatrix::from_fn(dim, dim, |_, _| rng.gen::<f64>());
+        let mut rng = rand::rng();
+        let mut matrix = DMatrix::from_fn(dim, dim, |_, _| rng.random::<f64>());
         // Make symmetric
         matrix = &matrix + &matrix.transpose();
         Self { matrix }

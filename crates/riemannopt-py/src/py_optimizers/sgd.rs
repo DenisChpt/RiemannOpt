@@ -141,7 +141,7 @@ impl PySGD {
     /// Get optimizer configuration as a dictionary.
     #[getter]
     fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("learning_rate", self.learning_rate)?;
         dict.set_item("momentum", self.momentum)?;
         dict.set_item("nesterov", self.nesterov)?;

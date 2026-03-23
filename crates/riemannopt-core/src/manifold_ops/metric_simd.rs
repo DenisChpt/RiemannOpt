@@ -79,7 +79,7 @@ where
     F: Fn(&DVector<T>) -> Result<DMatrix<T>>,
 {
     let n = point.len();
-    let h = <T as Float>::sqrt(T::epsilon());
+    let h = T::fd_epsilon();
     let dispatcher = get_dispatcher::<T>();
     
     // Get metric at current point

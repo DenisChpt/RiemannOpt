@@ -89,7 +89,7 @@ impl ParallelSGDUtils {
         T: Scalar,
     {
         use rand::seq::SliceRandom;
-        use rand::thread_rng;
+        use rand::rng;
         
         let mut rng = thread_rng();
         let sample: Vec<_> = data.choose_multiple(&mut rng, batch_size)

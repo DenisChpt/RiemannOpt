@@ -79,7 +79,7 @@ impl PyOptimizationResult {
     /// Get all result data as a dictionary.
     #[getter]
     fn as_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("point", &self.point)?;
         dict.set_item("value", self.value)?;
         dict.set_item("gradient_norm", self.gradient_norm)?;
@@ -226,6 +226,7 @@ impl PyOptimizationResult {
 /// Base trait for Python optimizer implementations.
 ///
 /// This trait provides common functionality that all optimizers should implement.
+#[allow(dead_code)]
 pub trait PyOptimizerBase {
     /// Get the name of the optimizer.
     fn name(&self) -> &'static str;

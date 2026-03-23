@@ -56,16 +56,18 @@
 //! ## Example Usage
 //!
 //! ```rust,no_run
-//! use riemannopt_manifolds::{ProductStatic, Sphere, Stiefel};
+//! use riemannopt_manifolds::{ProductStatic, Sphere};
 //! use riemannopt_core::manifold::Manifold;
+//! use nalgebra::DVector;
 //!
-//! // Create S² × St(5,2) statically
-//! let sphere = Sphere::<f64>::new(3)?;
-//! let stiefel = Stiefel::<f64>::new(5, 2)?;
-//! let product = ProductStatic::new(sphere, stiefel);
+//! // Create S² × S³ statically
+//! let sphere1 = Sphere::<f64>::new(3)?;
+//! let sphere2 = Sphere::<f64>::new(4)?;
+//! let product = ProductStatic::new(sphere1, sphere2);
 //!
 //! // Operations are fully type-safe and optimized
-//! let x = product.random_point();
+//! let mut x = DVector::<f64>::zeros(7);
+//! product.random_point(&mut x)?;
 //!
 //! // Access components directly
 //! let (x1, x2) = product.split_point(&x)?;
@@ -723,11 +725,11 @@ where
 /// # Example
 ///
 /// ```rust
-/// use riemannopt_manifolds::{product_static, Sphere, Stiefel};
-/// 
-/// let sphere = Sphere::<f64>::new(3).unwrap();
-/// let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
-/// let product = product_static(sphere, stiefel);
+/// use riemannopt_manifolds::{product_static, Sphere};
+///
+/// let sphere1 = Sphere::<f64>::new(3).unwrap();
+/// let sphere2 = Sphere::<f64>::new(4).unwrap();
+/// let product = product_static(sphere1, sphere2);
 /// ```
 pub fn product_static<T, M1, M2>(manifold1: M1, manifold2: M2) -> ProductStatic<T, M1, M2>
 where

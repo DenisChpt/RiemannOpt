@@ -261,7 +261,7 @@ impl<T: Scalar> Newton<T> {
         }
         
         // Use finite differences approximation
-        let eps = <T as Float>::sqrt(T::epsilon());
+        let eps = T::fd_epsilon();
         
         // Unfortunately, we still need to allocate temporary vectors as TangentVectors
         // because the workspace returns DVector<T> but manifold operations require M::TangentVector

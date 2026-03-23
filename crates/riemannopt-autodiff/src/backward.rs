@@ -1,394 +1,277 @@
-//! Backward pass implementation for automatic differentiation.
-//!
-//! This module implements the backpropagation algorithm to compute
-//! gradients through the computation graph.
+//! Reverse-mode backward pass over the tape.
 
-use crate::graph::{Graph, NodeId, Tensor};
-use std::collections::HashMap;
+use crate::tape::{OpCode, Tape};
+use crate::Var;
 
-/// Type alias for gradient storage.
-pub type GradientMap = HashMap<NodeId, Tensor>;
+/// Accumulated gradients for every tape entry.
+pub struct Gradients {
+    pub(crate) grads: Vec<Vec<f64>>,
+}
 
-/// Performs backward pass (backpropagation) through the graph.
+impl Gradients {
+    /// Gradient w.r.t. the variable `v` as a flat slice.
+    #[inline]
+    pub fn wrt(&self, v: Var) -> &[f64] {
+        &self.grads[v.idx.0 as usize]
+    }
+
+    /// Gradient as a `nalgebra::DVector`.
+    pub fn wrt_vec(&self, v: Var) -> nalgebra::DVector<f64> {
+        nalgebra::DVector::from_column_slice(self.wrt(v))
+    }
+
+    /// Gradient as a `nalgebra::DMatrix` with the given shape.
+    pub fn wrt_mat(&self, v: Var, rows: usize, cols: usize) -> nalgebra::DMatrix<f64> {
+        nalgebra::DMatrix::from_column_slice(rows, cols, self.wrt(v))
+    }
+}
+
+/// Run the reverse sweep starting from `output`.
 ///
-/// # Arguments
-/// * `graph` - The computation graph
-/// * `output_node` - The node to compute gradients from
-/// * `grad_output` - The initial gradient (usually ones for scalar loss)
-///
-/// # Returns
-/// A map from node IDs to their gradients
-pub fn backward(
-    graph: &Graph,
-    output_node: NodeId,
-    grad_output: Option<Tensor>,
-) -> GradientMap {
-    let mut gradients = GradientMap::new();
-    
-    // Initialize output gradient
-    let initial_grad = grad_output.unwrap_or_else(|| {
-        // Default to gradient of 1.0 for scalar outputs
-        if let Some(output_value) = graph.get_value(output_node) {
-            if output_value.nrows() == 1 && output_value.ncols() == 1 {
-                Tensor::from_element(1, 1, 1.0)
-            } else {
-                // For non-scalar outputs, default to identity-like gradient
-                Tensor::from_element(output_value.nrows(), output_value.ncols(), 1.0)
+/// `output` should be a scalar `(1,1)` node (the loss).
+pub fn backward(tape: &Tape, output: Var) -> Gradients {
+    let n = tape.entries.len();
+    let mut grads: Vec<Vec<f64>> = vec![Vec::new(); n];
+
+    // Seed
+    grads[output.idx.0 as usize] = vec![1.0];
+
+    for i in (0..n).rev() {
+        let entry = &tape.entries[i];
+        if grads[i].is_empty() || !entry.requires_grad {
+            continue;
+        }
+
+        let grad = grads[i].clone(); // need owned copy because we mutate grads below
+
+        match entry.op {
+            OpCode::Input => {}
+
+            // ── binary element-wise ────────────────────────────────
+            OpCode::Add(a, b) => {
+                accum(&mut grads[a.0 as usize], &grad);
+                accum(&mut grads[b.0 as usize], &grad);
             }
-        } else {
-            Tensor::from_element(1, 1, 1.0)
-        }
-    });
-    
-    gradients.insert(output_node, initial_grad);
-    
-    // Get nodes in reverse topological order
-    let topo_order = graph.topological_order();
-    
-    // Process ALL nodes in reverse topological order
-    for &node_id in topo_order.iter().rev() {
-        // Skip if no gradient for this node
-        let node_grad = match gradients.get(&node_id) {
-            Some(grad) => grad.clone(),
-            None => {
-                // No gradient for this node yet
-                continue;
+            OpCode::Sub(a, b) => {
+                accum(&mut grads[a.0 as usize], &grad);
+                let neg: Vec<f64> = grad.iter().map(|g| -g).collect();
+                accum(&mut grads[b.0 as usize], &neg);
             }
-        };
-        
-        // Get the node
-        let node_rc = match graph.get_node(node_id) {
-            Some(n) => n,
-            None => continue,
-        };
-        
-        let node = node_rc.borrow();
-        
-        // Skip leaf nodes (they don't compute gradients for inputs)
-        if node.is_leaf() {
-            continue;
-        }
-        
-        // Skip nodes that don't require gradient
-        if !node.requires_grad {
-            continue;
-        }
-        
-        // Get the operation
-        let op = match &node.op {
-            Some(op) => op,
-            None => continue,
-        };
-        
-        // Collect input values
-        let input_values: Vec<Tensor> = node.inputs
-            .iter()
-            .filter_map(|&input_id| graph.get_value(input_id))
-            .collect();
-        
-        // Skip if we don't have all input values
-        if input_values.len() != node.inputs.len() {
-            continue;
-        }
-        
-        // Get output value
-        let output_value = match &node.value {
-            Some(val) => val,
-            None => continue,
-        };
-        
-        // Compute gradients for inputs
-        let input_grads = op.backward(&node_grad, &input_values, output_value);
-        
-        // Accumulate gradients for input nodes
-        for (i, &input_id) in node.inputs.iter().enumerate() {
-            if i < input_grads.len() {
-                let grad = &input_grads[i];
-                // Only accumulate if the input node requires gradient
-                if let Some(input_node) = graph.get_node(input_id) {
-                    if input_node.borrow().requires_grad {
-                        gradients
-                            .entry(input_id)
-                            .and_modify(|g| *g = &*g + grad)
-                            .or_insert_with(|| grad.clone());
-                    }
+            OpCode::Mul(a, b) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let bv = &tape.entries[b.0 as usize].value;
+                let ga: Vec<f64> = grad.iter().zip(bv).map(|(g, b)| g * b).collect();
+                let gb: Vec<f64> = grad.iter().zip(av).map(|(g, a)| g * a).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+                accum(&mut grads[b.0 as usize], &gb);
+            }
+            OpCode::Div(a, b) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let bv = &tape.entries[b.0 as usize].value;
+                let ga: Vec<f64> = grad.iter().zip(bv).map(|(g, b)| g / b).collect();
+                let gb: Vec<f64> = grad
+                    .iter()
+                    .zip(av.iter().zip(bv))
+                    .map(|(g, (a, b))| -g * a / (b * b))
+                    .collect();
+                accum(&mut grads[a.0 as usize], &ga);
+                accum(&mut grads[b.0 as usize], &gb);
+            }
+
+            // ── unary element-wise ─────────────────────────────────
+            OpCode::Neg(a) => {
+                let ga: Vec<f64> = grad.iter().map(|g| -g).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Exp(a) => {
+                let out = &entry.value;
+                let ga: Vec<f64> = grad.iter().zip(out).map(|(g, v)| g * v).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Log(a) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let ga: Vec<f64> = grad.iter().zip(av).map(|(g, a)| g / a).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Sqrt(a) => {
+                let out = &entry.value;
+                let ga: Vec<f64> = grad.iter().zip(out).map(|(g, v)| g * 0.5 / v).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Sin(a) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let ga: Vec<f64> = grad.iter().zip(av).map(|(g, a)| g * a.cos()).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Cos(a) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let ga: Vec<f64> = grad.iter().zip(av).map(|(g, a)| -g * a.sin()).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Abs(a) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let ga: Vec<f64> = grad.iter().zip(av).map(|(g, a)| g * a.signum()).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Pow(a, n) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let nf = n as f64;
+                let ga: Vec<f64> = grad
+                    .iter()
+                    .zip(av)
+                    .map(|(g, a)| g * nf * a.powi(n as i32 - 1))
+                    .collect();
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+
+            // ── reductions ─────────────────────────────────────────
+            OpCode::Sum(a) => {
+                let len = tape.entries[a.0 as usize].value.len();
+                let g0 = grad[0];
+                let ga = vec![g0; len];
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Mean(a) => {
+                let len = tape.entries[a.0 as usize].value.len();
+                let g0 = grad[0] / len as f64;
+                let ga = vec![g0; len];
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+            OpCode::Dot(a, b) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let bv = &tape.entries[b.0 as usize].value;
+                let g0 = grad[0];
+                let ga: Vec<f64> = bv.iter().map(|b| g0 * b).collect();
+                let gb: Vec<f64> = av.iter().map(|a| g0 * a).collect();
+                accum(&mut grads[a.0 as usize], &ga);
+                accum(&mut grads[b.0 as usize], &gb);
+            }
+            OpCode::Norm(a) => {
+                let av = &tape.entries[a.0 as usize].value;
+                let norm_val = entry.value[0];
+                let g0 = grad[0];
+                if norm_val > 1e-30 {
+                    let ga: Vec<f64> = av.iter().map(|a| g0 * a / norm_val).collect();
+                    accum(&mut grads[a.0 as usize], &ga);
                 }
             }
+
+            // ── linear algebra ─────────────────────────────────────
+            OpCode::MatMul(a, b, m, k, n) => {
+                let (m, k, n) = (m as usize, k as usize, n as usize);
+                let av = &tape.entries[a.0 as usize].value;
+                let bv = &tape.entries[b.0 as usize].value;
+                // grad_A = grad_out × B^T
+                let mut ga = vec![0.0; m * k];
+                for j in 0..k {
+                    for p in 0..n {
+                        let b_jp = bv[j + p * k];
+                        for ii in 0..m {
+                            ga[ii + j * m] += grad[ii + p * m] * b_jp;
+                        }
+                    }
+                }
+                // grad_B = A^T × grad_out
+                let mut gb = vec![0.0; k * n];
+                for j in 0..n {
+                    for p in 0..m {
+                        let g_pj = grad[p + j * m];
+                        for ii in 0..k {
+                            gb[ii + j * k] += av[p + ii * m] * g_pj;
+                        }
+                    }
+                }
+                accum(&mut grads[a.0 as usize], &ga);
+                accum(&mut grads[b.0 as usize], &gb);
+            }
+            OpCode::Trace(a) => {
+                let (r, _) = tape.entries[a.0 as usize].shape;
+                let g0 = grad[0];
+                let mut ga = vec![0.0; r * r];
+                for ii in 0..r {
+                    ga[ii + ii * r] = g0;
+                }
+                accum(&mut grads[a.0 as usize], &ga);
+            }
+
+            // ── scalar–tensor broadcast ────────────────────────────
+            OpCode::ScalarMul(s, t) => {
+                let sv = tape.entries[s.0 as usize].value[0];
+                let tv = &tape.entries[t.0 as usize].value;
+                let gs = vec![grad.iter().zip(tv).map(|(g, v)| g * v).sum()];
+                let gt: Vec<f64> = grad.iter().map(|g| g * sv).collect();
+                accum(&mut grads[s.0 as usize], &gs);
+                accum(&mut grads[t.0 as usize], &gt);
+            }
+            OpCode::ScalarAdd(s, t) => {
+                let gs = vec![grad.iter().sum()];
+                accum(&mut grads[s.0 as usize], &gs);
+                accum(&mut grads[t.0 as usize], &grad);
+            }
         }
     }
-    
-    gradients
+
+    Gradients { grads }
 }
 
-/// Computes the gradient of a scalar output with respect to specified inputs.
-///
-/// # Arguments
-/// * `graph` - The computation graph
-/// * `output_node` - The scalar output node
-/// * `input_nodes` - The input nodes to compute gradients for
-///
-/// # Returns
-/// A map containing gradients for the requested input nodes
-pub fn grad(
-    graph: &Graph,
-    output_node: NodeId,
-    input_nodes: &[NodeId],
-) -> GradientMap {
-    let all_grads = backward(graph, output_node, None);
-    
-    let mut result = GradientMap::new();
-    for &input_id in input_nodes {
-        if let Some(grad) = all_grads.get(&input_id) {
-            result.insert(input_id, grad.clone());
+/// Accumulate `src` into `dst`, initialising if empty.
+#[inline]
+fn accum(dst: &mut Vec<f64>, src: &[f64]) {
+    if dst.is_empty() {
+        *dst = src.to_vec();
+    } else {
+        debug_assert_eq!(dst.len(), src.len());
+        for (d, s) in dst.iter_mut().zip(src) {
+            *d += s;
         }
     }
-    
-    result
 }
 
-/// Checks gradients using finite differences.
-///
-/// This is useful for verifying the correctness of backward implementations.
-///
-/// # Arguments
-/// * `graph` - The computation graph
-/// * `output_node` - The output node
-/// * `input_node` - The input node to check gradient for
-/// * `epsilon` - Small value for finite differences
-///
-/// # Returns
-/// The maximum relative error between analytical and numerical gradients
-pub fn check_gradients(
-    graph: &Graph,
-    output_node: NodeId,
-    input_node: NodeId,
-    epsilon: f64,
-) -> f64 {
-    // Get analytical gradient
-    let analytical_grads = grad(graph, output_node, &[input_node]);
-    let analytical_grad = analytical_grads
-        .get(&input_node)
-        .expect("No gradient computed for input node");
-    
-    // Get original input value
-    let original_value = graph
-        .get_value(input_node)
-        .expect("No value for input node");
-    
-    let mut max_error: f64 = 0.0;
-    
-    // Check each element
-    for i in 0..original_value.nrows() {
-        for j in 0..original_value.ncols() {
-            // Perturb forward
-            let mut perturbed = original_value.clone();
-            perturbed[(i, j)] += epsilon;
-            graph.set_value(input_node, perturbed);
-            let f_plus = graph.forward(output_node).unwrap()[(0, 0)];
-            
-            // Perturb backward
-            let mut perturbed = original_value.clone();
-            perturbed[(i, j)] -= epsilon;
-            graph.set_value(input_node, perturbed);
-            let f_minus = graph.forward(output_node).unwrap()[(0, 0)];
-            
-            // Restore original value
-            graph.set_value(input_node, original_value.clone());
-            graph.forward(output_node); // Recompute with original value
-            
-            // Compute numerical gradient
-            let numerical_grad = (f_plus - f_minus) / (2.0 * epsilon);
-            let analytical_grad_elem = analytical_grad[(i, j)];
-            
-            // Compute relative error
-            let abs_error = (numerical_grad - analytical_grad_elem).abs();
-            let denom = numerical_grad.abs().max(analytical_grad_elem.abs()).max(1e-8);
-            let error = abs_error / denom;
-            
-            max_error = max_error.max(error);
-        }
-    }
-    
-    max_error
-}
+/// Finite-difference gradient check.  Returns the maximum relative error.
+pub fn check_gradient<F>(f: F, x: &[f64], shape: (usize, usize), eps: f64) -> f64
+where
+    F: Fn(Var) -> Var,
+{
+    // AD gradient
+    let mut tape = Tape::new();
+    let _guard = crate::TapeGuard::new(&mut tape);
+    let v = tape.var(x, shape);
+    let out = f(v);
+    let grads = backward(&tape, out);
+    let ad_grad = grads.wrt(v).to_vec();
+    drop(_guard);
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ops::{Add, Multiply, Sum, ReLU};
+    // Finite-difference gradient
+    let n = x.len();
+    let mut fd_grad = vec![0.0; n];
+    for i in 0..n {
+        let mut xp = x.to_vec();
+        let mut xm = x.to_vec();
+        xp[i] += eps;
+        xm[i] -= eps;
 
-    #[test]
-    fn test_backward_single_node() {
-        let graph = Graph::new();
-        let x = graph.variable(Tensor::from_element(2, 2, 3.0));
-        
-        let grads = backward(&graph, x.id, None);
-        
-        // Gradient of a variable with respect to itself is identity
-        assert_eq!(grads.len(), 1);
-        assert!(grads.contains_key(&x.id));
-        assert_eq!(grads[&x.id][(0, 0)], 1.0);
+        let mut tp = Tape::new();
+        let _g = crate::TapeGuard::new(&mut tp);
+        let vp = tp.var(&xp, shape);
+        let op = f(vp);
+        let fp = tp.scalar(op.idx());
+        drop(_g);
+
+        let mut tm = Tape::new();
+        let _g = crate::TapeGuard::new(&mut tm);
+        let vm = tm.var(&xm, shape);
+        let om = f(vm);
+        let fm = tm.scalar(om.idx());
+        drop(_g);
+
+        fd_grad[i] = (fp - fm) / (2.0 * eps);
     }
 
-    #[test]
-    fn test_backward_add() {
-        let graph = Graph::new();
-        
-        // Create x + y
-        let x = graph.variable(Tensor::from_element(2, 2, 2.0));
-        let y = graph.variable(Tensor::from_element(2, 2, 3.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Backward pass
-        let grads = backward(&graph, z, None);
-        
-        // Check gradients
-        assert_eq!(grads[&x.id], Tensor::from_element(2, 2, 1.0));
-        assert_eq!(grads[&y.id], Tensor::from_element(2, 2, 1.0));
+    let mut max_err = 0.0_f64;
+    for (a, f) in ad_grad.iter().zip(&fd_grad) {
+        let scale = a.abs().max(f.abs()).max(1e-15);
+        let err = (a - f).abs() / scale;
+        max_err = max_err.max(err);
     }
-
-    #[test]
-    fn test_backward_multiply() {
-        let graph = Graph::new();
-        
-        // Create x * y
-        let x = graph.variable(Tensor::from_element(1, 1, 2.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let z = graph.apply_op(Box::new(Multiply), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Backward pass
-        let grads = backward(&graph, z, None);
-        
-        // d/dx (x * y) = y = 3
-        // d/dy (x * y) = x = 2
-        assert_eq!(grads[&x.id][(0, 0)], 3.0);
-        assert_eq!(grads[&y.id][(0, 0)], 2.0);
-    }
-
-    #[test]
-    fn test_backward_chain() {
-        let graph = Graph::new();
-        
-        // Create (x + y) * 2
-        let x = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 4.0));
-        let two = graph.variable(Tensor::from_element(1, 1, 2.0));
-        
-        let sum = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        let prod = graph.apply_op(Box::new(Multiply), &[sum, two.id]);
-        
-        // Forward pass
-        let result = graph.forward(prod).unwrap();
-        assert_eq!(result[(0, 0)], 14.0); // (3 + 4) * 2 = 14
-        
-        // Backward pass
-        let grads = backward(&graph, prod, None);
-        
-        
-        // d/dx ((x + y) * 2) = 2
-        // d/dy ((x + y) * 2) = 2
-        assert!(grads.contains_key(&x.id), "Missing gradient for x");
-        assert!(grads.contains_key(&y.id), "Missing gradient for y");
-        assert_eq!(grads[&x.id][(0, 0)], 2.0);
-        assert_eq!(grads[&y.id][(0, 0)], 2.0);
-    }
-
-    #[test]
-    fn test_backward_sum() {
-        let graph = Graph::new();
-        
-        // Create sum(x)
-        let x = graph.variable(Tensor::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]));
-        let sum_node = graph.apply_op(Box::new(Sum::all()), &[x.id]);
-        
-        // Forward pass
-        let result = graph.forward(sum_node).unwrap();
-        assert_eq!(result[(0, 0)], 10.0);
-        
-        // Backward pass
-        let grads = backward(&graph, sum_node, None);
-        
-        // Gradient of sum is all ones
-        assert_eq!(grads[&x.id], Tensor::from_element(2, 2, 1.0));
-    }
-
-    #[test]
-    fn test_backward_relu() {
-        let graph = Graph::new();
-        
-        // Create ReLU(x)
-        let x = graph.variable(Tensor::from_row_slice(2, 2, &[-1.0, 2.0, -3.0, 4.0]));
-        let relu_node = graph.apply_op(Box::new(ReLU), &[x.id]);
-        
-        // Forward pass
-        graph.forward(relu_node);
-        
-        // Backward pass with custom gradient
-        let grad_output = Tensor::from_element(2, 2, 1.0);
-        let grads = backward(&graph, relu_node, Some(grad_output));
-        
-        // Gradient is 1 where x > 0, else 0
-        let expected = Tensor::from_row_slice(2, 2, &[0.0, 1.0, 0.0, 1.0]);
-        assert_eq!(grads[&x.id], expected);
-    }
-
-    #[test]
-    fn test_grad_function() {
-        let graph = Graph::new();
-        
-        // Create x + y
-        let x = graph.variable(Tensor::from_element(1, 1, 2.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Get gradient only for x
-        let grads = grad(&graph, z, &[x.id]);
-        
-        assert_eq!(grads.len(), 1);
-        assert!(grads.contains_key(&x.id));
-        assert!(!grads.contains_key(&y.id));
-    }
-
-    #[test]
-    fn test_gradient_accumulation() {
-        let graph = Graph::new();
-        
-        // Create x + x (same input used twice)
-        let x = graph.variable(Tensor::from_element(1, 1, 5.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, x.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Backward pass
-        let grads = backward(&graph, z, None);
-        
-        // Gradient should be accumulated: 1 + 1 = 2
-        assert_eq!(grads[&x.id][(0, 0)], 2.0);
-    }
-
-    #[test]
-    fn test_check_gradients_add() {
-        let graph = Graph::new();
-        
-        let x = graph.variable(Tensor::from_element(1, 1, 2.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Check gradients using a separate test to debug
-        // For now, skip this test as there seems to be an issue with the gradient checking function
-        // The backward pass itself works correctly as shown by other tests
-    }
+    max_err
 }

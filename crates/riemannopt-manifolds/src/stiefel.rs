@@ -106,15 +106,15 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Stiefel;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::memory::workspace::Workspace;
 //! use nalgebra::DMatrix;
 //!
 //! // Create Stiefel manifold St(5,2)
 //! let stiefel = Stiefel::<f64>::new(5, 2)?;
 //!
 //! // Random point on manifold
-//! let x = stiefel.random_point();
-//! 
+//! let mut x = DMatrix::<f64>::zeros(5, 2);
+//! stiefel.random_point(&mut x)?;
+//!
 //! // Verify orthonormality: X^T X = I
 //! let xtx = x.transpose() * &x;
 //! assert!((xtx - DMatrix::<f64>::identity(2, 2)).norm() < 1e-14);
@@ -126,7 +126,7 @@
 //!
 //! // Verify tangent space constraint
 //! let constraint = x.transpose() * &rgrad;
-//! assert!((constraint + constraint.transpose()).norm() < 1e-14);
+//! assert!((constraint.clone() + constraint.transpose()).norm() < 1e-14);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
@@ -636,18 +636,20 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 
     fn parallel_transport(
         &self,
-        from: &Self::Point,
+        _from: &Self::Point,
         to: &Self::Point,
         vector: &Self::TangentVector,
         result: &mut Self::TangentVector,
     ) -> Result<()> {
-        let transported = self.parallel_transport(from, to, vector)?;
-        result.copy_from(&transported);
+        // Projection-based transport: τ_{X→Y}(V) = V - Y * sym(Y^T V)
+        let ytv = to.transpose() * vector;
+        let sym_ytv = Self::symmetrize(&ytv);
+        result.copy_from(&(vector - to * sym_ytv));
         Ok(())
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random Gaussian matrix
@@ -680,7 +682,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
         self.check_point(point)?;
         
         // Generate random matrix
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         let mut z = DMatrix::zeros(self.n, self.p);

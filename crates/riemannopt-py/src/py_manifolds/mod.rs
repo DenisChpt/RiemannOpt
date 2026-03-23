@@ -31,7 +31,7 @@ pub use product::PyProductManifold;
 
 /// Register all manifold classes with the Python module.
 pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(parent.py(), "manifolds")?;
+    let m = PyModule::new(parent.py(), "manifolds")?;
     
     // Register manifold classes
     m.add_class::<PySphere>()?;

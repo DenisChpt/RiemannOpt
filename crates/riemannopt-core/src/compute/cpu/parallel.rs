@@ -5,7 +5,12 @@
 
 use crate::types::Scalar;
 use crate::simd::SimdOps;
-use crate::compute::cpu::{batch_ops::{BatchError, CacheFriendlyBatch}, get_dispatcher, SimdBackend};
+use crate::compute::cpu::{
+    batch_ops::{BatchError, CacheFriendlyBatch},
+    get_dispatcher,
+    parallel_strategy::BlasThreadGuard,
+    SimdBackend,
+};
 use nalgebra::{DMatrix, DVector, DVectorView, DVectorViewMut};
 use rayon::prelude::*;
 
@@ -409,7 +414,10 @@ impl SimdParallelOps {
         norms
     }
     
-    /// Parallel matrix-vector multiplication with SIMD
+    /// Parallel matrix-vector multiplication with SIMD.
+    ///
+    /// Automatically suppresses BLAS-level threading to avoid
+    /// over-subscription when Rayon is driving the outer loop.
     pub fn batch_gemv<T>(
         matrices: &[DMatrix<T>],
         vectors: &[DVector<T>],
@@ -420,9 +428,10 @@ impl SimdParallelOps {
         T: Scalar + SimdOps + 'static,
     {
         assert_eq!(matrices.len(), vectors.len());
-        
+
         let dispatcher = get_dispatcher::<T>();
-        
+        let _guard = BlasThreadGuard::single_threaded();
+
         matrices
             .par_iter()
             .zip(vectors.par_iter())

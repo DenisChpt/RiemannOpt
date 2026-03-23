@@ -4,8 +4,7 @@
 //! and SIMD capabilities, allowing the library to dynamically select the most
 //! efficient implementations for the current hardware.
 
-use once_cell::sync::Lazy;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// Available CPU features that can be detected at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +95,7 @@ impl CpuFeatures {
 }
 
 /// Global CPU features detected at program startup.
-pub static CPU_FEATURES: Lazy<Arc<CpuFeatures>> = Lazy::new(|| Arc::new(CpuFeatures::detect()));
+pub static CPU_FEATURES: LazyLock<Arc<CpuFeatures>> = LazyLock::new(|| Arc::new(CpuFeatures::detect()));
 
 /// Get the detected CPU features.
 pub fn cpu_features() -> &'static CpuFeatures {
@@ -129,7 +128,7 @@ impl Default for SimdConfig {
 }
 
 /// Global SIMD configuration.
-pub static SIMD_CONFIG: Lazy<Arc<SimdConfig>> = Lazy::new(|| Arc::new(SimdConfig::default()));
+pub static SIMD_CONFIG: LazyLock<Arc<SimdConfig>> = LazyLock::new(|| Arc::new(SimdConfig::default()));
 
 /// Get the current SIMD configuration.
 pub fn simd_config() -> &'static SimdConfig {

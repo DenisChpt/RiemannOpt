@@ -101,13 +101,14 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::PSDCone;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DMatrix;
+//! use nalgebra::DVector;
 //!
 //! // Create S⁺(3) - 3×3 PSD matrices
 //! let psd_cone = PSDCone::new(3)?;
 //!
-//! // Random PSD matrix
-//! let x = psd_cone.random_point();
+//! // Random PSD matrix (stored as vector)
+//! let mut x = DVector::<f64>::zeros(6);
+//! psd_cone.random_point(&mut x)?;
 //!
 //! // Verify positive semi-definiteness
 //! let x_mat = psd_cone.vector_to_matrix(&x);
@@ -673,7 +674,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
     }
 
     fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random symmetric matrix
@@ -711,7 +712,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
             *result = DVector::zeros(self.n * (self.n + 1) / 2);
         }
         
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = StandardNormal;
         
         // Generate random symmetric matrix

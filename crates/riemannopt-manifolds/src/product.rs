@@ -63,20 +63,21 @@
 //! ## Example Usage
 //!
 //! ```rust,no_run
-//! use riemannopt_manifolds::{Product, Sphere, Stiefel};
+//! use riemannopt_manifolds::{Product, Sphere};
 //! use riemannopt_core::manifold::Manifold;
 //! use nalgebra::DVector;
 //!
-//! // Create S² × St(5,2) - sphere and Stiefel manifold
-//! let sphere = Sphere::<f64>::new(3)?;
-//! let stiefel = Stiefel::<f64>::new(5, 2)?;
-//! let product = Product::new(vec![Box::new(sphere), Box::new(stiefel)]);
+//! // Create S² × S³ - two sphere manifolds
+//! let sphere1 = Sphere::<f64>::new(3)?;
+//! let sphere2 = Sphere::<f64>::new(4)?;
+//! let product = Product::new(vec![Box::new(sphere1), Box::new(sphere2)]);
 //!
 //! // Points are concatenated vectors
-//! let mut x = product.random_point();
-//! 
+//! let mut x = DVector::<f64>::zeros(product.component_dimensions().iter().sum());
+//! product.random_point(&mut x)?;
+//!
 //! // Access components
-//! let (x_sphere, x_stiefel) = product.split_point(&x, 0)?;
+//! let x_sphere1 = product.split_point::<f64>(&x, 0)?;
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
@@ -132,10 +133,10 @@ impl Product {
     /// # Example
     ///
     /// ```rust
-    /// # use riemannopt_manifolds::{Product, Sphere, SPD};
-    /// let sphere = Sphere::<f64>::new(3).unwrap();
-    /// let spd = SPD::<f64>::new(2).unwrap();
-    /// let product = Product::new(vec![Box::new(sphere), Box::new(spd)]);
+    /// # use riemannopt_manifolds::{Product, Sphere};
+    /// let sphere1 = Sphere::<f64>::new(3).unwrap();
+    /// let sphere2 = Sphere::<f64>::new(4).unwrap();
+    /// let product = Product::new(vec![Box::new(sphere1), Box::new(sphere2)]);
     /// ```
     pub fn new(manifolds: Vec<Box<dyn Manifold<f64, Point = DVector<f64>, TangentVector = DVector<f64>>>>) -> Self {
         assert!(!manifolds.is_empty(), "Product manifold requires at least one component");

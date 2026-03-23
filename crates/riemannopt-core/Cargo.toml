@@ -15,14 +15,12 @@ thiserror = { workspace = true }
 num-traits = { workspace = true }
 approx = { workspace = true }
 serde = { workspace = true, optional = true }
-rand = "0.8"
+rand = { workspace = true }
 rayon = { workspace = true }
 wide = { workspace = true }
 cudarc = { workspace = true, optional = true }
 cust = { workspace = true, optional = true }
-once_cell = "1.19"
 parking_lot = "0.12"
-num_cpus = "1.16"
 dashmap = "6.1"
 lru = "0.12"
 
@@ -32,49 +30,11 @@ std = []
 serde = ["dep:serde", "nalgebra/serde-serialize"]
 test-utils = []
 cuda = ["dep:cudarc", "dep:cust"]
-parallel = []  # Rayon is always available, this just enables parallel features
+parallel = []
 
 [dev-dependencies]
-proptest = "1.5"
-pretty_assertions = "1.4"
-serde_json = "1.0"
-rand = "0.8"
-criterion = { version = "0.5", features = ["html_reports"] }
-
-# Benchmarks commented out - files not yet created
-# [[bench]]
-# name = "manifold_operations"
-# harness = false
-#
-# [[bench]]
-# name = "retraction_benchmarks"
-# harness = false
-#
-# [[bench]]
-# name = "tangent_operations"
-# harness = false
-#
-# [[bench]]
-# name = "memory_profile"
-# harness = false
-#
-# [[bench]]
-# name = "baseline_comparison"
-# harness = false
-#
-# [[bench]]
-# name = "end_to_end"
-# harness = false
-#
-# [[bench]]
-# name = "algorithm_comparison"
-# harness = false
-#
-# [[bench]]
-# name = "simd_benchmarks"
-# harness = false
-#
-# [[bench]]
-# name = "parallel_gradient"
-# harness = false
-
+proptest = { workspace = true }
+pretty_assertions = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+criterion = { workspace = true }
