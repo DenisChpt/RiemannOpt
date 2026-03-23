@@ -1,9 +1,9 @@
 //! SIMD-optimized Riemannian metric operations.
 
 use crate::{
-	compute::cpu::{get_dispatcher, SimdBackend},
+	compute::cpu::{get_dispatcher, ScalarDispatch, SimdBackend},
 	error::Result,
-	types::{DMatrix, DVector, Scalar},
+	types::{DMatrix, DVector},
 };
 use num_traits::Float;
 
@@ -14,7 +14,7 @@ pub fn metric_inner_product_simd_dvec<T>(
 	v: &DVector<T>,
 ) -> Result<T>
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 {
 	let dispatcher = get_dispatcher::<T>();
 
@@ -29,7 +29,7 @@ where
 /// SIMD-accelerated norm computation using a metric tensor for dynamic vectors.
 pub fn metric_norm_simd_dvec<T>(metric_matrix: &DMatrix<T>, v: &DVector<T>) -> Result<T>
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 {
 	let inner = metric_inner_product_simd_dvec(metric_matrix, v, v)?;
 	Ok(<T as Float>::sqrt(inner))
@@ -38,7 +38,7 @@ where
 /// SIMD-accelerated weighted metric computation.
 pub fn weighted_metric_simd<T>(weights: &DVector<T>, u: &DVector<T>, v: &DVector<T>) -> T
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 {
 	let dispatcher = get_dispatcher::<T>();
 
@@ -68,7 +68,7 @@ pub fn christoffel_symbols_simd_dvec<T, F>(
 	metric_fn: &F,
 ) -> Result<Vec<DMatrix<T>>>
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 	F: Fn(&DVector<T>) -> Result<DMatrix<T>>,
 {
 	let n = point.len();

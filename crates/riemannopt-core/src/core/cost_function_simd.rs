@@ -4,7 +4,7 @@
 //! using finite differences. It leverages CPU vector instructions for improved performance.
 
 use crate::{
-	compute::cpu::{get_dispatcher, parallel::ParallelConfig},
+	compute::cpu::{get_dispatcher, parallel::ParallelConfig, ScalarDispatch},
 	error::{ManifoldError, Result},
 	memory::{workspace::Workspace, BufferId},
 	types::Scalar,
@@ -87,7 +87,7 @@ impl<T: Scalar> SimdGradientOps<T> for DVector<T> {
 /// The gradient vector computed using finite differences
 pub fn gradient_fd_simd_alloc<T, P, F>(cost_fn: &F, point: &P) -> Result<P>
 where
-	T: Scalar + 'static,
+	T: ScalarDispatch,
 	P: SimdGradientOps<T>,
 	F: Fn(&P) -> Result<T>,
 {
@@ -137,7 +137,7 @@ pub fn gradient_fd_simd<T, P, F>(
 	gradient: &mut P,
 ) -> Result<()>
 where
-	T: Scalar + Float,
+	T: ScalarDispatch + Float,
 	P: SimdGradientOps<T>,
 	F: Fn(&P) -> Result<T>,
 {
@@ -180,7 +180,7 @@ pub fn gradient_fd_simd_parallel<T, P, F>(
 	config: &ParallelConfig,
 ) -> Result<P>
 where
-	T: Scalar + Float + Send + Sync + 'static,
+	T: ScalarDispatch + Float + Send + Sync,
 	P: SimdGradientOps<T>,
 	F: Fn(&P) -> Result<T> + Sync,
 {

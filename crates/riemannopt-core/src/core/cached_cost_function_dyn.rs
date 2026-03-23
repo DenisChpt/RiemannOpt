@@ -5,7 +5,6 @@
 //! optimization problems.
 
 use crate::{
-	compute::cpu::{get_dispatcher, SimdBackend},
 	core::cost_function::CostFunction,
 	error::Result,
 	memory::Workspace,
@@ -35,36 +34,17 @@ impl<T: Scalar> LastPointCache<T> {
 		}
 	}
 
-	/// Check if this cache entry matches the given point within tolerance
+	/// Check if this cache entry matches the given point within tolerance.
 	fn matches_with_tolerance(&self, point: &DVector<T>, tolerance: T) -> bool {
-		// First check dimensions for fast rejection
 		if self.point.len() != point.len() {
 			return false;
 		}
 
-		// For f64, we can use the dispatcher directly
-		if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-			// SAFETY: We've verified T is f64
-			unsafe {
-				let self_point_f64 = &*(&self.point as *const DVector<T> as *const DVector<f64>);
-				let point_f64 = &*(point as *const DVector<T> as *const DVector<f64>);
-				let tolerance_f64 = *(&tolerance as *const T as *const f64);
-
-				let dispatcher = get_dispatcher::<f64>();
-				let max_diff = dispatcher.max_abs_diff(self_point_f64, point_f64);
-				return max_diff <= tolerance_f64;
-			}
-		}
-
-		// Fallback for other types (shouldn't happen in practice since this is used with f64)
-		for i in 0..self.point.len() {
-			let diff = self.point[i] - point[i];
-			if num_traits::Signed::abs(&diff) > tolerance {
-				return false;
-			}
-		}
-
-		true
+		// Use nalgebra's built-in L-infinity norm for the comparison.
+		// This avoids unsafe TypeId-based pointer casts while remaining
+		// efficient for the cache-hit check (not on a hot path).
+		let max_diff = (&self.point - point).amax();
+		max_diff <= tolerance
 	}
 }
 

@@ -314,18 +314,31 @@ static F32_DISPATCHER: std::sync::LazyLock<SimdDispatcher<f32>> =
 static F64_DISPATCHER: std::sync::LazyLock<SimdDispatcher<f64>> =
 	std::sync::LazyLock::new(|| SimdDispatcher::<f64>::new());
 
-/// Get the global SIMD dispatcher for a given type.
-pub fn get_dispatcher<T: Scalar + 'static>() -> &'static SimdDispatcher<T> {
-	// This is a bit of a hack, but it works for our use case
-	use std::any::TypeId;
+/// Trait for types that have a global SIMD dispatcher.
+///
+/// This replaces the previous approach using unsafe pointer casts with `TypeId`.
+/// Each supported scalar type implements this trait to provide type-safe access
+/// to its global dispatcher instance.
+pub trait ScalarDispatch: Scalar + 'static {
+	/// Returns a reference to the global dispatcher for this scalar type.
+	fn dispatcher() -> &'static SimdDispatcher<Self>;
+}
 
-	if TypeId::of::<T>() == TypeId::of::<f32>() {
-		unsafe { &*(&*F32_DISPATCHER as *const SimdDispatcher<f32> as *const SimdDispatcher<T>) }
-	} else if TypeId::of::<T>() == TypeId::of::<f64>() {
-		unsafe { &*(&*F64_DISPATCHER as *const SimdDispatcher<f64> as *const SimdDispatcher<T>) }
-	} else {
-		panic!("SIMD dispatcher only supports f32 and f64");
+impl ScalarDispatch for f32 {
+	fn dispatcher() -> &'static SimdDispatcher<Self> {
+		&F32_DISPATCHER
 	}
+}
+
+impl ScalarDispatch for f64 {
+	fn dispatcher() -> &'static SimdDispatcher<Self> {
+		&F64_DISPATCHER
+	}
+}
+
+/// Get the global SIMD dispatcher for a given type.
+pub fn get_dispatcher<T: ScalarDispatch>() -> &'static SimdDispatcher<T> {
+	T::dispatcher()
 }
 
 #[cfg(test)]

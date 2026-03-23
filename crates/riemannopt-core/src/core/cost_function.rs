@@ -465,7 +465,7 @@ where
 }
 
 /// Extension trait for parallel gradient computation on dynamic vectors.
-pub trait CostFunctionParallel<T: Scalar>: CostFunction<T> {
+pub trait CostFunctionParallel<T: crate::compute::cpu::ScalarDispatch>: CostFunction<T> {
 	/// Compute gradient in parallel for dynamic vectors.
 	///
 	/// This method is only available when the Point type can be converted to/from DVector.
@@ -587,7 +587,7 @@ where
 }
 
 // Blanket implementation for all cost functions
-impl<T: Scalar, C: CostFunction<T>> CostFunctionParallel<T> for C {}
+impl<T: crate::compute::cpu::ScalarDispatch, C: CostFunction<T>> CostFunctionParallel<T> for C {}
 
 /// Utilities for checking gradient and Hessian implementations.
 pub struct DerivativeChecker;

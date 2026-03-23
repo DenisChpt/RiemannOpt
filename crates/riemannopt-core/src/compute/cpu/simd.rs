@@ -388,18 +388,18 @@ impl SimdMatrixOps {
 /// SIMD-accelerated manifold operations (internal use only)
 pub(crate) mod simd_manifolds {
 	use super::*;
-	use crate::compute::cpu::{get_dispatcher, SimdBackend};
+	use crate::compute::cpu::{get_dispatcher, ScalarDispatch, SimdBackend};
 
 	/// SIMD sphere projection
 	#[allow(dead_code)]
-	pub fn project_sphere_simd<T: SimdOps + 'static>(point: &mut DVector<T>) {
+	pub fn project_sphere_simd<T: SimdOps + ScalarDispatch>(point: &mut DVector<T>) {
 		let dispatcher = get_dispatcher::<T>();
 		let _norm = dispatcher.normalize(point);
 	}
 
 	/// SIMD orthogonalization for Stiefel using Modified Gram-Schmidt
 	#[allow(dead_code)]
-	pub fn orthogonalize_simd<T: SimdOps + 'static>(matrix: &mut DMatrix<T>) {
+	pub fn orthogonalize_simd<T: SimdOps + ScalarDispatch>(matrix: &mut DMatrix<T>) {
 		let p = matrix.ncols();
 		let dispatcher = get_dispatcher::<T>();
 
