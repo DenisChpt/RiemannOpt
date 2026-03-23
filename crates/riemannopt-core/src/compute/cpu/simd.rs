@@ -207,31 +207,66 @@ impl SimdOps for f64 {
 pub(crate) struct SimdVectorOps;
 
 impl SimdVectorOps {
-	/// Compute dot product using SIMD
+	/// Compute dot product using SIMD with multiple accumulators.
+	///
+	/// Using 4 independent accumulators reduces catastrophic cancellation
+	/// for large `f32` vectors and enables better instruction-level
+	/// parallelism on modern CPUs.
 	pub fn dot_product<T: SimdOps>(a: DVectorView<T>, b: DVectorView<T>) -> T {
 		assert_eq!(a.len(), b.len(), "Vectors must have same length");
 
 		let n = a.len();
 		let simd_width = T::SIMD_WIDTH;
+		let stride = simd_width * 4; // 4 accumulators
+		let block_end = n - (n % stride);
 		let simd_end = n - (n % simd_width);
 
 		let a_slice = a.as_slice();
 		let b_slice = b.as_slice();
 
-		// SIMD part
-		let mut sum = T::SimdVector::splat(T::zero());
-		for i in (0..simd_end).step_by(simd_width) {
-			let va = T::SimdVector::from_slice(&a_slice[i..]);
-			let vb = T::SimdVector::from_slice(&b_slice[i..]);
-			// mul_add(a, b, c) = a * b + c, so we want va * vb + sum
-			sum = va.mul_add(vb, sum);
+		// 4 independent accumulators for better precision and ILP
+		let zero = T::SimdVector::splat(T::zero());
+		let mut sum0 = zero;
+		let mut sum1 = zero;
+		let mut sum2 = zero;
+		let mut sum3 = zero;
+
+		let mut i = 0;
+		while i < block_end {
+			let va0 = T::SimdVector::from_slice(&a_slice[i..]);
+			let vb0 = T::SimdVector::from_slice(&b_slice[i..]);
+			sum0 = va0.mul_add(vb0, sum0);
+
+			let va1 = T::SimdVector::from_slice(&a_slice[i + simd_width..]);
+			let vb1 = T::SimdVector::from_slice(&b_slice[i + simd_width..]);
+			sum1 = va1.mul_add(vb1, sum1);
+
+			let va2 = T::SimdVector::from_slice(&a_slice[i + simd_width * 2..]);
+			let vb2 = T::SimdVector::from_slice(&b_slice[i + simd_width * 2..]);
+			sum2 = va2.mul_add(vb2, sum2);
+
+			let va3 = T::SimdVector::from_slice(&a_slice[i + simd_width * 3..]);
+			let vb3 = T::SimdVector::from_slice(&b_slice[i + simd_width * 3..]);
+			sum3 = va3.mul_add(vb3, sum3);
+
+			i += stride;
 		}
 
-		let mut result = sum.horizontal_sum();
+		// Handle remaining full SIMD-width chunks
+		while i < simd_end {
+			let va = T::SimdVector::from_slice(&a_slice[i..]);
+			let vb = T::SimdVector::from_slice(&b_slice[i..]);
+			sum0 = va.mul_add(vb, sum0);
+			i += simd_width;
+		}
+
+		// Reduce accumulators: (sum0 + sum2) + (sum1 + sum3) for balanced tree
+		let partial = sum0.add(sum2).add(sum1.add(sum3));
+		let mut result = partial.horizontal_sum();
 
 		// Scalar remainder
-		for i in simd_end..n {
-			result += a_slice[i] * b_slice[i];
+		for j in simd_end..n {
+			result += a_slice[j] * b_slice[j];
 		}
 
 		result
@@ -360,25 +395,45 @@ impl SimdMatrixOps {
 		y.gemv(alpha, a, x, beta);
 	}
 
-	/// Frobenius norm using SIMD
+	/// Frobenius norm using SIMD with multiple accumulators.
 	pub fn frobenius_norm<T: SimdOps>(a: &DMatrix<T>) -> T {
 		let data = a.as_slice();
 		let n = data.len();
 		let simd_width = T::SIMD_WIDTH;
+		let stride = simd_width * 4;
+		let block_end = n - (n % stride);
 		let simd_end = n - (n % simd_width);
 
-		// SIMD part
-		let mut sum = T::SimdVector::splat(T::zero());
-		for i in (0..simd_end).step_by(simd_width) {
-			let v = T::SimdVector::from_slice(&data[i..]);
-			sum = v.mul_add(v, sum);
+		let zero = T::SimdVector::splat(T::zero());
+		let mut sum0 = zero;
+		let mut sum1 = zero;
+		let mut sum2 = zero;
+		let mut sum3 = zero;
+
+		let mut i = 0;
+		while i < block_end {
+			let v0 = T::SimdVector::from_slice(&data[i..]);
+			sum0 = v0.mul_add(v0, sum0);
+			let v1 = T::SimdVector::from_slice(&data[i + simd_width..]);
+			sum1 = v1.mul_add(v1, sum1);
+			let v2 = T::SimdVector::from_slice(&data[i + simd_width * 2..]);
+			sum2 = v2.mul_add(v2, sum2);
+			let v3 = T::SimdVector::from_slice(&data[i + simd_width * 3..]);
+			sum3 = v3.mul_add(v3, sum3);
+			i += stride;
 		}
 
-		let mut result = sum.horizontal_sum();
+		while i < simd_end {
+			let v = T::SimdVector::from_slice(&data[i..]);
+			sum0 = v.mul_add(v, sum0);
+			i += simd_width;
+		}
 
-		// Scalar remainder
-		for i in simd_end..n {
-			result = result + data[i] * data[i];
+		let partial = sum0.add(sum2).add(sum1.add(sum3));
+		let mut result = partial.horizontal_sum();
+
+		for j in simd_end..n {
+			result = result + data[j] * data[j];
 		}
 
 		<T as num_traits::Float>::sqrt(result)

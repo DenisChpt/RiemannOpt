@@ -10,6 +10,7 @@ use riemannopt_core::optimizer::{Optimizer, StoppingCriterion};
 use riemannopt_optim::{Adam, AdamConfig};
 
 use super::base::{PyOptimizationResult, PyOptimizerBase};
+use crate::py_optimizers::generic::PyOptimizerGeneric;
 use crate::{
 	array_utils::{dmatrix_to_numpy, dvector_to_numpy, numpy_to_dmatrix, numpy_to_dvector},
 	error::to_py_err,
@@ -165,7 +166,7 @@ impl PyAdam {
 	pub fn optimize(
 		&mut self,
 		py: Python<'_>,
-		cost_function: PyRef<'_, PyCostFunction>,
+		cost_function: PyObject,
 		manifold: PyObject,
 		initial_point: PyObject,
 		max_iterations: usize,
@@ -174,12 +175,25 @@ impl PyAdam {
 		target_value: Option<f64>,
 		max_time: Option<f64>,
 	) -> PyResult<PyObject> {
-		// Use the generic dispatcher to route to the correct manifold implementation
+		// Try native cost functions first (pure Rust, no GIL overhead)
+		if let Some(result) = self.try_native_optimize(
+			py,
+			&cost_function,
+			&manifold,
+			&initial_point,
+			max_iterations,
+			gradient_tolerance,
+		)? {
+			return Ok(result);
+		}
+
+		// Fall back to Python callback cost function
 		use super::generic::optimize_dispatcher;
+		let py_cf = cost_function.extract::<PyRef<'_, PyCostFunction>>(py)?;
 		optimize_dispatcher(
 			self,
 			py,
-			cost_function,
+			py_cf,
 			manifold,
 			initial_point,
 			max_iterations,

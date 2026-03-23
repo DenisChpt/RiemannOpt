@@ -53,6 +53,15 @@ from ._riemannopt import manifolds, optimizers
 # Cost function utilities
 from ._riemannopt import CostFunction, create_cost_function
 
+# Native Rust cost functions (zero Python callback overhead)
+from ._riemannopt import (
+    RayleighQuotient,
+    TraceMinimization,
+    Brockett,
+    LogDetDivergence,
+    Quadratic,
+)
+
 # Callback system
 from ._riemannopt import CallbackInfo, CallbackManager
 
@@ -92,6 +101,12 @@ __all__ = [
     # Cost function
     "CostFunction",
     "create_cost_function",
+    # Native cost functions
+    "RayleighQuotient",
+    "TraceMinimization",
+    "Brockett",
+    "LogDetDivergence",
+    "Quadratic",
     # Callbacks
     "CallbackInfo",
     "CallbackManager",

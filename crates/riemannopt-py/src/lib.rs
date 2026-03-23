@@ -24,6 +24,7 @@ mod types;
 mod py_manifolds;
 mod callback_manager;
 mod callbacks;
+mod native_cost;
 mod py_cost;
 mod py_optimizers;
 
@@ -44,6 +45,7 @@ fn _riemannopt(m: &Bound<'_, PyModule>) -> PyResult<()> {
 	py_manifolds::register_module(m)?;
 	py_optimizers::register_module(m)?;
 	py_cost::register_module(m)?;
+	native_cost::register_module(m)?;
 
 	// Register callback classes
 	m.add_class::<callbacks::PyCallbackInfo>()?;

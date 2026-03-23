@@ -5,9 +5,7 @@
 
 use crate::compute::cpu::{
 	batch_ops::{BatchError, CacheFriendlyBatch},
-	get_dispatcher,
-	parallel_strategy::BlasThreadGuard,
-	ScalarDispatch, SimdBackend,
+	get_dispatcher, ScalarDispatch, SimdBackend,
 };
 use crate::simd::SimdOps;
 use crate::types::Scalar;
@@ -386,8 +384,10 @@ impl SimdParallelOps {
 
 	/// Parallel matrix-vector multiplication with SIMD.
 	///
-	/// Automatically suppresses BLAS-level threading to avoid
-	/// over-subscription when Rayon is driving the outer loop.
+	/// To avoid over-subscription when Rayon drives the outer loop, ensure
+	/// BLAS threads are configured to 1 at program startup via
+	/// [`configure_blas_threads(1)`](crate::compute::cpu::parallel_strategy::configure_blas_threads)
+	/// or by setting `OMP_NUM_THREADS=1` in the environment.
 	pub fn batch_gemv<T>(
 		matrices: &[DMatrix<T>],
 		vectors: &[DVector<T>],
@@ -400,7 +400,6 @@ impl SimdParallelOps {
 		assert_eq!(matrices.len(), vectors.len());
 
 		let dispatcher = get_dispatcher::<T>();
-		let _guard = BlasThreadGuard::single_threaded();
 
 		matrices
 			.par_iter()

@@ -1,6 +1,9 @@
 //! Tape-based arena for reverse-mode automatic differentiation.
 //!
-//! The [`Tape`] stores computation entries in a flat `Vec` (Wengert list).
+//! The [`Tape`] stores computation entries in a flat `Vec` (Wengert list)
+//! with all forward-pass values kept in a single contiguous arena.  This
+//! avoids per-node heap allocations and improves cache locality.
+//!
 //! Entries are appended during the forward pass in topological order, so the
 //! backward pass is a simple reverse iteration — no graph traversal required.
 
@@ -72,11 +75,16 @@ pub enum OpCode {
 // ---------------------------------------------------------------------------
 
 /// A single recorded computation.
+///
+/// Forward-pass values are stored in the [`Tape`]'s contiguous arena;
+/// this entry only stores an offset and length into that arena.
 #[derive(Debug)]
 pub struct TapeEntry {
 	pub op: OpCode,
-	/// Forward-pass value stored as a flat column-major buffer.
-	pub value: Vec<f64>,
+	/// Start offset into [`Tape::arena`].
+	pub value_offset: u32,
+	/// Number of `f64` elements for this node's value.
+	pub value_len: u32,
 	/// `(rows, cols)`.  Scalars are `(1, 1)`, column vectors `(n, 1)`.
 	pub shape: (usize, usize),
 	/// Propagate gradients through this node?
@@ -87,12 +95,15 @@ pub struct TapeEntry {
 // Tape
 // ---------------------------------------------------------------------------
 
-/// The Wengert list (tape).
+/// The Wengert list (tape) with arena-based value storage.
 ///
 /// All entries are in topological order by construction: each entry only
-/// references earlier entries.
+/// references earlier entries.  All forward-pass values live in a single
+/// contiguous `Vec<f64>` arena — no per-node heap allocation.
 pub struct Tape {
 	pub(crate) entries: Vec<TapeEntry>,
+	/// Contiguous storage for all forward-pass values.
+	pub(crate) arena: Vec<f64>,
 }
 
 impl Tape {
@@ -100,7 +111,14 @@ impl Tape {
 	pub fn new() -> Self {
 		Self {
 			entries: Vec::with_capacity(256),
+			arena: Vec::with_capacity(4096),
 		}
+	}
+
+	/// Reset the tape for reuse, keeping allocated memory.
+	pub fn clear(&mut self) {
+		self.entries.clear();
+		self.arena.clear();
 	}
 
 	/// Number of entries.
@@ -115,25 +133,54 @@ impl Tape {
 		self.entries.is_empty()
 	}
 
-	/// Append an entry, returning its index.
+	/// Total number of `f64` values stored in the arena.
 	#[inline]
-	pub(crate) fn push(&mut self, entry: TapeEntry) -> NodeIdx {
+	pub fn arena_len(&self) -> usize {
+		self.arena.len()
+	}
+
+	/// Append an entry whose value is stored in the arena.
+	#[inline]
+	pub(crate) fn push(
+		&mut self,
+		op: OpCode,
+		value: &[f64],
+		shape: (usize, usize),
+		requires_grad: bool,
+	) -> NodeIdx {
+		let offset = self.arena.len();
+		self.arena.extend_from_slice(value);
 		let idx = NodeIdx(self.entries.len() as u32);
-		self.entries.push(entry);
+		self.entries.push(TapeEntry {
+			op,
+			value_offset: offset as u32,
+			value_len: value.len() as u32,
+			shape,
+			requires_grad,
+		});
 		idx
 	}
 
 	/// Read the value stored at `idx`.
 	#[inline]
 	pub fn value(&self, idx: NodeIdx) -> &[f64] {
-		&self.entries[idx.0 as usize].value
+		let e = &self.entries[idx.0 as usize];
+		&self.arena[e.value_offset as usize..(e.value_offset + e.value_len) as usize]
+	}
+
+	/// Read the forward-pass value for a given entry index (not `NodeIdx`).
+	#[inline]
+	pub(crate) fn entry_value(&self, entry_idx: usize) -> &[f64] {
+		let e = &self.entries[entry_idx];
+		&self.arena[e.value_offset as usize..(e.value_offset + e.value_len) as usize]
 	}
 
 	/// Read the scalar value stored at `idx` (panics if not `(1,1)`).
 	#[inline]
 	pub fn scalar(&self, idx: NodeIdx) -> f64 {
-		debug_assert_eq!(self.entries[idx.0 as usize].shape, (1, 1));
-		self.entries[idx.0 as usize].value[0]
+		let e = &self.entries[idx.0 as usize];
+		debug_assert_eq!(e.shape, (1, 1));
+		self.arena[e.value_offset as usize]
 	}
 
 	/// Shape of the value at `idx`.
@@ -177,7 +224,7 @@ impl TapeGuard {
 	/// Panics if another tape is already active on this thread.
 	pub fn new(tape: &mut Tape) -> Self {
 		let prev = ACTIVE_TAPE.with(|cell| {
-			let prev = cell.borrow().clone();
+			let prev = *cell.borrow();
 			*cell.borrow_mut() = Some(tape as *mut Tape);
 			prev
 		});

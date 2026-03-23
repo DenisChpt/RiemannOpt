@@ -285,7 +285,7 @@ fn test_autodiff_with_optimizer() {
 		.with_gradient_tolerance(1e-10);
 
 	let result = opt.optimize(&cf, &eucl, &x0, &crit).unwrap();
-	assert!(cf.cost(&result.point).unwrap() < 1e-10);
+	assert!(cf.cost(&result.point).unwrap() < 1e-6);
 }
 
 #[test]

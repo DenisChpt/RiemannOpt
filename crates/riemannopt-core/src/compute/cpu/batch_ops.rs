@@ -7,7 +7,6 @@
 use crate::types::Scalar;
 use nalgebra::{DMatrix, DVector, DVectorView, DVectorViewMut};
 use rayon::prelude::*;
-use std::fmt;
 
 /// Cache line size in bytes (typical for modern CPUs)
 const CACHE_LINE_SIZE: usize = 64;
@@ -166,9 +165,10 @@ impl<'a, T: Scalar> BatchDataMut<'a, T> {
 }
 
 /// Error type for batch operations.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(thiserror::Error, Debug, Clone, PartialEq)]
 pub enum BatchError {
 	/// Input and output dimensions don't match
+	#[error("Dimension mismatch: input is {input_rows}x{input_cols}, output is {output_rows}x{output_cols}")]
 	DimensionMismatch {
 		input_rows: usize,
 		input_cols: usize,
@@ -176,42 +176,14 @@ pub enum BatchError {
 		output_cols: usize,
 	},
 	/// Points and tangents have different dimensions
+	#[error(
+		"Points and tangents must have same number of columns: {points_cols} vs {tangents_cols}"
+	)]
 	PointTangentMismatch {
 		points_cols: usize,
 		tangents_cols: usize,
 	},
 }
-
-impl fmt::Display for BatchError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			BatchError::DimensionMismatch {
-				input_rows,
-				input_cols,
-				output_rows,
-				output_cols,
-			} => {
-				write!(
-					f,
-					"Dimension mismatch: input is {}x{}, output is {}x{}",
-					input_rows, input_cols, output_rows, output_cols
-				)
-			}
-			BatchError::PointTangentMismatch {
-				points_cols,
-				tangents_cols,
-			} => {
-				write!(
-					f,
-					"Points and tangents must have same number of columns: {} vs {}",
-					points_cols, tangents_cols
-				)
-			}
-		}
-	}
-}
-
-impl std::error::Error for BatchError {}
 
 /// High-performance parallel batch operations with zero allocations.
 pub struct CacheFriendlyBatch;

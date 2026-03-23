@@ -707,9 +707,28 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 	) -> Result<()> {
 		match self.metric {
 			SPDMetric::AffineInvariant => {
-				// Use exact exponential map
-				let exp_result = self.exp_map(point, tangent)?;
-				result.copy_from(&exp_result);
+				// Second-order retraction (manopt/pymanopt default):
+				// R_P(V) = sym(P + V + 0.5 * V * P^{-1} * V)
+				//
+				// This avoids the expensive eigendecomposition of exp_map
+				// and uses a single linear solve P\V instead.
+				let n = self.n;
+				let p_inv_v = point
+					.clone()
+					.cholesky()
+					.map(|chol| chol.solve(tangent))
+					.unwrap_or_else(|| {
+						// Fallback: use pseudoinverse if Cholesky fails
+						point
+							.clone()
+							.try_inverse()
+							.unwrap_or_else(|| DMatrix::identity(n, n))
+							* tangent
+					});
+				let half = <T as Scalar>::from_f64(0.5);
+				let raw = point + tangent + tangent * &p_inv_v * half;
+				// Symmetrize for numerical stability
+				result.copy_from(&((&raw + raw.transpose()) * half));
 				Ok(())
 			}
 			_ => {
@@ -774,14 +793,16 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 
 	fn parallel_transport(
 		&self,
-		from: &Self::Point,
+		_from: &Self::Point,
 		to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		let transported = self.parallel_transport(from, to, vector)?;
-		result.copy_from(&transported);
-		Ok(())
+		// Use identity transport (vector transport by projection) like
+		// manopt/pymanopt.  The true parallel transport via matrix square
+		// roots is expensive and numerically fragile for large n.
+		// Re-project to tangent space at the destination to ensure symmetry.
+		self.project_tangent(to, vector, result)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
