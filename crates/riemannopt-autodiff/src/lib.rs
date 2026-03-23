@@ -42,12 +42,12 @@
 //! // `cost_fn` implements `CostFunction<f64>` — pass it to any optimizer.
 //! ```
 
-pub mod tape;
-pub mod var;
 pub mod backward;
 pub mod cost_function;
+pub mod tape;
+pub mod var;
 
-pub use tape::{Tape, TapeGuard, NodeIdx, OpCode, TapeEntry};
-pub use var::Var;
-pub use backward::{backward, Gradients, check_gradient};
+pub use backward::{backward, check_gradient, Gradients};
 pub use cost_function::{AutoDiffCostFunction, AutoDiffMatCostFunction};
+pub use tape::{NodeIdx, OpCode, Tape, TapeEntry, TapeGuard};
+pub use var::Var;

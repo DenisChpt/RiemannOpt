@@ -4,11 +4,8 @@
 //! as matrices (e.g., Stiefel, Grassmann, SPD manifolds). It acts as a marker trait
 //! to indicate that a manifold uses DMatrix as its Point type.
 
+use crate::{manifold::Manifold, types::Scalar};
 use nalgebra::DMatrix;
-use crate::{
-    manifold::Manifold,
-    types::Scalar,
-};
 
 /// Trait for manifolds whose elements are naturally represented as matrices.
 ///
@@ -31,13 +28,13 @@ use crate::{
 ///     p: usize,
 ///     _marker: PhantomData<T>,
 /// }
-/// 
+///
 /// impl<T: Scalar> Manifold<T> for Stiefel<T> {
 ///     type Point = DMatrix<T>;
 ///     type TangentVector = DMatrix<T>;
 ///     // ... implement required methods ...
 /// }
-/// 
+///
 /// impl<T: Scalar> MatrixManifold<T> for Stiefel<T> {
 ///     fn matrix_dims(&self) -> (usize, usize) {
 ///         (self.n, self.p)
@@ -45,8 +42,8 @@ use crate::{
 /// }
 /// ```
 pub trait MatrixManifold<T: Scalar>: Manifold<T, Point = DMatrix<T>> {
-    /// Get the dimensions of the matrix representation (rows, columns).
-    fn matrix_dims(&self) -> (usize, usize);
-    // Add other matrix-specific methods here if they are REALLY specific
-    // to matrices and not generalizable in the Manifold trait.
+	/// Get the dimensions of the matrix representation (rows, columns).
+	fn matrix_dims(&self) -> (usize, usize);
+	// Add other matrix-specific methods here if they are REALLY specific
+	// to matrices and not generalizable in the Manifold trait.
 }

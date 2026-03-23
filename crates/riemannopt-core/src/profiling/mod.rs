@@ -3,12 +3,12 @@
 //! This module provides tools for monitoring and optimizing the performance
 //! of Riemannian optimization algorithms.
 
-pub mod metrics;
 pub mod auto_tuner;
+pub mod metrics;
 
 // Re-export commonly used types
+pub use auto_tuner::{AutoTunable, AutoTuner, TunableParameter, TuningResult};
 pub use metrics::{
-    PerformanceCollector, MetricType, MetricsSummary, 
-    InMemoryCollector, AtomicCollector, TimerGuard,
+	AtomicCollector, InMemoryCollector, MetricType, MetricsSummary, PerformanceCollector,
+	TimerGuard,
 };
-pub use auto_tuner::{AutoTuner, AutoTunable, TunableParameter, TuningResult};

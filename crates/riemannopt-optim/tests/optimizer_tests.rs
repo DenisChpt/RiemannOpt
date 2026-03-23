@@ -9,10 +9,10 @@
 
 use nalgebra::{DMatrix, DVector, Dyn};
 use riemannopt_core::{
-    core::cost_function::{CostFunction, QuadraticCost},
-    error::Result as ManifoldResult,
-    memory::workspace::Workspace,
-    optimization::optimizer::{Optimizer, StoppingCriterion},
+	core::cost_function::{CostFunction, QuadraticCost},
+	error::Result as ManifoldResult,
+	memory::workspace::Workspace,
+	optimization::optimizer::{Optimizer, StoppingCriterion},
 };
 use riemannopt_manifolds::{Euclidean, Sphere};
 use riemannopt_optim::*;
@@ -24,71 +24,68 @@ use riemannopt_optim::*;
 
 #[derive(Debug, Clone)]
 struct RayleighQuotient {
-    a: DMatrix<f64>,
+	a: DMatrix<f64>,
 }
 
 impl RayleighQuotient {
-    /// Create a diagonal SPD matrix with eigenvalues 1, 2, ..., n.
-    /// The minimum on the sphere is e_1 with cost = 1.
-    fn diagonal(n: usize) -> Self {
-        let mut a = DMatrix::zeros(n, n);
-        for i in 0..n {
-            a[(i, i)] = (i + 1) as f64;
-        }
-        Self { a }
-    }
+	/// Create a diagonal SPD matrix with eigenvalues 1, 2, ..., n.
+	/// The minimum on the sphere is e_1 with cost = 1.
+	fn diagonal(n: usize) -> Self {
+		let mut a = DMatrix::zeros(n, n);
+		for i in 0..n {
+			a[(i, i)] = (i + 1) as f64;
+		}
+		Self { a }
+	}
 }
 
 impl CostFunction<f64> for RayleighQuotient {
-    type Point = DVector<f64>;
-    type TangentVector = DVector<f64>;
+	type Point = DVector<f64>;
+	type TangentVector = DVector<f64>;
 
-    fn cost(&self, point: &DVector<f64>) -> ManifoldResult<f64> {
-        let ax = &self.a * point;
-        Ok(point.dot(&ax))
-    }
+	fn cost(&self, point: &DVector<f64>) -> ManifoldResult<f64> {
+		let ax = &self.a * point;
+		Ok(point.dot(&ax))
+	}
 
-    fn cost_and_gradient_alloc(
-        &self,
-        point: &DVector<f64>,
-    ) -> ManifoldResult<(f64, DVector<f64>)> {
-        let ax = &self.a * point;
-        let cost = point.dot(&ax);
-        let gradient = &ax * 2.0;
-        Ok((cost, gradient))
-    }
+	fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> ManifoldResult<(f64, DVector<f64>)> {
+		let ax = &self.a * point;
+		let cost = point.dot(&ax);
+		let gradient = &ax * 2.0;
+		Ok((cost, gradient))
+	}
 
-    fn cost_and_gradient(
-        &self,
-        point: &DVector<f64>,
-        _workspace: &mut Workspace<f64>,
-        gradient: &mut DVector<f64>,
-    ) -> ManifoldResult<f64> {
-        let ax = &self.a * point;
-        let cost = point.dot(&ax);
-        *gradient = &ax * 2.0;
-        Ok(cost)
-    }
+	fn cost_and_gradient(
+		&self,
+		point: &DVector<f64>,
+		_workspace: &mut Workspace<f64>,
+		gradient: &mut DVector<f64>,
+	) -> ManifoldResult<f64> {
+		let ax = &self.a * point;
+		let cost = point.dot(&ax);
+		*gradient = &ax * 2.0;
+		Ok(cost)
+	}
 
-    fn gradient(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
-        Ok(&self.a * point * 2.0)
-    }
+	fn gradient(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
+		Ok(&self.a * point * 2.0)
+	}
 
-    fn hessian(&self, _point: &DVector<f64>) -> ManifoldResult<DMatrix<f64>> {
-        Ok(&self.a * 2.0)
-    }
+	fn hessian(&self, _point: &DVector<f64>) -> ManifoldResult<DMatrix<f64>> {
+		Ok(&self.a * 2.0)
+	}
 
-    fn hessian_vector_product(
-        &self,
-        _point: &DVector<f64>,
-        vector: &DVector<f64>,
-    ) -> ManifoldResult<DVector<f64>> {
-        Ok(&self.a * vector * 2.0)
-    }
+	fn hessian_vector_product(
+		&self,
+		_point: &DVector<f64>,
+		vector: &DVector<f64>,
+	) -> ManifoldResult<DVector<f64>> {
+		Ok(&self.a * vector * 2.0)
+	}
 
-    fn gradient_fd_alloc(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
-        self.gradient(point)
-    }
+	fn gradient_fd_alloc(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
+		self.gradient(point)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -97,21 +94,21 @@ impl CostFunction<f64> for RayleighQuotient {
 
 /// Create a starting point on the sphere that is not aligned with any eigenvector.
 fn initial_point_on_sphere(n: usize) -> DVector<f64> {
-    let mut x = DVector::from_element(n, 1.0 / (n as f64).sqrt());
-    x[0] += 0.1;
-    x /= x.norm();
-    x
+	let mut x = DVector::from_element(n, 1.0 / (n as f64).sqrt());
+	x[0] += 0.1;
+	x /= x.norm();
+	x
 }
 
 /// Verify the result point lies on the sphere.
 fn assert_on_sphere(point: &DVector<f64>, tol: f64) {
-    let norm = point.norm();
-    assert!(
-        (norm - 1.0).abs() < tol,
-        "Point norm {} deviates from 1.0 by {}",
-        norm,
-        (norm - 1.0).abs()
-    );
+	let norm = point.norm();
+	assert!(
+		(norm - 1.0).abs() < tol,
+		"Point norm {} deviates from 1.0 by {}",
+		norm,
+		(norm - 1.0).abs()
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,106 +117,112 @@ fn assert_on_sphere(point: &DVector<f64>, tol: f64) {
 
 #[test]
 fn test_sgd_convergence_on_sphere() {
-    let n = 5;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = SGDConfig::new().with_constant_step_size(0.01);
-    let mut optimizer = SGD::new(config);
+	let config = SGDConfig::new().with_constant_step_size(0.01);
+	let mut optimizer = SGD::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(300)
-        .with_gradient_tolerance(1e-4);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(300)
+		.with_gradient_tolerance(1e-4);
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
 
-    // Compute actual cost at the returned point (result.value may lag by one step)
-    let final_cost = cost_fn.cost(&result.point).unwrap();
-    assert!(
-        final_cost < initial_cost,
-        "SGD did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert_on_sphere(&result.point, 1e-10);
+	// Compute actual cost at the returned point (result.value may lag by one step)
+	let final_cost = cost_fn.cost(&result.point).unwrap();
+	assert!(
+		final_cost < initial_cost,
+		"SGD did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert_on_sphere(&result.point, 1e-10);
 }
 
 #[test]
 fn test_sgd_with_momentum_convergence() {
-    let n = 5;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = SGDConfig::new()
-        .with_constant_step_size(0.01)
-        .with_classical_momentum(0.9);
-    let mut optimizer = SGD::new(config);
+	let config = SGDConfig::new()
+		.with_constant_step_size(0.01)
+		.with_classical_momentum(0.9);
+	let mut optimizer = SGD::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(300)
-        .with_gradient_tolerance(1e-4);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(300)
+		.with_gradient_tolerance(1e-4);
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "SGD with momentum did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert_on_sphere(&result.point, 1e-10);
+	assert!(
+		final_cost < initial_cost,
+		"SGD with momentum did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert_on_sphere(&result.point, 1e-10);
 }
 
 #[test]
 fn test_sgd_with_nesterov_momentum() {
-    let n = 5;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = SGDConfig::new()
-        .with_constant_step_size(0.01)
-        .with_nesterov_momentum(0.9);
-    let mut optimizer = SGD::new(config);
+	let config = SGDConfig::new()
+		.with_constant_step_size(0.01)
+		.with_nesterov_momentum(0.9);
+	let mut optimizer = SGD::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(300)
-        .with_gradient_tolerance(1e-4);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(300)
+		.with_gradient_tolerance(1e-4);
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "SGD with Nesterov did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert_on_sphere(&result.point, 1e-10);
+	assert!(
+		final_cost < initial_cost,
+		"SGD with Nesterov did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert_on_sphere(&result.point, 1e-10);
 }
 
 #[test]
 fn test_sgd_config_parameters() {
-    let config = SGDConfig::<f64>::new()
-        .with_constant_step_size(0.05)
-        .with_classical_momentum(0.8)
-        .with_gradient_clip(5.0);
+	let config = SGDConfig::<f64>::new()
+		.with_constant_step_size(0.05)
+		.with_classical_momentum(0.8)
+		.with_gradient_clip(5.0);
 
-    assert!(matches!(
-        config.step_size,
-        StepSizeSchedule::Constant(v) if (v - 0.05).abs() < 1e-15
-    ));
-    assert!(matches!(
-        config.momentum,
-        MomentumMethod::Classical { coefficient } if (coefficient - 0.8).abs() < 1e-15
-    ));
-    assert_eq!(config.gradient_clip, Some(5.0));
+	assert!(matches!(
+		config.step_size,
+		StepSizeSchedule::Constant(v) if (v - 0.05).abs() < 1e-15
+	));
+	assert!(matches!(
+		config.momentum,
+		MomentumMethod::Classical { coefficient } if (coefficient - 0.8).abs() < 1e-15
+	));
+	assert_eq!(config.gradient_clip, Some(5.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -228,72 +231,74 @@ fn test_sgd_config_parameters() {
 
 #[test]
 fn test_adam_convergence_on_sphere() {
-    let n = 5;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = AdamConfig::new().with_learning_rate(0.01);
-    let mut optimizer = Adam::new(config);
+	let config = AdamConfig::new().with_learning_rate(0.01);
+	let mut optimizer = Adam::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(300)
-        .with_gradient_tolerance(1e-4);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(300)
+		.with_gradient_tolerance(1e-4);
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "Adam did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert_on_sphere(&result.point, 1e-10);
+	assert!(
+		final_cost < initial_cost,
+		"Adam did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert_on_sphere(&result.point, 1e-10);
 }
 
 #[test]
 fn test_adam_amsgrad_convergence() {
-    let n = 5;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = AdamConfig::new()
-        .with_learning_rate(0.01)
-        .with_amsgrad();
-    let mut optimizer = Adam::new(config);
+	let config = AdamConfig::new().with_learning_rate(0.01).with_amsgrad();
+	let mut optimizer = Adam::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(300)
-        .with_gradient_tolerance(1e-4);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(300)
+		.with_gradient_tolerance(1e-4);
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "Adam AMSGrad did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert_on_sphere(&result.point, 1e-10);
+	assert!(
+		final_cost < initial_cost,
+		"Adam AMSGrad did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert_on_sphere(&result.point, 1e-10);
 }
 
 #[test]
 fn test_adam_config_parameters() {
-    let config = AdamConfig::<f64>::new()
-        .with_learning_rate(0.002)
-        .with_beta1(0.85)
-        .with_beta2(0.995)
-        .with_epsilon(1e-7);
+	let config = AdamConfig::<f64>::new()
+		.with_learning_rate(0.002)
+		.with_beta1(0.85)
+		.with_beta2(0.995)
+		.with_epsilon(1e-7);
 
-    assert!((config.learning_rate - 0.002).abs() < 1e-15);
-    assert!((config.beta1 - 0.85).abs() < 1e-15);
-    assert!((config.beta2 - 0.995).abs() < 1e-15);
-    assert!((config.epsilon - 1e-7).abs() < 1e-20);
+	assert!((config.learning_rate - 0.002).abs() < 1e-15);
+	assert!((config.beta1 - 0.85).abs() < 1e-15);
+	assert!((config.beta2 - 0.995).abs() < 1e-15);
+	assert!((config.epsilon - 1e-7).abs() < 1e-20);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,120 +309,144 @@ fn test_adam_config_parameters() {
 
 #[test]
 fn test_cg_fletcher_reeves_convergence() {
-    let n = 5;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = CGConfig::new().with_method(ConjugateGradientMethod::FletcherReeves);
-    let mut optimizer = ConjugateGradient::new(config);
+	let config = CGConfig::new().with_method(ConjugateGradientMethod::FletcherReeves);
+	let mut optimizer = ConjugateGradient::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-6);
 
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "CG Fletcher-Reeves did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert!(final_cost < 1e-6, "CG FR did not converge: cost={}", final_cost);
+	assert!(
+		final_cost < initial_cost,
+		"CG Fletcher-Reeves did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert!(
+		final_cost < 1e-6,
+		"CG FR did not converge: cost={}",
+		final_cost
+	);
 }
 
 #[test]
 fn test_cg_polak_ribiere_convergence() {
-    let n = 5;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = CGConfig::new().with_method(ConjugateGradientMethod::PolakRibiere);
-    let mut optimizer = ConjugateGradient::new(config);
+	let config = CGConfig::new().with_method(ConjugateGradientMethod::PolakRibiere);
+	let mut optimizer = ConjugateGradient::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-6);
 
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "CG Polak-Ribiere did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert!(final_cost < 1e-6, "CG PR did not converge: cost={}", final_cost);
+	assert!(
+		final_cost < initial_cost,
+		"CG Polak-Ribiere did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert!(
+		final_cost < 1e-6,
+		"CG PR did not converge: cost={}",
+		final_cost
+	);
 }
 
 #[test]
 fn test_cg_dai_yuan_convergence() {
-    let n = 5;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = CGConfig::new().with_method(ConjugateGradientMethod::DaiYuan);
-    let mut optimizer = ConjugateGradient::new(config);
+	let config = CGConfig::new().with_method(ConjugateGradientMethod::DaiYuan);
+	let mut optimizer = ConjugateGradient::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-6);
 
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "CG Dai-Yuan did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert!(final_cost < 1e-6, "CG DY did not converge: cost={}", final_cost);
+	assert!(
+		final_cost < initial_cost,
+		"CG Dai-Yuan did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert!(
+		final_cost < 1e-6,
+		"CG DY did not converge: cost={}",
+		final_cost
+	);
 }
 
 #[test]
 fn test_cg_hestenes_stiefel_convergence() {
-    let n = 5;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 5;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = CGConfig::new().with_method(ConjugateGradientMethod::HestenesStiefel);
-    let mut optimizer = ConjugateGradient::new(config);
+	let config = CGConfig::new().with_method(ConjugateGradientMethod::HestenesStiefel);
+	let mut optimizer = ConjugateGradient::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-6);
 
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "CG Hestenes-Stiefel did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert!(final_cost < 1e-6, "CG HS did not converge: cost={}", final_cost);
+	assert!(
+		final_cost < initial_cost,
+		"CG Hestenes-Stiefel did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert!(
+		final_cost < 1e-6,
+		"CG HS did not converge: cost={}",
+		final_cost
+	);
 }
 
 #[test]
 fn test_cg_config_parameters() {
-    let config = CGConfig::<f64>::new()
-        .with_method(ConjugateGradientMethod::FletcherReeves)
-        .with_restart_period(20);
+	let config = CGConfig::<f64>::new()
+		.with_method(ConjugateGradientMethod::FletcherReeves)
+		.with_restart_period(20);
 
-    assert_eq!(config.method, ConjugateGradientMethod::FletcherReeves);
-    assert_eq!(config.restart_period, 20);
+	assert_eq!(config.method, ConjugateGradientMethod::FletcherReeves);
+	assert_eq!(config.restart_period, 20);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,77 +455,81 @@ fn test_cg_config_parameters() {
 
 #[test]
 fn test_natural_gradient_convergence_on_sphere() {
-    let n = 4;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 4;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = NaturalGradientConfig::new()
-        .with_learning_rate(0.005)
-        .with_fisher_approximation(FisherApproximation::Identity)
-        .with_damping(0.001);
-    let mut optimizer = NaturalGradient::new(config);
+	let config = NaturalGradientConfig::new()
+		.with_learning_rate(0.005)
+		.with_fisher_approximation(FisherApproximation::Identity)
+		.with_damping(0.001);
+	let mut optimizer = NaturalGradient::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-3);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-3);
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "Natural Gradient did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert_on_sphere(&result.point, 1e-8);
+	assert!(
+		final_cost < initial_cost,
+		"Natural Gradient did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert_on_sphere(&result.point, 1e-8);
 }
 
 #[test]
 fn test_natural_gradient_diagonal_fisher() {
-    // Use Euclidean manifold to avoid very tight point-on-sphere tolerance
-    // that can be exceeded by accumulated floating point drift
-    let n = 4;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5]);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	// Use Euclidean manifold to avoid very tight point-on-sphere tolerance
+	// that can be exceeded by accumulated floating point drift
+	let n = 4;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5]);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let config = NaturalGradientConfig::new()
-        .with_learning_rate(0.01)
-        .with_fisher_approximation(FisherApproximation::Diagonal)
-        .with_damping(0.01);
-    let mut optimizer = NaturalGradient::new(config);
+	let config = NaturalGradientConfig::new()
+		.with_learning_rate(0.01)
+		.with_fisher_approximation(FisherApproximation::Diagonal)
+		.with_damping(0.01);
+	let mut optimizer = NaturalGradient::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(500)
-        .with_gradient_tolerance(1e-4);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(500)
+		.with_gradient_tolerance(1e-4);
 
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "Natural Gradient (diagonal) did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
+	assert!(
+		final_cost < initial_cost,
+		"Natural Gradient (diagonal) did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
 }
 
 #[test]
 fn test_natural_gradient_config_parameters() {
-    let config = NaturalGradientConfig::<f64>::new()
-        .with_learning_rate(0.05)
-        .with_fisher_approximation(FisherApproximation::Diagonal)
-        .with_damping(0.01)
-        .with_fisher_update_freq(5);
+	let config = NaturalGradientConfig::<f64>::new()
+		.with_learning_rate(0.05)
+		.with_fisher_approximation(FisherApproximation::Diagonal)
+		.with_damping(0.01)
+		.with_fisher_update_freq(5);
 
-    assert!((config.learning_rate - 0.05).abs() < 1e-15);
-    assert_eq!(config.fisher_approximation, FisherApproximation::Diagonal);
-    assert!((config.damping - 0.01).abs() < 1e-15);
-    assert_eq!(config.fisher_update_freq, 5);
+	assert!((config.learning_rate - 0.05).abs() < 1e-15);
+	assert_eq!(config.fisher_approximation, FisherApproximation::Diagonal);
+	assert!((config.damping - 0.01).abs() < 1e-15);
+	assert_eq!(config.fisher_update_freq, 5);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,36 +538,42 @@ fn test_natural_gradient_config_parameters() {
 
 #[test]
 fn test_lbfgs_convergence_on_euclidean() {
-    let n = 5;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let n = 5;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
 
-    let config = LBFGSConfig::new().with_memory_size(5);
-    let mut optimizer = LBFGS::new(config);
+	let config = LBFGSConfig::new().with_memory_size(5);
+	let mut optimizer = LBFGS::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(100)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(100)
+		.with_gradient_tolerance(1e-6);
 
-    let initial_cost = cost_fn.cost(&x0).unwrap();
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let initial_cost = cost_fn.cost(&x0).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "L-BFGS did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    // L-BFGS should converge close to the origin for f(x)=0.5*||x||^2
-    assert!(final_cost < 1e-6, "L-BFGS did not converge: cost={}", final_cost);
+	assert!(
+		final_cost < initial_cost,
+		"L-BFGS did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	// L-BFGS should converge close to the origin for f(x)=0.5*||x||^2
+	assert!(
+		final_cost < 1e-6,
+		"L-BFGS did not converge: cost={}",
+		final_cost
+	);
 }
 
 #[test]
 fn test_lbfgs_config_parameters() {
-    let config = LBFGSConfig::<f64>::new().with_memory_size(20);
-    assert_eq!(config.memory_size, 20);
+	let config = LBFGSConfig::<f64>::new().with_memory_size(20);
+	assert_eq!(config.memory_size, 20);
 }
 
 // ---------------------------------------------------------------------------
@@ -543,45 +582,51 @@ fn test_lbfgs_config_parameters() {
 
 #[test]
 fn test_trust_region_convergence_on_euclidean() {
-    let n = 5;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let n = 5;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
 
-    let config = TrustRegionConfig::new()
-        .with_initial_radius(1.0)
-        .with_max_radius(10.0);
-    let mut optimizer = TrustRegion::new(config);
+	let config = TrustRegionConfig::new()
+		.with_initial_radius(1.0)
+		.with_max_radius(10.0);
+	let mut optimizer = TrustRegion::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(100)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(100)
+		.with_gradient_tolerance(1e-6);
 
-    let initial_cost = cost_fn.cost(&x0).unwrap();
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let initial_cost = cost_fn.cost(&x0).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "Trust Region did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    assert!(final_cost < 1e-6, "Trust Region did not converge: cost={}", final_cost);
+	assert!(
+		final_cost < initial_cost,
+		"Trust Region did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	assert!(
+		final_cost < 1e-6,
+		"Trust Region did not converge: cost={}",
+		final_cost
+	);
 }
 
 #[test]
 fn test_trust_region_config_parameters() {
-    let config = TrustRegionConfig::<f64>::new()
-        .with_initial_radius(0.5)
-        .with_max_radius(5.0)
-        .with_min_radius(1e-8)
-        .with_acceptance_ratio(0.15);
+	let config = TrustRegionConfig::<f64>::new()
+		.with_initial_radius(0.5)
+		.with_max_radius(5.0)
+		.with_min_radius(1e-8)
+		.with_acceptance_ratio(0.15);
 
-    assert!((config.initial_radius - 0.5).abs() < 1e-15);
-    assert!((config.max_radius - 5.0).abs() < 1e-15);
-    assert!((config.min_radius - 1e-8).abs() < 1e-20);
-    assert!((config.acceptance_ratio - 0.15).abs() < 1e-15);
+	assert!((config.initial_radius - 0.5).abs() < 1e-15);
+	assert!((config.max_radius - 5.0).abs() < 1e-15);
+	assert!((config.min_radius - 1e-8).abs() < 1e-20);
+	assert!((config.acceptance_ratio - 0.15).abs() < 1e-15);
 }
 
 // ---------------------------------------------------------------------------
@@ -590,41 +635,47 @@ fn test_trust_region_config_parameters() {
 
 #[test]
 fn test_newton_convergence_on_euclidean() {
-    let n = 3;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![1.0, 1.0, 1.0]);
+	let n = 3;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![1.0, 1.0, 1.0]);
 
-    let config = NewtonConfig::new().with_regularization(1e-6);
-    let mut optimizer = Newton::new(config);
+	let config = NewtonConfig::new().with_regularization(1e-6);
+	let mut optimizer = Newton::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(50)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(50)
+		.with_gradient_tolerance(1e-6);
 
-    let initial_cost = cost_fn.cost(&x0).unwrap();
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let initial_cost = cost_fn.cost(&x0).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < initial_cost,
-        "Newton did not reduce cost: initial={}, final={}",
-        initial_cost,
-        final_cost
-    );
-    // Newton should converge fast on a quadratic
-    assert!(result.iterations < 20, "Newton took too many iterations: {}", result.iterations);
+	assert!(
+		final_cost < initial_cost,
+		"Newton did not reduce cost: initial={}, final={}",
+		initial_cost,
+		final_cost
+	);
+	// Newton should converge fast on a quadratic
+	assert!(
+		result.iterations < 20,
+		"Newton took too many iterations: {}",
+		result.iterations
+	);
 }
 
 #[test]
 fn test_newton_config_parameters() {
-    let config = NewtonConfig::<f64>::new()
-        .with_regularization(1e-4)
-        .with_cg_params(50, 1e-8);
+	let config = NewtonConfig::<f64>::new()
+		.with_regularization(1e-4)
+		.with_cg_params(50, 1e-8);
 
-    assert!((config.hessian_regularization - 1e-4).abs() < 1e-15);
-    assert_eq!(config.max_cg_iterations, 50);
-    assert!((config.cg_tolerance - 1e-8).abs() < 1e-20);
+	assert!((config.hessian_regularization - 1e-4).abs() < 1e-15);
+	assert_eq!(config.max_cg_iterations, 50);
+	assert!((config.cg_tolerance - 1e-8).abs() < 1e-20);
 }
 
 // ---------------------------------------------------------------------------
@@ -633,40 +684,43 @@ fn test_newton_config_parameters() {
 
 #[test]
 fn test_first_order_optimizers_all_reduce_cost_on_sphere() {
-    let n = 4;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 4;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-3);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-3);
 
-    // SGD
-    let mut sgd = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
-    let sgd_result = sgd.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let sgd_cost = cost_fn.cost(&sgd_result.point).unwrap();
-    assert!(sgd_cost < initial_cost, "SGD failed to reduce cost");
-    assert_on_sphere(&sgd_result.point, 1e-10);
+	// SGD
+	let mut sgd = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
+	let sgd_result = sgd.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
+	let sgd_cost = cost_fn.cost(&sgd_result.point).unwrap();
+	assert!(sgd_cost < initial_cost, "SGD failed to reduce cost");
+	assert_on_sphere(&sgd_result.point, 1e-10);
 
-    // Adam
-    let mut adam = Adam::new(AdamConfig::new().with_learning_rate(0.01));
-    let adam_result = adam.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let adam_cost = cost_fn.cost(&adam_result.point).unwrap();
-    assert!(adam_cost < initial_cost, "Adam failed to reduce cost");
-    assert_on_sphere(&adam_result.point, 1e-10);
+	// Adam
+	let mut adam = Adam::new(AdamConfig::new().with_learning_rate(0.01));
+	let adam_result = adam.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
+	let adam_cost = cost_fn.cost(&adam_result.point).unwrap();
+	assert!(adam_cost < initial_cost, "Adam failed to reduce cost");
+	assert_on_sphere(&adam_result.point, 1e-10);
 
-    // Natural Gradient
-    let mut ng = NaturalGradient::new(
-        NaturalGradientConfig::new()
-            .with_learning_rate(0.005)
-            .with_fisher_approximation(FisherApproximation::Identity),
-    );
-    let ng_result = ng.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
-    let ng_cost = cost_fn.cost(&ng_result.point).unwrap();
-    assert!(ng_cost < initial_cost, "Natural Gradient failed to reduce cost");
-    assert_on_sphere(&ng_result.point, 1e-8);
+	// Natural Gradient
+	let mut ng = NaturalGradient::new(
+		NaturalGradientConfig::new()
+			.with_learning_rate(0.005)
+			.with_fisher_approximation(FisherApproximation::Identity),
+	);
+	let ng_result = ng.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
+	let ng_cost = cost_fn.cost(&ng_result.point).unwrap();
+	assert!(
+		ng_cost < initial_cost,
+		"Natural Gradient failed to reduce cost"
+	);
+	assert_on_sphere(&ng_result.point, 1e-8);
 }
 
 // ---------------------------------------------------------------------------
@@ -675,36 +729,40 @@ fn test_first_order_optimizers_all_reduce_cost_on_sphere() {
 
 #[test]
 fn test_second_order_optimizers_converge_on_euclidean() {
-    let n = 4;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![2.0, -1.0, 0.5, 1.5]);
-    let initial_cost = cost_fn.cost(&x0).unwrap();
+	let n = 4;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![2.0, -1.0, 0.5, 1.5]);
+	let initial_cost = cost_fn.cost(&x0).unwrap();
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-6);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-6);
 
-    // Newton
-    let mut newton = Newton::new(NewtonConfig::new().with_regularization(1e-6));
-    let newton_result = newton.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let newton_cost = cost_fn.cost(&newton_result.point).unwrap();
-    assert!(newton_cost < initial_cost, "Newton failed to reduce cost");
-    assert!(newton_cost < 1e-6, "Newton did not converge to minimum");
+	// Newton
+	let mut newton = Newton::new(NewtonConfig::new().with_regularization(1e-6));
+	let newton_result = newton
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let newton_cost = cost_fn.cost(&newton_result.point).unwrap();
+	assert!(newton_cost < initial_cost, "Newton failed to reduce cost");
+	assert!(newton_cost < 1e-6, "Newton did not converge to minimum");
 
-    // Trust Region
-    let mut tr = TrustRegion::new(TrustRegionConfig::new());
-    let tr_result = tr.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let tr_cost = cost_fn.cost(&tr_result.point).unwrap();
-    assert!(tr_cost < initial_cost, "Trust Region failed to reduce cost");
-    assert!(tr_cost < 1e-6, "Trust Region did not converge to minimum");
+	// Trust Region
+	let mut tr = TrustRegion::new(TrustRegionConfig::new());
+	let tr_result = tr.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
+	let tr_cost = cost_fn.cost(&tr_result.point).unwrap();
+	assert!(tr_cost < initial_cost, "Trust Region failed to reduce cost");
+	assert!(tr_cost < 1e-6, "Trust Region did not converge to minimum");
 
-    // L-BFGS
-    let mut lbfgs = LBFGS::new(LBFGSConfig::new());
-    let lbfgs_result = lbfgs.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let lbfgs_cost = cost_fn.cost(&lbfgs_result.point).unwrap();
-    assert!(lbfgs_cost < initial_cost, "L-BFGS failed to reduce cost");
-    assert!(lbfgs_cost < 1e-6, "L-BFGS did not converge to minimum");
+	// L-BFGS
+	let mut lbfgs = LBFGS::new(LBFGSConfig::new());
+	let lbfgs_result = lbfgs
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let lbfgs_cost = cost_fn.cost(&lbfgs_result.point).unwrap();
+	assert!(lbfgs_cost < initial_cost, "L-BFGS failed to reduce cost");
+	assert!(lbfgs_cost < 1e-6, "L-BFGS did not converge to minimum");
 }
 
 // ---------------------------------------------------------------------------
@@ -713,24 +771,26 @@ fn test_second_order_optimizers_converge_on_euclidean() {
 
 #[test]
 fn test_optimization_result_metadata() {
-    let n = 4;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
+	let n = 4;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
 
-    let mut optimizer = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(50)
-        .with_gradient_tolerance(1e-15); // Very tight so all 50 iterations run
+	let mut optimizer = SGD::new(SGDConfig::new().with_constant_step_size(0.01));
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(50)
+		.with_gradient_tolerance(1e-15); // Very tight so all 50 iterations run
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
 
-    assert!(result.iterations > 0, "Should have performed iterations");
-    assert!(
-        result.function_evaluations > 0,
-        "Should have function evaluations"
-    );
-    assert!(!result.duration.is_zero(), "Duration should be nonzero");
+	assert!(result.iterations > 0, "Should have performed iterations");
+	assert!(
+		result.function_evaluations > 0,
+		"Should have function evaluations"
+	);
+	assert!(!result.duration.is_zero(), "Duration should be nonzero");
 }
 
 // ---------------------------------------------------------------------------
@@ -739,23 +799,25 @@ fn test_optimization_result_metadata() {
 
 #[test]
 fn test_max_iterations_stopping() {
-    let n = 3;
-    let sphere = Sphere::<f64>::new(n).unwrap();
-    let cost_fn = RayleighQuotient::diagonal(n);
-    let x0 = initial_point_on_sphere(n);
+	let n = 3;
+	let sphere = Sphere::<f64>::new(n).unwrap();
+	let cost_fn = RayleighQuotient::diagonal(n);
+	let x0 = initial_point_on_sphere(n);
 
-    let mut optimizer = SGD::new(SGDConfig::new().with_constant_step_size(0.001));
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(10)
-        .with_gradient_tolerance(1e-15); // Very tight -- won't converge
+	let mut optimizer = SGD::new(SGDConfig::new().with_constant_step_size(0.001));
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(10)
+		.with_gradient_tolerance(1e-15); // Very tight -- won't converge
 
-    let result = optimizer.optimize(&cost_fn, &sphere, &x0, &criterion).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &sphere, &x0, &criterion)
+		.unwrap();
 
-    assert!(
-        result.iterations <= 10,
-        "Should have stopped at or before 10 iterations, got {}",
-        result.iterations
-    );
+	assert!(
+		result.iterations <= 10,
+		"Should have stopped at or before 10 iterations, got {}",
+		result.iterations
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -764,28 +826,29 @@ fn test_max_iterations_stopping() {
 
 #[test]
 fn test_cg_approaches_quadratic_minimum() {
-    let n = 5;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    // f(x) = 0.5 * x^T * x, minimum at origin with cost = 0
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![3.0, -2.0, 1.0, 0.5, -1.5]);
+	let n = 5;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	// f(x) = 0.5 * x^T * x, minimum at origin with cost = 0
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![3.0, -2.0, 1.0, 0.5, -1.5]);
 
-    let config = CGConfig::new()
-        .with_method(ConjugateGradientMethod::PolakRibiere);
-    let mut optimizer = ConjugateGradient::new(config);
+	let config = CGConfig::new().with_method(ConjugateGradientMethod::PolakRibiere);
+	let mut optimizer = ConjugateGradient::new(config);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(500)
-        .with_gradient_tolerance(1e-8);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(500)
+		.with_gradient_tolerance(1e-8);
 
-    let result = optimizer.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let final_cost = cost_fn.cost(&result.point).unwrap();
+	let result = optimizer
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let final_cost = cost_fn.cost(&result.point).unwrap();
 
-    assert!(
-        final_cost < 1e-10,
-        "CG did not approach minimum: cost={}",
-        final_cost
-    );
+	assert!(
+		final_cost < 1e-10,
+		"CG did not approach minimum: cost={}",
+		final_cost
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -794,43 +857,47 @@ fn test_cg_approaches_quadratic_minimum() {
 
 #[test]
 fn test_second_order_methods_approach_minimum_on_euclidean() {
-    let n = 3;
-    let manifold = Euclidean::<f64>::new(n).unwrap();
-    // f(x) = 0.5 * x^T * x, minimum at origin with cost = 0
-    let cost_fn = QuadraticCost::simple(Dyn(n));
-    let x0 = DVector::from_vec(vec![3.0, -2.0, 1.0]);
+	let n = 3;
+	let manifold = Euclidean::<f64>::new(n).unwrap();
+	// f(x) = 0.5 * x^T * x, minimum at origin with cost = 0
+	let cost_fn = QuadraticCost::simple(Dyn(n));
+	let x0 = DVector::from_vec(vec![3.0, -2.0, 1.0]);
 
-    let criterion = StoppingCriterion::new()
-        .with_max_iterations(200)
-        .with_gradient_tolerance(1e-8);
+	let criterion = StoppingCriterion::new()
+		.with_max_iterations(200)
+		.with_gradient_tolerance(1e-8);
 
-    // Trust Region should get very close to the minimum
-    let mut tr = TrustRegion::new(TrustRegionConfig::new());
-    let tr_result = tr.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let tr_cost = cost_fn.cost(&tr_result.point).unwrap();
-    assert!(
-        tr_cost < 1e-10,
-        "Trust Region did not converge to minimum: cost={}",
-        tr_cost
-    );
+	// Trust Region should get very close to the minimum
+	let mut tr = TrustRegion::new(TrustRegionConfig::new());
+	let tr_result = tr.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
+	let tr_cost = cost_fn.cost(&tr_result.point).unwrap();
+	assert!(
+		tr_cost < 1e-10,
+		"Trust Region did not converge to minimum: cost={}",
+		tr_cost
+	);
 
-    // Newton should converge very fast on a quadratic
-    let mut newton = Newton::new(NewtonConfig::new().with_regularization(1e-8));
-    let newton_result = newton.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let newton_cost = cost_fn.cost(&newton_result.point).unwrap();
-    assert!(
-        newton_cost < 1e-10,
-        "Newton did not converge to minimum: cost={}",
-        newton_cost
-    );
+	// Newton should converge very fast on a quadratic
+	let mut newton = Newton::new(NewtonConfig::new().with_regularization(1e-8));
+	let newton_result = newton
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let newton_cost = cost_fn.cost(&newton_result.point).unwrap();
+	assert!(
+		newton_cost < 1e-10,
+		"Newton did not converge to minimum: cost={}",
+		newton_cost
+	);
 
-    // L-BFGS should also converge well
-    let mut lbfgs = LBFGS::new(LBFGSConfig::new());
-    let lbfgs_result = lbfgs.optimize(&cost_fn, &manifold, &x0, &criterion).unwrap();
-    let lbfgs_cost = cost_fn.cost(&lbfgs_result.point).unwrap();
-    assert!(
-        lbfgs_cost < 1e-10,
-        "L-BFGS did not converge to minimum: cost={}",
-        lbfgs_cost
-    );
+	// L-BFGS should also converge well
+	let mut lbfgs = LBFGS::new(LBFGSConfig::new());
+	let lbfgs_result = lbfgs
+		.optimize(&cost_fn, &manifold, &x0, &criterion)
+		.unwrap();
+	let lbfgs_cost = cost_fn.cost(&lbfgs_result.point).unwrap();
+	assert!(
+		lbfgs_cost < 1e-10,
+		"L-BFGS did not converge to minimum: cost={}",
+		lbfgs_cost
+	);
 }

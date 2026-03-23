@@ -5,36 +5,36 @@
 
 use crate::error::Result;
 use crate::types::Scalar;
-use std::time::Duration;
 use std::fmt::Debug;
+use std::time::Duration;
 
 /// Information passed to callbacks during optimization.
 #[derive(Clone, Debug)]
 pub struct CallbackInfo<T: Scalar, P, TV>
 where
-    P: Clone + Debug,
-    TV: Clone + Debug,
+	P: Clone + Debug,
+	TV: Clone + Debug,
 {
-    /// Current point
-    pub point: P,
-    
-    /// Current objective value
-    pub value: T,
-    
-    /// Current gradient (if computed)
-    pub gradient: Option<TV>,
-    
-    /// Gradient norm (if computed)
-    pub gradient_norm: Option<T>,
-    
-    /// Current iteration
-    pub iteration: usize,
-    
-    /// Elapsed time since optimization start
-    pub elapsed: Duration,
-    
-    /// Whether convergence has been achieved
-    pub converged: bool,
+	/// Current point
+	pub point: P,
+
+	/// Current objective value
+	pub value: T,
+
+	/// Current gradient (if computed)
+	pub gradient: Option<TV>,
+
+	/// Gradient norm (if computed)
+	pub gradient_norm: Option<T>,
+
+	/// Current iteration
+	pub iteration: usize,
+
+	/// Elapsed time since optimization start
+	pub elapsed: Duration,
+
+	/// Whether convergence has been achieved
+	pub converged: bool,
 }
 
 /// Trait for optimization callbacks.
@@ -43,76 +43,75 @@ where
 /// They can be used for logging, visualization, early stopping, etc.
 pub trait OptimizationCallback<T: Scalar, P, TV>: Send
 where
-    P: Clone + Debug,
-    TV: Clone + Debug,
+	P: Clone + Debug,
+	TV: Clone + Debug,
 {
-    /// Called at the start of optimization.
-    fn on_optimization_start(&mut self) -> Result<()> {
-        Ok(())
-    }
-    
-    /// Called at the end of each iteration.
-    /// 
-    /// Returns `true` to continue optimization, `false` to stop early.
-    fn on_iteration_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<bool> {
-        let _ = info; // Unused by default
-        Ok(true)
-    }
-    
-    /// Called at the end of optimization.
-    fn on_optimization_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<()> {
-        let _ = info; // Unused by default
-        Ok(())
-    }
+	/// Called at the start of optimization.
+	fn on_optimization_start(&mut self) -> Result<()> {
+		Ok(())
+	}
+
+	/// Called at the end of each iteration.
+	///
+	/// Returns `true` to continue optimization, `false` to stop early.
+	fn on_iteration_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<bool> {
+		let _ = info; // Unused by default
+		Ok(true)
+	}
+
+	/// Called at the end of optimization.
+	fn on_optimization_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<()> {
+		let _ = info; // Unused by default
+		Ok(())
+	}
 }
 
 /// A no-op callback that does nothing.
 pub struct NoOpCallback;
 
-impl<T: Scalar, P: Clone + Debug, TV: Clone + Debug> OptimizationCallback<T, P, TV> for NoOpCallback
+impl<T: Scalar, P: Clone + Debug, TV: Clone + Debug> OptimizationCallback<T, P, TV>
+	for NoOpCallback
 {
-    // Use default implementations
+	// Use default implementations
 }
 
 /// A callback that prints progress to stdout.
 pub struct PrintProgressCallback {
-    print_every: usize,
+	print_every: usize,
 }
 
 impl PrintProgressCallback {
-    /// Create a new progress printing callback.
-    pub fn new(print_every: usize) -> Self {
-        Self { print_every }
-    }
+	/// Create a new progress printing callback.
+	pub fn new(print_every: usize) -> Self {
+		Self { print_every }
+	}
 }
 
-impl<T: Scalar, P: Clone + Debug, TV: Clone + Debug> OptimizationCallback<T, P, TV> for PrintProgressCallback
+impl<T: Scalar, P: Clone + Debug, TV: Clone + Debug> OptimizationCallback<T, P, TV>
+	for PrintProgressCallback
 where
-    T: std::fmt::Display,
+	T: std::fmt::Display,
 {
-    fn on_optimization_start(&mut self) -> Result<()> {
-        println!("Starting optimization...");
-        Ok(())
-    }
-    
-    fn on_iteration_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<bool> {
-        if info.iteration % self.print_every == 0 {
-            println!(
-                "Iteration {}: cost = {}, gradient norm = {:?}",
-                info.iteration,
-                info.value,
-                info.gradient_norm
-            );
-        }
-        Ok(true)
-    }
-    
-    fn on_optimization_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<()> {
-        println!(
-            "Optimization complete after {} iterations. Final cost: {}",
-            info.iteration,
-            info.value
-        );
-        Ok(())
-    }
+	fn on_optimization_start(&mut self) -> Result<()> {
+		println!("Starting optimization...");
+		Ok(())
+	}
+
+	fn on_iteration_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<bool> {
+		if info.iteration % self.print_every == 0 {
+			println!(
+				"Iteration {}: cost = {}, gradient norm = {:?}",
+				info.iteration, info.value, info.gradient_norm
+			);
+		}
+		Ok(true)
+	}
+
+	fn on_optimization_end(&mut self, info: &CallbackInfo<T, P, TV>) -> Result<()> {
+		println!(
+			"Optimization complete after {} iterations. Final cost: {}",
+			info.iteration, info.value
+		);
+		Ok(())
+	}
 }
