@@ -288,7 +288,8 @@ where
 		}
 
 		// Check orthonormality: X^T X = I
-		let xtx = x.transpose().mat_mul(x);
+		let mut xtx = linalg::Mat::<T>::zeros(self.p, self.p);
+		xtx.gemm_at(T::one(), x, x, T::zero());
 		let identity = linalg::Mat::<T>::identity(self.p);
 		let constraint_error = xtx.sub(&identity).norm();
 
@@ -324,7 +325,8 @@ where
 		}
 
 		// Check skew-symmetry: X^T Z + Z^T X = 0
-		let xtz = x.transpose().mat_mul(z);
+		let mut xtz = linalg::Mat::<T>::zeros(self.p, self.p);
+		xtz.gemm_at(T::one(), x, z, T::zero());
 		let skew_error = xtz.add(&xtz.transpose()).norm();
 
 		if skew_error > self.tolerance {
@@ -405,7 +407,8 @@ where
 		let x_plus_z = x.add(z);
 
 		// Compute (X+Z)^T(X+Z)
-		let gram = x_plus_z.transpose().mat_mul(&x_plus_z);
+		let mut gram = linalg::Mat::<T>::zeros(self.p, self.p);
+		gram.gemm_at(T::one(), &x_plus_z, &x_plus_z, T::zero());
 
 		// Eigendecomposition for matrix square root
 		let eigen = gram.symmetric_eigen();
@@ -424,9 +427,9 @@ where
 			}
 		}
 
-		let gram_sqrt_inv = v
-			.mat_mul(&linalg::Mat::<T>::from_diagonal(&d_sqrt_inv))
-			.mat_mul(&v.transpose());
+		let temp = v.mat_mul(&linalg::Mat::<T>::from_diagonal(&d_sqrt_inv));
+		let mut gram_sqrt_inv = linalg::Mat::<T>::zeros(self.p, self.p);
+		gram_sqrt_inv.gemm_bt(T::one(), &temp, v, T::zero());
 
 		Ok(x_plus_z.mat_mul(&gram_sqrt_inv))
 	}
@@ -447,7 +450,8 @@ where
 		self.check_point(y)?;
 
 		// Compute X^T Y
-		let xty = x.transpose().mat_mul(y);
+		let mut xty = linalg::Mat::<T>::zeros(self.p, self.p);
+		xty.gemm_at(T::one(), x, y, T::zero());
 
 		// SVD to get principal angles
 		let svd = xty.svd();
@@ -482,7 +486,8 @@ where
 		// τ_{X→Y}(V) = P_Y(V) where P_Y is tangent projection at Y
 
 		// Compute Y^T V
-		let ytv = y.transpose().mat_mul(v);
+		let mut ytv = linalg::Mat::<T>::zeros(self.p, self.p);
+		ytv.gemm_at(T::one(), y, v, T::zero());
 
 		// Project: V - Y * sym(Y^T V)
 		let sym_ytv = Self::symmetrize(&ytv);
@@ -512,7 +517,8 @@ where
 		}
 
 		// Check X^T X = I
-		let xtx = point.transpose().mat_mul(point);
+		let mut xtx = linalg::Mat::<T>::zeros(self.p, self.p);
+		xtx.gemm_at(T::one(), point, point, T::zero());
 		let identity = linalg::Mat::<T>::identity(self.p);
 		xtx.sub(&identity).norm() < tol
 	}
@@ -531,7 +537,8 @@ where
 		}
 
 		// Check X^T Z + Z^T X = 0
-		let xtz = point.transpose().mat_mul(vector);
+		let mut xtz = linalg::Mat::<T>::zeros(self.p, self.p);
+		xtz.gemm_at(T::one(), point, vector, T::zero());
 		xtz.add(&xtz.transpose()).norm() < tol
 	}
 
@@ -658,7 +665,8 @@ where
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Projection-based transport: τ_{X→Y}(V) = V - Y * sym(Y^T V)
-		let ytv = to.transpose().mat_mul(vector);
+		let mut ytv = linalg::Mat::<T>::zeros(self.p, self.p);
+		ytv.gemm_at(T::one(), to, vector, T::zero());
 		let sym_ytv = Self::symmetrize(&ytv);
 		let transported = vector.sub(&to.mat_mul(&sym_ytv));
 		result.copy_from(&transported);

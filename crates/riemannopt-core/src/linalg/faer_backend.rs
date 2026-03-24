@@ -328,6 +328,31 @@ macro_rules! impl_faer_matrix_ops {
 					);
 				}
 			}
+
+			fn gemm_bt(&mut self, alpha: $t, a: &Self, b: &Self, beta: $t) {
+				let par = faer::get_global_parallelism();
+
+				if beta == 0.0 {
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Replace,
+						a.as_ref(),
+						b.as_ref().transpose(),
+						alpha,
+						par,
+					);
+				} else {
+					self.scale_mut(beta);
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Add,
+						a.as_ref(),
+						b.as_ref().transpose(),
+						alpha,
+						par,
+					);
+				}
+			}
 		}
 	};
 }

@@ -24,20 +24,20 @@
 //!
 //! ```rust,ignore
 //! # use riemannopt_core::manifold::Manifold;
-//! # use nalgebra::DVector;
+//! # use riemannopt_core::linalg::{self, VectorOps, LinAlgBackend};
 //!
 //! #[derive(Debug)]
 //! struct MySphere { radius: f64 }
 //!
 //! impl Manifold<f64> for MySphere {
-//!     type Point = DVector<f64>;
-//!     type TangentVector = DVector<f64>;
+//!     type Point = linalg::Vec<f64>;
+//!     type TangentVector = linalg::Vec<f64>;
 //!     // ... implement required methods ...
 //! }
 //!
 //! let sphere = MySphere { radius: 1.0 };
-//! let point = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-//! let tangent = DVector::from_vec(vec![0.0, 0.1, 0.0]);
+//! let point = linalg::Vec::<f64>::from_slice(&[1.0, 0.0, 0.0]);
+//! let tangent = linalg::Vec::<f64>::from_slice(&[0.0, 0.1, 0.0]);
 //!
 //! // Check if point is on manifold
 //! assert!(sphere.is_point_on_manifold(&point, 1e-10));
@@ -104,70 +104,51 @@ use std::fmt::Debug;
 ///
 /// ```rust,ignore
 /// use riemannopt_core::prelude::*;
-/// use nalgebra::{Const, DVector};
+/// use riemannopt_core::linalg::{self, VectorOps, LinAlgBackend};
 ///
 /// /// Unit sphere S^{n-1} = {x ∈ ℝⁿ : ||x|| = 1}
-/// struct Sphere<T: Scalar> {
+/// struct Sphere {
 ///     ambient_dim: usize,
 /// }
 ///
-/// impl<T: Scalar> Manifold<T, nalgebra::Dyn> for Sphere<T> {
+/// impl Manifold<f64> for Sphere {
+///     type Point = linalg::Vec<f64>;
+///     type TangentVector = linalg::Vec<f64>;
+///
 ///     fn name(&self) -> &str { "Sphere" }
-///     
+///
 ///     fn dimension(&self) -> usize {
 ///         self.ambient_dim - 1  // S^{n-1} has dimension n-1
 ///     }
-///     
-///     fn is_point_on_manifold(&self, point: &DVector<T>, tol: T) -> bool {
-///         // Check ||x|| = 1
-///         (point.norm_squared() - T::one()).abs() < tol
+///
+///     fn is_point_on_manifold(&self, point: &Self::Point, tol: f64) -> bool {
+///         (VectorOps::norm_squared(point) - 1.0).abs() < tol
 ///     }
-///     
-///     fn project(&self, point: &DVector<T>) -> Result<DVector<T>> {
-///         // Π(x) = x / ||x||
-///         let norm = point.norm();
-///         if norm < T::epsilon() {
-///             return Err(ManifoldError::NumericalError);
-///         }
-///         Ok(point / norm)
-///     }
-///     
-///     fn tangent_projection(&self, point: &DVector<T>, vector: &DVector<T>)
-///         -> Result<DVector<T>> {
-///         // P_p(v) = v - ⟨v, p⟩ p  (orthogonal projection)
-///         Ok(vector - point * vector.dot(point))
-///     }
+///     // ... other required methods ...
 /// }
 /// ```
 ///
 /// ## Stiefel Manifold Implementation
 ///
 /// ```rust,ignore
+/// use riemannopt_core::linalg::{self, MatrixOps, LinAlgBackend};
+///
 /// /// Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = I_p}
-/// struct Stiefel<T: Scalar> {
+/// struct Stiefel {
 ///     n: usize,  // Number of rows
 ///     p: usize,  // Number of columns
 /// }
 ///
-/// impl<T: Scalar> Manifold<T, nalgebra::Dyn> for Stiefel<T> {
+/// impl Manifold<f64> for Stiefel {
+///     type Point = linalg::Mat<f64>;
+///     type TangentVector = linalg::Mat<f64>;
+///
 ///     fn name(&self) -> &str { "Stiefel" }
-///     
+///
 ///     fn dimension(&self) -> usize {
 ///         self.n * self.p - self.p * (self.p + 1) / 2
 ///     }
-///     
-///     fn project(&self, matrix: &DMatrix<T>) -> Result<DMatrix<T>> {
-///         // QR decomposition: X = QR, return Q
-///         let qr = matrix.qr();
-///         Ok(qr.q())
-///     }
-///     
-///     fn retract(&self, point: &DMatrix<T>, tangent: &DMatrix<T>)
-///         -> Result<DMatrix<T>> {
-///         // QR-based retraction: R_X(V) = qf(X + V)
-///         let sum = point + tangent;
-///         self.project(&sum)
-///     }
+///     // ... other required methods ...
 /// }
 /// ```
 pub trait Manifold<T: Scalar>: Debug + Send + Sync {

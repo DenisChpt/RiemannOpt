@@ -571,7 +571,7 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 mod tests {
 	use super::*;
 	use approx::assert_relative_eq;
-	use riemannopt_core::types::DVector;
+	use riemannopt_core::linalg;
 
 	#[test]
 	fn test_step_size_schedules() {
@@ -616,7 +616,7 @@ mod tests {
 	#[test]
 	fn test_momentum_state() {
 		// Test state initialization for different momentum types
-		type TestTangent = DVector<f64>;
+		type TestTangent = linalg::Vec<f64>;
 
 		let state_none = MomentumState::<f64, TestTangent>::new(&MomentumMethod::None);
 		assert!(state_none.momentum_vector.is_none());

@@ -297,7 +297,8 @@ where
 		}
 
 		// Check orthonormality: Y^T Y = I
-		let yty = y.transpose().mat_mul(y);
+		let mut yty = linalg::Mat::<T>::zeros(self.p, self.p);
+		yty.gemm_at(T::one(), y, y, T::zero());
 		let identity = linalg::Mat::<T>::identity(self.p);
 		let constraint_error = yty.sub(&identity).norm();
 
@@ -333,7 +334,8 @@ where
 		}
 
 		// Check horizontality: Y^T Z = 0
-		let ytz = y.transpose().mat_mul(z);
+		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
+		ytz.gemm_at(T::one(), y, z, T::zero());
 		let horizontal_error = ytz.norm();
 
 		if horizontal_error > self.tolerance {
@@ -447,7 +449,8 @@ where
 		self.check_point(y2)?;
 
 		// Compute Y₁^T Y₂
-		let y1ty2 = y1.transpose().mat_mul(y2);
+		let mut y1ty2 = linalg::Mat::<T>::zeros(self.p, self.p);
+		y1ty2.gemm_at(T::one(), y1, y2, T::zero());
 
 		// SVD to get principal angles
 		let svd = y1ty2.svd();
@@ -482,13 +485,16 @@ where
 		self.check_point(y2)?;
 
 		// Compute Y₂^T Y₁ and its SVD
-		let y2ty1 = y2.transpose().mat_mul(y1);
+		let mut y2ty1 = linalg::Mat::<T>::zeros(self.p, self.p);
+		y2ty1.gemm_at(T::one(), y2, y1, T::zero());
 		let svd = y2ty1.svd();
 
 		if let Some(u) = svd.u {
 			// Transport: (I - Y₂Y₂^T)ZU
 			let zu = z.mat_mul(&u);
-			let y2_zu = y2.mat_mul(&y2.transpose().mat_mul(&zu));
+			let mut y2t_zu = linalg::Mat::<T>::zeros(self.p, zu.ncols());
+			y2t_zu.gemm_at(T::one(), y2, &zu, T::zero());
+			let y2_zu = y2.mat_mul(&y2t_zu);
 			Ok(zu.sub(&y2_zu))
 		} else {
 			// Fallback to simple projection
@@ -521,7 +527,8 @@ where
 		}
 
 		// Check Y^T Y = I_p
-		let yty = point.transpose().mat_mul(point);
+		let mut yty = linalg::Mat::<T>::zeros(self.p, self.p);
+		yty.gemm_at(T::one(), point, point, T::zero());
 		let identity = linalg::Mat::<T>::identity(self.p);
 		yty.sub(&identity).norm() < tol
 	}
@@ -540,7 +547,8 @@ where
 		}
 
 		// Horizontal space: Y^T Z = 0
-		let ytz = point.transpose().mat_mul(vector);
+		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
+		ytz.gemm_at(T::one(), point, vector, T::zero());
 		ytz.norm() < tol
 	}
 

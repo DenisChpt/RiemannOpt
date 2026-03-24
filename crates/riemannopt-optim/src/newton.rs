@@ -544,9 +544,8 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use nalgebra::Dyn;
 	use riemannopt_core::core::cost_function::QuadraticCost;
-	use riemannopt_core::types::DVector;
+	use riemannopt_core::linalg::{self, VectorOps};
 	use riemannopt_core::utils::test_manifolds::TestEuclideanManifold;
 
 	#[test]
@@ -561,8 +560,8 @@ mod tests {
 		let mut optimizer = Newton::new(config);
 
 		let manifold = TestEuclideanManifold::new(2);
-		let cost_fn = QuadraticCost::simple(Dyn(2));
-		let x0 = DVector::from_vec(vec![1.0, 1.0]);
+		let cost_fn = QuadraticCost::simple(2);
+		let x0 = linalg::Vec::<f64>::from_slice(&[1.0, 1.0]);
 
 		let criterion = StoppingCriterion::new()
 			.with_max_iterations(100)

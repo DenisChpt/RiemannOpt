@@ -1765,12 +1765,9 @@ where
 
 #[cfg(test)]
 mod tests {
-	// Tests temporarily commented - need to be rewritten with new trait structure
+	// TODO: rewrite line search tests with linalg abstraction
 	/*
 	use super::*;
-	use crate::{core::cost_function::QuadraticCost, types::DVector};
-	use approx::assert_relative_eq;
-	use nalgebra::Dyn;
 
 	// Simple Euclidean manifold for testing
 	#[derive(Debug)]

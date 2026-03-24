@@ -396,7 +396,9 @@ impl PSDCone {
 		let q = &eigen.eigenvectors;
 		let d = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&eigenvalues);
 		let temp = MatrixOps::mat_mul(q, &d);
-		MatrixOps::mat_mul(&temp, &MatrixOps::transpose(q))
+		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		out.gemm_bt(T::one(), &temp, q, T::zero());
+		out
 	}
 
 	/// Check if a matrix is in the PSD cone
@@ -783,7 +785,8 @@ where
 		}
 
 		// Make it PSD by X = A^T A
-		let psd = MatrixOps::mat_mul(&MatrixOps::transpose(&mat), &mat);
+		let mut psd = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		psd.gemm_at(T::one(), &mat, &mat, T::zero());
 
 		// Scale to reasonable size
 		let psd_scaled =

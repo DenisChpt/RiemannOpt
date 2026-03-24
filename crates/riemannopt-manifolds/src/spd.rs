@@ -415,7 +415,9 @@ where
 		let sqrt_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&sqrt_vals);
 		let ev = &eigen.eigenvectors;
 		let temp = MatrixOps::mat_mul(ev, &sqrt_diag);
-		Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev)))
+		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		out.gemm_bt(T::one(), &temp, ev, T::zero());
+		Ok(out)
 	}
 
 	/// Computes the inverse square root P^{-1/2}.
@@ -436,7 +438,9 @@ where
 		let sqrt_inv_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&sqrt_inv_vals);
 		let ev = &eigen.eigenvectors;
 		let temp = MatrixOps::mat_mul(ev, &sqrt_inv_diag);
-		Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev)))
+		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		out.gemm_bt(T::one(), &temp, ev, T::zero());
+		Ok(out)
 	}
 
 	/// Computes the matrix logarithm log(P).
@@ -457,7 +461,9 @@ where
 		let log_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&log_vals);
 		let ev = &eigen.eigenvectors;
 		let temp = MatrixOps::mat_mul(ev, &log_diag);
-		Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev)))
+		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		out.gemm_bt(T::one(), &temp, ev, T::zero());
+		Ok(out)
 	}
 
 	/// Computes the matrix exponential exp(X).
@@ -467,7 +473,9 @@ where
 		let exp_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&exp_vals);
 		let ev = &eigen.eigenvectors;
 		let temp = MatrixOps::mat_mul(ev, &exp_diag);
-		MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev))
+		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		out.gemm_bt(T::one(), &temp, ev, T::zero());
+		out
 	}
 
 	/// Exponential map at P in direction V.
@@ -572,7 +580,9 @@ where
 
 				// Transport: E V E^T
 				let temp = MatrixOps::mat_mul(&e, v);
-				Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(&e)))
+				let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+				out.gemm_bt(T::one(), &temp, &e, T::zero());
+				Ok(out)
 			}
 			_ => {
 				// For other metrics, use identity transport (approximation)
@@ -666,7 +676,8 @@ where
 		let lambda_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&eigenvalues);
 		let ev = &eigen.eigenvectors;
 		let temp = MatrixOps::mat_mul(ev, &lambda_diag);
-		*result = MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev));
+		*result = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		result.gemm_bt(T::one(), &temp, ev, T::zero());
 
 		// Final symmetry enforcement
 		let sym = MatrixOps::scale_by(
@@ -866,7 +877,8 @@ where
 		}
 
 		// Make SPD: P = A^T A + εI
-		let ata = MatrixOps::mat_mul(&MatrixOps::transpose(&a), &a);
+		let mut ata = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
+		ata.gemm_at(T::one(), &a, &a, T::zero());
 		let identity = <linalg::Mat<T> as MatrixOps<T>>::identity(self.n);
 
 		*result = MatrixOps::add(&ata, &MatrixOps::scale_by(&identity, self.min_eigenvalue));

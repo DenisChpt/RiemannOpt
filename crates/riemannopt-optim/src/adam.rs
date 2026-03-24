@@ -674,7 +674,7 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use riemannopt_core::types::DVector;
+	use riemannopt_core::linalg;
 
 	#[test]
 	fn test_adam_config() {
@@ -698,7 +698,7 @@ mod tests {
 
 	#[test]
 	fn test_adam_state() {
-		let state = AdamState::<f64, DVector<f64>>::new(0.9, 0.999, 1e-8, false);
+		let state = AdamState::<f64, linalg::Vec<f64>>::new(0.9, 0.999, 1e-8, false);
 		assert_eq!(state.beta1, 0.9);
 		assert_eq!(state.beta2, 0.999);
 		assert_eq!(state.epsilon, 1e-8);
@@ -707,7 +707,7 @@ mod tests {
 
 	#[test]
 	fn test_amsgrad_state() {
-		let state = AdamState::<f64, DVector<f64>>::new(0.9, 0.999, 1e-8, true);
+		let state = AdamState::<f64, linalg::Vec<f64>>::new(0.9, 0.999, 1e-8, true);
 		assert!(state.amsgrad);
 	}
 
@@ -718,7 +718,7 @@ mod tests {
 			.beta2(0.95)
 			.epsilon(1e-10)
 			.amsgrad(true)
-			.build::<DVector<f64>>();
+			.build::<linalg::Vec<f64>>();
 
 		assert_eq!(state.beta1, 0.8);
 		assert_eq!(state.beta2, 0.95);

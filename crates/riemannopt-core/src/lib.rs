@@ -52,25 +52,16 @@ pub mod prelude {
 		// From cost_function
 		CostFunction,
 		CountingCostFunction,
-		DMatrix,
-		DSquareMatrix,
-		DVector,
 		DerivativeChecker,
-		Dimension,
 		// From manifold
 		Manifold,
 		// From error
 		ManifoldError,
-		Matrix,
 		OptimizerError,
 		OptimizerResult,
 		QuadraticCost,
 		Result,
-		SMatrix,
-		SSquareMatrix,
-		SVector,
 		Scalar,
-		Vector,
 	};
 
 	// Optimization components

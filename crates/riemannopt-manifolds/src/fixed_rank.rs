@@ -176,7 +176,9 @@ where
 	pub fn to_matrix(&self) -> linalg::Mat<T> {
 		let s_mat = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&self.s);
 		let temp = MatrixOps::mat_mul(&self.u, &s_mat);
-		MatrixOps::mat_mul(&temp, &MatrixOps::transpose(&self.v))
+		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.u.nrows(), self.v.nrows());
+		out.gemm_bt(T::one(), &temp, &self.v, T::zero());
+		out
 	}
 
 	/// Create from full matrix using SVD
@@ -274,10 +276,9 @@ where
 			);
 		}
 
-		// Create identity and project out the columns of mat
+		// Create identity and project out the columns of mat: I - M·Mᵀ
 		let mut q = <linalg::Mat<T> as MatrixOps<T>>::identity(m);
-		let mat_matt = MatrixOps::mat_mul(mat, &MatrixOps::transpose(mat));
-		q.sub_assign(&mat_matt);
+		q.gemm_bt(-T::one(), mat, mat, T::one());
 
 		// Use QR to get orthonormal basis for the complement
 		let qr = DecompositionOps::qr(&q);
@@ -487,8 +488,10 @@ where
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
 		// Check that U and V are on Stiefel manifolds
-		let u_gram = MatrixOps::mat_mul(&MatrixOps::transpose(&point.u), &point.u);
-		let v_gram = MatrixOps::mat_mul(&MatrixOps::transpose(&point.v), &point.v);
+		let mut u_gram = linalg::Mat::<T>::zeros(self.k, self.k);
+		u_gram.gemm_at(T::one(), &point.u, &point.u, T::zero());
+		let mut v_gram = linalg::Mat::<T>::zeros(self.k, self.k);
+		v_gram.gemm_at(T::one(), &point.v, &point.v, T::zero());
 
 		// Check orthogonality
 		for i in 0..self.k {
@@ -758,26 +761,21 @@ where
 
 		// Decompose the difference into tangent components
 		// M = U_perp^T * diff * V
-		result.u_perp_m = MatrixOps::mat_mul(
-			&MatrixOps::mat_mul(&MatrixOps::transpose(&u_perp), &diff),
-			&point.v,
-		);
+		let mut upt_diff = linalg::Mat::<T>::zeros(u_perp.ncols(), diff.ncols());
+		upt_diff.gemm_at(T::one(), &u_perp, &diff, T::zero());
+		result.u_perp_m = MatrixOps::mat_mul(&upt_diff, &point.v);
 
 		// S_dot = diag(U^T * diff * V)
-		let s_component = MatrixOps::mat_mul(
-			&MatrixOps::mat_mul(&MatrixOps::transpose(&point.u), &diff),
-			&point.v,
-		);
+		let mut ut_diff = linalg::Mat::<T>::zeros(self.k, diff.ncols());
+		ut_diff.gemm_at(T::one(), &point.u, &diff, T::zero());
+		let s_component = MatrixOps::mat_mul(&ut_diff, &point.v);
 		// Extract diagonal
 		result.s_dot = <linalg::Vec<T> as VectorOps<T>>::from_fn(self.k, |i| {
 			MatrixOps::get(&s_component, i, i)
 		});
 
 		// N = U^T * diff * V_perp
-		result.v_perp_n = MatrixOps::mat_mul(
-			&MatrixOps::mat_mul(&MatrixOps::transpose(&point.u), &diff),
-			&v_perp,
-		);
+		result.v_perp_n = MatrixOps::mat_mul(&ut_diff, &v_perp);
 
 		Ok(())
 	}
