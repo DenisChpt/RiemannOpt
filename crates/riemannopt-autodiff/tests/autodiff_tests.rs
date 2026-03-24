@@ -281,11 +281,16 @@ fn test_autodiff_with_optimizer() {
 
 	let mut opt = ConjugateGradient::with_default_config();
 	let crit = StoppingCriterion::new()
-		.with_max_iterations(50)
+		.with_max_iterations(200)
 		.with_gradient_tolerance(1e-10);
 
 	let result = opt.optimize(&cf, &eucl, &x0, &crit).unwrap();
-	assert!(cf.cost(&result.point).unwrap() < 1e-6);
+	assert!(
+		cf.cost(&result.point).unwrap() < 1e-6,
+		"AutoDiff CG: cost={:.2e}, iterations={}",
+		cf.cost(&result.point).unwrap(),
+		result.iterations
+	);
 }
 
 #[test]

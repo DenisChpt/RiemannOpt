@@ -46,8 +46,8 @@
 
 use crate::Sphere;
 use riemannopt_core::{
-	compute::{get_dispatcher, SimdBackend},
 	linalg::{self, VectorOps},
+	simd::{get_dispatcher, SimdBackend},
 };
 /// Extension trait for SIMD-accelerated sphere operations.
 ///
@@ -126,7 +126,7 @@ pub trait SphereSimdExt {
 /// We construct a temporary `DVector` from the slice, normalize it, and copy back.
 fn simd_normalize_inplace<T>(v: &mut linalg::Vec<T>) -> T
 where
-	T: riemannopt_core::types::Scalar + riemannopt_core::compute::ScalarDispatch,
+	T: riemannopt_core::types::Scalar + riemannopt_core::simd::ScalarDispatch,
 	linalg::DefaultBackend: riemannopt_core::linalg::LinAlgBackend<T>,
 {
 	let mut dv = nalgebra::DVector::from_column_slice(v.as_slice());
@@ -139,7 +139,7 @@ where
 /// Helper: compute dot product via the SIMD dispatcher.
 fn simd_dot<T>(a: &linalg::Vec<T>, b: &linalg::Vec<T>) -> T
 where
-	T: riemannopt_core::types::Scalar + riemannopt_core::compute::ScalarDispatch,
+	T: riemannopt_core::types::Scalar + riemannopt_core::simd::ScalarDispatch,
 	linalg::DefaultBackend: riemannopt_core::linalg::LinAlgBackend<T>,
 {
 	let da = nalgebra::DVector::from_column_slice(a.as_slice());

@@ -4,7 +4,6 @@
 //! that automatically selects the best implementation based on detected
 //! CPU features.
 
-use crate::config::features::simd_config;
 use crate::types::Scalar;
 use nalgebra::{DMatrix, DVector};
 use std::marker::PhantomData;
@@ -45,7 +44,7 @@ pub trait SimdBackend<T: Scalar>: Send + Sync {
 	fn is_efficient_for_size(&self, size: usize) -> bool;
 
 	/// Compute the maximum absolute difference between two vectors.
-	/// Returns the L∞ norm of (a - b).
+	/// Returns the L-infinity norm of (a - b).
 	fn max_abs_diff(&self, a: &DVector<T>, b: &DVector<T>) -> T;
 }
 
@@ -200,16 +199,8 @@ impl<T: Scalar + 'static> SimdDispatcher<T> {
 impl SimdDispatcher<f32> {
 	/// Create a new dispatcher with automatic backend selection for f32.
 	pub fn new() -> Self {
-		let config = simd_config();
-
-		// Select the best backend based on CPU features and configuration
-		let backend: Box<dyn SimdBackend<f32>> = if !config.enabled {
-			Box::new(ScalarBackend::new())
-		} else {
-			// Use the Wide backend which provides portable SIMD
-			Box::new(WideBackend::new())
-		};
-
+		// Always use the Wide backend which provides portable SIMD
+		let backend: Box<dyn SimdBackend<f32>> = Box::new(WideBackend::new());
 		Self { backend }
 	}
 }
@@ -223,16 +214,8 @@ impl Default for SimdDispatcher<f32> {
 impl SimdDispatcher<f64> {
 	/// Create a new dispatcher with automatic backend selection for f64.
 	pub fn new() -> Self {
-		let config = simd_config();
-
-		// Select the best backend based on CPU features and configuration
-		let backend: Box<dyn SimdBackend<f64>> = if !config.enabled {
-			Box::new(ScalarBackend::new())
-		} else {
-			// Use the Wide backend which provides portable SIMD
-			Box::new(WideBackend::new())
-		};
-
+		// Always use the Wide backend which provides portable SIMD
+		let backend: Box<dyn SimdBackend<f64>> = Box::new(WideBackend::new());
 		Self { backend }
 	}
 }
@@ -316,7 +299,6 @@ static F64_DISPATCHER: std::sync::LazyLock<SimdDispatcher<f64>> =
 
 /// Trait for types that have a global SIMD dispatcher.
 ///
-/// This replaces the previous approach using unsafe pointer casts with `TypeId`.
 /// Each supported scalar type implements this trait to provide type-safe access
 /// to its global dispatcher instance.
 pub trait ScalarDispatch: Scalar + 'static {

@@ -193,33 +193,6 @@ pub trait CostFunction<T: Scalar>: Debug {
 		Ok(())
 	}
 
-	/// Compute gradient using finite differences with parallel execution.
-	///
-	/// This method evaluates the gradient in parallel when the dimension is large enough.
-	/// It uses the same central difference formula as `gradient_fd` but distributes
-	/// the work across multiple threads.
-	///
-	/// # Arguments
-	///
-	/// * `point` - The point at which to compute the gradient
-	/// * `config` - Parallel execution configuration
-	///
-	/// # Returns
-	///
-	/// An approximation of the gradient computed in parallel.
-	fn gradient_fd_parallel(
-		&self,
-		point: &Self::Point,
-		_config: &crate::compute::cpu::parallel::ParallelConfig,
-	) -> Result<Self::TangentVector>
-	where
-		Self: Sync,
-	{
-		// Default implementation: use sequential version
-		// For parallel execution with dynamic vectors, implementations should use
-		// the gradient_fd_parallel_dvec function from cost_function_simd module
-		self.gradient_fd_alloc(point)
-	}
 }
 
 /// A simple quadratic cost function for testing.
@@ -698,66 +671,4 @@ mod tests {
 		assert!(error < 1e-10);
 	}
 
-	#[test]
-	fn test_gradient_fd_parallel() {
-		use crate::compute::cpu::parallel::ParallelConfig;
-
-		let n = 200; // Large enough to trigger parallel execution
-		let a = nalgebra::DMatrix::<f64>::identity(n, n) * 2.0;
-		let b = nalgebra::DVector::zeros(n);
-		let c = 0.0;
-
-		let quadratic = QuadraticCost::new(a.clone(), b.clone(), c);
-		let x = nalgebra::DVector::from_element(n, 1.0);
-
-		// Sequential gradient
-		let grad_seq = quadratic.gradient(&x).unwrap();
-
-		// Parallel gradient using the default implementation
-		let config = ParallelConfig::default();
-		let grad_par = quadratic.gradient_fd_parallel(&x, &config).unwrap();
-
-		// Compare results
-		for i in 0..n {
-			assert_relative_eq!(grad_par[i], grad_seq[i], epsilon = 1e-4);
-		}
-	}
-
-	#[test]
-	fn test_parallel_config() {
-		use crate::compute::cpu::parallel::ParallelConfig;
-
-		let config = ParallelConfig::new()
-			.with_min_dimension(50)
-			.with_num_threads(4)
-			.with_chunk_size(10);
-
-		assert!(config.should_parallelize(100));
-		assert!(!config.should_parallelize(30));
-		assert_eq!(config.num_threads, Some(4));
-		assert_eq!(config.chunk_size, Some(10));
-	}
-
-	#[test]
-	fn test_gradient_fd_parallel_small_dimension() {
-		use crate::compute::cpu::parallel::ParallelConfig;
-
-		// Test that small dimensions fall back to sequential
-		let n = 5;
-		let a = nalgebra::DMatrix::<f64>::identity(n, n);
-		let b = nalgebra::DVector::zeros(n);
-		let c = 1.0;
-
-		let quadratic = QuadraticCost::new(a, b, c);
-		let x = nalgebra::DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
-
-		let config = ParallelConfig::default();
-		let grad_par = quadratic.gradient_fd_parallel(&x, &config).unwrap();
-		let grad_seq = quadratic.gradient_fd_alloc(&x).unwrap();
-
-		// Should be identical since it falls back to sequential
-		for i in 0..n {
-			assert_relative_eq!(grad_par[i], grad_seq[i], epsilon = 1e-10);
-		}
-	}
 }
