@@ -570,30 +570,26 @@ where
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.nrows() != self.n
-			|| point.ncols() != self.p
-			|| vector.nrows() != self.n
-			|| vector.ncols() != self.p
-		{
-			return Err(ManifoldError::dimension_mismatch(
-				self.n * self.p,
-				point.nrows() * point.ncols(),
-			));
+		// Stiefel projection: result = Z - X · sym(X^T Z)
+		// Uses in-place GEMM to avoid allocating n×p temporaries.
+
+		// Step 1: xtz = X^T Z (small p×p buffer)
+		let mut xtz = linalg::Mat::<T>::zeros(self.p, self.p);
+		xtz.gemm_at(T::one(), point, vector, T::zero());
+
+		// Step 2: symmetrize in-place: xtz = (xtz + xtz^T) / 2
+		let half = <T as Scalar>::from_f64(0.5);
+		for i in 0..self.p {
+			for j in i + 1..self.p {
+				let avg = half * (xtz.get(i, j) + xtz.get(j, i));
+				*xtz.get_mut(i, j) = avg;
+				*xtz.get_mut(j, i) = avg;
+			}
 		}
 
-		// Check that point is on manifold
-		let xtx = point.transpose().mat_mul(point);
-		let identity = linalg::Mat::<T>::identity(self.p);
-		if xtx.sub(&identity).norm() > self.tolerance {
-			return Err(ManifoldError::invalid_point(
-				"Point must be on Stiefel for tangent projection",
-			));
-		}
-
-		// Project: Z - X * sym(X^T Z)
-		let xtz = point.transpose().mat_mul(vector);
-		let sym_xtz = Self::symmetrize(&xtz);
-		*result = vector.sub(&point.mat_mul(&sym_xtz));
+		// Step 3: result = Z - X · sym(X^T Z)
+		result.copy_from(vector);
+		result.gemm(-T::one(), point, &xtz, T::one());
 
 		Ok(())
 	}

@@ -313,6 +313,7 @@ impl_optimizer_generic_default!(
 			use_gauss_newton: false,
 			max_cg_iterations: opt.max_cg_iterations.unwrap_or(100), // Default CG iterations
 			cg_tolerance: opt.cg_tolerance,
+			use_exact_hessian: true,
 		}
 	}
 );

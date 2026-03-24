@@ -38,7 +38,10 @@ use riemannopt_core::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::Result,
 	optimization::{
-		line_search::{LineSearch, LineSearchParams, LineSearchResult, StrongWolfeLineSearch},
+		line_search::{
+			AdaptiveLineSearch, LineSearch, LineSearchParams, LineSearchResult,
+			StrongWolfeLineSearch,
+		},
 		optimizer::{OptimizationResult, Optimizer, StoppingCriterion, TerminationReason},
 	},
 	types::Scalar,
@@ -61,6 +64,17 @@ pub enum ConjugateGradientMethod {
 	HagerZhang,
 	/// Liu-Storey — conservative hybrid min(β_LS, β_CD)
 	LiuStorey,
+}
+
+/// Line search strategy for Conjugate Gradient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CGLineSearchType {
+	/// Strong Wolfe conditions — high-quality steps but requires gradient evaluations
+	/// during search. Best for quasi-Newton methods (L-BFGS).
+	StrongWolfe,
+	/// Adaptive Armijo-only — fast (no gradient evaluations during search),
+	/// remembers previous step size. Default for CG, matches Manopt/pymanopt behavior.
+	Adaptive,
 }
 
 /// State for conjugate gradient optimization.
@@ -130,8 +144,10 @@ pub struct CGConfig<T: Scalar> {
 	pub min_beta: Option<T>,
 	/// Maximum value of beta allowed
 	pub max_beta: Option<T>,
-	/// Line search parameters
+	/// Line search parameters (used by Strong Wolfe; Adaptive uses its own defaults)
 	pub line_search_params: LineSearchParams<T>,
+	/// Line search type (default: Adaptive, matching Manopt/pymanopt)
+	pub line_search_type: CGLineSearchType,
 }
 
 impl<T: Scalar> Default for CGConfig<T> {
@@ -143,6 +159,7 @@ impl<T: Scalar> Default for CGConfig<T> {
 			min_beta: None,
 			max_beta: None,
 			line_search_params: LineSearchParams::for_conjugate_gradient(),
+			line_search_type: CGLineSearchType::Adaptive,
 		}
 	}
 }
@@ -186,6 +203,12 @@ impl<T: Scalar> CGConfig<T> {
 	/// Sets custom line search parameters.
 	pub fn with_line_search_params(mut self, params: LineSearchParams<T>) -> Self {
 		self.line_search_params = params;
+		self
+	}
+
+	/// Sets the line search type (default: Adaptive).
+	pub fn with_line_search_type(mut self, ls_type: CGLineSearchType) -> Self {
+		self.line_search_type = ls_type;
 		self
 	}
 
@@ -552,7 +575,7 @@ impl<T: Scalar> ConjugateGradient<T> {
 		Ok(false)
 	}
 
-	/// Performs Strong Wolfe line search with adaptive initial step size.
+	/// Performs line search using the configured strategy.
 	fn perform_line_search<M, C>(
 		&self,
 		cost_fn: &C,
@@ -564,6 +587,7 @@ impl<T: Scalar> ConjugateGradient<T> {
 		function_evaluations: &mut usize,
 		gradient_evaluations: &mut usize,
 		cg_state: &ConjugateGradientState<T, M::TangentVector>,
+		adaptive_ls: &mut AdaptiveLineSearch<T>,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -571,32 +595,56 @@ impl<T: Scalar> ConjugateGradient<T> {
 	{
 		let directional_derivative = manifold.inner_product(point, gradient, direction)?;
 
-		// Adaptive initial step: double last accepted step, or 1/‖d‖ on first iteration
-		let dir_norm = <T as Float>::sqrt(manifold.inner_product(point, direction, direction)?);
-		let initial_step = if let Some(prev) = cg_state.last_step_size {
-			<T as Float>::min(
-				prev * <T as Scalar>::from_f64(2.0),
-				self.config.line_search_params.max_step_size,
-			)
-		} else if dir_norm > T::zero() {
-			T::one() / dir_norm
-		} else {
-			T::one()
-		};
+		match self.config.line_search_type {
+			CGLineSearchType::Adaptive => {
+				let result = adaptive_ls.search_with_deriv(
+					cost_fn,
+					manifold,
+					point,
+					current_cost,
+					direction,
+					directional_derivative,
+					&self.config.line_search_params,
+				)?;
+				*function_evaluations += result.function_evals;
+				Ok(result)
+			}
+			CGLineSearchType::StrongWolfe => {
+				// Adaptive initial step: double last accepted step, or 1/‖d‖
+				let dir_norm = <T as Float>::sqrt(
+					manifold.inner_product(point, direction, direction)?,
+				);
+				let initial_step = if let Some(prev) = cg_state.last_step_size {
+					<T as Float>::min(
+						prev * <T as Scalar>::from_f64(2.0),
+						self.config.line_search_params.max_step_size,
+					)
+				} else if dir_norm > T::zero() {
+					T::one() / dir_norm
+				} else {
+					T::one()
+				};
 
-		let mut params = self.config.line_search_params.clone();
-		params.initial_step_size = initial_step;
+				let mut params = self.config.line_search_params.clone();
+				params.initial_step_size = initial_step;
 
-		let mut ls = StrongWolfeLineSearch::new();
-		let result = ls.search_with_deriv(
-			cost_fn, manifold, point, current_cost, direction,
-			directional_derivative, &params,
-		)?;
+				let mut ls = StrongWolfeLineSearch::new();
+				let result = ls.search_with_deriv(
+					cost_fn,
+					manifold,
+					point,
+					current_cost,
+					direction,
+					directional_derivative,
+					&params,
+				)?;
 
-		*function_evaluations += result.function_evals;
-		*gradient_evaluations += result.gradient_evals;
+				*function_evaluations += result.function_evals;
+				*gradient_evaluations += result.gradient_evals;
 
-		Ok(result)
+				Ok(result)
+			}
+		}
 	}
 }
 
@@ -631,6 +679,9 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
 		let start_time = Instant::now();
+
+		// Create adaptive line search (stateful — remembers previous step size)
+		let mut adaptive_ls = AdaptiveLineSearch::new();
 
 		// Initialize state
 		let initial_cost = cost_fn.cost(initial_point)?;
@@ -759,6 +810,7 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 				&mut function_evaluations,
 				&mut gradient_evaluations,
 				&cg_state,
+				&mut adaptive_ls,
 			)?;
 			// If the line search failed entirely (zero step), terminate —
 			// the algorithm can no longer make progress.

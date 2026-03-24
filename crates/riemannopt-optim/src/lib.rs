@@ -46,7 +46,8 @@ pub mod trust_region;
 // Re-export main optimizers for convenience
 pub use adam::{Adam, AdamConfig, AdamState, AdamStateBuilder};
 pub use conjugate_gradient::{
-	CGConfig, ConjugateGradient, ConjugateGradientMethod, ConjugateGradientState,
+	CGConfig, CGLineSearchType, ConjugateGradient, ConjugateGradientMethod,
+	ConjugateGradientState,
 };
 pub use lbfgs::{LBFGSConfig, LBFGSState, LBFGS};
 pub use natural_gradient::{FisherApproximation, NaturalGradient, NaturalGradientConfig};

@@ -100,6 +100,9 @@ pub struct NewtonConfig<T: Scalar> {
 	pub max_cg_iterations: usize,
 	/// Tolerance for CG solver
 	pub cg_tolerance: T,
+	/// Whether to use exact Hessian (via cost_fn.hessian_vector_product + ehess2rhess)
+	/// or finite differences (default: true)
+	pub use_exact_hessian: bool,
 }
 
 impl<T: Scalar> Default for NewtonConfig<T> {
@@ -110,6 +113,7 @@ impl<T: Scalar> Default for NewtonConfig<T> {
 			use_gauss_newton: false,
 			max_cg_iterations: 100,
 			cg_tolerance: <T as Scalar>::from_f64(1e-6),
+			use_exact_hessian: true,
 		}
 	}
 }
@@ -162,6 +166,7 @@ impl<T: Scalar> Newton<T> {
 		cost_fn: &impl CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		point: &M::Point,
 		gradient: &M::TangentVector,
+		euclidean_grad: &M::TangentVector,
 		result: &mut M::TangentVector,
 	) -> Result<()> {
 		// Allocate CG workspace vectors as proper TangentVectors
@@ -181,10 +186,16 @@ impl<T: Scalar> Newton<T> {
 		p.clone_from(&r);
 
 		// CG iterations
-		for _ in 0..self.config.max_cg_iterations {
-			// Compute Hessian-vector product: hp = H*p
+		for cg_iter in 0..self.config.max_cg_iterations {
+			// Compute Riemannian Hessian-vector product: hp = H*p
 			self.hessian_vector_product(
-				manifold, cost_fn, point, gradient, &p, &mut hp,
+				manifold,
+				cost_fn,
+				point,
+				gradient,
+				euclidean_grad,
+				&p,
+				&mut hp,
 			)?;
 
 			// Add regularization: hp = hp + reg*p
@@ -205,7 +216,12 @@ impl<T: Scalar> Newton<T> {
 			let php_inner = manifold.inner_product(point, &p, &hp)?;
 
 			if php_inner <= T::zero() {
-				// Non-positive curvature detected, exit CG
+				// Non-positive curvature detected.
+				// If CG hasn't made progress yet (d ≈ 0), use the negative curvature
+				// direction as a descent step (like trust region boundary step).
+				if cg_iter == 0 {
+					d.clone_from(&p);
+				}
 				break;
 			}
 
@@ -243,39 +259,48 @@ impl<T: Scalar> Newton<T> {
 		Ok(())
 	}
 
-	/// Compute Hessian-vector product using finite differences
+	/// Compute Riemannian Hessian-vector product.
 	///
-	/// This implementation reuses temporary vectors to minimize allocations.
-	/// While we still need to allocate TangentVectors (due to type constraints),
-	/// we avoid unnecessary clones by using clone_from() for efficient copying.
+	/// When `use_exact_hessian` is true, uses the cost function's exact Euclidean
+	/// HVP and converts it to Riemannian via `manifold.euclidean_to_riemannian_hessian`.
+	/// Otherwise, falls back to finite differences on the Riemannian gradient.
 	fn hessian_vector_product<M: Manifold<T>>(
 		&self,
 		manifold: &M,
 		cost_fn: &impl CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		point: &M::Point,
-		_gradient: &M::TangentVector,
+		riemannian_grad: &M::TangentVector,
+		euclidean_grad: &M::TangentVector,
 		vector: &M::TangentVector,
 		result: &mut M::TangentVector,
 	) -> Result<()> {
 		if self.config.use_gauss_newton {
-			// Gauss-Newton approximation not implemented yet
 			return Err(ManifoldError::NotImplemented {
 				feature: "Gauss-Newton approximation".to_string(),
 			});
 		}
 
-		// Use finite differences approximation
+		if self.config.use_exact_hessian {
+			// Use exact Euclidean HVP + ehess2rhess conversion
+			let ehvp = cost_fn.hessian_vector_product(point, vector)?;
+			manifold.euclidean_to_riemannian_hessian(
+				point,
+				euclidean_grad,
+				&ehvp,
+				vector,
+				result,
+			)?;
+			return Ok(());
+		}
+
+		// Fallback: finite differences on Riemannian gradient
 		let eps = T::fd_epsilon();
 
-		// Unfortunately, we still need to allocate temporary vectors as TangentVectors
-		// because the workspace returns DVector<T> but manifold operations require M::TangentVector
-		// This is a limitation of the current architecture
 		let mut scaled_vec = vector.clone();
 		let mut grad_plus_riem = vector.clone();
 		let mut grad_transported = vector.clone();
-		let mut current_grad_riem = vector.clone();
 		let mut temp = vector.clone();
-		let mut temp2 = vector.clone(); // Additional temporary for add_tangents
+		let mut temp2 = vector.clone();
 
 		// Compute perturbed direction: eps * v
 		manifold.scale_tangent(point, eps, vector, &mut scaled_vec)?;
@@ -292,18 +317,12 @@ impl<T: Scalar> Newton<T> {
 		// Transport gradient back to original point
 		manifold.parallel_transport(&x_plus, point, &grad_plus_riem, &mut grad_transported)?;
 
-		// Get current gradient
-		let current_grad = cost_fn.gradient(point)?;
-		current_grad_riem.clone_from(&current_grad);
-		manifold.euclidean_to_riemannian_gradient(point, &current_grad, &mut current_grad_riem)?;
-
-		// Compute finite difference: (grad_transported - current_grad_riem) / eps
-		manifold.scale_tangent(point, -T::one(), &current_grad_riem, &mut temp)?;
+		// Compute finite difference: (grad_transported - riemannian_grad) / eps
+		manifold.scale_tangent(point, -T::one(), riemannian_grad, &mut temp)?;
 		manifold.add_tangents(point, &grad_transported, &temp, result, &mut temp2)?;
 		manifold.scale_tangent(point, T::one() / eps, result, &mut temp)?;
 
-		// Project back to tangent space — the FD approximation accumulates
-		// numerical errors that can push the result out of T_x M
+		// Project back to tangent space
 		manifold.project_tangent(point, &temp, result)?;
 
 		Ok(())
@@ -409,7 +428,7 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 		let mut current_cost = cost_fn.cost(&current_point)?;
 		let mut previous_cost = None;
 
-		let euclidean_grad = cost_fn.gradient(&current_point)?;
+		let mut euclidean_grad = cost_fn.gradient(&current_point)?;
 		let mut riemannian_grad = euclidean_grad.clone();
 		manifold.euclidean_to_riemannian_gradient(
 			&current_point,
@@ -472,6 +491,7 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 				cost_fn,
 				&current_point,
 				&riemannian_grad,
+				&euclidean_grad,
 				&mut newton_dir,
 			)?;
 
@@ -506,7 +526,7 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 
 			// Compute new cost and gradient
 			current_cost = cost_fn.cost(&current_point)?;
-			let euclidean_grad = cost_fn.gradient(&current_point)?;
+			euclidean_grad = cost_fn.gradient(&current_point)?;
 			manifold.euclidean_to_riemannian_gradient(
 				&current_point,
 				&euclidean_grad,

@@ -820,6 +820,24 @@ where
 		self.project_tangent(point, euclidean_grad, result)
 	}
 
+	fn euclidean_to_riemannian_hessian(
+		&self,
+		point: &Self::Point,
+		euclidean_grad: &Self::TangentVector,
+		euclidean_hvp: &Self::TangentVector,
+		tangent_vector: &Self::TangentVector,
+		result: &mut Self::TangentVector,
+	) -> Result<()> {
+		// Sphere ehess2rhess:
+		// rhess = project(point, ehess) - ⟨point, egrad⟩ · ξ
+		// The second term is the Weingarten correction for the sphere.
+		self.project_tangent(point, euclidean_hvp, result)?;
+		let pt_egrad = point.dot(euclidean_grad);
+		// result = result - pt_egrad * tangent_vector
+		result.axpy(-pt_egrad, tangent_vector, T::one());
+		Ok(())
+	}
+
 	fn parallel_transport(
 		&self,
 		from: &Self::Point,

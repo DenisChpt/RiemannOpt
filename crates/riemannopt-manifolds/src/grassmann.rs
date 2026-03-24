@@ -578,30 +578,13 @@ where
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.nrows() != self.n
-			|| point.ncols() != self.p
-			|| vector.nrows() != self.n
-			|| vector.ncols() != self.p
-		{
-			return Err(ManifoldError::dimension_mismatch(
-				self.n * self.p,
-				point.nrows() * point.ncols(),
-			));
-		}
-
-		// Check that point is on manifold
-		let yty = point.transpose().mat_mul(point);
-		let identity = linalg::Mat::<T>::identity(self.p);
-		if yty.sub(&identity).norm() > self.tolerance {
-			return Err(ManifoldError::invalid_point(
-				"Point must be on Grassmann for tangent projection",
-			));
-		}
-
-		// Horizontal projection: Z - Y(Y^T Z)
-		let ytz = point.transpose().mat_mul(vector);
-		*result = vector.sub(&point.mat_mul(&ytz));
-
+		// Horizontal projection: result = Z - Y(Y^T Z)
+		// Uses in-place GEMM to avoid allocating n×p temporaries.
+		// Only allocates one small p×p buffer for Y^T Z.
+		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
+		ytz.gemm_at(T::one(), point, vector, T::zero()); // ytz = Y^T Z
+		result.copy_from(vector);
+		result.gemm(-T::one(), point, &ytz, T::one()); // result = Z - Y(Y^T Z)
 		Ok(())
 	}
 
@@ -629,19 +612,19 @@ where
 		result: &mut Self::Point,
 	) -> Result<()> {
 		// Polar retraction via SVD: Y = X + G;  U Σ V^T = SVD(Y);  return U V^T
-		// This is the standard choice in pymanopt and manopt (grassmannfactory.m lines 165-188).
-		// Polar retraction is compatible with projection-based vector transport,
-		// unlike QR retraction which is representation-dependent.
-		let y = point.add(tangent);
-		let svd = y.svd();
+		// Compute Y = X + G in-place into result (avoids n×p allocation).
+		result.copy_from(point);
+		result.add_assign(tangent);
+
+		// SVD (internal faer allocations unavoidable)
+		let svd = result.svd();
 		match (svd.u, svd.vt) {
 			(Some(u), Some(vt)) => {
-				let polar = u.mat_mul(&vt);
-				result.copy_from(&polar);
+				// U * V^T via in-place GEMM (avoids n×p allocation)
+				result.gemm(T::one(), &u, &vt, T::zero());
 				Ok(())
 			}
 			_ => {
-				// Fallback to QR if SVD fails (shouldn't happen in practice)
 				let retracted = self.qr_retraction(point, tangent)?;
 				result.copy_from(&retracted);
 				Ok(())
@@ -672,6 +655,30 @@ where
 	) -> Result<()> {
 		// Riemannian gradient is the horizontal projection of Euclidean gradient
 		self.project_tangent(point, euclidean_grad, result)
+	}
+
+	fn euclidean_to_riemannian_hessian(
+		&self,
+		point: &Self::Point,
+		euclidean_grad: &Self::TangentVector,
+		euclidean_hvp: &Self::TangentVector,
+		tangent_vector: &Self::TangentVector,
+		result: &mut Self::TangentVector,
+	) -> Result<()> {
+		// Grassmann ehess2rhess (cf. pymanopt grassmann.py):
+		// rhess = project(point, ehess) - ξ @ (Y^T @ egrad)
+		//
+		// Step 1: result = project(point, ehess) = ehess - Y(Y^T ehess)
+		self.project_tangent(point, euclidean_hvp, result)?;
+
+		// Step 2: curvature correction via in-place GEMM
+		// Reuse a small p×p buffer for Y^T egrad
+		let mut ytg = linalg::Mat::<T>::zeros(self.p, self.p);
+		ytg.gemm_at(T::one(), point, euclidean_grad, T::zero()); // ytg = Y^T egrad
+
+		// result -= ξ (Y^T egrad)  (in-place, no n×p allocation)
+		result.gemm(-T::one(), tangent_vector, &ytg, T::one());
+		Ok(())
 	}
 
 	fn parallel_transport(
