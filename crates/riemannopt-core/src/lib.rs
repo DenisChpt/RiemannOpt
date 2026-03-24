@@ -15,7 +15,6 @@
 //!
 //! - [`core`]: Core traits and types (manifold, cost function, error, types)
 //! - [`linalg`]: Linear algebra abstractions and backends
-//! - [`simd`]: SIMD-accelerated computational backends
 //! - [`optimization`]: Optimization algorithms and utilities
 //! - [`utils`]: Utility functions and test helpers
 
@@ -25,7 +24,6 @@
 pub mod core;
 pub mod linalg;
 pub mod optimization;
-pub mod simd;
 pub mod utils;
 
 // Re-export key items from core for backward compatibility
@@ -89,11 +87,6 @@ pub mod prelude {
 		StoppingCriterion,
 		StrongWolfeLineSearch,
 		TerminationReason,
-	};
-
-	// SIMD components
-	pub use crate::simd::{
-		get_dispatcher, ScalarDispatch, SimdBackend, SimdDispatcher, SimdOps, SimdVector,
 	};
 
 	// Utils

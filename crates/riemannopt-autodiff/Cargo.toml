@@ -11,7 +11,6 @@ description = "Automatic differentiation for Riemannian optimization"
 
 [dependencies]
 riemannopt-core = { path = "../riemannopt-core", version = "0.1.0" }
-nalgebra = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
 

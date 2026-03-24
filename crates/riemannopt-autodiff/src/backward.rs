@@ -227,34 +227,44 @@ pub fn backward(tape: &Tape, output: Var) -> Gradients {
 
 			// ── linear algebra ─────────────────────────────────────
 			OpCode::MatMul(a, b, m, k, n_cols) => {
+				use riemannopt_core::linalg::MatrixOps;
+				type Mat = riemannopt_core::linalg::Mat<f64>;
+
 				let (m, k, n_cols) = (m as usize, k as usize, n_cols as usize);
 				let av = tape.entry_value(a.0 as usize);
 				let bv = tape.entry_value(b.0 as usize);
 
-				// Use nalgebra for MatMul gradients.
-				let grad_out = nalgebra::DMatrixView::from_slice_generic(
-					&grad_buf,
-					nalgebra::Dyn(m),
-					nalgebra::Dyn(n_cols),
-				);
-				let a_mat = nalgebra::DMatrixView::from_slice_generic(
-					av,
-					nalgebra::Dyn(m),
-					nalgebra::Dyn(k),
-				);
-				let b_mat = nalgebra::DMatrixView::from_slice_generic(
-					bv,
-					nalgebra::Dyn(k),
-					nalgebra::Dyn(n_cols),
-				);
+				let grad_out = Mat::from_column_slice(m, n_cols, &grad_buf[..m * n_cols]);
+				let a_mat = Mat::from_column_slice(m, k, av);
+				let b_mat = Mat::from_column_slice(k, n_cols, bv);
 
-				// grad_A = grad_out * B^T
-				let ga_mat = &grad_out * b_mat.transpose();
-				// grad_B = A^T * grad_out
-				let gb_mat = a_mat.transpose() * &grad_out;
+				// grad_A = grad_out * B^T  (m×n * n×k → m×k)
+				let bt = MatrixOps::transpose(&b_mat);
+				let ga_mat = grad_out.mat_mul(&bt);
+				// grad_B = A^T * grad_out  (k×m * m×n → k×n)
+				let at = MatrixOps::transpose(&a_mat);
+				let gb_mat = at.mat_mul(&grad_out);
 
-				accum(&mut grads, a.0 as usize, ga_mat.as_slice());
-				accum(&mut grads, b.0 as usize, gb_mat.as_slice());
+				// Extract column-major data (mat_mul may return non-contiguous layout)
+				let ga_rows = MatrixOps::nrows(&ga_mat);
+				let ga_cols = MatrixOps::ncols(&ga_mat);
+				let mut ga_data = vec![0.0f64; ga_rows * ga_cols];
+				for j in 0..ga_cols {
+					for i in 0..ga_rows {
+						ga_data[i + j * ga_rows] = *ga_mat.get(i, j);
+					}
+				}
+				accum(&mut grads, a.0 as usize, &ga_data);
+
+				let gb_rows = MatrixOps::nrows(&gb_mat);
+				let gb_cols = MatrixOps::ncols(&gb_mat);
+				let mut gb_data = vec![0.0f64; gb_rows * gb_cols];
+				for j in 0..gb_cols {
+					for i in 0..gb_rows {
+						gb_data[i + j * gb_rows] = *gb_mat.get(i, j);
+					}
+				}
+				accum(&mut grads, b.0 as usize, &gb_data);
 			}
 			OpCode::Trace(a) => {
 				let (r, _) = tape.entries[a.0 as usize].shape;
