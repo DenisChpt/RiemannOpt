@@ -4,13 +4,14 @@
 //! that work with dynamic vectors (DVector), which is common in many
 //! optimization problems.
 
+use crate::linalg::{self, LinAlgBackend};
 use crate::{
 	core::cost_function::CostFunction,
 	error::Result,
 	memory::Workspace,
 	types::{constants, Scalar},
 };
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DVector;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -318,7 +319,10 @@ where
 		self.inner.gradient_fd_alloc(point)
 	}
 
-	fn hessian(&self, point: &Self::Point) -> Result<DMatrix<f64>> {
+	fn hessian(&self, point: &Self::Point) -> Result<linalg::Mat<f64>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<f64>,
+	{
 		// Hessians are typically too large to cache effectively
 		self.inner.hessian(point)
 	}

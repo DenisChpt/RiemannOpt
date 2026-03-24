@@ -30,6 +30,7 @@
 pub mod compute;
 pub mod config;
 pub mod core;
+pub mod linalg;
 pub mod manifold_ops;
 pub mod memory;
 pub mod numerical;

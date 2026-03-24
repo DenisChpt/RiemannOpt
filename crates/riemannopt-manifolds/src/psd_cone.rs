@@ -101,28 +101,30 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::PSDCone;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DVector;
+//! use riemannopt_core::linalg::{self, VectorOps, MatrixOps, DecompositionOps};
 //!
 //! // Create S⁺(3) - 3×3 PSD matrices
 //! let psd_cone = PSDCone::new(3)?;
 //!
 //! // Random PSD matrix (stored as vector)
-//! let mut x = DVector::<f64>::zeros(6);
-//! psd_cone.random_point(&mut x)?;
+//! let mut x = linalg::Vec::<f64>::zeros(6);
+//! <PSDCone as Manifold<f64>>::random_point(&psd_cone, &mut x)?;
 //!
 //! // Verify positive semi-definiteness
-//! let x_mat = psd_cone.vector_to_matrix(&x);
-//! let eigenvalues = x_mat.symmetric_eigen().eigenvalues;
-//! assert!(eigenvalues.iter().all(|&λ| λ >= -1e-10));
+//! let x_mat = psd_cone.vector_to_matrix::<f64>(&x);
+//! let eigenvalues: linalg::Vec<f64> = DecompositionOps::symmetric_eigen(&x_mat).eigenvalues;
+//! for i in 0..eigenvalues.len() {
+//!     assert!(VectorOps::get(&eigenvalues, i) >= -1e-10);
+//! }
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::{DMatrix, DVector};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -233,18 +235,21 @@ impl PSDCone {
 	///
 	/// - `DimensionMismatch`: If matrix is not n×n
 	/// - `InvalidPoint`: If matrix is not symmetric or not PSD
-	pub fn check_matrix<T: Scalar>(&self, x: &DMatrix<T>) -> Result<()> {
-		if x.nrows() != self.n || x.ncols() != self.n {
+	pub fn check_matrix<T: Scalar>(&self, x: &linalg::Mat<T>) -> Result<()>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(x) != self.n || MatrixOps::ncols(x) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", x.nrows(), x.ncols()),
+				format!("{}×{}", MatrixOps::nrows(x), MatrixOps::ncols(x)),
 			));
 		}
 
 		// Check symmetry
 		for i in 0..self.n {
 			for j in i + 1..self.n {
-				if <T as Float>::abs(x[(i, j)] - x[(j, i)])
+				if <T as Float>::abs(MatrixOps::get(x, i, j) - MatrixOps::get(x, j, i))
 					> <T as Scalar>::from_f64(self.tolerance)
 				{
 					return Err(ManifoldError::invalid_point(format!(
@@ -253,7 +258,7 @@ impl PSDCone {
 						j,
 						j,
 						i,
-						<T as Float>::abs(x[(i, j)] - x[(j, i)]),
+						<T as Float>::abs(MatrixOps::get(x, i, j) - MatrixOps::get(x, j, i)),
 						self.tolerance
 					)));
 				}
@@ -261,15 +266,15 @@ impl PSDCone {
 		}
 
 		// Check eigenvalues
-		let eigen = x.clone().symmetric_eigen();
+		let eigen = DecompositionOps::symmetric_eigen(x);
 		let min_eigenvalue =
-			eigen
-				.eigenvalues
-				.iter()
-				.fold(
-					<T as Float>::max_value(),
-					|min, &val| if val < min { val } else { min },
-				);
+			VectorOps::iter(&eigen.eigenvalues).fold(<T as Float>::max_value(), |min, val| {
+				if val < min {
+					val
+				} else {
+					min
+				}
+			});
 
 		let threshold = if self.strict {
 			<T as Scalar>::from_f64(self.tolerance)
@@ -297,29 +302,39 @@ impl PSDCone {
 	///
 	/// Uses the standard vectorization with √2 scaling for off-diagonal elements
 	/// to preserve the Frobenius inner product.
-	pub fn matrix_to_vector<T: Scalar>(&self, mat: &DMatrix<T>) -> DVector<T> {
+	pub fn matrix_to_vector<T: Scalar>(&self, mat: &linalg::Mat<T>) -> linalg::Vec<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.mat_to_vec(mat)
 	}
 
 	/// Converts a vector to its symmetric matrix form.
-	pub fn vector_to_matrix<T: Scalar>(&self, vec: &DVector<T>) -> DMatrix<T> {
+	pub fn vector_to_matrix<T: Scalar>(&self, vec: &linalg::Vec<T>) -> linalg::Mat<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.vec_to_mat(vec)
 	}
 
 	/// Convert a symmetric matrix to vector form (upper triangular part)
-	fn mat_to_vec<T: Scalar>(&self, mat: &DMatrix<T>) -> DVector<T> {
+	fn mat_to_vec<T: Scalar>(&self, mat: &linalg::Mat<T>) -> linalg::Vec<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		let n = self.n;
 		let dim = n * (n + 1) / 2;
-		let mut vec = DVector::zeros(dim);
+		let mut vec = <linalg::Vec<T> as VectorOps<T>>::zeros(dim);
 		let mut idx = 0;
 
 		for i in 0..n {
 			for j in i..n {
 				if i == j {
-					vec[idx] = mat[(i, j)];
+					*VectorOps::get_mut(&mut vec, idx) = MatrixOps::get(mat, i, j);
 				} else {
 					// Store off-diagonal elements with sqrt(2) scaling for proper inner product
-					vec[idx] = mat[(i, j)] * <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
+					*VectorOps::get_mut(&mut vec, idx) = MatrixOps::get(mat, i, j)
+						* <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
 				}
 				idx += 1;
 			}
@@ -329,20 +344,24 @@ impl PSDCone {
 	}
 
 	/// Convert vector to symmetric matrix
-	fn vec_to_mat<T: Scalar>(&self, vec: &DVector<T>) -> DMatrix<T> {
+	fn vec_to_mat<T: Scalar>(&self, vec: &linalg::Vec<T>) -> linalg::Mat<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		let n = self.n;
-		let mut mat = DMatrix::zeros(n, n);
+		let mut mat = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 		let mut idx = 0;
 
 		for i in 0..n {
 			for j in i..n {
 				if i == j {
-					mat[(i, j)] = vec[idx];
+					*MatrixOps::get_mut(&mut mat, i, j) = VectorOps::get(vec, idx);
 				} else {
 					// Unscale off-diagonal elements
-					let val = vec[idx] / <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
-					mat[(i, j)] = val;
-					mat[(j, i)] = val;
+					let val = VectorOps::get(vec, idx)
+						/ <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
+					*MatrixOps::get_mut(&mut mat, i, j) = val;
+					*MatrixOps::get_mut(&mut mat, j, i) = val;
 				}
 				idx += 1;
 			}
@@ -352,42 +371,53 @@ impl PSDCone {
 	}
 
 	/// Project a matrix to the PSD cone
-	fn project_to_psd<T: Scalar>(&self, mat: &DMatrix<T>) -> DMatrix<T> {
+	fn project_to_psd<T: Scalar>(&self, mat: &linalg::Mat<T>) -> linalg::Mat<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		// Symmetrize first
-		let sym = (mat.clone() + mat.transpose()) / <T as Scalar>::from_f64(2.0);
+		let sym = MatrixOps::scale_by(
+			&MatrixOps::add(mat, &MatrixOps::transpose(mat)),
+			<T as Scalar>::from_f64(0.5),
+		);
 
 		// Eigendecomposition
-		let eigen = sym.clone().symmetric_eigen();
+		let eigen = DecompositionOps::symmetric_eigen(&sym);
 		let mut eigenvalues = eigen.eigenvalues.clone();
 
 		// Project eigenvalues to non-negative
-		for i in 0..eigenvalues.len() {
-			if eigenvalues[i] < T::zero() {
-				eigenvalues[i] = T::zero();
+		for i in 0..VectorOps::len(&eigenvalues) {
+			if VectorOps::get(&eigenvalues, i) < T::zero() {
+				*VectorOps::get_mut(&mut eigenvalues, i) = T::zero();
 			}
 		}
 
 		// Reconstruct
-		let q = eigen.eigenvectors;
-		let d = DMatrix::from_diagonal(&eigenvalues);
-		&q * &d * q.transpose()
+		let q = &eigen.eigenvectors;
+		let d = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&eigenvalues);
+		let temp = MatrixOps::mat_mul(q, &d);
+		MatrixOps::mat_mul(&temp, &MatrixOps::transpose(q))
 	}
 
 	/// Check if a matrix is in the PSD cone
-	fn is_psd<T: Scalar>(&self, mat: &DMatrix<T>, tol: T) -> bool {
+	fn is_psd<T: Scalar>(&self, mat: &linalg::Mat<T>, tol: T) -> bool
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		// Check symmetry
 		for i in 0..self.n {
 			for j in i + 1..self.n {
-				if <T as Float>::abs(mat[(i, j)] - mat[(j, i)]) > tol {
+				if <T as Float>::abs(MatrixOps::get(mat, i, j) - MatrixOps::get(mat, j, i)) > tol {
 					return false;
 				}
 			}
 		}
 
 		// Check positive semi-definiteness
-		let eigen = mat.clone().symmetric_eigen();
+		let eigen = DecompositionOps::symmetric_eigen(mat);
 		let threshold = if self.strict { tol } else { -tol };
-		eigen.eigenvalues.iter().all(|&lambda| lambda >= threshold)
+		let result = VectorOps::iter(&eigen.eigenvalues).all(|lambda| lambda >= threshold);
+		result
 	}
 
 	/// Projects a matrix onto the PSD cone.
@@ -406,11 +436,14 @@ impl PSDCone {
 	/// # Returns
 	///
 	/// The projected PSD matrix.
-	pub fn project_matrix<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<DMatrix<T>> {
-		if mat.nrows() != self.n || mat.ncols() != self.n {
+	pub fn project_matrix<T: Scalar>(&self, mat: &linalg::Mat<T>) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(mat) != self.n || MatrixOps::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", mat.nrows(), mat.ncols()),
+				format!("{}×{}", MatrixOps::nrows(mat), MatrixOps::ncols(mat)),
 			));
 		}
 
@@ -433,47 +466,62 @@ impl PSDCone {
 	/// # Returns
 	///
 	/// The Frobenius distance to the nearest PSD matrix.
-	pub fn distance_to_cone<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<T> {
-		if mat.nrows() != self.n || mat.ncols() != self.n {
+	pub fn distance_to_cone<T: Scalar>(&self, mat: &linalg::Mat<T>) -> Result<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(mat) != self.n || MatrixOps::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", mat.nrows(), mat.ncols()),
+				format!("{}×{}", MatrixOps::nrows(mat), MatrixOps::ncols(mat)),
 			));
 		}
 
 		let projected = self.project_to_psd(mat);
-		let diff = mat - &projected;
-		Ok(<T as Float>::sqrt(diff.dot(&diff)))
+		let diff = MatrixOps::sub(mat, &projected);
+		Ok(MatrixOps::norm(&diff))
 	}
 
 	/// Computes the minimum eigenvalue of a matrix.
 	///
 	/// Useful for checking how far a matrix is from being PSD.
-	pub fn minimum_eigenvalue<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<T> {
-		if mat.nrows() != self.n || mat.ncols() != self.n {
+	pub fn minimum_eigenvalue<T: Scalar>(&self, mat: &linalg::Mat<T>) -> Result<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(mat) != self.n || MatrixOps::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", mat.nrows(), mat.ncols()),
+				format!("{}×{}", MatrixOps::nrows(mat), MatrixOps::ncols(mat)),
 			));
 		}
 
 		// Symmetrize first
-		let sym = (mat + &mat.transpose()) / <T as Scalar>::from_f64(2.0);
-		let eigen = sym.symmetric_eigen();
+		let sym = MatrixOps::scale_by(
+			&MatrixOps::add(mat, &MatrixOps::transpose(mat)),
+			<T as Scalar>::from_f64(0.5),
+		);
+		let eigen = DecompositionOps::symmetric_eigen(&sym);
 
-		Ok(eigen
-			.eigenvalues
-			.iter()
-			.fold(
-				<T as Float>::max_value(),
-				|min, &val| if val < min { val } else { min },
-			))
+		Ok(
+			VectorOps::iter(&eigen.eigenvalues).fold(<T as Float>::max_value(), |min, val| {
+				if val < min {
+					val
+				} else {
+					min
+				}
+			}),
+		)
 	}
 }
 
-impl<T: Scalar> Manifold<T> for PSDCone {
-	type Point = DVector<T>;
-	type TangentVector = DVector<T>;
+impl<T> Manifold<T> for PSDCone
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Vec<T>;
+	type TangentVector = linalg::Vec<T>;
 
 	fn name(&self) -> &str {
 		"PSDCone"
@@ -484,7 +532,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-		if point.len() != self.n * (self.n + 1) / 2 {
+		if VectorOps::len(point) != self.n * (self.n + 1) / 2 {
 			return false;
 		}
 
@@ -502,7 +550,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 			return false;
 		}
 
-		if vector.len() != self.n * (self.n + 1) / 2 {
+		if VectorOps::len(vector) != self.n * (self.n + 1) / 2 {
 			return false;
 		}
 
@@ -513,7 +561,8 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 		// Check symmetry
 		for i in 0..self.n {
 			for j in i + 1..self.n {
-				if <T as Float>::abs(mat[(i, j)] - mat[(j, i)]) > tol {
+				if <T as Float>::abs(MatrixOps::get(&mat, i, j) - MatrixOps::get(&mat, j, i)) > tol
+				{
 					return false;
 				}
 			}
@@ -526,14 +575,16 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 
 		// Check if tangent respects the cone constraint at boundary
 		let x_mat = self.vec_to_mat(point);
-		let eigen = x_mat.clone().symmetric_eigen();
+		let eigen = DecompositionOps::symmetric_eigen(&x_mat);
 
 		// Find near-zero eigenvalues (boundary)
-		for (i, &lambda) in eigen.eigenvalues.iter().enumerate() {
+		for i in 0..VectorOps::len(&eigen.eigenvalues) {
+			let lambda = VectorOps::get(&eigen.eigenvalues, i);
 			if <T as Float>::abs(lambda) < <T as Scalar>::from_f64(self.tolerance) {
 				// For zero eigenvalue, check v^T V v >= 0 where v is eigenvector
-				let v = eigen.eigenvectors.column(i);
-				let vt_mat_v = v.dot(&(&mat * v));
+				let v = MatrixOps::column(&eigen.eigenvectors, i);
+				let mat_v = MatrixOps::mat_vec(&mat, &v);
+				let vt_mat_v = VectorOps::dot(&v, &mat_v);
 				if vt_mat_v < -tol {
 					return false;
 				}
@@ -544,19 +595,24 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
+		let dim = self.n * (self.n + 1) / 2;
 		// Ensure result has correct size
-		if result.len() != self.n * (self.n + 1) / 2 {
-			*result = DVector::zeros(self.n * (self.n + 1) / 2);
+		if VectorOps::len(result) != dim {
+			*result = VectorOps::zeros(dim);
 		}
 
-		let mat = if point.len() == self.n * self.n {
+		let mat = if VectorOps::len(point) == self.n * self.n {
 			// If given as full matrix, reshape
-			DMatrix::from_vec(self.n, self.n, point.as_slice().to_vec())
-		} else if point.len() == self.n * (self.n + 1) / 2 {
+			<linalg::Mat<T> as MatrixOps<T>>::from_column_slice(
+				self.n,
+				self.n,
+				VectorOps::as_slice(point),
+			)
+		} else if VectorOps::len(point) == dim {
 			self.vec_to_mat(point)
 		} else {
 			// Wrong size, create zero matrix
-			DMatrix::zeros(self.n, self.n)
+			<linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n)
 		};
 
 		let projected = self.project_to_psd(&mat);
@@ -570,39 +626,49 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
+		let dim = self.n * (self.n + 1) / 2;
 		// Ensure result has correct size
-		if result.len() != self.n * (self.n + 1) / 2 {
-			*result = DVector::zeros(self.n * (self.n + 1) / 2);
+		if VectorOps::len(result) != dim {
+			*result = VectorOps::zeros(dim);
 		}
 
 		// Check dimensions
-		if point.len() != self.n * (self.n + 1) / 2 || vector.len() != self.n * (self.n + 1) / 2 {
+		if VectorOps::len(point) != dim || VectorOps::len(vector) != dim {
 			return Err(ManifoldError::dimension_mismatch(
-				format!("{}", self.n * (self.n + 1) / 2),
-				format!("{}", point.len().max(vector.len())),
+				format!("{}", dim),
+				format!("{}", VectorOps::len(point).max(VectorOps::len(vector))),
 			));
 		}
 
 		// For PSD cone, tangent projection is symmetrization
 		let mat = self.vec_to_mat(vector);
-		let sym = (mat.clone() + mat.transpose()) / <T as Scalar>::from_f64(2.0);
+		let sym = MatrixOps::scale_by(
+			&MatrixOps::add(&mat, &MatrixOps::transpose(&mat)),
+			<T as Scalar>::from_f64(0.5),
+		);
 
 		// For boundary points, additional projection may be needed
 		if !self.strict {
 			let x_mat = self.vec_to_mat(point);
-			let eigen = x_mat.clone().symmetric_eigen();
+			let eigen = DecompositionOps::symmetric_eigen(&x_mat);
 
 			// Project out components that violate cone constraint
 			let mut proj_mat = sym.clone();
-			for (i, &lambda) in eigen.eigenvalues.iter().enumerate() {
+			for i in 0..VectorOps::len(&eigen.eigenvalues) {
+				let lambda = VectorOps::get(&eigen.eigenvalues, i);
 				if <T as Float>::abs(lambda) < <T as Scalar>::from_f64(self.tolerance) {
 					// Zero eigenvalue: project to ensure v^T V v >= 0
-					let v = eigen.eigenvectors.column(i);
-					let vt_mat_v = v.dot(&(&sym * v));
+					let v = MatrixOps::column(&eigen.eigenvectors, i);
+					let sym_v = MatrixOps::mat_vec(&sym, &v);
+					let vt_mat_v = VectorOps::dot(&v, &sym_v);
 					if vt_mat_v < T::zero() {
-						// Project out the violating component
-						let vvt = &v * v.transpose();
-						proj_mat = proj_mat - vvt * vt_mat_v;
+						// Project out the violating component: vvt * scalar
+						let vvt =
+							<linalg::Mat<T> as MatrixOps<T>>::from_fn(self.n, self.n, |r, c| {
+								VectorOps::get(&v, r) * VectorOps::get(&v, c)
+							});
+						let correction = MatrixOps::scale_by(&vvt, vt_mat_v);
+						proj_mat.sub_assign(&correction);
 					}
 				}
 			}
@@ -623,15 +689,16 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
 	) -> Result<T> {
-		if u.len() != self.n * (self.n + 1) / 2 || v.len() != self.n * (self.n + 1) / 2 {
+		let dim = self.n * (self.n + 1) / 2;
+		if VectorOps::len(u) != dim || VectorOps::len(v) != dim {
 			return Err(ManifoldError::dimension_mismatch(
-				format!("{}", self.n * (self.n + 1) / 2),
-				format!("{}", u.len().max(v.len())),
+				format!("{}", dim),
+				format!("{}", VectorOps::len(u).max(VectorOps::len(v))),
 			));
 		}
 
 		// Standard Frobenius inner product (with √2 scaling already in vectors)
-		Ok(u.dot(v))
+		Ok(VectorOps::dot(u, v))
 	}
 
 	fn retract(
@@ -640,23 +707,24 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
 	) -> Result<()> {
-		if point.len() != self.n * (self.n + 1) / 2 || tangent.len() != self.n * (self.n + 1) / 2 {
+		let dim = self.n * (self.n + 1) / 2;
+		if VectorOps::len(point) != dim || VectorOps::len(tangent) != dim {
 			return Err(ManifoldError::dimension_mismatch(
-				format!("{}", self.n * (self.n + 1) / 2),
-				format!("{}", point.len().max(tangent.len())),
+				format!("{}", dim),
+				format!("{}", VectorOps::len(point).max(VectorOps::len(tangent))),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.n * (self.n + 1) / 2 {
-			*result = DVector::zeros(self.n * (self.n + 1) / 2);
+		if VectorOps::len(result) != dim {
+			*result = VectorOps::zeros(dim);
 		}
 
 		let x_mat = self.vec_to_mat(point);
 		let v_mat = self.vec_to_mat(tangent);
 
 		// Simple retraction: project(X + V)
-		let new_mat = &x_mat + &v_mat;
+		let new_mat = MatrixOps::add(&x_mat, &v_mat);
 		let projected = self.project_to_psd(&new_mat);
 
 		let projected_vec = self.mat_to_vec(&projected);
@@ -670,20 +738,21 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.n * (self.n + 1) / 2 || other.len() != self.n * (self.n + 1) / 2 {
+		let dim = self.n * (self.n + 1) / 2;
+		if VectorOps::len(point) != dim || VectorOps::len(other) != dim {
 			return Err(ManifoldError::dimension_mismatch(
-				format!("{}", self.n * (self.n + 1) / 2),
-				format!("{}", point.len().max(other.len())),
+				format!("{}", dim),
+				format!("{}", VectorOps::len(point).max(VectorOps::len(other))),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.n * (self.n + 1) / 2 {
-			*result = DVector::zeros(self.n * (self.n + 1) / 2);
+		if VectorOps::len(result) != dim {
+			*result = VectorOps::zeros(dim);
 		}
 
 		// Simple approximation: project the difference
-		let diff = other - point;
+		let diff = VectorOps::sub(other, point);
 		self.project_tangent(point, &diff, result)
 	}
 
@@ -702,51 +771,53 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 		let normal = StandardNormal;
 
 		// Generate random symmetric matrix
-		let mut mat = DMatrix::zeros(self.n, self.n);
+		let mut mat = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
 		for i in 0..self.n {
 			for j in i..self.n {
 				let val: f64 = normal.sample(&mut rng);
-				mat[(i, j)] = <T as Scalar>::from_f64(val);
+				*MatrixOps::get_mut(&mut mat, i, j) = <T as Scalar>::from_f64(val);
 				if i != j {
-					mat[(j, i)] = <T as Scalar>::from_f64(val);
+					*MatrixOps::get_mut(&mut mat, j, i) = <T as Scalar>::from_f64(val);
 				}
 			}
 		}
 
 		// Make it PSD by X = A^T A
-		let psd = mat.transpose() * &mat;
+		let psd = MatrixOps::mat_mul(&MatrixOps::transpose(&mat), &mat);
 
 		// Scale to reasonable size
-		let psd_scaled = psd / <T as Scalar>::from_f64(self.n as f64);
+		let psd_scaled =
+			MatrixOps::scale_by(&psd, T::one() / <T as Scalar>::from_f64(self.n as f64));
 
 		*result = self.mat_to_vec(&psd_scaled);
 		Ok(())
 	}
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
-		if point.len() != self.n * (self.n + 1) / 2 {
+		let dim = self.n * (self.n + 1) / 2;
+		if VectorOps::len(point) != dim {
 			return Err(ManifoldError::dimension_mismatch(
-				format!("{}", self.n * (self.n + 1) / 2),
-				format!("{}", point.len()),
+				format!("{}", dim),
+				format!("{}", VectorOps::len(point)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.n * (self.n + 1) / 2 {
-			*result = DVector::zeros(self.n * (self.n + 1) / 2);
+		if VectorOps::len(result) != dim {
+			*result = VectorOps::zeros(dim);
 		}
 
 		let mut rng = rand::rng();
 		let normal = StandardNormal;
 
 		// Generate random symmetric matrix
-		let mut mat = DMatrix::zeros(self.n, self.n);
+		let mut mat = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
 		for i in 0..self.n {
 			for j in i..self.n {
 				let val: f64 = normal.sample(&mut rng);
-				mat[(i, j)] = <T as Scalar>::from_f64(val);
+				*MatrixOps::get_mut(&mut mat, i, j) = <T as Scalar>::from_f64(val);
 				if i != j {
-					mat[(j, i)] = <T as Scalar>::from_f64(val);
+					*MatrixOps::get_mut(&mut mat, j, i) = <T as Scalar>::from_f64(val);
 				}
 			}
 		}
@@ -756,16 +827,17 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		if x.len() != self.n * (self.n + 1) / 2 || y.len() != self.n * (self.n + 1) / 2 {
+		let dim = self.n * (self.n + 1) / 2;
+		if VectorOps::len(x) != dim || VectorOps::len(y) != dim {
 			return Err(ManifoldError::dimension_mismatch(
-				format!("{}", self.n * (self.n + 1) / 2),
-				format!("{}", x.len().max(y.len())),
+				format!("{}", dim),
+				format!("{}", VectorOps::len(x).max(VectorOps::len(y))),
 			));
 		}
 
 		// Frobenius distance
-		let diff = y - x;
-		Ok(<T as Float>::sqrt(diff.dot(&diff)))
+		let diff = VectorOps::sub(y, x);
+		Ok(VectorOps::norm(&diff))
 	}
 
 	fn parallel_transport(
@@ -798,7 +870,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 		// For PSD cone with Euclidean metric, tangent vectors are symmetric matrices
 		// Scaling preserves symmetry
 		result.copy_from(tangent);
-		*result *= scalar;
+		result.scale_mut(scalar);
 		Ok(())
 	}
 
@@ -813,7 +885,7 @@ impl<T: Scalar> Manifold<T> for PSDCone {
 	) -> Result<()> {
 		// Add the tangent vectors
 		temp.copy_from(v1);
-		*temp += v2;
+		temp.add_assign(v2);
 
 		// The sum should already be symmetric if v1 and v2 are,
 		// but we project for numerical stability and boundary constraints

@@ -1,7 +1,7 @@
 //! Integration tests for the SPD manifold
 
 use approx::assert_relative_eq;
-use nalgebra::DMatrix;
+use riemannopt_core::linalg::{self, DecompositionOps, MatrixOps, VectorOps};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::SPD;
 
@@ -33,25 +33,24 @@ fn test_spd_projection() {
 	let spd = SPD::<f64>::new(3).unwrap();
 
 	// Create a non-SPD matrix (not symmetric, not positive definite)
-	let a = DMatrix::from_fn(3, 3, |i, j| ((i + 1) as f64) * 0.3 + ((j + 1) as f64) * 0.2);
+	let a = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(3, 3, |i, j| {
+		((i + 1) as f64) * 0.3 + ((j + 1) as f64) * 0.2
+	});
 
-	let mut proj = DMatrix::zeros(3, 3);
+	let mut proj = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.project_point(&a, &mut proj);
 
 	// Result should be on manifold
 	assert!(spd.is_point_on_manifold(&proj, 1e-8));
 
 	// Result should be symmetric
-	assert_relative_eq!(
-		&proj - proj.transpose(),
-		DMatrix::zeros(3, 3),
-		epsilon = 1e-14
-	);
+	let diff = MatrixOps::sub(&proj, &MatrixOps::transpose(&proj));
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 
 	// Result should be positive definite
-	let eigen = proj.clone().symmetric_eigen();
-	for &eval in eigen.eigenvalues.iter() {
-		assert!(eval > 0.0);
+	let eigen = DecompositionOps::symmetric_eigen(&proj);
+	for val in VectorOps::iter(&eigen.eigenvalues) {
+		assert!(val > 0.0);
 	}
 }
 
@@ -60,19 +59,22 @@ fn test_spd_tangent_projection() {
 	let spd = SPD::<f64>::new(3).unwrap();
 
 	// Create an SPD point
-	let mut p = DMatrix::zeros(3, 3);
+	let mut p = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_point(&mut p).unwrap();
 
 	// Create an arbitrary (non-symmetric) matrix
-	let v = DMatrix::from_fn(3, 3, |i, j| {
+	let v = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(3, 3, |i, j| {
 		((i as f64) - 1.0) * 0.2 + ((j as f64) - 1.0) * 0.1
 	});
 
-	let mut v_tangent = DMatrix::zeros(3, 3);
+	let mut v_tangent = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.project_tangent(&p, &v, &mut v_tangent).unwrap();
 
 	// Tangent vector should be symmetric
-	let symmetry_error = (&v_tangent - v_tangent.transpose()).norm();
+	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(
+		&v_tangent,
+		&MatrixOps::transpose(&v_tangent),
+	));
 	assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-14);
 }
 
@@ -81,38 +83,39 @@ fn test_spd_retraction() {
 	let spd = SPD::<f64>::new(3).unwrap();
 
 	// Create an SPD point
-	let mut p = DMatrix::zeros(3, 3);
+	let mut p = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_point(&mut p).unwrap();
 
 	// Create a symmetric tangent vector (scaled small)
-	let mut v = DMatrix::zeros(3, 3);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_tangent(&p, &mut v).unwrap();
-	v *= 0.01; // small step
+	v.scale_mut(0.01); // small step
 
-	let mut q = DMatrix::zeros(3, 3);
+	let mut q = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.retract(&p, &v, &mut q).unwrap();
 
 	// Result should be on manifold (symmetric, positive definite)
 	assert!(spd.is_point_on_manifold(&q, 1e-8));
 
 	// Zero retraction should return same point
-	let zero = DMatrix::zeros(3, 3);
-	let mut p_recovered = DMatrix::zeros(3, 3);
+	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
+	let mut p_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.retract(&p, &zero, &mut p_recovered).unwrap();
-	assert_relative_eq!(p, p_recovered, epsilon = 1e-10);
+	let diff = MatrixOps::sub(&p, &p_recovered);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-10);
 }
 
 #[test]
 fn test_spd_inner_product() {
 	let spd = SPD::<f64>::new(3).unwrap();
 
-	let mut p = DMatrix::zeros(3, 3);
+	let mut p = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_point(&mut p).unwrap();
 
-	let mut u = DMatrix::zeros(3, 3);
+	let mut u = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_tangent(&p, &mut u).unwrap();
 
-	let mut v = DMatrix::zeros(3, 3);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_tangent(&p, &mut v).unwrap();
 
 	// Test symmetry
@@ -130,20 +133,20 @@ fn test_spd_random_point() {
 	let spd = SPD::<f64>::new(4).unwrap();
 
 	for _ in 0..5 {
-		let mut p = DMatrix::zeros(4, 4);
+		let mut p = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 4);
 		spd.random_point(&mut p).unwrap();
 
 		// Check point is on manifold
 		assert!(spd.is_point_on_manifold(&p, 1e-8));
 
 		// Check symmetry
-		let symmetry_error = (&p - p.transpose()).norm();
+		let symmetry_error = MatrixOps::norm(&MatrixOps::sub(&p, &MatrixOps::transpose(&p)));
 		assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-14);
 
 		// Check positive definiteness
-		let eigen = p.clone().symmetric_eigen();
-		for &eval in eigen.eigenvalues.iter() {
-			assert!(eval > 0.0);
+		let eigen = DecompositionOps::symmetric_eigen(&p);
+		for val in VectorOps::iter(&eigen.eigenvalues) {
+			assert!(val > 0.0);
 		}
 	}
 }
@@ -152,21 +155,24 @@ fn test_spd_random_point() {
 fn test_spd_euclidean_to_riemannian_gradient() {
 	let spd = SPD::<f64>::new(3).unwrap();
 
-	let mut p = DMatrix::zeros(3, 3);
+	let mut p = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_point(&mut p).unwrap();
 
 	// Create a symmetric euclidean gradient
-	let egrad_raw = DMatrix::from_fn(3, 3, |i, j| {
+	let egrad_raw = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(3, 3, |i, j| {
 		((i + 1) as f64) * 0.1 + ((j + 1) as f64) * 0.05
 	});
-	let egrad = (&egrad_raw + egrad_raw.transpose()) * 0.5;
+	let egrad = MatrixOps::scale_by(
+		&MatrixOps::add(&egrad_raw, &MatrixOps::transpose(&egrad_raw)),
+		0.5,
+	);
 
-	let mut rgrad = DMatrix::zeros(3, 3);
+	let mut rgrad = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.euclidean_to_riemannian_gradient(&p, &egrad, &mut rgrad)
 		.unwrap();
 
 	// Result should be symmetric (in tangent space)
-	let symmetry_error = (&rgrad - rgrad.transpose()).norm();
+	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(&rgrad, &MatrixOps::transpose(&rgrad)));
 	assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-10);
 }
 
@@ -175,15 +181,16 @@ fn test_spd_is_point_on_manifold() {
 	let spd = SPD::<f64>::new(3).unwrap();
 
 	// Identity is SPD
-	let eye = DMatrix::identity(3, 3);
+	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
 	assert!(spd.is_point_on_manifold(&eye, 1e-10));
 
 	// Non-symmetric matrix is not on manifold
-	let non_sym = DMatrix::from_fn(3, 3, |i, j| (i + j + 1) as f64);
+	let non_sym = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(3, 3, |i, j| (i + j + 1) as f64);
 	assert!(!spd.is_point_on_manifold(&non_sym, 1e-10));
 
 	// Negative definite matrix is not on manifold
-	let neg = -DMatrix::identity(3, 3);
+	let mut neg = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
+	neg.scale_mut(-1.0);
 	assert!(!spd.is_point_on_manifold(&neg, 1e-10));
 }
 
@@ -192,20 +199,23 @@ fn test_spd_parallel_transport() {
 	let spd = SPD::<f64>::new(3).unwrap();
 
 	// Use identity as a well-conditioned SPD point
-	let p = DMatrix::<f64>::identity(3, 3);
+	let p = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
 
-	let mut v = DMatrix::zeros(3, 3);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.random_tangent(&p, &mut v).unwrap();
 
 	// Transport from P to P (self-transport) via trait method
-	let mut transported = DMatrix::zeros(3, 3);
+	let mut transported = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	Manifold::<f64>::parallel_transport(&spd, &p, &p, &v, &mut transported).unwrap();
 
 	// Transported vector should be symmetric (tangent space constraint)
-	let symmetry_error = (&transported - transported.transpose()).norm();
+	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(
+		&transported,
+		&MatrixOps::transpose(&transported),
+	));
 	assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-8);
 
 	// For identity matrix self-transport, E = I, so transport preserves vector
-	let error = (&transported - &v).norm();
+	let error = MatrixOps::norm(&MatrixOps::sub(&transported, &v));
 	assert_relative_eq!(error, 0.0, epsilon = 1e-8);
 }

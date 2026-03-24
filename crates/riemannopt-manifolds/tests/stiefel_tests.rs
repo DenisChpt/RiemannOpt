@@ -1,7 +1,7 @@
 //! Integration tests for the Stiefel manifold
 
 use approx::assert_relative_eq;
-use nalgebra::DMatrix;
+use riemannopt_core::linalg::{self, MatrixOps};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Stiefel;
 
@@ -35,15 +35,18 @@ fn test_stiefel_projection() {
 	let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
 
 	// Create a random matrix
-	let a = DMatrix::from_fn(4, 2, |i, j| ((i + 1) as f64) * 0.3 + ((j + 1) as f64) * 0.2);
+	let a = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(4, 2, |i, j| {
+		((i + 1) as f64) * 0.3 + ((j + 1) as f64) * 0.2
+	});
 
-	let mut proj = DMatrix::zeros(4, 2);
+	let mut proj = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	stiefel.project_point(&a, &mut proj);
 
 	// Check that X^T X = I
-	let xtx = proj.transpose() * &proj;
-	let eye = DMatrix::identity(2, 2);
-	assert_relative_eq!(xtx, eye, epsilon = 1e-14);
+	let xtx = MatrixOps::mat_mul(&MatrixOps::transpose(&proj), &proj);
+	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
+	let diff = MatrixOps::sub(&xtx, &eye);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 }
 
 #[test]
@@ -51,21 +54,21 @@ fn test_stiefel_tangent_projection() {
 	let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
 
 	// Create an orthonormal point on the manifold
-	let mut x = DMatrix::zeros(4, 2);
+	let mut x = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	stiefel.random_point(&mut x).unwrap();
 
 	// Create a random tangent vector
-	let z = DMatrix::from_fn(4, 2, |i, j| {
+	let z = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(4, 2, |i, j| {
 		((i as f64) - 2.0) * 0.1 + ((j as f64) - 0.5) * 0.2
 	});
 
-	let mut z_tangent = DMatrix::zeros(4, 2);
+	let mut z_tangent = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	stiefel.project_tangent(&x, &z, &mut z_tangent).unwrap();
 
 	// Check tangent space constraint: X^T Z + Z^T X = 0
-	let xtz = x.transpose() * &z_tangent;
-	let skew_check = &xtz + &xtz.transpose();
-	assert_relative_eq!(skew_check.norm(), 0.0, epsilon = 1e-14);
+	let xtz = MatrixOps::mat_mul(&MatrixOps::transpose(&x), &z_tangent);
+	let skew_check = MatrixOps::add(&xtz, &MatrixOps::transpose(&xtz));
+	assert_relative_eq!(MatrixOps::norm(&skew_check), 0.0, epsilon = 1e-14);
 }
 
 #[test]
@@ -73,47 +76,49 @@ fn test_stiefel_retraction() {
 	let stiefel = Stiefel::<f64>::new(3, 2).unwrap();
 
 	// Create an orthonormal point
-	let mut x = DMatrix::zeros(3, 2);
+	let mut x = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	stiefel.random_point(&mut x).unwrap();
 
 	// Create a tangent vector
-	let mut v = DMatrix::zeros(3, 2);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	stiefel.random_tangent(&x, &mut v).unwrap();
 
 	// Scale it down for better numerical behavior
-	v *= 0.1;
+	v.scale_mut(0.1);
 
-	let mut y = DMatrix::zeros(3, 2);
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	stiefel.retract(&x, &v, &mut y).unwrap();
 
 	// Check that result is on manifold: Y^T Y = I
-	let yty = y.transpose() * &y;
-	let eye = DMatrix::identity(2, 2);
-	assert_relative_eq!(yty, eye, epsilon = 1e-14);
+	let yty = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &y);
+	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
+	let diff = MatrixOps::sub(&yty, &eye);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 
 	// Test zero retraction
-	let zero = DMatrix::zeros(3, 2);
-	let mut x_recovered = DMatrix::zeros(3, 2);
+	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
+	let mut x_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	stiefel.retract(&x, &zero, &mut x_recovered).unwrap();
-	assert_relative_eq!(x, x_recovered, epsilon = 1e-14);
+	let diff = MatrixOps::sub(&x, &x_recovered);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 }
 
 #[test]
 fn test_stiefel_inner_product() {
 	let stiefel = Stiefel::<f64>::new(3, 2).unwrap();
 
-	let mut x = DMatrix::zeros(3, 2);
+	let mut x = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	stiefel.random_point(&mut x).unwrap();
 
-	let mut u = DMatrix::zeros(3, 2);
+	let mut u = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	stiefel.random_tangent(&x, &mut u).unwrap();
 
-	let mut v = DMatrix::zeros(3, 2);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	stiefel.random_tangent(&x, &mut v).unwrap();
 
 	// Test inner product (should be Frobenius inner product)
 	let inner_uv = stiefel.inner_product(&x, &u, &v).unwrap();
-	let expected = (u.transpose() * &v).trace();
+	let expected = MatrixOps::trace(&MatrixOps::mat_mul(&MatrixOps::transpose(&u), &v));
 	assert_relative_eq!(inner_uv, expected, epsilon = 1e-14);
 
 	// Test symmetry
@@ -129,25 +134,28 @@ fn test_stiefel_inner_product() {
 fn test_stiefel_parallel_transport() {
 	let stiefel = Stiefel::<f64>::new(4, 2).unwrap();
 
-	let mut x = DMatrix::zeros(4, 2);
+	let mut x = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	stiefel.random_point(&mut x).unwrap();
 
-	let mut y = DMatrix::zeros(4, 2);
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	stiefel.random_point(&mut y).unwrap();
 
-	let mut v = DMatrix::zeros(4, 2);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	stiefel.random_tangent(&x, &mut v).unwrap();
 
-	let transported = stiefel.parallel_transport(&x, &y, &v).unwrap();
+	let mut transported = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
+	stiefel
+		.parallel_transport(&x, &y, &v, &mut transported)
+		.unwrap();
 
 	// Check transported vector is in tangent space at y
-	let ytt = y.transpose() * &transported;
-	let skew_check = &ytt + &ytt.transpose();
-	assert_relative_eq!(skew_check.norm(), 0.0, epsilon = 1e-12);
+	let ytt = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &transported);
+	let skew_check = MatrixOps::add(&ytt, &MatrixOps::transpose(&ytt));
+	assert_relative_eq!(MatrixOps::norm(&skew_check), 0.0, epsilon = 1e-12);
 
 	// Norm preservation depends on the transport implementation
 	// For this manifold, we just check the result is reasonable
-	assert!(transported.norm() > 0.0);
+	assert!(MatrixOps::norm(&transported) > 0.0);
 }
 
 #[test]
@@ -155,13 +163,14 @@ fn test_stiefel_random_point() {
 	let stiefel = Stiefel::<f64>::new(6, 3).unwrap();
 
 	for _ in 0..5 {
-		let mut x = DMatrix::zeros(6, 3);
+		let mut x = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 3);
 		stiefel.random_point(&mut x).unwrap();
 
 		// Check point is on manifold: X^T X = I
-		let xtx = x.transpose() * &x;
-		let eye = DMatrix::identity(3, 3);
-		assert_relative_eq!(xtx, eye, epsilon = 1e-14);
+		let xtx = MatrixOps::mat_mul(&MatrixOps::transpose(&x), &x);
+		let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
+		let diff = MatrixOps::sub(&xtx, &eye);
+		assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 	}
 }
 

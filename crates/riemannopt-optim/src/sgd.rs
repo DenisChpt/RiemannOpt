@@ -340,7 +340,12 @@ impl<T: Scalar> SGD<T> {
 						momentum,
 						&mut transported_momentum,
 					)?;
-					*momentum = transported_momentum;
+					// Re-project into tangent space to prevent numerical drift
+					manifold.project_tangent(
+						current_point,
+						&transported_momentum,
+						momentum,
+					)?;
 				}
 
 				if momentum_state.is_nesterov {

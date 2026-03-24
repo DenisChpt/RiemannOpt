@@ -7,10 +7,10 @@
 //! with a simple quadratic, because these methods internally compute Hessian-vector products
 //! that do not automatically lie in the tangent space of curved manifolds.
 
-use nalgebra::{DMatrix, DVector, Dyn};
 use riemannopt_core::{
-	core::cost_function::{CostFunction, QuadraticCost},
+	core::cost_function::CostFunction,
 	error::Result as ManifoldResult,
+	linalg::{self, MatrixOps, VectorOps},
 	memory::workspace::Workspace,
 	optimization::optimizer::{Optimizer, StoppingCriterion},
 };
@@ -24,66 +24,144 @@ use riemannopt_optim::*;
 
 #[derive(Debug, Clone)]
 struct RayleighQuotient {
-	a: DMatrix<f64>,
+	a: linalg::Mat<f64>,
 }
 
 impl RayleighQuotient {
 	/// Create a diagonal SPD matrix with eigenvalues 1, 2, ..., n.
 	/// The minimum on the sphere is e_1 with cost = 1.
 	fn diagonal(n: usize) -> Self {
-		let mut a = DMatrix::zeros(n, n);
-		for i in 0..n {
-			a[(i, i)] = (i + 1) as f64;
-		}
+		let a = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(n, n, |i, j| {
+			if i == j {
+				(i + 1) as f64
+			} else {
+				0.0
+			}
+		});
 		Self { a }
 	}
 }
 
 impl CostFunction<f64> for RayleighQuotient {
-	type Point = DVector<f64>;
-	type TangentVector = DVector<f64>;
+	type Point = linalg::Vec<f64>;
+	type TangentVector = linalg::Vec<f64>;
 
-	fn cost(&self, point: &DVector<f64>) -> ManifoldResult<f64> {
-		let ax = &self.a * point;
+	fn cost(&self, point: &linalg::Vec<f64>) -> ManifoldResult<f64> {
+		let ax = self.a.mat_vec(point);
 		Ok(point.dot(&ax))
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> ManifoldResult<(f64, DVector<f64>)> {
-		let ax = &self.a * point;
+	fn cost_and_gradient_alloc(
+		&self,
+		point: &linalg::Vec<f64>,
+	) -> ManifoldResult<(f64, linalg::Vec<f64>)> {
+		let ax = self.a.mat_vec(point);
 		let cost = point.dot(&ax);
-		let gradient = &ax * 2.0;
+		let mut gradient = ax;
+		gradient.scale_mut(2.0);
 		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DVector<f64>,
+		point: &linalg::Vec<f64>,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DVector<f64>,
+		gradient: &mut linalg::Vec<f64>,
 	) -> ManifoldResult<f64> {
-		let ax = &self.a * point;
+		let ax = self.a.mat_vec(point);
 		let cost = point.dot(&ax);
-		*gradient = &ax * 2.0;
+		gradient.copy_from(&ax);
+		gradient.scale_mut(2.0);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
-		Ok(&self.a * point * 2.0)
+	fn gradient(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
+		let mut ax = self.a.mat_vec(point);
+		ax.scale_mut(2.0);
+		Ok(ax)
 	}
 
-	fn hessian(&self, _point: &DVector<f64>) -> ManifoldResult<DMatrix<f64>> {
-		Ok(&self.a * 2.0)
+	fn hessian(&self, _point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		let n = self.a.nrows();
+		let scaled = self.a.scale_by(2.0);
+		Ok(linalg::Mat::<f64>::from_fn(n, n, |i, j| {
+			MatrixOps::get(&scaled, i, j)
+		}))
 	}
 
 	fn hessian_vector_product(
 		&self,
-		_point: &DVector<f64>,
-		vector: &DVector<f64>,
-	) -> ManifoldResult<DVector<f64>> {
-		Ok(&self.a * vector * 2.0)
+		_point: &linalg::Vec<f64>,
+		vector: &linalg::Vec<f64>,
+	) -> ManifoldResult<linalg::Vec<f64>> {
+		let mut av = self.a.mat_vec(vector);
+		av.scale_mut(2.0);
+		Ok(av)
 	}
 
-	fn gradient_fd_alloc(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
+	fn gradient_fd_alloc(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
+		self.gradient(point)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Simple quadratic cost: f(x) = 0.5 * ||x||^2 (replaces QuadraticCost for linalg types)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct SimpleQuadratic {
+	n: usize,
+}
+
+impl SimpleQuadratic {
+	fn new(n: usize) -> Self {
+		Self { n }
+	}
+}
+
+impl CostFunction<f64> for SimpleQuadratic {
+	type Point = linalg::Vec<f64>;
+	type TangentVector = linalg::Vec<f64>;
+
+	fn cost(&self, point: &linalg::Vec<f64>) -> ManifoldResult<f64> {
+		Ok(0.5 * point.dot(point))
+	}
+
+	fn cost_and_gradient_alloc(
+		&self,
+		point: &linalg::Vec<f64>,
+	) -> ManifoldResult<(f64, linalg::Vec<f64>)> {
+		let cost = 0.5 * point.dot(point);
+		Ok((cost, point.clone()))
+	}
+
+	fn cost_and_gradient(
+		&self,
+		point: &linalg::Vec<f64>,
+		_workspace: &mut Workspace<f64>,
+		gradient: &mut linalg::Vec<f64>,
+	) -> ManifoldResult<f64> {
+		gradient.copy_from(point);
+		Ok(0.5 * point.dot(point))
+	}
+
+	fn gradient(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
+		Ok(point.clone())
+	}
+
+	fn hessian(&self, _point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		Ok(linalg::Mat::<f64>::identity(self.n, self.n))
+	}
+
+	fn hessian_vector_product(
+		&self,
+		_point: &linalg::Vec<f64>,
+		vector: &linalg::Vec<f64>,
+	) -> ManifoldResult<linalg::Vec<f64>> {
+		Ok(vector.clone())
+	}
+
+	fn gradient_fd_alloc(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
 		self.gradient(point)
 	}
 }
@@ -93,15 +171,16 @@ impl CostFunction<f64> for RayleighQuotient {
 // ---------------------------------------------------------------------------
 
 /// Create a starting point on the sphere that is not aligned with any eigenvector.
-fn initial_point_on_sphere(n: usize) -> DVector<f64> {
-	let mut x = DVector::from_element(n, 1.0 / (n as f64).sqrt());
-	x[0] += 0.1;
-	x /= x.norm();
+fn initial_point_on_sphere(n: usize) -> linalg::Vec<f64> {
+	let mut x: linalg::Vec<f64> = VectorOps::from_fn(n, |_| 1.0 / (n as f64).sqrt());
+	*x.get_mut(0) += 0.1;
+	let norm = x.norm();
+	x.div_scalar_mut(norm);
 	x
 }
 
 /// Verify the result point lies on the sphere.
-fn assert_on_sphere(point: &DVector<f64>, tol: f64) {
+fn assert_on_sphere(point: &linalg::Vec<f64>, tol: f64) {
 	let norm = point.norm();
 	assert!(
 		(norm - 1.0).abs() < tol,
@@ -311,8 +390,8 @@ fn test_adam_config_parameters() {
 fn test_cg_fletcher_reeves_convergence() {
 	let n = 5;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, -1.0, 0.5, -0.3]);
 	let initial_cost = cost_fn.cost(&x0).unwrap();
 
 	let config = CGConfig::new().with_method(ConjugateGradientMethod::FletcherReeves);
@@ -344,8 +423,8 @@ fn test_cg_fletcher_reeves_convergence() {
 fn test_cg_polak_ribiere_convergence() {
 	let n = 5;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, -1.0, 0.5, -0.3]);
 	let initial_cost = cost_fn.cost(&x0).unwrap();
 
 	let config = CGConfig::new().with_method(ConjugateGradientMethod::PolakRibiere);
@@ -377,8 +456,8 @@ fn test_cg_polak_ribiere_convergence() {
 fn test_cg_dai_yuan_convergence() {
 	let n = 5;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, -1.0, 0.5, -0.3]);
 	let initial_cost = cost_fn.cost(&x0).unwrap();
 
 	let config = CGConfig::new().with_method(ConjugateGradientMethod::DaiYuan);
@@ -410,8 +489,8 @@ fn test_cg_dai_yuan_convergence() {
 fn test_cg_hestenes_stiefel_convergence() {
 	let n = 5;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, -1.0, 0.5, -0.3]);
 	let initial_cost = cost_fn.cost(&x0).unwrap();
 
 	let config = CGConfig::new().with_method(ConjugateGradientMethod::HestenesStiefel);
@@ -491,8 +570,8 @@ fn test_natural_gradient_diagonal_fisher() {
 	// that can be exceeded by accumulated floating point drift
 	let n = 4;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, -1.0, 0.5]);
 	let initial_cost = cost_fn.cost(&x0).unwrap();
 
 	let config = NaturalGradientConfig::new()
@@ -533,15 +612,15 @@ fn test_natural_gradient_config_parameters() {
 }
 
 // ---------------------------------------------------------------------------
-// L-BFGS Tests (on Euclidean manifold with QuadraticCost)
+// L-BFGS Tests (on Euclidean manifold with SimpleQuadratic)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_lbfgs_convergence_on_euclidean() {
 	let n = 5;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, -1.0, 0.5, -0.3]);
 
 	let config = LBFGSConfig::new().with_memory_size(5);
 	let mut optimizer = LBFGS::new(config);
@@ -577,15 +656,15 @@ fn test_lbfgs_config_parameters() {
 }
 
 // ---------------------------------------------------------------------------
-// Trust Region Tests (on Euclidean manifold with QuadraticCost)
+// Trust Region Tests (on Euclidean manifold with SimpleQuadratic)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_trust_region_convergence_on_euclidean() {
 	let n = 5;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 2.0, -1.0, 0.5, -0.3]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, -1.0, 0.5, -0.3]);
 
 	let config = TrustRegionConfig::new()
 		.with_initial_radius(1.0)
@@ -630,15 +709,15 @@ fn test_trust_region_config_parameters() {
 }
 
 // ---------------------------------------------------------------------------
-// Newton Tests (on Euclidean manifold with QuadraticCost)
+// Newton Tests (on Euclidean manifold with SimpleQuadratic)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_newton_convergence_on_euclidean() {
 	let n = 3;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![1.0, 1.0, 1.0]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 1.0, 1.0]);
 
 	let config = NewtonConfig::new().with_regularization(1e-6);
 	let mut optimizer = Newton::new(config);
@@ -731,8 +810,8 @@ fn test_first_order_optimizers_all_reduce_cost_on_sphere() {
 fn test_second_order_optimizers_converge_on_euclidean() {
 	let n = 4;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![2.0, -1.0, 0.5, 1.5]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[2.0, -1.0, 0.5, 1.5]);
 	let initial_cost = cost_fn.cost(&x0).unwrap();
 
 	let criterion = StoppingCriterion::new()
@@ -829,8 +908,8 @@ fn test_cg_approaches_quadratic_minimum() {
 	let n = 5;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
 	// f(x) = 0.5 * x^T * x, minimum at origin with cost = 0
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![3.0, -2.0, 1.0, 0.5, -1.5]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[3.0, -2.0, 1.0, 0.5, -1.5]);
 
 	let config = CGConfig::new().with_method(ConjugateGradientMethod::PolakRibiere);
 	let mut optimizer = ConjugateGradient::new(config);
@@ -860,8 +939,8 @@ fn test_second_order_methods_approach_minimum_on_euclidean() {
 	let n = 3;
 	let manifold = Euclidean::<f64>::new(n).unwrap();
 	// f(x) = 0.5 * x^T * x, minimum at origin with cost = 0
-	let cost_fn = QuadraticCost::simple(Dyn(n));
-	let x0 = DVector::from_vec(vec![3.0, -2.0, 1.0]);
+	let cost_fn = SimpleQuadratic::new(n);
+	let x0: linalg::Vec<f64> = VectorOps::from_slice(&[3.0, -2.0, 1.0]);
 
 	let criterion = StoppingCriterion::new()
 		.with_max_iterations(200)
@@ -906,8 +985,8 @@ fn test_second_order_methods_approach_minimum_on_euclidean() {
 //  Strong Wolfe line search + CG convergence at increasing dimensions
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// CG with Polak-Ribière on Sphere + Rayleigh quotient at various dimensions.
-/// f* = λ_min(A) = 1. This is the key test for the Strong Wolfe line search:
+/// CG with Polak-Ribiere on Sphere + Rayleigh quotient at various dimensions.
+/// f* = lambda_min(A) = 1. This is the key test for the Strong Wolfe line search:
 /// without Wolfe conditions, CG stagnates at large n due to loss of conjugacy.
 #[test]
 fn test_cg_wolfe_sphere_rayleigh_n10() {

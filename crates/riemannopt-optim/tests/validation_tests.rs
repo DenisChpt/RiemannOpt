@@ -3,10 +3,10 @@
 //! These tests verify that RiemannOpt produces mathematically correct results
 //! with proper convergence on classical Riemannian optimization problems.
 
-use nalgebra::{DMatrix, DVector, Dyn};
 use riemannopt_core::{
-	core::cost_function::{CostFunction, QuadraticCost},
+	core::cost_function::CostFunction,
 	error::Result as ManifoldResult,
+	linalg::{self, DecompositionOps, MatrixOps, VectorOps},
 	manifold::Manifold,
 	memory::workspace::Workspace,
 	optimization::optimizer::{Optimizer, StoppingCriterion},
@@ -22,75 +22,103 @@ use riemannopt_optim::*;
 /// On S^{n-1}, the global minimum is the eigenvector of smallest eigenvalue.
 #[derive(Debug, Clone)]
 struct RayleighQuotient {
-	a: DMatrix<f64>,
+	a: linalg::Mat<f64>,
 }
 
 impl RayleighQuotient {
-	fn new(a: DMatrix<f64>) -> Self {
+	fn new(a: linalg::Mat<f64>) -> Self {
 		Self { a }
 	}
 
 	/// Diagonal matrix diag(1, 2, ..., n).
 	/// Minimum on S^{n-1}: e_1 with cost 1.0.
 	fn diagonal(n: usize) -> Self {
-		let mut a = DMatrix::zeros(n, n);
-		for i in 0..n {
-			a[(i, i)] = (i + 1) as f64;
-		}
+		let a = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(n, n, |i, j| {
+			if i == j {
+				(i + 1) as f64
+			} else {
+				0.0
+			}
+		});
 		Self::new(a)
 	}
 
 	/// Diagonal with a spectral gap: diag(1, gap+1, gap+1, ..., gap+1).
 	/// Larger gap makes the problem easier.
 	fn with_gap(n: usize, gap: f64) -> Self {
-		let mut a = DMatrix::from_diagonal_element(n, n, gap + 1.0);
-		a[(0, 0)] = 1.0;
+		let a = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(n, n, |i, j| {
+			if i == j {
+				if i == 0 {
+					1.0
+				} else {
+					gap + 1.0
+				}
+			} else {
+				0.0
+			}
+		});
 		Self::new(a)
 	}
 }
 
 impl CostFunction<f64> for RayleighQuotient {
-	type Point = DVector<f64>;
-	type TangentVector = DVector<f64>;
+	type Point = linalg::Vec<f64>;
+	type TangentVector = linalg::Vec<f64>;
 
-	fn cost(&self, point: &DVector<f64>) -> ManifoldResult<f64> {
-		Ok(point.dot(&(&self.a * point)))
+	fn cost(&self, point: &linalg::Vec<f64>) -> ManifoldResult<f64> {
+		let ax = self.a.mat_vec(point);
+		Ok(point.dot(&ax))
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> ManifoldResult<(f64, DVector<f64>)> {
-		let ax = &self.a * point;
-		Ok((point.dot(&ax), &ax * 2.0))
+	fn cost_and_gradient_alloc(
+		&self,
+		point: &linalg::Vec<f64>,
+	) -> ManifoldResult<(f64, linalg::Vec<f64>)> {
+		let ax = self.a.mat_vec(point);
+		let cost = point.dot(&ax);
+		let mut gradient = ax;
+		gradient.scale_mut(2.0);
+		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DVector<f64>,
+		point: &linalg::Vec<f64>,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DVector<f64>,
+		gradient: &mut linalg::Vec<f64>,
 	) -> ManifoldResult<f64> {
-		let ax = &self.a * point;
+		let ax = self.a.mat_vec(point);
 		let cost = point.dot(&ax);
-		*gradient = &ax * 2.0;
+		gradient.copy_from(&ax);
+		gradient.scale_mut(2.0);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
-		Ok(&self.a * point * 2.0)
+	fn gradient(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
+		let mut ax = self.a.mat_vec(point);
+		ax.scale_mut(2.0);
+		Ok(ax)
 	}
 
-	fn hessian(&self, _point: &DVector<f64>) -> ManifoldResult<DMatrix<f64>> {
-		Ok(&self.a * 2.0)
+	fn hessian(&self, _point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		let n = self.a.nrows();
+		let scaled = self.a.scale_by(2.0);
+		Ok(linalg::Mat::<f64>::from_fn(n, n, |i, j| {
+			MatrixOps::get(&scaled, i, j)
+		}))
 	}
 
 	fn hessian_vector_product(
 		&self,
-		_point: &DVector<f64>,
-		vector: &DVector<f64>,
-	) -> ManifoldResult<DVector<f64>> {
-		Ok(&self.a * vector * 2.0)
+		_point: &linalg::Vec<f64>,
+		vector: &linalg::Vec<f64>,
+	) -> ManifoldResult<linalg::Vec<f64>> {
+		let mut av = self.a.mat_vec(vector);
+		av.scale_mut(2.0);
+		Ok(av)
 	}
 
-	fn gradient_fd_alloc(&self, point: &DVector<f64>) -> ManifoldResult<DVector<f64>> {
+	fn gradient_fd_alloc(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
 		self.gradient(point)
 	}
 }
@@ -100,52 +128,63 @@ impl CostFunction<f64> for RayleighQuotient {
 /// corresponding to the p smallest eigenvalues.
 #[derive(Debug, Clone)]
 struct TraceMinimization {
-	a: DMatrix<f64>,
+	a: linalg::Mat<f64>,
 }
 
 impl TraceMinimization {
 	fn diagonal(n: usize) -> Self {
-		let mut a = DMatrix::zeros(n, n);
-		for i in 0..n {
-			a[(i, i)] = (i + 1) as f64;
-		}
+		let a = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(n, n, |i, j| {
+			if i == j {
+				(i + 1) as f64
+			} else {
+				0.0
+			}
+		});
 		Self { a }
 	}
 }
 
 impl CostFunction<f64> for TraceMinimization {
-	type Point = DMatrix<f64>;
-	type TangentVector = DMatrix<f64>;
+	type Point = linalg::Mat<f64>;
+	type TangentVector = linalg::Mat<f64>;
 
-	fn cost(&self, point: &DMatrix<f64>) -> ManifoldResult<f64> {
-		let ay = &self.a * point;
-		Ok((point.transpose() * &ay).trace())
+	fn cost(&self, point: &linalg::Mat<f64>) -> ManifoldResult<f64> {
+		let ay = self.a.mat_mul(point);
+		let yt_ay = MatrixOps::transpose(point).mat_mul(&ay);
+		Ok(yt_ay.trace())
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DMatrix<f64>) -> ManifoldResult<(f64, DMatrix<f64>)> {
-		let ay = &self.a * point;
-		let cost = (point.transpose() * &ay).trace();
-		let gradient = &ay * 2.0;
+	fn cost_and_gradient_alloc(
+		&self,
+		point: &linalg::Mat<f64>,
+	) -> ManifoldResult<(f64, linalg::Mat<f64>)> {
+		let ay = self.a.mat_mul(point);
+		let yt_ay = MatrixOps::transpose(point).mat_mul(&ay);
+		let cost = yt_ay.trace();
+		let gradient = ay.scale_by(2.0);
 		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DMatrix<f64>,
+		point: &linalg::Mat<f64>,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut linalg::Mat<f64>,
 	) -> ManifoldResult<f64> {
-		let ay = &self.a * point;
-		let cost = (point.transpose() * &ay).trace();
-		*gradient = &ay * 2.0;
+		let ay = self.a.mat_mul(point);
+		let yt_ay = MatrixOps::transpose(point).mat_mul(&ay);
+		let cost = yt_ay.trace();
+		gradient.copy_from(&ay);
+		gradient.scale_mut(2.0);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DMatrix<f64>) -> ManifoldResult<DMatrix<f64>> {
-		Ok(&self.a * point * 2.0)
+	fn gradient(&self, point: &linalg::Mat<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		let ay = self.a.mat_mul(point);
+		Ok(ay.scale_by(2.0))
 	}
 
-	fn hessian(&self, _point: &DMatrix<f64>) -> ManifoldResult<DMatrix<f64>> {
+	fn hessian(&self, _point: &linalg::Mat<f64>) -> ManifoldResult<linalg::Mat<f64>> {
 		// Not needed for first-order methods
 		Err(riemannopt_core::ManifoldError::not_implemented(
 			"Hessian not implemented for TraceMinimization",
@@ -154,13 +193,14 @@ impl CostFunction<f64> for TraceMinimization {
 
 	fn hessian_vector_product(
 		&self,
-		_point: &DMatrix<f64>,
-		vector: &DMatrix<f64>,
-	) -> ManifoldResult<DMatrix<f64>> {
-		Ok(&self.a * vector * 2.0)
+		_point: &linalg::Mat<f64>,
+		vector: &linalg::Mat<f64>,
+	) -> ManifoldResult<linalg::Mat<f64>> {
+		let av = self.a.mat_mul(vector);
+		Ok(av.scale_by(2.0))
 	}
 
-	fn gradient_fd_alloc(&self, point: &DMatrix<f64>) -> ManifoldResult<DMatrix<f64>> {
+	fn gradient_fd_alloc(&self, point: &linalg::Mat<f64>) -> ManifoldResult<linalg::Mat<f64>> {
 		self.gradient(point)
 	}
 }
@@ -169,50 +209,66 @@ impl CostFunction<f64> for TraceMinimization {
 /// For A = I and B = target, the minimum is B projected onto St(n,p).
 #[derive(Debug, Clone)]
 struct Procrustes {
-	a: DMatrix<f64>,
-	b: DMatrix<f64>,
+	a: linalg::Mat<f64>,
+	b: linalg::Mat<f64>,
 }
 
 impl Procrustes {
-	fn new(a: DMatrix<f64>, b: DMatrix<f64>) -> Self {
+	fn new(a: linalg::Mat<f64>, b: linalg::Mat<f64>) -> Self {
 		Self { a, b }
 	}
 }
 
 impl CostFunction<f64> for Procrustes {
-	type Point = DMatrix<f64>;
-	type TangentVector = DMatrix<f64>;
+	type Point = linalg::Mat<f64>;
+	type TangentVector = linalg::Mat<f64>;
 
-	fn cost(&self, point: &DMatrix<f64>) -> ManifoldResult<f64> {
-		let diff = &self.a * point - &self.b;
-		Ok(diff.norm_squared())
+	fn cost(&self, point: &linalg::Mat<f64>) -> ManifoldResult<f64> {
+		let ax = self.a.mat_mul(point);
+		let diff = ax.sub(&self.b);
+		// norm_squared = sum of squares of all elements
+		let n = diff.norm();
+		Ok(n * n)
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DMatrix<f64>) -> ManifoldResult<(f64, DMatrix<f64>)> {
-		let diff = &self.a * point - &self.b;
-		let cost = diff.norm_squared();
-		let gradient = self.a.transpose() * &diff * 2.0;
+	fn cost_and_gradient_alloc(
+		&self,
+		point: &linalg::Mat<f64>,
+	) -> ManifoldResult<(f64, linalg::Mat<f64>)> {
+		let ax = self.a.mat_mul(point);
+		let diff = ax.sub(&self.b);
+		let n = diff.norm();
+		let cost = n * n;
+		// gradient = 2 * A^T * (A*X - B)
+		let at = MatrixOps::transpose(&self.a);
+		let gradient = at.mat_mul(&diff).scale_by(2.0);
 		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DMatrix<f64>,
+		point: &linalg::Mat<f64>,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut linalg::Mat<f64>,
 	) -> ManifoldResult<f64> {
-		let diff = &self.a * point - &self.b;
-		let cost = diff.norm_squared();
-		*gradient = self.a.transpose() * &diff * 2.0;
+		let ax = self.a.mat_mul(point);
+		let diff = ax.sub(&self.b);
+		let n = diff.norm();
+		let cost = n * n;
+		let at = MatrixOps::transpose(&self.a);
+		let g = at.mat_mul(&diff).scale_by(2.0);
+		gradient.copy_from(&g);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DMatrix<f64>) -> ManifoldResult<DMatrix<f64>> {
-		let diff = &self.a * point - &self.b;
-		Ok(self.a.transpose() * &diff * 2.0)
+	fn gradient(&self, point: &linalg::Mat<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		let ax = self.a.mat_mul(point);
+		let diff = ax.sub(&self.b);
+		let at = MatrixOps::transpose(&self.a);
+		Ok(at.mat_mul(&diff).scale_by(2.0))
 	}
 
-	fn hessian(&self, _point: &DMatrix<f64>) -> ManifoldResult<DMatrix<f64>> {
+	fn hessian(&self, _point: &linalg::Mat<f64>) -> ManifoldResult<linalg::Mat<f64>> {
 		Err(riemannopt_core::ManifoldError::not_implemented(
 			"Hessian not implemented for Procrustes",
 		))
@@ -220,13 +276,178 @@ impl CostFunction<f64> for Procrustes {
 
 	fn hessian_vector_product(
 		&self,
-		_point: &DMatrix<f64>,
-		vector: &DMatrix<f64>,
-	) -> ManifoldResult<DMatrix<f64>> {
-		Ok(self.a.transpose() * &self.a * vector * 2.0)
+		_point: &linalg::Mat<f64>,
+		vector: &linalg::Mat<f64>,
+	) -> ManifoldResult<linalg::Mat<f64>> {
+		// 2 * A^T * A * V
+		let at = MatrixOps::transpose(&self.a);
+		let ata = at.mat_mul(&self.a);
+		Ok(ata.mat_mul(vector).scale_by(2.0))
 	}
 
-	fn gradient_fd_alloc(&self, point: &DMatrix<f64>) -> ManifoldResult<DMatrix<f64>> {
+	fn gradient_fd_alloc(&self, point: &linalg::Mat<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		self.gradient(point)
+	}
+}
+
+/// Simple quadratic cost: f(x) = 0.5 * ||x||^2
+/// Replaces QuadraticCost for linalg types.
+#[derive(Debug, Clone)]
+struct SimpleQuadratic {
+	n: usize,
+}
+
+impl SimpleQuadratic {
+	fn new(n: usize) -> Self {
+		Self { n }
+	}
+}
+
+impl CostFunction<f64> for SimpleQuadratic {
+	type Point = linalg::Vec<f64>;
+	type TangentVector = linalg::Vec<f64>;
+
+	fn cost(&self, point: &linalg::Vec<f64>) -> ManifoldResult<f64> {
+		Ok(0.5 * point.dot(point))
+	}
+
+	fn cost_and_gradient_alloc(
+		&self,
+		point: &linalg::Vec<f64>,
+	) -> ManifoldResult<(f64, linalg::Vec<f64>)> {
+		let cost = 0.5 * point.dot(point);
+		Ok((cost, point.clone()))
+	}
+
+	fn cost_and_gradient(
+		&self,
+		point: &linalg::Vec<f64>,
+		_workspace: &mut Workspace<f64>,
+		gradient: &mut linalg::Vec<f64>,
+	) -> ManifoldResult<f64> {
+		gradient.copy_from(point);
+		Ok(0.5 * point.dot(point))
+	}
+
+	fn gradient(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
+		Ok(point.clone())
+	}
+
+	fn hessian(&self, _point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		Ok(linalg::Mat::<f64>::identity(self.n, self.n))
+	}
+
+	fn hessian_vector_product(
+		&self,
+		_point: &linalg::Vec<f64>,
+		vector: &linalg::Vec<f64>,
+	) -> ManifoldResult<linalg::Vec<f64>> {
+		Ok(vector.clone())
+	}
+
+	fn gradient_fd_alloc(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
+		self.gradient(point)
+	}
+}
+
+/// Shifted quadratic cost: f(x) = 0.5 * x^T A x + b^T x
+/// where A = diag(1, 2, ..., n), b = (0.5, 1.0, 1.5, ..., n*0.5)
+/// Minimum at x* = -A^{-1}b
+#[derive(Debug, Clone)]
+struct ShiftedQuadratic {
+	a_diag: Vec<f64>,
+	b: linalg::Vec<f64>,
+}
+
+impl ShiftedQuadratic {
+	fn new(n: usize) -> Self {
+		let a_diag: Vec<f64> = (0..n).map(|i| (i + 1) as f64).collect();
+		let b: linalg::Vec<f64> = VectorOps::from_fn(n, |i| (i + 1) as f64 * 0.5);
+		Self { a_diag, b }
+	}
+
+	fn x_star(&self) -> linalg::Vec<f64> {
+		let n = self.a_diag.len();
+		VectorOps::from_fn(n, |i| -self.b.get(i) / self.a_diag[i])
+	}
+
+	fn f_star(&self) -> f64 {
+		let n = self.a_diag.len();
+		(0..n)
+			.map(|i| -0.5 * self.b.get(i) * self.b.get(i) / self.a_diag[i])
+			.sum()
+	}
+}
+
+impl CostFunction<f64> for ShiftedQuadratic {
+	type Point = linalg::Vec<f64>;
+	type TangentVector = linalg::Vec<f64>;
+
+	fn cost(&self, point: &linalg::Vec<f64>) -> ManifoldResult<f64> {
+		let n = self.a_diag.len();
+		let mut quad = 0.0;
+		let mut lin = 0.0;
+		for i in 0..n {
+			let xi = point.get(i);
+			quad += self.a_diag[i] * xi * xi;
+			lin += self.b.get(i) * xi;
+		}
+		Ok(0.5 * quad + lin)
+	}
+
+	fn cost_and_gradient_alloc(
+		&self,
+		point: &linalg::Vec<f64>,
+	) -> ManifoldResult<(f64, linalg::Vec<f64>)> {
+		let cost = self.cost(point)?;
+		let grad = self.gradient(point)?;
+		Ok((cost, grad))
+	}
+
+	fn cost_and_gradient(
+		&self,
+		point: &linalg::Vec<f64>,
+		_workspace: &mut Workspace<f64>,
+		gradient: &mut linalg::Vec<f64>,
+	) -> ManifoldResult<f64> {
+		let n = self.a_diag.len();
+		let mut cost = 0.0;
+		for i in 0..n {
+			let xi = point.get(i);
+			cost += 0.5 * self.a_diag[i] * xi * xi + self.b.get(i) * xi;
+			*gradient.get_mut(i) = self.a_diag[i] * xi + self.b.get(i);
+		}
+		Ok(cost)
+	}
+
+	fn gradient(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
+		let n = self.a_diag.len();
+		Ok(VectorOps::from_fn(n, |i| {
+			self.a_diag[i] * point.get(i) + self.b.get(i)
+		}))
+	}
+
+	fn hessian(&self, _point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Mat<f64>> {
+		let n = self.a_diag.len();
+		Ok(linalg::Mat::<f64>::from_fn(n, n, |i, j| {
+			if i == j {
+				self.a_diag[i]
+			} else {
+				0.0
+			}
+		}))
+	}
+
+	fn hessian_vector_product(
+		&self,
+		_point: &linalg::Vec<f64>,
+		vector: &linalg::Vec<f64>,
+	) -> ManifoldResult<linalg::Vec<f64>> {
+		let n = self.a_diag.len();
+		Ok(VectorOps::from_fn(n, |i| self.a_diag[i] * vector.get(i)))
+	}
+
+	fn gradient_fd_alloc(&self, point: &linalg::Vec<f64>) -> ManifoldResult<linalg::Vec<f64>> {
 		self.gradient(point)
 	}
 }
@@ -236,52 +457,54 @@ impl CostFunction<f64> for Procrustes {
 // ============================================================================
 
 /// Starting point on the sphere not aligned with any eigenvector.
-fn sphere_start(n: usize) -> DVector<f64> {
-	let mut x = DVector::from_element(n, 1.0 / (n as f64).sqrt());
+fn sphere_start(n: usize) -> linalg::Vec<f64> {
+	let mut x: linalg::Vec<f64> = VectorOps::from_fn(n, |_| 1.0 / (n as f64).sqrt());
 	// Perturb slightly to break symmetry
 	for i in 0..n {
-		x[i] += 0.01 * (i as f64) / (n as f64);
+		*x.get_mut(i) += 0.01 * (i as f64) / (n as f64);
 	}
-	x.normalize_mut();
+	let norm = x.norm();
+	x.div_scalar_mut(norm);
 	x
 }
 
 /// Starting point on the Grassmann manifold Gr(n, p).
-fn grassmann_start(gr: &Grassmann<f64>, n: usize, p: usize) -> DMatrix<f64> {
-	let mut y = DMatrix::zeros(n, p);
+fn grassmann_start(gr: &Grassmann<f64>, n: usize, p: usize) -> linalg::Mat<f64> {
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(n, p);
 	gr.random_point(&mut y).unwrap();
 	y
 }
 
 /// Starting point on the Stiefel manifold St(n, p).
-fn stiefel_start(st: &Stiefel<f64>) -> DMatrix<f64> {
-	let mut x = DMatrix::zeros(st.rows(), st.cols());
+fn stiefel_start(st: &Stiefel<f64>) -> linalg::Mat<f64> {
+	let mut x = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(st.rows(), st.cols());
 	st.random_point(&mut x).unwrap();
 	x
 }
 
 /// Check that a point is the minimizer of the Rayleigh quotient (smallest eigenvector).
-/// On S^{n-1} with A = diag(λ₁, ..., λ_n), the minimizer is ±e₁.
-fn check_rayleigh_minimizer(x: &DVector<f64>, tol: f64) {
-	// |x₁| should be close to 1 (the point is ±e₁)
+/// On S^{n-1} with A = diag(lambda_1, ..., lambda_n), the minimizer is +/-e_1.
+fn check_rayleigh_minimizer(x: &linalg::Vec<f64>, tol: f64) {
+	// |x_1| should be close to 1 (the point is +/-e_1)
 	assert!(
-		x[0].abs() > 1.0 - tol,
-		"Expected |x[0]| ≈ 1.0, got {}. Full x = {:?}",
-		x[0].abs(),
+		x.get(0).abs() > 1.0 - tol,
+		"Expected |x[0]| close to 1.0, got {}. Full x = {:?}",
+		x.get(0).abs(),
 		x.as_slice()
 	);
 }
 
 /// Check that columns of Y span the subspace of smallest eigenvectors.
-/// For A = diag(1, 2, ..., n), the p smallest are e₁, ..., e_p.
+/// For A = diag(1, 2, ..., n), the p smallest are e_1, ..., e_p.
 /// The projection matrix P = Y Y^T should satisfy P e_i = e_i for i = 1..p.
-fn check_subspace_minimizer(y: &DMatrix<f64>, p: usize, tol: f64) {
-	let proj = y * y.transpose();
+fn check_subspace_minimizer(y: &linalg::Mat<f64>, p: usize, tol: f64) {
+	let proj = y.mat_mul(&MatrixOps::transpose(y));
+	let nrows = y.nrows();
 	for i in 0..p {
-		let mut ei = DVector::zeros(y.nrows());
-		ei[i] = 1.0;
-		let projected = &proj * &ei;
-		let error = (&projected - &ei).norm();
+		let ei: linalg::Vec<f64> = VectorOps::from_fn(nrows, |k| if k == i { 1.0 } else { 0.0 });
+		let projected = proj.mat_vec(&ei);
+		let diff = projected.sub(&ei);
+		let error = diff.norm();
 		assert!(
 			error < tol,
 			"Subspace projection error for e_{}: {:.2e} (tol = {:.2e})",
@@ -295,7 +518,7 @@ fn check_subspace_minimizer(y: &DMatrix<f64>, p: usize, tol: f64) {
 // ============================================================================
 // PROBLEM 1: RAYLEIGH QUOTIENT ON S^{n-1} (EIGENVECTOR COMPUTATION)
 //
-// min_{x ∈ S^{n-1}} x^T A x
+// min_{x in S^{n-1}} x^T A x
 // Known solution: eigenvector of smallest eigenvalue of A
 // ============================================================================
 
@@ -410,7 +633,7 @@ mod rayleigh_on_sphere {
 	fn cg_converges_fast_on_well_conditioned_problem() {
 		let n = 10;
 		let sphere = Sphere::<f64>::new(n).unwrap();
-		// Well-conditioned: eigenvalues 1, 2, ..., 10 → κ = 10
+		// Well-conditioned: eigenvalues 1, 2, ..., 10 -> kappa = 10
 		let cost_fn = RayleighQuotient::diagonal(n);
 		let x0 = sphere_start(n);
 
@@ -506,19 +729,19 @@ mod rayleigh_on_sphere {
 // ============================================================================
 // PROBLEM 2: QUADRATIC MINIMIZATION ON R^n
 //
-// min_{x ∈ R^n} 0.5 * x^T A x + b^T x + c
+// min_{x in R^n} 0.5 * x^T A x + b^T x + c
 // Known solution: x* = -A^{-1} b, f* = c - 0.5 * b^T A^{-1} b
 // ============================================================================
 
 mod quadratic_on_euclidean {
 	use super::*;
 
-	/// Create a test problem: f(x) = 0.5 * x^T diag(1,...,n) x
+	/// Create a test problem: f(x) = 0.5 * x^T x
 	/// Minimum at x = 0 with f* = 0.
-	fn simple_problem(n: usize) -> (Euclidean<f64>, QuadraticCost<f64, Dyn>, DVector<f64>) {
+	fn simple_problem(n: usize) -> (Euclidean<f64>, SimpleQuadratic, linalg::Vec<f64>) {
 		let eucl = Euclidean::<f64>::new(n).unwrap();
-		let cost_fn = QuadraticCost::simple(Dyn(n));
-		let x0 = DVector::from_element(n, 1.0);
+		let cost_fn = SimpleQuadratic::new(n);
+		let x0: linalg::Vec<f64> = VectorOps::from_fn(n, |_| 1.0);
 		(eucl, cost_fn, x0)
 	}
 
@@ -527,25 +750,16 @@ mod quadratic_on_euclidean {
 		n: usize,
 	) -> (
 		Euclidean<f64>,
-		QuadraticCost<f64, Dyn>,
-		DVector<f64>,
-		DVector<f64>,
+		ShiftedQuadratic,
+		linalg::Vec<f64>,
+		linalg::Vec<f64>,
 		f64,
 	) {
 		let eucl = Euclidean::<f64>::new(n).unwrap();
-		let mut a = DMatrix::zeros(n, n);
-		for i in 0..n {
-			a[(i, i)] = (i + 1) as f64;
-		}
-		let b = DVector::from_fn(n, |i, _| (i + 1) as f64 * 0.5);
-
-		// x* = -A^{-1}b
-		let x_star = DVector::from_fn(n, |i, _| -b[i] / a[(i, i)]);
-		// f* = 0.5 * x*^T A x* + b^T x* = -0.5 * b^T A^{-1} b
-		let f_star: f64 = (0..n).map(|i| -0.5 * b[i] * b[i] / a[(i, i)]).sum();
-
-		let cost_fn = QuadraticCost::new(a, b, 0.0);
-		let x0 = DVector::from_element(n, 2.0);
+		let cost_fn = ShiftedQuadratic::new(n);
+		let x_star = cost_fn.x_star();
+		let f_star = cost_fn.f_star();
+		let x0: linalg::Vec<f64> = VectorOps::from_fn(n, |_| 2.0);
 		(eucl, cost_fn, x0, x_star, f_star)
 	}
 
@@ -570,14 +784,14 @@ mod quadratic_on_euclidean {
 		let final_cost = cost_fn.cost(&result.point).unwrap();
 		assert!(
 			final_cost < 1e-20,
-			"Newton: final cost = {:.2e}, expected ≈0",
+			"Newton: final cost = {:.2e}, expected ~0",
 			final_cost
 		);
 
 		// Solution should be at the origin
 		assert!(
 			result.point.norm() < 1e-10,
-			"Newton: solution norm = {:.2e}, expected ≈0",
+			"Newton: solution norm = {:.2e}, expected ~0",
 			result.point.norm()
 		);
 	}
@@ -602,7 +816,7 @@ mod quadratic_on_euclidean {
 			f_star
 		);
 
-		let error = (&result.point - &x_star).norm();
+		let error = result.point.sub(&x_star).norm();
 		assert!(error < 1e-6, "Newton: ||x - x*|| = {:.2e}", error);
 	}
 
@@ -627,7 +841,7 @@ mod quadratic_on_euclidean {
 			f_star
 		);
 
-		let error = (&result.point - &x_star).norm();
+		let error = result.point.sub(&x_star).norm();
 		assert!(error < 1e-8, "L-BFGS: ||x - x*|| = {:.2e}", error);
 	}
 
@@ -651,7 +865,7 @@ mod quadratic_on_euclidean {
 			f_star
 		);
 
-		let error = (&result.point - &x_star).norm();
+		let error = result.point.sub(&x_star).norm();
 		assert!(error < 1e-6, "Trust Region: ||x - x*|| = {:.2e}", error);
 	}
 
@@ -670,7 +884,7 @@ mod quadratic_on_euclidean {
 		let final_cost = cost_fn.cost(&result.point).unwrap();
 		assert!(
 			final_cost < 1e-6,
-			"CG: cost = {:.2e} after {} iterations, expected ≈0",
+			"CG: cost = {:.2e} after {} iterations, expected ~0",
 			final_cost,
 			result.iterations
 		);
@@ -679,7 +893,7 @@ mod quadratic_on_euclidean {
 		// than the classical n-step bound (which assumes exact line search)
 		assert!(
 			result.iterations <= 3 * n + 10,
-			"CG should converge in ≤ {} steps on {}-dim quadratic, took {}",
+			"CG should converge in <= {} steps on {}-dim quadratic, took {}",
 			3 * n + 10,
 			n,
 			result.iterations
@@ -690,7 +904,7 @@ mod quadratic_on_euclidean {
 // ============================================================================
 // PROBLEM 3: TRACE MINIMIZATION ON GRASSMANN MANIFOLD (EIGENSPACE COMPUTATION)
 //
-// min_{Y ∈ Gr(n,p)} tr(Y^T A Y)
+// min_{Y in Gr(n,p)} tr(Y^T A Y)
 // Known solution: column space of the p eigenvectors of smallest eigenvalues
 // ============================================================================
 
@@ -790,8 +1004,8 @@ mod trace_on_grassmann {
 // ============================================================================
 // PROBLEM 4: PROCRUSTES PROBLEM ON STIEFEL MANIFOLD
 //
-// min_{X ∈ St(n,p)} ||X - B||_F^2  (A = I)
-// Known solution: nearest orthogonal matrix to B, given by U V^T from SVD B = U Σ V^T
+// min_{X in St(n,p)} ||X - B||_F^2  (A = I)
+// Known solution: nearest orthogonal matrix to B, given by U V^T from SVD B = U Sigma V^T
 // ============================================================================
 
 mod procrustes_on_stiefel {
@@ -804,15 +1018,18 @@ mod procrustes_on_stiefel {
 		let st = Stiefel::<f64>::new(n, p).unwrap();
 
 		// Target: an arbitrary matrix
-		let target = DMatrix::from_fn(n, p, |i, j| ((i + 1) as f64) * 0.3 + (j as f64) * 0.5);
+		let target = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(n, p, |i, j| {
+			((i + 1) as f64) * 0.3 + (j as f64) * 0.5
+		});
 
-		// Known solution: nearest orthogonal matrix to target
-		let svd = target.clone().svd(true, true);
+		// Known solution: nearest orthogonal matrix to target via SVD
+		let svd = DecompositionOps::svd(&target);
 		let u = svd.u.unwrap();
-		let vt = svd.v_t.unwrap();
-		let _x_star = u.columns(0, p) * vt.rows(0, p);
+		let vt = svd.vt.unwrap();
+		let _x_star = u.columns(0, p).mat_mul(&vt.rows(0, p));
 
-		let cost_fn = Procrustes::new(DMatrix::identity(n, n), target);
+		let identity_n = <linalg::Mat<f64> as MatrixOps<f64>>::identity(n);
+		let cost_fn = Procrustes::new(identity_n, target);
 		let x0 = stiefel_start(&st);
 
 		let config = SGDConfig::new().with_constant_step_size(0.002);
@@ -833,12 +1050,13 @@ mod procrustes_on_stiefel {
 		);
 
 		// Verify result is on Stiefel manifold: X^T X = I
-		let xtx = result.point.transpose() * &result.point;
-		let eye = DMatrix::identity(p, p);
+		let xtx = MatrixOps::transpose(&result.point).mat_mul(&result.point);
+		let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(p);
+		let orth_error = xtx.sub(&eye).norm();
 		assert!(
-			(&xtx - &eye).norm() < 1e-12,
+			orth_error < 1e-12,
 			"Result not on Stiefel manifold: ||X^T X - I|| = {:.2e}",
-			(&xtx - &eye).norm()
+			orth_error
 		);
 	}
 
@@ -848,14 +1066,18 @@ mod procrustes_on_stiefel {
 		let p = 2;
 		let st = Stiefel::<f64>::new(n, p).unwrap();
 
-		let target = DMatrix::from_fn(n, p, |i, j| ((i + 1) as f64) * 0.3 + (j as f64) * 0.5);
-		let svd = target.clone().svd(true, true);
+		let target = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(n, p, |i, j| {
+			((i + 1) as f64) * 0.3 + (j as f64) * 0.5
+		});
+		let svd = DecompositionOps::svd(&target);
 		let u = svd.u.unwrap();
-		let vt = svd.v_t.unwrap();
-		let x_star = u.columns(0, p) * vt.rows(0, p);
-		let f_star = (&target - &x_star).norm_squared();
+		let vt = svd.vt.unwrap();
+		let x_star = u.columns(0, p).mat_mul(&vt.rows(0, p));
+		let diff = target.sub(&x_star);
+		let f_star = diff.norm() * diff.norm();
 
-		let cost_fn = Procrustes::new(DMatrix::identity(n, n), target);
+		let identity_n = <linalg::Mat<f64> as MatrixOps<f64>>::identity(n);
+		let cost_fn = Procrustes::new(identity_n, target);
 		let x0 = stiefel_start(&st);
 
 		let mut opt = ConjugateGradient::new(CGConfig::polak_ribiere());
@@ -889,12 +1111,13 @@ mod manifold_geometry {
 		for _ in 0..20 {
 			let x = sphere.random_point();
 			let v = sphere.random_tangent(&x).unwrap();
-			let v_small = &v * 0.3; // Small tangent for numerical stability
+			let mut v_small = v.clone();
+			v_small.scale_mut(0.3); // Small tangent for numerical stability
 
 			let y = sphere.exp_map(&x, &v_small).unwrap();
 			let v_recovered = sphere.log_map(&x, &y).unwrap();
 
-			let error = (&v_small - &v_recovered).norm();
+			let error = v_small.sub(&v_recovered).norm();
 			assert!(
 				error < 1e-12,
 				"exp/log inverse error: {:.2e} (v_norm = {:.4})",
@@ -911,9 +1134,12 @@ mod manifold_geometry {
 		for _ in 0..20 {
 			let x = sphere.random_point();
 			let v = sphere.random_tangent(&x).unwrap();
-			let v_unit = &v / v.norm();
+			let v_norm = v.norm();
+			let mut v_unit = v.clone();
+			v_unit.div_scalar_mut(v_norm);
 			let t = 0.5; // geodesic parameter
-			let v_scaled = &v_unit * t;
+			let mut v_scaled = v_unit.clone();
+			v_scaled.scale_mut(t);
 
 			let y = sphere.exp_map(&x, &v_scaled).unwrap();
 			let dist = sphere.geodesic_distance(&x, &y).unwrap();
@@ -934,7 +1160,8 @@ mod manifold_geometry {
 		for _ in 0..20 {
 			let x = sphere.random_point();
 			let v = sphere.random_tangent(&x).unwrap();
-			let v_small = &v * 0.5;
+			let mut v_small = v.clone();
+			v_small.scale_mut(0.5);
 			let y = sphere.exp_map(&x, &v_small).unwrap();
 
 			let u = sphere.random_tangent(&x).unwrap();
@@ -945,7 +1172,7 @@ mod manifold_geometry {
 
 			assert!(
 				(norm_before - norm_after).abs() < 1e-12,
-				"Parallel transport norm error: {:.14} → {:.14}",
+				"Parallel transport norm error: {:.14} -> {:.14}",
 				norm_before,
 				norm_after
 			);
@@ -954,7 +1181,7 @@ mod manifold_geometry {
 			let inner = y.dot(&transported);
 			assert!(
 				inner.abs() < 1e-12,
-				"Transported vector not tangent: <y, τ(u)> = {:.2e}",
+				"Transported vector not tangent: <y, tau(u)> = {:.2e}",
 				inner
 			);
 		}
@@ -970,7 +1197,8 @@ mod manifold_geometry {
 			let w = sphere.random_tangent(&x).unwrap();
 
 			let v = sphere.random_tangent(&x).unwrap();
-			let v_small = &v * 0.3;
+			let mut v_small = v.clone();
+			v_small.scale_mut(0.3);
 			let y = sphere.exp_map(&x, &v_small).unwrap();
 
 			let u_t = sphere.parallel_transport(&x, &y, &u).unwrap();
@@ -981,7 +1209,7 @@ mod manifold_geometry {
 
 			assert!(
 				(ip_before - ip_after).abs() < 1e-11,
-				"Inner product not preserved: {:.14} → {:.14}",
+				"Inner product not preserved: {:.14} -> {:.14}",
 				ip_before,
 				ip_after
 			);
@@ -993,21 +1221,21 @@ mod manifold_geometry {
 		let st = Stiefel::<f64>::new(6, 3).unwrap();
 
 		for _ in 0..20 {
-			let mut x = DMatrix::zeros(6, 3);
+			let mut x = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 3);
 			st.random_point(&mut x).unwrap();
 
-			let mut v = DMatrix::zeros(6, 3);
+			let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 3);
 			st.random_tangent(&x, &mut v).unwrap();
 
 			// Various step sizes
 			for &scale in &[0.01, 0.1, 0.5, 1.0] {
-				let v_scaled = &v * scale;
-				let mut y = DMatrix::zeros(6, 3);
+				let v_scaled = v.scale_by(scale);
+				let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 3);
 				st.retract(&x, &v_scaled, &mut y).unwrap();
 
-				let yty = y.transpose() * &y;
-				let eye = DMatrix::identity(3, 3);
-				let orth_error = (&yty - &eye).norm();
+				let yty = MatrixOps::transpose(&y).mat_mul(&y);
+				let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
+				let orth_error = yty.sub(&eye).norm();
 				assert!(
 					orth_error < 1e-13,
 					"Stiefel retraction orthogonality error at scale {}: {:.2e}",
@@ -1023,8 +1251,8 @@ mod manifold_geometry {
 		let gr = Grassmann::<f64>::new(6, 2).unwrap();
 
 		for _ in 0..10 {
-			let mut y1 = DMatrix::zeros(6, 2);
-			let mut y2 = DMatrix::zeros(6, 2);
+			let mut y1 = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 2);
+			let mut y2 = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 2);
 			gr.random_point(&mut y1).unwrap();
 			gr.random_point(&mut y2).unwrap();
 
@@ -1042,7 +1270,7 @@ mod manifold_geometry {
 			let d11 = gr.distance(&y1, &y1).unwrap();
 			assert!(
 				d11.abs() < 1e-7,
-				"Self-distance must be ≈0, got {:.2e}",
+				"Self-distance must be ~0, got {:.2e}",
 				d11
 			);
 		}
@@ -1053,28 +1281,29 @@ mod manifold_geometry {
 		let eucl = Euclidean::<f64>::new(5).unwrap();
 
 		// Retraction = addition
-		let x = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
-		let v = DVector::from_vec(vec![0.1, 0.2, 0.3, 0.4, 0.5]);
-		let mut y = DVector::zeros(5);
+		let x: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+		let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.3, 0.4, 0.5]);
+		let mut y: linalg::Vec<f64> = VectorOps::zeros(5);
 		eucl.retract(&x, &v, &mut y).unwrap();
+		let expected_y = x.add(&v);
 		assert!(
-			(&y - &x - &v).norm() < 1e-15,
+			y.sub(&expected_y).norm() < 1e-15,
 			"Euclidean retraction should be addition"
 		);
 
 		// Parallel transport = identity
-		let z = DVector::from_vec(vec![5.0, 4.0, 3.0, 2.0, 1.0]);
-		let mut transported = DVector::zeros(5);
+		let z: linalg::Vec<f64> = VectorOps::from_slice(&[5.0, 4.0, 3.0, 2.0, 1.0]);
+		let mut transported: linalg::Vec<f64> = VectorOps::zeros(5);
 		eucl.parallel_transport(&x, &z, &v, &mut transported)
 			.unwrap();
 		assert!(
-			(&transported - &v).norm() < 1e-15,
+			transported.sub(&v).norm() < 1e-15,
 			"Euclidean parallel transport should be identity"
 		);
 
 		// Distance = Euclidean norm
 		let d = eucl.distance(&x, &z).unwrap();
-		let expected = (&x - &z).norm();
+		let expected = x.sub(&z).norm();
 		assert!(
 			(d - expected).abs() < 1e-15,
 			"Euclidean distance should be norm"
@@ -1115,7 +1344,7 @@ mod convergence_rates {
 		let final_cost = *costs.last().unwrap();
 		assert!(
 			final_cost < initial_cost,
-			"SGD should decrease cost: initial {:.6} → final {:.6}",
+			"SGD should decrease cost: initial {:.6} -> final {:.6}",
 			initial_cost,
 			final_cost
 		);
@@ -1166,8 +1395,8 @@ mod convergence_rates {
 	fn lbfgs_converges_superlinearly_on_quadratic() {
 		let n = 10;
 		let eucl = Euclidean::<f64>::new(n).unwrap();
-		let cost_fn = QuadraticCost::simple(Dyn(n));
-		let x0 = DVector::from_element(n, 1.0);
+		let cost_fn = SimpleQuadratic::new(n);
+		let x0: linalg::Vec<f64> = VectorOps::from_fn(n, |_| 1.0);
 
 		let config = LBFGSConfig::new().with_memory_size(n); // Full memory
 		let mut opt = LBFGS::new(config);
@@ -1196,7 +1425,7 @@ mod convergence_rates {
 		// Should converge in O(n) steps with full memory
 		assert!(
 			costs.len() <= n + 5,
-			"L-BFGS with full memory should converge in ≈n steps, took {}",
+			"L-BFGS with full memory should converge in ~n steps, took {}",
 			costs.len()
 		);
 	}
@@ -1218,7 +1447,7 @@ mod numerical_precision {
 			let x = sphere.random_point();
 			let (_, egrad) = cost_fn.cost_and_gradient_alloc(&x).unwrap();
 
-			let mut rgrad = DVector::zeros(10);
+			let mut rgrad: linalg::Vec<f64> = VectorOps::zeros(10);
 			sphere
 				.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad)
 				.unwrap();
@@ -1279,8 +1508,11 @@ mod numerical_precision {
 		let n = 5;
 		let p = 2;
 		let st = Stiefel::<f64>::new(n, p).unwrap();
-		let target = DMatrix::from_fn(n, p, |i, j| ((i + 1) as f64) * 0.3 + (j as f64) * 0.5);
-		let cost_fn = Procrustes::new(DMatrix::identity(n, n), target);
+		let target = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(n, p, |i, j| {
+			((i + 1) as f64) * 0.3 + (j as f64) * 0.5
+		});
+		let identity_n = <linalg::Mat<f64> as MatrixOps<f64>>::identity(n);
+		let cost_fn = Procrustes::new(identity_n, target);
 		let x0 = stiefel_start(&st);
 
 		let config = SGDConfig::new().with_constant_step_size(0.005);
@@ -1291,9 +1523,9 @@ mod numerical_precision {
 			let crit = StoppingCriterion::new().with_max_iterations(1);
 			let result = opt.optimize(&cost_fn, &st, &x, &crit).unwrap();
 
-			let xtx = result.point.transpose() * &result.point;
-			let eye = DMatrix::identity(p, p);
-			let orth_error = (&xtx - &eye).norm();
+			let xtx = MatrixOps::transpose(&result.point).mat_mul(&result.point);
+			let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(p);
+			let orth_error = xtx.sub(&eye).norm();
 			assert!(
 				orth_error < 1e-12,
 				"Orthogonality violated at iteration {}: ||X^T X - I|| = {:.2e}",
@@ -1346,17 +1578,17 @@ mod numerical_precision {
 
 		// Compute gradient via finite differences
 		let eps = 1e-7;
-		let mut grad_fd = DVector::zeros(n);
+		let mut grad_fd: linalg::Vec<f64> = VectorOps::zeros(n);
 		for i in 0..n {
 			let mut x_plus = x.clone();
 			let mut x_minus = x.clone();
-			x_plus[i] += eps;
-			x_minus[i] -= eps;
-			grad_fd[i] =
+			*x_plus.get_mut(i) += eps;
+			*x_minus.get_mut(i) -= eps;
+			*grad_fd.get_mut(i) =
 				(cost_fn.cost(&x_plus).unwrap() - cost_fn.cost(&x_minus).unwrap()) / (2.0 * eps);
 		}
 
-		let error = (&grad_analytic - &grad_fd).norm();
+		let error = grad_analytic.sub(&grad_fd).norm();
 		let relative_error = error / grad_analytic.norm().max(1e-15);
 		assert!(
 			relative_error < 1e-5,

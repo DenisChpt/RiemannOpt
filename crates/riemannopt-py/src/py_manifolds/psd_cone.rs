@@ -2,14 +2,14 @@
 //!
 //! The positive semi-definite cone consists of symmetric positive semi-definite matrices.
 
-use nalgebra::DVector;
 use numpy::{PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
+use riemannopt_core::linalg::VectorOps;
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::psd_cone::PSDCone;
 
 use crate::{
-	array_utils::{dmatrix_to_numpy, numpy_to_dmatrix},
+	array_utils::{mat_to_numpy, numpy_to_mat, Vec64},
 	error::to_py_err,
 };
 
@@ -95,7 +95,7 @@ impl PyPSDCone {
 	///     True if the matrix is symmetric positive semi-definite
 	#[pyo3(signature = (point, atol=1e-10))]
 	pub fn contains(&self, point: PyReadonlyArray2<'_, f64>, atol: f64) -> PyResult<bool> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
 		// Validate dimensions
 		if point_mat.nrows() != self.n || point_mat.ncols() != self.n {
@@ -103,8 +103,12 @@ impl PyPSDCone {
 		}
 
 		// Convert matrix to vector representation
-		let point_vec = self.inner.matrix_to_vector(&point_mat);
-		Ok(self.inner.is_point_on_manifold(&point_vec, atol))
+		let point_vec = self.inner.matrix_to_vector::<f64>(&point_mat);
+		Ok(Manifold::<f64>::is_point_on_manifold(
+			&self.inner,
+			&point_vec,
+			atol,
+		))
 	}
 
 	/// Project a point onto the manifold.
@@ -121,7 +125,7 @@ impl PyPSDCone {
 		py: Python<'py>,
 		point: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
 		// Validate dimensions
 		if point_mat.nrows() != self.n || point_mat.ncols() != self.n {
@@ -132,15 +136,15 @@ impl PyPSDCone {
 		}
 
 		// Convert matrix to vector representation
-		let point_vec = self.inner.matrix_to_vector(&point_mat);
-		let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
+		let point_vec = self.inner.matrix_to_vector::<f64>(&point_mat);
+		let mut result_vec: Vec64 = VectorOps::zeros(self.n * (self.n + 1) / 2);
 
-		self.inner.project_point(&point_vec, &mut result_vec);
+		Manifold::<f64>::project_point(&self.inner, &point_vec, &mut result_vec);
 
 		// Convert back to matrix
-		let result = self.inner.vector_to_matrix(&result_vec);
+		let result = self.inner.vector_to_matrix::<f64>(&result_vec);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Project a tangent vector at a point.
@@ -157,11 +161,13 @@ impl PyPSDCone {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate dimensions
-		if point_mat.shape() != (self.n, self.n) || tangent_mat.shape() != (self.n, self.n) {
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.n)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.n)
+		{
 			return Err(crate::error::dimension_mismatch(
 				&[self.n, self.n],
 				&[tangent_mat.nrows(), tangent_mat.ncols()],
@@ -169,18 +175,17 @@ impl PyPSDCone {
 		}
 
 		// Convert matrices to vector representation
-		let point_vec = self.inner.matrix_to_vector(&point_mat);
-		let tangent_vec = self.inner.matrix_to_vector(&tangent_mat);
-		let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
+		let point_vec = self.inner.matrix_to_vector::<f64>(&point_mat);
+		let tangent_vec = self.inner.matrix_to_vector::<f64>(&tangent_mat);
+		let mut result_vec: Vec64 = VectorOps::zeros(self.n * (self.n + 1) / 2);
 
-		self.inner
-			.project_tangent(&point_vec, &tangent_vec, &mut result_vec)
+		Manifold::<f64>::project_tangent(&self.inner, &point_vec, &tangent_vec, &mut result_vec)
 			.map_err(to_py_err)?;
 
 		// Convert back to matrix
-		let result = self.inner.vector_to_matrix(&result_vec);
+		let result = self.inner.vector_to_matrix::<f64>(&result_vec);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the retraction.
@@ -197,22 +202,21 @@ impl PyPSDCone {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Convert matrices to vector representation
-		let point_vec = self.inner.matrix_to_vector(&point_mat);
-		let tangent_vec = self.inner.matrix_to_vector(&tangent_mat);
-		let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
+		let point_vec = self.inner.matrix_to_vector::<f64>(&point_mat);
+		let tangent_vec = self.inner.matrix_to_vector::<f64>(&tangent_mat);
+		let mut result_vec: Vec64 = VectorOps::zeros(self.n * (self.n + 1) / 2);
 
-		self.inner
-			.retract(&point_vec, &tangent_vec, &mut result_vec)
+		Manifold::<f64>::retract(&self.inner, &point_vec, &tangent_vec, &mut result_vec)
 			.map_err(to_py_err)?;
 
 		// Convert back to matrix
-		let result = self.inner.vector_to_matrix(&result_vec);
+		let result = self.inner.vector_to_matrix::<f64>(&result_vec);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the inverse retraction.
@@ -229,22 +233,21 @@ impl PyPSDCone {
 		x: PyReadonlyArray2<'_, f64>,
 		y: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let x_mat = numpy_to_dmatrix(x)?;
-		let y_mat = numpy_to_dmatrix(y)?;
+		let x_mat = numpy_to_mat(x)?;
+		let y_mat = numpy_to_mat(y)?;
 
 		// Convert matrices to vector representation
-		let x_vec = self.inner.matrix_to_vector(&x_mat);
-		let y_vec = self.inner.matrix_to_vector(&y_mat);
-		let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
+		let x_vec = self.inner.matrix_to_vector::<f64>(&x_mat);
+		let y_vec = self.inner.matrix_to_vector::<f64>(&y_mat);
+		let mut result_vec: Vec64 = VectorOps::zeros(self.n * (self.n + 1) / 2);
 
-		self.inner
-			.inverse_retract(&x_vec, &y_vec, &mut result_vec)
+		Manifold::<f64>::inverse_retract(&self.inner, &x_vec, &y_vec, &mut result_vec)
 			.map_err(to_py_err)?;
 
 		// Convert back to matrix
-		let result = self.inner.vector_to_matrix(&result_vec);
+		let result = self.inner.vector_to_matrix::<f64>(&result_vec);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian inner product.
@@ -262,14 +265,14 @@ impl PyPSDCone {
 		u: PyReadonlyArray2<'_, f64>,
 		v: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let u_mat = numpy_to_dmatrix(u)?;
-		let v_mat = numpy_to_dmatrix(v)?;
+		let point_mat = numpy_to_mat(point)?;
+		let u_mat = numpy_to_mat(u)?;
+		let v_mat = numpy_to_mat(v)?;
 
 		// Convert matrices to vector representation
-		let point_vec = self.inner.matrix_to_vector(&point_mat);
-		let u_vec = self.inner.matrix_to_vector(&u_mat);
-		let v_vec = self.inner.matrix_to_vector(&v_mat);
+		let point_vec = self.inner.matrix_to_vector::<f64>(&point_mat);
+		let u_vec = self.inner.matrix_to_vector::<f64>(&u_mat);
+		let v_vec = self.inner.matrix_to_vector::<f64>(&v_mat);
 
 		Ok(self
 			.inner
@@ -290,12 +293,12 @@ impl PyPSDCone {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Convert matrices to vector representation
-		let point_vec = self.inner.matrix_to_vector(&point_mat);
-		let tangent_vec = self.inner.matrix_to_vector(&tangent_mat);
+		let point_vec = self.inner.matrix_to_vector::<f64>(&point_mat);
+		let tangent_vec = self.inner.matrix_to_vector::<f64>(&tangent_mat);
 
 		Ok(self
 			.inner
@@ -308,16 +311,14 @@ impl PyPSDCone {
 	/// Returns:
 	///     Random symmetric positive semi-definite matrix
 	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
+		let mut result_vec: Vec64 = VectorOps::zeros(self.n * (self.n + 1) / 2);
 
-		self.inner
-			.random_point(&mut result_vec)
-			.map_err(to_py_err)?;
+		Manifold::<f64>::random_point(&self.inner, &mut result_vec).map_err(to_py_err)?;
 
 		// Convert back to matrix
-		let result = self.inner.vector_to_matrix(&result_vec);
+		let result = self.inner.vector_to_matrix::<f64>(&result_vec);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Generate a random tangent vector at a point.
@@ -335,14 +336,13 @@ impl PyPSDCone {
 		point: PyReadonlyArray2<'_, f64>,
 		scale: f64,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
 		// Convert matrix to vector representation
-		let point_vec = self.inner.matrix_to_vector(&point_mat);
-		let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
+		let point_vec = self.inner.matrix_to_vector::<f64>(&point_mat);
+		let mut result_vec: Vec64 = VectorOps::zeros(self.n * (self.n + 1) / 2);
 
-		self.inner
-			.random_tangent(&point_vec, &mut result_vec)
+		Manifold::<f64>::random_tangent(&self.inner, &point_vec, &mut result_vec)
 			.map_err(to_py_err)?;
 
 		// Scale the result if needed
@@ -351,9 +351,9 @@ impl PyPSDCone {
 		}
 
 		// Convert back to matrix
-		let result = self.inner.vector_to_matrix(&result_vec);
+		let result = self.inner.vector_to_matrix::<f64>(&result_vec);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Get the intrinsic dimension of the manifold.
@@ -384,14 +384,14 @@ impl PyPSDCone {
 		to_point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let from_mat = numpy_to_dmatrix(from_point)?;
-		let to_mat = numpy_to_dmatrix(to_point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let from_mat = numpy_to_mat(from_point)?;
+		let to_mat = numpy_to_mat(to_point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate dimensions
-		if from_mat.shape() != (self.n, self.n)
-			|| to_mat.shape() != (self.n, self.n)
-			|| tangent_mat.shape() != (self.n, self.n)
+		if (from_mat.nrows() != self.n || from_mat.ncols() != self.n)
+			|| (to_mat.nrows() != self.n || to_mat.ncols() != self.n)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.n)
 		{
 			return Err(crate::error::dimension_mismatch(
 				&[self.n, self.n, self.n, self.n, self.n, self.n],
@@ -407,18 +407,23 @@ impl PyPSDCone {
 		}
 
 		// Convert matrices to vector representation
-		let from_vec = self.inner.matrix_to_vector(&from_mat);
-		let to_vec = self.inner.matrix_to_vector(&to_mat);
-		let tangent_vec = self.inner.matrix_to_vector(&tangent_mat);
-		let mut result_vec = DVector::zeros(self.n * (self.n + 1) / 2);
+		let from_vec = self.inner.matrix_to_vector::<f64>(&from_mat);
+		let to_vec = self.inner.matrix_to_vector::<f64>(&to_mat);
+		let tangent_vec = self.inner.matrix_to_vector::<f64>(&tangent_mat);
+		let mut result_vec: Vec64 = VectorOps::zeros(self.n * (self.n + 1) / 2);
 
-		self.inner
-			.parallel_transport(&from_vec, &to_vec, &tangent_vec, &mut result_vec)
-			.map_err(to_py_err)?;
+		Manifold::<f64>::parallel_transport(
+			&self.inner,
+			&from_vec,
+			&to_vec,
+			&tangent_vec,
+			&mut result_vec,
+		)
+		.map_err(to_py_err)?;
 
 		// Convert back to matrix
-		let result = self.inner.vector_to_matrix(&result_vec);
+		let result = self.inner.vector_to_matrix::<f64>(&result_vec);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 }

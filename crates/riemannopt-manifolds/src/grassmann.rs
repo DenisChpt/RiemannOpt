@@ -115,36 +115,37 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Grassmann;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DMatrix;
+//! use riemannopt_core::linalg::{MatrixOps, DecompositionOps};
 //!
 //! // Create Grassmann manifold Gr(5,2)
 //! let grassmann = Grassmann::<f64>::new(5, 2)?;
 //!
 //! // Random point (2D subspace of ℝ⁵)
-//! let mut y = DMatrix::<f64>::zeros(5, 2);
+//! let mut y = riemannopt_core::linalg::Mat::<f64>::zeros(5, 2);
 //! grassmann.random_point(&mut y)?;
 //!
 //! // Verify orthonormality
-//! let yty = y.transpose() * &y;
-//! assert!((yty - DMatrix::<f64>::identity(2, 2)).norm() < 1e-14);
+//! let yt = MatrixOps::transpose(&y);
+//! let yty = yt.mat_mul(&y);
+//! let identity = <riemannopt_core::linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
+//! assert!(yty.sub(&identity).norm() < 1e-14);
 //!
 //! // Tangent vector (orthogonal to subspace)
-//! let z = DMatrix::from_fn(5, 2, |i, j| 0.1 * (i as f64 - j as f64));
+//! let z = riemannopt_core::linalg::Mat::<f64>::from_fn(5, 2, |i, j| 0.1 * (i as f64 - j as f64));
 //! let mut z_horizontal = z.clone();
 //! grassmann.project_tangent(&y, &z, &mut z_horizontal)?;
 //!
 //! // Verify horizontality: Y^T Z = 0
-//! let ytz = y.transpose() * &z_horizontal;
+//! let ytz = yt.mat_mul(&z_horizontal);
 //! assert!(ytz.norm() < 1e-14);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::DMatrix;
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
-	core::matrix_manifold::MatrixManifold,
 	error::{ManifoldError, Result},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -270,7 +271,13 @@ impl<T: Scalar> Grassmann<T> {
 	pub fn subspace_dim(&self) -> usize {
 		self.p
 	}
+}
 
+impl<T> Grassmann<T>
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Validates that a matrix represents a point on Grassmann.
 	///
 	/// # Mathematical Check
@@ -281,7 +288,7 @@ impl<T: Scalar> Grassmann<T> {
 	///
 	/// - `DimensionMismatch`: If matrix dimensions don't match (n,p)
 	/// - `NotOnManifold`: If ‖Y^T Y - I_p‖ > tolerance
-	pub fn check_point(&self, y: &DMatrix<T>) -> Result<()> {
+	pub fn check_point(&self, y: &linalg::Mat<T>) -> Result<()> {
 		if y.nrows() != self.n || y.ncols() != self.p {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.p,
@@ -290,9 +297,9 @@ impl<T: Scalar> Grassmann<T> {
 		}
 
 		// Check orthonormality: Y^T Y = I
-		let yty = y.transpose() * y;
-		let identity = DMatrix::<T>::identity(self.p, self.p);
-		let constraint_error = (&yty - &identity).norm();
+		let yty = y.transpose().mat_mul(y);
+		let identity = linalg::Mat::<T>::identity(self.p);
+		let constraint_error = yty.sub(&identity).norm();
 
 		if constraint_error > self.tolerance {
 			return Err(ManifoldError::invalid_point(format!(
@@ -315,7 +322,7 @@ impl<T: Scalar> Grassmann<T> {
 	/// - `DimensionMismatch`: If dimensions don't match
 	/// - `NotOnManifold`: If Y is not on Grassmann
 	/// - `NotInTangentSpace`: If ‖Y^T Z‖ > tolerance
-	pub fn check_tangent(&self, y: &DMatrix<T>, z: &DMatrix<T>) -> Result<()> {
+	pub fn check_tangent(&self, y: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<()> {
 		self.check_point(y)?;
 
 		if z.nrows() != self.n || z.ncols() != self.p {
@@ -326,7 +333,7 @@ impl<T: Scalar> Grassmann<T> {
 		}
 
 		// Check horizontality: Y^T Z = 0
-		let ytz = y.transpose() * z;
+		let ytz = y.transpose().mat_mul(z);
 		let horizontal_error = ytz.norm();
 
 		if horizontal_error > self.tolerance {
@@ -353,25 +360,25 @@ impl<T: Scalar> Grassmann<T> {
 	/// # Returns
 	///
 	/// The retracted point R_Y(Z) on the manifold.
-	pub fn qr_retraction(&self, y: &DMatrix<T>, z: &DMatrix<T>) -> Result<DMatrix<T>> {
+	pub fn qr_retraction(&self, y: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
 		// Compute Y + Z
-		let y_plus_z = y + z;
+		let y_plus_z = y.add(z);
 
 		// QR decomposition
 		let qr = y_plus_z.qr();
-		let mut q = qr.q();
+		let mut q = qr.q().clone();
 
 		// Extract first p columns
 		if q.ncols() > self.p {
-			q = q.columns(0, self.p).clone_owned();
+			q = q.columns(0, self.p);
 		}
 
 		// Fix signs for continuity
 		let r = qr.r();
 		for j in 0..self.p.min(r.ncols()) {
-			if r[(j, j)] < T::zero() {
+			if r.get(j, j) < T::zero() {
 				for i in 0..self.n {
-					q[(i, j)] = -q[(i, j)];
+					*q.get_mut(i, j) = T::zero() - q.get(i, j);
 				}
 			}
 		}
@@ -393,27 +400,27 @@ impl<T: Scalar> Grassmann<T> {
 	/// # Returns
 	///
 	/// The retracted point using SVD.
-	pub fn svd_retraction(&self, y: &DMatrix<T>, z: &DMatrix<T>) -> Result<DMatrix<T>> {
-		let y_plus_z = y + z;
+	pub fn svd_retraction(&self, y: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
+		let y_plus_z = y.add(z);
 
 		// Compute SVD
-		let svd = y_plus_z.svd(true, true);
+		let svd = y_plus_z.svd();
 
-		if let (Some(u), Some(vt)) = (svd.u, svd.v_t) {
+		if let (Some(u), Some(vt)) = (svd.u, svd.vt) {
 			// Take first p columns of U and rows of V^T
 			let u_truncated = if u.ncols() > self.p {
-				u.columns(0, self.p).clone_owned()
+				u.columns(0, self.p)
 			} else {
 				u
 			};
 
 			let vt_truncated = if vt.nrows() > self.p {
-				vt.rows(0, self.p).clone_owned()
+				vt.rows(0, self.p)
 			} else {
 				vt
 			};
 
-			Ok(u_truncated * vt_truncated)
+			Ok(u_truncated.mat_mul(&vt_truncated))
 		} else {
 			Err(ManifoldError::numerical_error(
 				"SVD computation failed in retraction",
@@ -435,22 +442,23 @@ impl<T: Scalar> Grassmann<T> {
 	/// # Returns
 	///
 	/// The geodesic distance between the subspaces.
-	pub fn geodesic_distance(&self, y1: &DMatrix<T>, y2: &DMatrix<T>) -> Result<T> {
+	pub fn geodesic_distance(&self, y1: &linalg::Mat<T>, y2: &linalg::Mat<T>) -> Result<T> {
 		self.check_point(y1)?;
 		self.check_point(y2)?;
 
 		// Compute Y₁^T Y₂
-		let y1ty2 = y1.transpose() * y2;
+		let y1ty2 = y1.transpose().mat_mul(y2);
 
 		// SVD to get principal angles
-		let svd = y1ty2.svd(true, true);
+		let svd = y1ty2.svd();
 		let sigma = &svd.singular_values;
 
 		// Principal angles: θᵢ = arccos(σᵢ)
 		let mut dist_sq = T::zero();
 		for i in 0..self.p {
 			// Clamp singular values to [-1, 1]
-			let sigma_clamped = <T as Float>::max(<T as Float>::min(sigma[i], T::one()), -T::one());
+			let sigma_clamped =
+				<T as Float>::max(<T as Float>::min(sigma.get(i), T::one()), -T::one());
 			let theta = <T as Float>::acos(sigma_clamped);
 			dist_sq = dist_sq + theta * theta;
 		}
@@ -464,24 +472,24 @@ impl<T: Scalar> Grassmann<T> {
 	///
 	/// For geodesic from [Y₁] to [Y₂], transport Z using:
 	/// τ(Z) = (I - Y₂Y₂^T)ZU where Y₂^T Y₁ = UΣV^T.
-	pub fn parallel_transport(
+	pub fn parallel_transport_geodesic(
 		&self,
-		y1: &DMatrix<T>,
-		y2: &DMatrix<T>,
-		z: &DMatrix<T>,
-	) -> Result<DMatrix<T>> {
+		y1: &linalg::Mat<T>,
+		y2: &linalg::Mat<T>,
+		z: &linalg::Mat<T>,
+	) -> Result<linalg::Mat<T>> {
 		self.check_tangent(y1, z)?;
 		self.check_point(y2)?;
 
 		// Compute Y₂^T Y₁ and its SVD
-		let y2ty1 = y2.transpose() * y1;
-		let svd = y2ty1.svd(true, true);
+		let y2ty1 = y2.transpose().mat_mul(y1);
+		let svd = y2ty1.svd();
 
 		if let Some(u) = svd.u {
 			// Transport: (I - Y₂Y₂^T)ZU
-			let zu = z * &u;
-			let y2_zu = y2 * &(y2.transpose() * &zu);
-			Ok(&zu - &y2_zu)
+			let zu = z.mat_mul(&u);
+			let y2_zu = y2.mat_mul(&y2.transpose().mat_mul(&zu));
+			Ok(zu.sub(&y2_zu))
 		} else {
 			// Fallback to simple projection
 			let mut result = z.clone();
@@ -491,9 +499,13 @@ impl<T: Scalar> Grassmann<T> {
 	}
 }
 
-impl<T: Scalar> Manifold<T> for Grassmann<T> {
-	type Point = DMatrix<T>;
-	type TangentVector = DMatrix<T>;
+impl<T> Manifold<T> for Grassmann<T>
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Mat<T>;
+	type TangentVector = linalg::Mat<T>;
 
 	fn name(&self) -> &str {
 		"Grassmann"
@@ -509,9 +521,9 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		}
 
 		// Check Y^T Y = I_p
-		let yty = point.transpose() * point;
-		let identity = DMatrix::<T>::identity(self.p, self.p);
-		(&yty - &identity).norm() < tol
+		let yty = point.transpose().mat_mul(point);
+		let identity = linalg::Mat::<T>::identity(self.p);
+		yty.sub(&identity).norm() < tol
 	}
 
 	fn is_vector_in_tangent_space(
@@ -528,31 +540,31 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		}
 
 		// Horizontal space: Y^T Z = 0
-		let ytz = point.transpose() * vector;
+		let ytz = point.transpose().mat_mul(vector);
 		ytz.norm() < tol
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		if point.nrows() != self.n || point.ncols() != self.p {
-			*result = DMatrix::zeros(self.n, self.p);
+			*result = MatrixOps::zeros(self.n, self.p);
 			return;
 		}
 
 		// Use QR decomposition for projection
-		let qr = point.clone().qr();
-		let mut q = qr.q();
+		let qr = point.qr();
+		let mut q = qr.q().clone();
 
 		// Extract first p columns
 		if q.ncols() > self.p {
-			q = q.columns(0, self.p).clone_owned();
+			q = q.columns(0, self.p);
 		}
 
 		// Fix signs for continuity
 		let r = qr.r();
 		for j in 0..self.p.min(r.ncols()) {
-			if r[(j, j)] < T::zero() {
+			if r.get(j, j) < T::zero() {
 				for i in 0..self.n {
-					q[(i, j)] = -q[(i, j)];
+					*q.get_mut(i, j) = T::zero() - q.get(i, j);
 				}
 			}
 		}
@@ -578,17 +590,17 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		}
 
 		// Check that point is on manifold
-		let yty = point.transpose() * point;
-		let identity = DMatrix::<T>::identity(self.p, self.p);
-		if (&yty - &identity).norm() > self.tolerance {
+		let yty = point.transpose().mat_mul(point);
+		let identity = linalg::Mat::<T>::identity(self.p);
+		if yty.sub(&identity).norm() > self.tolerance {
 			return Err(ManifoldError::invalid_point(
 				"Point must be on Grassmann for tangent projection",
 			));
 		}
 
 		// Horizontal projection: Z - Y(Y^T Z)
-		let ytz = point.transpose() * vector;
-		*result = vector - point * ytz;
+		let ytz = point.transpose().mat_mul(vector);
+		*result = vector.sub(&point.mat_mul(&ytz));
 
 		Ok(())
 	}
@@ -604,7 +616,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		let mut inner = T::zero();
 		for i in 0..self.n {
 			for j in 0..self.p {
-				inner = inner + u[(i, j)] * v[(i, j)];
+				inner = inner + u.get(i, j) * v.get(i, j);
 			}
 		}
 		Ok(inner)
@@ -620,11 +632,11 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		// This is the standard choice in pymanopt and manopt (grassmannfactory.m lines 165-188).
 		// Polar retraction is compatible with projection-based vector transport,
 		// unlike QR retraction which is representation-dependent.
-		let y = point + tangent;
-		let svd = y.svd(true, true);
-		match (svd.u, svd.v_t) {
+		let y = point.add(tangent);
+		let svd = y.svd();
+		match (svd.u, svd.vt) {
 			(Some(u), Some(vt)) => {
-				let polar = &u * &vt;
+				let polar = u.mat_mul(&vt);
 				result.copy_from(&polar);
 				Ok(())
 			}
@@ -648,7 +660,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 
 		// Compute log map approximation using projection
 		// For close points: log_Y(Ỹ) ≈ P_h(Ỹ - Y)
-		let diff = other - point;
+		let diff = other.sub(point);
 		self.project_tangent(point, &diff, result)
 	}
 
@@ -680,10 +692,10 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		let normal = StandardNormal;
 
 		// Generate random Gaussian matrix
-		let mut a = DMatrix::zeros(self.n, self.p);
+		let mut a: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 		for i in 0..self.n {
 			for j in 0..self.p {
-				a[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*a.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
@@ -693,9 +705,9 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 
 		// Extract first p columns
 		if q.ncols() > self.p {
-			result.copy_from(&q.columns(0, self.p));
+			*result = q.columns(0, self.p);
 		} else {
-			result.copy_from(&q);
+			result.copy_from(q);
 		}
 
 		Ok(())
@@ -708,10 +720,10 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		let mut rng = rand::rng();
 		let normal = StandardNormal;
 
-		let mut z = DMatrix::zeros(self.n, self.p);
+		let mut z: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 		for i in 0..self.n {
 			for j in 0..self.p {
-				z[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*z.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
@@ -721,7 +733,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		// Normalize
 		let norm = result.norm();
 		if norm > <T as Scalar>::from_f64(1e-16) {
-			*result /= norm;
+			result.scale_mut(T::one() / norm);
 		}
 
 		Ok(())
@@ -749,7 +761,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 		// For Grassmann manifold, tangent vectors are in the horizontal space
 		// Scaling preserves the horizontal space property
 		result.copy_from(tangent);
-		*result *= scalar;
+		result.scale_mut(scalar);
 		Ok(())
 	}
 
@@ -764,7 +776,7 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 	) -> Result<()> {
 		// Add the tangent vectors
 		temp.copy_from(v1);
-		*temp += v2;
+		temp.add_assign(v2);
 
 		// The sum should already be in the horizontal space if v1 and v2 are,
 		// but we project for numerical stability
@@ -774,8 +786,12 @@ impl<T: Scalar> Manifold<T> for Grassmann<T> {
 	}
 }
 
-impl<T: Scalar> MatrixManifold<T> for Grassmann<T> {
-	fn matrix_dims(&self) -> (usize, usize) {
-		(self.n, self.p)
-	}
-}
+// NOTE: MatrixManifold<T> impl commented out because the trait still requires
+// `Point = DMatrix<T>` but we now use `linalg::Mat<T>`. Will be re-enabled
+// once riemannopt-core's MatrixManifold trait is migrated to the linalg layer.
+//
+// impl<T: Scalar> MatrixManifold<T> for Grassmann<T> {
+// 	fn matrix_dims(&self) -> (usize, usize) {
+// 		(self.n, self.p)
+// 	}
+// }

@@ -1,15 +1,13 @@
-//! # Utility Functions for Zero-Copy Matrix/Vector Operations
+//! # Utility Functions for Matrix/Vector Operations
 //!
-//! This module provides essential utilities for efficient manipulation of matrices
-//! and vectors without unnecessary memory allocations. These functions are crucial
-//! for the performance of manifold operations, especially when dealing with matrix
-//! manifolds where points and tangent vectors may need to be viewed in different
-//! formats.
+//! This module provides essential utilities for manipulation of matrices
+//! and vectors. These functions are crucial for the performance of manifold
+//! operations, especially when dealing with matrix manifolds where points
+//! and tangent vectors may need to be viewed in different formats.
 //!
 //! ## Key Features
 //!
-//! 1. **Zero-Copy Views**: Convert between vector and matrix representations without
-//!    allocating new memory
+//! 1. **Format Conversion**: Convert between vector and matrix representations
 //! 2. **In-Place Operations**: Perform matrix multiplications directly into existing
 //!    storage
 //! 3. **Memory Safety**: All operations maintain Rust's memory safety guarantees
@@ -18,7 +16,7 @@
 //!
 //! - **Performance First**: Every function is designed to minimize allocations
 //! - **Type Safety**: Strong typing prevents dimension mismatches at compile time
-//! - **BLAS Integration**: Operations are compatible with BLAS when available
+//! - **Backend Agnostic**: Uses `linalg` abstraction for portability
 //!
 //! ## Common Use Cases
 //!
@@ -27,15 +25,15 @@
 //! but may need to expose them as vectors for generic optimization algorithms:
 //!
 //! ```rust,no_run
-//! use riemannopt_manifolds::utils::vector_to_matrix_view;
-//! use nalgebra::DVector;
+//! use riemannopt_manifolds::utils::vector_to_matrix;
+//! use riemannopt_core::linalg::{self, VectorOps};
 //!
 //! // Optimization algorithm provides a vector
-//! let point_vec = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+//! let point_vec = linalg::Vec::<f64>::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 //!
-//! // View it as a 3×2 matrix for manifold operations
-//! let point_mat = vector_to_matrix_view(&point_vec, 3, 2);
-//! // Now we can perform matrix operations without copying data
+//! // Convert to a 3×2 matrix for manifold operations
+//! let point_mat = vector_to_matrix::<f64>(&point_vec, 3, 2);
+//! // Now we can perform matrix operations
 //! ```
 //!
 //! ### Efficient Updates
@@ -43,33 +41,36 @@
 //!
 //! ```rust,no_run
 //! use riemannopt_manifolds::utils::gemm_inplace;
-//! use nalgebra::DMatrix;
+//! use riemannopt_core::linalg::{self, MatrixOps};
 //!
-//! let a = DMatrix::from_vec(2, 2, vec![1.0, 2.0, 3.0, 4.0]);
-//! let b = DMatrix::from_vec(2, 2, vec![5.0, 6.0, 7.0, 8.0]);
-//! let mut c = DMatrix::zeros(2, 2);
+//! let a = linalg::Mat::<f64>::from_column_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+//! let b = linalg::Mat::<f64>::from_column_slice(2, 2, &[5.0, 6.0, 7.0, 8.0]);
+//! let mut c = linalg::Mat::<f64>::zeros(2, 2);
 //!
 //! // Compute C = 1.0 * A * B + 0.0 * C without allocating temporary matrices
 //! gemm_inplace(1.0, &a, &b, 0.0, &mut c);
 //! ```
 
-use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView, Dyn};
-use riemannopt_core::types::Scalar;
+use riemannopt_core::{
+	linalg::{self, DefaultBackend, LinAlgBackend, MatrixOps, VectorOps},
+	types::Scalar,
+};
 
-/// Creates a matrix view from a vector without cloning.
+/// Creates an owned matrix from a vector's data.
 ///
-/// This function provides a zero-copy way to interpret a vector as a matrix,
-/// which is essential for manifolds that internally use matrix representations.
+/// This function interprets a vector as a matrix in column-major order
+/// and returns an owned matrix copy, which is essential for manifolds
+/// that internally use matrix representations.
 ///
 /// # Arguments
 ///
-/// * `vector` - The source vector to view as a matrix
-/// * `nrows` - Number of rows in the resulting matrix view
-/// * `ncols` - Number of columns in the resulting matrix view
+/// * `vector` - The source vector to interpret as a matrix
+/// * `nrows` - Number of rows in the resulting matrix
+/// * `ncols` - Number of columns in the resulting matrix
 ///
 /// # Returns
 ///
-/// A read-only matrix view of the vector data.
+/// An owned matrix containing the vector's data in column-major layout.
 ///
 /// # Panics
 ///
@@ -77,9 +78,8 @@ use riemannopt_core::types::Scalar;
 ///
 /// # Memory Layout
 ///
-/// The vector is interpreted in column-major order (Fortran order), which is
-/// the default for nalgebra and BLAS libraries. For a 2×2 matrix, the vector
-/// [a, b, c, d] represents the matrix:
+/// The vector is interpreted in column-major order (Fortran order).
+/// For a 2×2 matrix, the vector [a, b, c, d] represents the matrix:
 /// ```text
 /// [ a  c ]
 /// [ b  d ]
@@ -88,46 +88,48 @@ use riemannopt_core::types::Scalar;
 /// # Example
 ///
 /// ```rust
-/// use riemannopt_manifolds::utils::vector_to_matrix_view;
-/// use nalgebra::DVector;
+/// use riemannopt_manifolds::utils::vector_to_matrix;
+/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps};
 ///
-/// let vec = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
-/// let mat = vector_to_matrix_view(&vec, 2, 2);
+/// let vec = linalg::Vec::<f64>::from_slice(&[1.0, 2.0, 3.0, 4.0]);
+/// let mat = vector_to_matrix::<f64>(&vec, 2, 2);
 ///
-/// assert_eq!(mat[(0, 0)], 1.0);
-/// assert_eq!(mat[(1, 0)], 2.0);
-/// assert_eq!(mat[(0, 1)], 3.0);
-/// assert_eq!(mat[(1, 1)], 4.0);
+/// assert_eq!(MatrixOps::get(&mat, 0, 0), 1.0);
+/// assert_eq!(MatrixOps::get(&mat, 1, 0), 2.0);
+/// assert_eq!(MatrixOps::get(&mat, 0, 1), 3.0);
+/// assert_eq!(MatrixOps::get(&mat, 1, 1), 4.0);
 /// ```
 #[inline]
-pub fn vector_to_matrix_view<'a, T: Scalar>(
-	vector: &'a DVector<T>,
+pub fn vector_to_matrix<T: Scalar>(
+	vector: &linalg::Vec<T>,
 	nrows: usize,
 	ncols: usize,
-) -> DMatrixView<'a, T> {
+) -> linalg::Mat<T>
+where
+	DefaultBackend: LinAlgBackend<T>,
+{
 	debug_assert_eq!(
 		vector.len(),
 		nrows * ncols,
 		"Vector length must equal nrows * ncols"
 	);
 
-	// Create a matrix view from the vector's data
-	// nalgebra stores matrices in column-major order
-	DMatrixView::from_slice_generic(vector.as_slice(), Dyn(nrows), Dyn(ncols))
+	// Create a matrix from the vector's slice data in column-major order
+	linalg::Mat::<T>::from_column_slice(nrows, ncols, vector.as_slice())
 }
 
-/// Creates a vector view from a matrix without cloning.
+/// Creates an owned vector from a matrix's data.
 ///
-/// This function provides a zero-copy way to interpret a matrix as a vector,
+/// This function flattens a matrix into a vector in column-major order,
 /// useful when optimization algorithms expect vector representations.
 ///
 /// # Arguments
 ///
-/// * `matrix` - The source matrix to view as a vector
+/// * `matrix` - The source matrix to flatten as a vector
 ///
 /// # Returns
 ///
-/// A read-only vector view of the matrix data in column-major order.
+/// An owned vector containing the matrix's data in column-major order.
 ///
 /// # Memory Layout
 ///
@@ -140,70 +142,74 @@ pub fn vector_to_matrix_view<'a, T: Scalar>(
 /// # Example
 ///
 /// ```rust
-/// use riemannopt_manifolds::utils::matrix_to_vector_view;
-/// use nalgebra::DMatrix;
+/// use riemannopt_manifolds::utils::matrix_to_vector;
+/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps};
 ///
-/// let mat = DMatrix::from_vec(2, 2, vec![1.0, 2.0, 3.0, 4.0]);
-/// let vec = matrix_to_vector_view(&mat);
+/// let mat = linalg::Mat::<f64>::from_column_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+/// let vec = matrix_to_vector::<f64>(&mat);
 ///
 /// assert_eq!(vec.len(), 4);
-/// assert_eq!(vec[0], 1.0);
-/// assert_eq!(vec[3], 4.0);
+/// assert_eq!(VectorOps::get(&vec, 0), 1.0);
+/// assert_eq!(VectorOps::get(&vec, 3), 4.0);
 /// ```
 #[inline]
-pub fn matrix_to_vector_view<'a, T: Scalar>(matrix: &'a DMatrix<T>) -> DVectorView<'a, T> {
-	let len = matrix.nrows() * matrix.ncols();
-
-	// Create a vector view from the matrix's data
-	DVectorView::from_slice_generic(matrix.as_slice(), Dyn(len), nalgebra::U1)
+pub fn matrix_to_vector<T: Scalar>(matrix: &linalg::Mat<T>) -> linalg::Vec<T>
+where
+	DefaultBackend: LinAlgBackend<T>,
+{
+	// Create a vector from the matrix's data in column-major order
+	let nrows = matrix.nrows();
+	let ncols = matrix.ncols();
+	VectorOps::from_fn(nrows * ncols, |idx| {
+		let j = idx / nrows;
+		let i = idx % nrows;
+		matrix.get(i, j)
+	})
 }
 
-/// Reshapes a mutable vector as a matrix view.
+/// Reshapes a vector's data into a matrix, writing the result into an existing matrix.
 ///
-/// This function provides a zero-copy way to interpret and modify a vector
-/// as a matrix, essential for in-place manifold operations.
+/// This function copies the vector's data into the provided mutable matrix
+/// in column-major order, useful for in-place manifold operations.
 ///
 /// # Arguments
 ///
-/// * `vector` - The source vector to view as a mutable matrix
-/// * `nrows` - Number of rows in the resulting matrix view
-/// * `ncols` - Number of columns in the resulting matrix view
-///
-/// # Returns
-///
-/// A mutable matrix view of the vector data.
+/// * `vector` - The source vector to interpret as a matrix
+/// * `result` - The target matrix to write into (must have correct dimensions)
 ///
 /// # Panics
 ///
-/// Panics in debug mode if `vector.len() != nrows * ncols`.
+/// Panics in debug mode if `vector.len() != result.nrows() * result.ncols()`.
 ///
 /// # Example
 ///
 /// ```rust
-/// use riemannopt_manifolds::utils::vector_to_matrix_view_mut;
-/// use nalgebra::DVector;
+/// use riemannopt_manifolds::utils::vector_to_matrix_inplace;
+/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps};
 ///
-/// let mut vec = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
-/// {
-///     let mut mat = vector_to_matrix_view_mut(&mut vec, 2, 2);
-///     mat[(0, 0)] *= 2.0;  // Modify through matrix view
-/// }
-/// assert_eq!(vec[0], 2.0);  // Change reflected in vector
+/// let vec = linalg::Vec::<f64>::from_slice(&[1.0, 2.0, 3.0, 4.0]);
+/// let mut mat = linalg::Mat::<f64>::zeros(2, 2);
+/// vector_to_matrix_inplace::<f64>(&vec, &mut mat);
+/// assert_eq!(MatrixOps::get(&mat, 0, 0), 1.0);
+/// assert_eq!(MatrixOps::get(&mat, 1, 1), 4.0);
 /// ```
 #[inline]
-pub fn vector_to_matrix_view_mut<'a, T: Scalar>(
-	vector: &'a mut DVector<T>,
-	nrows: usize,
-	ncols: usize,
-) -> nalgebra::DMatrixViewMut<'a, T> {
+pub fn vector_to_matrix_inplace<T: Scalar>(vector: &linalg::Vec<T>, result: &mut linalg::Mat<T>)
+where
+	DefaultBackend: LinAlgBackend<T>,
+{
 	debug_assert_eq!(
 		vector.len(),
-		nrows * ncols,
+		result.nrows() * result.ncols(),
 		"Vector length must equal nrows * ncols"
 	);
 
-	// Create a mutable matrix view from the vector's data
-	nalgebra::DMatrixViewMut::from_slice_generic(vector.as_mut_slice(), Dyn(nrows), Dyn(ncols))
+	let nrows = result.nrows();
+	for idx in 0..vector.len() {
+		let j = idx / nrows;
+		let i = idx % nrows;
+		*result.get_mut(i, j) = vector.get(idx);
+	}
 }
 
 /// In-place general matrix multiplication (GEMM): C = alpha * A * B + beta * C.
@@ -238,11 +244,11 @@ pub fn vector_to_matrix_view_mut<'a, T: Scalar>(
 ///
 /// ```rust
 /// use riemannopt_manifolds::utils::gemm_inplace;
-/// use nalgebra::DMatrix;
+/// use riemannopt_core::linalg::{self, MatrixOps};
 ///
-/// let a = DMatrix::from_vec(2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-/// let b = DMatrix::from_vec(3, 2, vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
-/// let mut c = DMatrix::zeros(2, 2);
+/// let a = linalg::Mat::<f64>::from_column_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+/// let b = linalg::Mat::<f64>::from_column_slice(3, 2, &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+/// let mut c = linalg::Mat::<f64>::zeros(2, 2);
 ///
 /// // Compute C = A * B
 /// gemm_inplace(1.0, &a, &b, 0.0, &mut c);
@@ -250,11 +256,13 @@ pub fn vector_to_matrix_view_mut<'a, T: Scalar>(
 #[inline]
 pub fn gemm_inplace<T: Scalar>(
 	alpha: T,
-	a: &DMatrix<T>,
-	b: &DMatrix<T>,
+	a: &linalg::Mat<T>,
+	b: &linalg::Mat<T>,
 	beta: T,
-	c: &mut DMatrix<T>,
-) {
+	c: &mut linalg::Mat<T>,
+) where
+	DefaultBackend: LinAlgBackend<T>,
+{
 	c.gemm(alpha, a, b, beta);
 }
 
@@ -289,11 +297,11 @@ pub fn gemm_inplace<T: Scalar>(
 ///
 /// ```rust
 /// use riemannopt_manifolds::utils::gemv_inplace;
-/// use nalgebra::{DMatrix, DVector};
+/// use riemannopt_core::linalg::{self, MatrixOps, VectorOps};
 ///
-/// let a = DMatrix::from_vec(2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-/// let x = DVector::from_vec(vec![7.0, 8.0, 9.0]);
-/// let mut y = DVector::zeros(2);
+/// let a = linalg::Mat::<f64>::from_column_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+/// let x = linalg::Vec::<f64>::from_slice(&[7.0, 8.0, 9.0]);
+/// let mut y = linalg::Vec::<f64>::zeros(2);
 ///
 /// // Compute y = A * x
 /// gemv_inplace(1.0, &a, &x, 0.0, &mut y);
@@ -301,10 +309,17 @@ pub fn gemm_inplace<T: Scalar>(
 #[inline]
 pub fn gemv_inplace<T: Scalar>(
 	alpha: T,
-	a: &DMatrix<T>,
-	x: &DVector<T>,
+	a: &linalg::Mat<T>,
+	x: &linalg::Vec<T>,
 	beta: T,
-	y: &mut DVector<T>,
-) {
-	y.gemv(alpha, a, x, beta);
+	y: &mut linalg::Vec<T>,
+) where
+	DefaultBackend: LinAlgBackend<T>,
+{
+	// Compute y = alpha * A * x + beta * y
+	// First scale y by beta
+	y.scale_mut(beta);
+	// Then add alpha * A * x
+	let ax = a.mat_vec(x);
+	y.axpy(alpha, &ax, T::one());
 }

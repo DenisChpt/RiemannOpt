@@ -58,7 +58,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::{ProductStatic, Sphere};
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DVector;
+//! use riemannopt_core::linalg::{self, VectorOps};
 //!
 //! // Create S² × S³ statically
 //! let sphere1 = Sphere::<f64>::new(3)?;
@@ -66,7 +66,7 @@
 //! let product = ProductStatic::new(sphere1, sphere2);
 //!
 //! // Operations are fully type-safe and optimized
-//! let mut x = DVector::<f64>::zeros(7);
+//! let mut x = linalg::Vec::<f64>::zeros(7);
 //! product.random_point(&mut x)?;
 //!
 //! // Access components directly
@@ -74,12 +74,12 @@
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::DVector;
 use num_traits::Float;
 use std::marker::PhantomData;
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
+	linalg::{self, LinAlgBackend, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -123,8 +123,9 @@ where
 impl<T, M1, M2> ProductStatic<T, M1, M2>
 where
 	T: Scalar,
-	M1: Manifold<T, Point = DVector<T>, TangentVector = DVector<T>>,
-	M2: Manifold<T, Point = DVector<T>, TangentVector = DVector<T>>,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+	M1: Manifold<T, Point = linalg::Vec<T>, TangentVector = linalg::Vec<T>>,
+	M2: Manifold<T, Point = linalg::Vec<T>, TangentVector = linalg::Vec<T>>,
 {
 	/// Creates a new static product manifold M₁ × M₂.
 	///
@@ -147,12 +148,12 @@ where
 	/// ```
 	pub fn new(manifold1: M1, manifold2: M2) -> Self {
 		// Get dimensions by creating test points
-		let mut test1 = Default::default();
-		let mut test2 = Default::default();
+		let mut test1 = VectorOps::zeros(0);
+		let mut test2 = VectorOps::zeros(0);
 		manifold1.random_point(&mut test1).unwrap();
 		manifold2.random_point(&mut test2).unwrap();
-		let dim1 = test1.len();
-		let dim2 = test2.len();
+		let dim1 = VectorOps::len(&test1);
+		let dim2 = VectorOps::len(&test2);
 		let total_dim = dim1 + dim2;
 
 		Self {
@@ -196,16 +197,22 @@ where
 	/// # Errors
 	///
 	/// Returns error if vector dimension doesn't match.
-	pub fn split_vector(&self, vector: &DVector<T>) -> Result<(DVector<T>, DVector<T>)> {
-		if vector.len() != self.total_dim {
+	pub fn split_vector(
+		&self,
+		vector: &linalg::Vec<T>,
+	) -> Result<(linalg::Vec<T>, linalg::Vec<T>)> {
+		if VectorOps::len(vector) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				vector.len(),
+				VectorOps::len(vector),
 			));
 		}
 
-		let comp1 = vector.rows(0, self.dim1).clone_owned();
-		let comp2 = vector.rows(self.dim1, self.dim2).clone_owned();
+		let comp1 =
+			<linalg::Vec<T> as VectorOps<T>>::from_fn(self.dim1, |i| VectorOps::get(vector, i));
+		let comp2 = <linalg::Vec<T> as VectorOps<T>>::from_fn(self.dim2, |i| {
+			VectorOps::get(vector, self.dim1 + i)
+		});
 
 		Ok((comp1, comp2))
 	}
@@ -224,17 +231,31 @@ where
 	/// # Errors
 	///
 	/// Returns error if component dimensions don't match.
-	pub fn combine_vectors(&self, comp1: &DVector<T>, comp2: &DVector<T>) -> Result<DVector<T>> {
-		if comp1.len() != self.dim1 {
-			return Err(ManifoldError::dimension_mismatch(self.dim1, comp1.len()));
+	pub fn combine_vectors(
+		&self,
+		comp1: &linalg::Vec<T>,
+		comp2: &linalg::Vec<T>,
+	) -> Result<linalg::Vec<T>> {
+		if VectorOps::len(comp1) != self.dim1 {
+			return Err(ManifoldError::dimension_mismatch(
+				self.dim1,
+				VectorOps::len(comp1),
+			));
 		}
-		if comp2.len() != self.dim2 {
-			return Err(ManifoldError::dimension_mismatch(self.dim2, comp2.len()));
+		if VectorOps::len(comp2) != self.dim2 {
+			return Err(ManifoldError::dimension_mismatch(
+				self.dim2,
+				VectorOps::len(comp2),
+			));
 		}
 
-		let mut combined = DVector::zeros(self.total_dim);
-		combined.rows_mut(0, self.dim1).copy_from(comp1);
-		combined.rows_mut(self.dim1, self.dim2).copy_from(comp2);
+		let mut combined = <linalg::Vec<T> as VectorOps<T>>::zeros(self.total_dim);
+		for i in 0..self.dim1 {
+			*VectorOps::get_mut(&mut combined, i) = VectorOps::get(comp1, i);
+		}
+		for i in 0..self.dim2 {
+			*VectorOps::get_mut(&mut combined, self.dim1 + i) = VectorOps::get(comp2, i);
+		}
 
 		Ok(combined)
 	}
@@ -244,27 +265,31 @@ where
 	/// This version avoids allocations by using pre-allocated buffers.
 	pub fn split_vector_mut(
 		&self,
-		vector: &DVector<T>,
-		comp1: &mut DVector<T>,
-		comp2: &mut DVector<T>,
+		vector: &linalg::Vec<T>,
+		comp1: &mut linalg::Vec<T>,
+		comp2: &mut linalg::Vec<T>,
 	) -> Result<()> {
-		if vector.len() != self.total_dim {
+		if VectorOps::len(vector) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				vector.len(),
+				VectorOps::len(vector),
 			));
 		}
 
 		// Ensure output vectors have correct size
-		if comp1.len() != self.dim1 {
-			*comp1 = DVector::zeros(self.dim1);
+		if VectorOps::len(comp1) != self.dim1 {
+			*comp1 = VectorOps::zeros(self.dim1);
 		}
-		if comp2.len() != self.dim2 {
-			*comp2 = DVector::zeros(self.dim2);
+		if VectorOps::len(comp2) != self.dim2 {
+			*comp2 = VectorOps::zeros(self.dim2);
 		}
 
-		comp1.copy_from(&vector.rows(0, self.dim1));
-		comp2.copy_from(&vector.rows(self.dim1, self.dim2));
+		for i in 0..self.dim1 {
+			*VectorOps::get_mut(comp1, i) = VectorOps::get(vector, i);
+		}
+		for i in 0..self.dim2 {
+			*VectorOps::get_mut(comp2, i) = VectorOps::get(vector, self.dim1 + i);
+		}
 
 		Ok(())
 	}
@@ -274,24 +299,34 @@ where
 	/// This version avoids allocations by using a pre-allocated buffer.
 	pub fn combine_vectors_mut(
 		&self,
-		comp1: &DVector<T>,
-		comp2: &DVector<T>,
-		result: &mut DVector<T>,
+		comp1: &linalg::Vec<T>,
+		comp2: &linalg::Vec<T>,
+		result: &mut linalg::Vec<T>,
 	) -> Result<()> {
-		if comp1.len() != self.dim1 {
-			return Err(ManifoldError::dimension_mismatch(self.dim1, comp1.len()));
+		if VectorOps::len(comp1) != self.dim1 {
+			return Err(ManifoldError::dimension_mismatch(
+				self.dim1,
+				VectorOps::len(comp1),
+			));
 		}
-		if comp2.len() != self.dim2 {
-			return Err(ManifoldError::dimension_mismatch(self.dim2, comp2.len()));
+		if VectorOps::len(comp2) != self.dim2 {
+			return Err(ManifoldError::dimension_mismatch(
+				self.dim2,
+				VectorOps::len(comp2),
+			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		result.rows_mut(0, self.dim1).copy_from(comp1);
-		result.rows_mut(self.dim1, self.dim2).copy_from(comp2);
+		for i in 0..self.dim1 {
+			*VectorOps::get_mut(result, i) = VectorOps::get(comp1, i);
+		}
+		for i in 0..self.dim2 {
+			*VectorOps::get_mut(result, self.dim1 + i) = VectorOps::get(comp2, i);
+		}
 
 		Ok(())
 	}
@@ -300,7 +335,7 @@ where
 	///
 	/// Convenience method for splitting points.
 	#[inline]
-	pub fn split_point(&self, point: &DVector<T>) -> Result<(DVector<T>, DVector<T>)> {
+	pub fn split_point(&self, point: &linalg::Vec<T>) -> Result<(linalg::Vec<T>, linalg::Vec<T>)> {
 		self.split_vector(point)
 	}
 
@@ -308,7 +343,11 @@ where
 	///
 	/// Convenience method for combining points.
 	#[inline]
-	pub fn combine_points(&self, p1: &DVector<T>, p2: &DVector<T>) -> Result<DVector<T>> {
+	pub fn combine_points(
+		&self,
+		p1: &linalg::Vec<T>,
+		p2: &linalg::Vec<T>,
+	) -> Result<linalg::Vec<T>> {
 		self.combine_vectors(p1, p2)
 	}
 }
@@ -316,11 +355,12 @@ where
 impl<T, M1, M2> Manifold<T> for ProductStatic<T, M1, M2>
 where
 	T: Scalar,
-	M1: Manifold<T, Point = DVector<T>, TangentVector = DVector<T>>,
-	M2: Manifold<T, Point = DVector<T>, TangentVector = DVector<T>>,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+	M1: Manifold<T, Point = linalg::Vec<T>, TangentVector = linalg::Vec<T>>,
+	M2: Manifold<T, Point = linalg::Vec<T>, TangentVector = linalg::Vec<T>>,
 {
-	type Point = DVector<T>;
-	type TangentVector = DVector<T>;
+	type Point = linalg::Vec<T>;
+	type TangentVector = linalg::Vec<T>;
 
 	fn name(&self) -> &str {
 		"ProductStatic"
@@ -331,7 +371,7 @@ where
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-		if point.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim {
 			return false;
 		}
 
@@ -350,7 +390,7 @@ where
 		vector: &Self::TangentVector,
 		tol: T,
 	) -> bool {
-		if point.len() != self.total_dim || vector.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(vector) != self.total_dim {
 			return false;
 		}
 
@@ -365,15 +405,17 @@ where
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		// Handle dimension mismatch by padding or truncating
-		let padded_point = if point.len() != self.total_dim {
-			let mut p = DVector::zeros(self.total_dim);
-			let copy_len = point.len().min(self.total_dim);
-			p.rows_mut(0, copy_len).copy_from(&point.rows(0, copy_len));
+		let padded_point = if VectorOps::len(point) != self.total_dim {
+			let mut p = <linalg::Vec<T> as VectorOps<T>>::zeros(self.total_dim);
+			let copy_len = VectorOps::len(point).min(self.total_dim);
+			for i in 0..copy_len {
+				*VectorOps::get_mut(&mut p, i) = VectorOps::get(point, i);
+			}
 			p
 		} else {
 			point.clone()
@@ -388,8 +430,7 @@ where
 			self.manifold2.project_point(&p2, &mut proj2);
 
 			// Combine results
-			result.rows_mut(0, self.dim1).copy_from(&proj1);
-			result.rows_mut(self.dim1, self.dim2).copy_from(&proj2);
+			let _ = self.combine_vectors_mut(&proj1, &proj2, result);
 		}
 	}
 
@@ -399,16 +440,16 @@ where
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || vector.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(vector) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(vector.len()),
+				VectorOps::len(point).max(VectorOps::len(vector)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (p1, p2) = self.split_vector(point)?;
@@ -430,10 +471,15 @@ where
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
 	) -> Result<T> {
-		if point.len() != self.total_dim || u.len() != self.total_dim || v.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim
+			|| VectorOps::len(u) != self.total_dim
+			|| VectorOps::len(v) != self.total_dim
+		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(u.len()).max(v.len()),
+				VectorOps::len(point)
+					.max(VectorOps::len(u))
+					.max(VectorOps::len(v)),
 			));
 		}
 
@@ -453,16 +499,16 @@ where
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
 	) -> Result<()> {
-		if point.len() != self.total_dim || tangent.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(tangent) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(tangent.len()),
+				VectorOps::len(point).max(VectorOps::len(tangent)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (p1, p2) = self.split_vector(point)?;
@@ -484,23 +530,23 @@ where
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || other.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(other) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(other.len()),
+				VectorOps::len(point).max(VectorOps::len(other)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (p1, p2) = self.split_vector(point)?;
 		let (o1, o2) = self.split_vector(other)?;
 
-		let mut tan1 = DVector::zeros(self.dim1);
-		let mut tan2 = DVector::zeros(self.dim2);
+		let mut tan1 = <linalg::Vec<T> as VectorOps<T>>::zeros(self.dim1);
+		let mut tan2 = <linalg::Vec<T> as VectorOps<T>>::zeros(self.dim2);
 
 		self.manifold1.inverse_retract(&p1, &o1, &mut tan1)?;
 		self.manifold2.inverse_retract(&p2, &o2, &mut tan2)?;
@@ -515,16 +561,18 @@ where
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || euclidean_grad.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim
+			|| VectorOps::len(euclidean_grad) != self.total_dim
+		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(euclidean_grad.len()),
+				VectorOps::len(point).max(VectorOps::len(euclidean_grad)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (p1, p2) = self.split_vector(point)?;
@@ -543,8 +591,8 @@ where
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-		let mut p1 = Default::default();
-		let mut p2 = Default::default();
+		let mut p1 = VectorOps::zeros(0);
+		let mut p2 = VectorOps::zeros(0);
 
 		self.manifold1.random_point(&mut p1)?;
 		self.manifold2.random_point(&mut p2)?;
@@ -554,22 +602,22 @@ where
 	}
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
-		if point.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len(),
+				VectorOps::len(point),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (p1, p2) = self.split_vector(point)?;
 
-		let mut tan1 = DVector::zeros(self.dim1);
-		let mut tan2 = DVector::zeros(self.dim2);
+		let mut tan1 = <linalg::Vec<T> as VectorOps<T>>::zeros(self.dim1);
+		let mut tan2 = <linalg::Vec<T> as VectorOps<T>>::zeros(self.dim2);
 
 		self.manifold1.random_tangent(&p1, &mut tan1)?;
 		self.manifold2.random_tangent(&p2, &mut tan2)?;
@@ -579,10 +627,10 @@ where
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		if x.len() != self.total_dim || y.len() != self.total_dim {
+		if VectorOps::len(x) != self.total_dim || VectorOps::len(y) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				x.len().max(y.len()),
+				VectorOps::len(x).max(VectorOps::len(y)),
 			));
 		}
 
@@ -602,19 +650,21 @@ where
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if from.len() != self.total_dim
-			|| to.len() != self.total_dim
-			|| vector.len() != self.total_dim
+		if VectorOps::len(from) != self.total_dim
+			|| VectorOps::len(to) != self.total_dim
+			|| VectorOps::len(vector) != self.total_dim
 		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				from.len().max(to.len()).max(vector.len()),
+				VectorOps::len(from)
+					.max(VectorOps::len(to))
+					.max(VectorOps::len(vector)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (f1, f2) = self.split_vector(from)?;
@@ -648,16 +698,16 @@ where
 		tangent: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || tangent.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(tangent) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(tangent.len()),
+				VectorOps::len(point).max(VectorOps::len(tangent)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (p1, p2) = self.split_vector(point)?;
@@ -684,17 +734,21 @@ where
 		// Temporary buffer for projection if needed
 		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || v1.len() != self.total_dim || v2.len() != self.total_dim
+		if VectorOps::len(point) != self.total_dim
+			|| VectorOps::len(v1) != self.total_dim
+			|| VectorOps::len(v2) != self.total_dim
 		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(v1.len()).max(v2.len()),
+				VectorOps::len(point)
+					.max(VectorOps::len(v1))
+					.max(VectorOps::len(v2)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		let (p1, p2) = self.split_vector(point)?;
@@ -705,8 +759,8 @@ where
 		let mut sum2 = v1_2.clone();
 
 		// Create temp buffers for components
-		let mut temp1 = DVector::zeros(self.dim1);
-		let mut temp2 = DVector::zeros(self.dim2);
+		let mut temp1 = <linalg::Vec<T> as VectorOps<T>>::zeros(self.dim1);
+		let mut temp2 = <linalg::Vec<T> as VectorOps<T>>::zeros(self.dim2);
 
 		self.manifold1
 			.add_tangents(&p1, &v1_1, &v2_1, &mut sum1, &mut temp1)?;
@@ -734,8 +788,9 @@ where
 pub fn product_static<T, M1, M2>(manifold1: M1, manifold2: M2) -> ProductStatic<T, M1, M2>
 where
 	T: Scalar,
-	M1: Manifold<T, Point = DVector<T>, TangentVector = DVector<T>>,
-	M2: Manifold<T, Point = DVector<T>, TangentVector = DVector<T>>,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+	M1: Manifold<T, Point = linalg::Vec<T>, TangentVector = linalg::Vec<T>>,
+	M2: Manifold<T, Point = linalg::Vec<T>, TangentVector = linalg::Vec<T>>,
 {
 	ProductStatic::new(manifold1, manifold2)
 }

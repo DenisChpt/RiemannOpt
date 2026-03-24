@@ -430,8 +430,9 @@ impl<T: Scalar> Adam<T> {
 				manifold.parallel_transport(prev_point, current_point, m, &mut transported_m)?;
 				manifold.parallel_transport(prev_point, current_point, v, &mut transported_v)?;
 
-				*m = transported_m;
-				*v = transported_v;
+				// Re-project into tangent space to prevent numerical drift
+				manifold.project_tangent(current_point, &transported_m, m)?;
+				manifold.project_tangent(current_point, &transported_v, v)?;
 
 				if let Some(v_max) = &mut adam_state.v_max {
 					let mut transported_v_max = v_max.clone();
@@ -441,7 +442,7 @@ impl<T: Scalar> Adam<T> {
 						v_max,
 						&mut transported_v_max,
 					)?;
-					*v_max = transported_v_max;
+					manifold.project_tangent(current_point, &transported_v_max, v_max)?;
 				}
 			}
 
@@ -665,15 +666,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 				&mut direction,
 				&mut workspace,
 			)?;
-
-			// Apply weight decay if configured (AdamW variant)
-			if let Some(weight_decay) = self.config.weight_decay {
-				// AdamW applies weight decay by adding λ * w to the gradient
-				// In the Riemannian setting, we need to be careful about this
-				// For now, we skip this as it requires projecting the point to tangent space
-				// which is not a standard operation
-				let _ = weight_decay; // Suppress unused warning
-			}
 
 			// Scale by negative learning rate and take step
 			let mut search_direction = direction.clone();

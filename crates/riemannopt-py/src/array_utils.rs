@@ -1,21 +1,26 @@
-//! Utilities for efficient conversion between NumPy arrays and nalgebra structures.
+//! Utilities for efficient conversion between NumPy arrays and linalg types.
 //!
-//! This module provides zero-copy (when possible) conversions between Python's NumPy
-//! arrays and Rust's nalgebra vectors/matrices, ensuring maximum performance.
+//! This module provides conversions between Python's NumPy arrays and
+//! the backend-agnostic `linalg::Vec<f64>` / `linalg::Mat<f64>` types.
 
-use nalgebra::{DMatrix, DVector};
 use numpy::{
 	PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
 };
 use pyo3::prelude::*;
+use riemannopt_core::linalg::{MatrixOps, VectorOps};
+
+/// The vector type for the active backend (e.g. `faer::Col<f64>` or `DVector<f64>`).
+pub type Vec64 = riemannopt_core::linalg::Vec<f64>;
+/// The matrix type for the active backend (e.g. `faer::Mat<f64>` or `DMatrix<f64>`).
+pub type Mat64 = riemannopt_core::linalg::Mat<f64>;
 
 /// Error type for array conversion operations.
 #[derive(Debug)]
 pub enum ArrayConversionError {
 	/// Shape mismatch between source and target
 	ShapeMismatch {
-		expected: Vec<usize>,
-		got: Vec<usize>,
+		expected: std::vec::Vec<usize>,
+		got: std::vec::Vec<usize>,
 	},
 	/// Invalid data layout (e.g., non-contiguous array)
 	InvalidLayout(String),
@@ -43,108 +48,71 @@ impl From<ArrayConversionError> for PyErr {
 	}
 }
 
-/// Convert a 1D NumPy array to a nalgebra DVector.
-///
-/// This function attempts to create a DVector with minimal copying.
-/// If the array is C-contiguous, it will use the data directly.
+/// Convert a 1D NumPy array to a `linalg::Vec<f64>`.
 ///
 /// # Performance
-/// - C-contiguous arrays: O(1) - direct slice reference
-/// - Non-contiguous arrays: O(n) - requires copy
-pub fn numpy_to_dvector(array: PyReadonlyArray1<'_, f64>) -> PyResult<DVector<f64>> {
+/// - C-contiguous arrays: uses `VectorOps::from_slice` on contiguous data
+/// - Non-contiguous arrays: O(n) element-by-element copy
+pub fn numpy_to_vec(array: PyReadonlyArray1<'_, f64>) -> PyResult<Vec64> {
 	let len = array.len();
 
-	// Check if array is contiguous for potential zero-copy
 	if array.is_c_contiguous() {
-		// Safe to use as_slice for contiguous arrays - zero copy!
 		let slice = array.as_slice()?;
-		Ok(DVector::from_row_slice(slice))
+		Ok(VectorOps::from_slice(slice))
 	} else {
-		// Need to copy non-contiguous data
-		// Pre-allocate to avoid reallocation
-		let mut vec = Vec::with_capacity(len);
-
+		let mut data = std::vec::Vec::with_capacity(len);
 		for i in 0..len {
-			vec.push(*array.get([i]).ok_or_else(|| {
+			data.push(*array.get([i]).ok_or_else(|| {
 				PyErr::new::<pyo3::exceptions::PyIndexError, _>("Index out of bounds")
 			})?);
 		}
-		Ok(DVector::from_vec(vec))
+		Ok(VectorOps::from_slice(&data))
 	}
 }
 
-/// Convert a 2D NumPy array to a nalgebra DMatrix.
+/// Convert a `linalg::Vec<f64>` to a 1D NumPy array.
 ///
-/// Handles both row-major (C-order) and column-major (F-order) arrays.
-/// **F-contiguous (Fortran-order) arrays are strongly preferred** because
-/// nalgebra uses column-major storage; an F-contiguous input avoids a
-/// layout transpose entirely.
+/// Uses `VectorOps::as_slice()` which is contiguous for all backends.
+pub fn vec_to_numpy<'py>(py: Python<'py>, vector: &Vec64) -> PyResult<Bound<'py, PyArray1<f64>>> {
+	Ok(PyArray1::from_slice(py, vector.as_slice()))
+}
+
+/// Convert a 2D NumPy array to a `linalg::Mat<f64>`.
+///
+/// Uses element-by-element access via `MatrixOps::from_fn` to handle
+/// any NumPy memory layout and any backend column stride.
 ///
 /// # Performance
-/// - **F-contiguous** arrays: single `memcpy` via `from_column_slice`
-/// - C-contiguous arrays: copy + implicit transpose via `from_row_slice`
-/// - Non-contiguous arrays: O(m×n) element-wise copy
-pub fn numpy_to_dmatrix(array: PyReadonlyArray2<'_, f64>) -> PyResult<DMatrix<f64>> {
+/// - O(m*n) element-wise copy regardless of layout
+pub fn numpy_to_mat(array: PyReadonlyArray2<'_, f64>) -> PyResult<Mat64> {
 	let shape = array.shape();
 	let nrows = shape[0];
 	let ncols = shape[1];
 
-	if array.is_c_contiguous() {
-		// Row-major (C-order): as_slice() returns valid contiguous data.
-		let slice = array.as_slice()?;
-		Ok(DMatrix::from_row_slice(nrows, ncols, slice))
-	} else {
-		// F-contiguous or non-contiguous: use element access for correct indexing.
-		// Build column-major buffer (nalgebra's native order).
-		let mut data = Vec::with_capacity(nrows * ncols);
-		for j in 0..ncols {
-			for i in 0..nrows {
-				let val = *array.get([i, j]).ok_or_else(|| {
-					PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!(
-						"Index out of bounds: [{i}, {j}]"
-					))
-				})?;
-				data.push(val);
-			}
-		}
-		Ok(DMatrix::from_column_slice(nrows, ncols, &data))
-	}
+	Ok(MatrixOps::from_fn(nrows, ncols, |i, j| {
+		*array.get([i, j]).unwrap_or(&0.0)
+	}))
 }
 
-/// Convert a nalgebra DVector to a 1D NumPy array.
+/// Convert a `linalg::Mat<f64>` to a 2D NumPy array.
 ///
-/// This creates a new NumPy array with the vector data.
-pub fn dvector_to_numpy<'py>(
-	py: Python<'py>,
-	vector: &DVector<f64>,
-) -> PyResult<Bound<'py, PyArray1<f64>>> {
-	Ok(PyArray1::from_slice(py, vector.as_slice()))
-}
-
-/// Convert a nalgebra DMatrix to a 2D NumPy array (Fortran / column-major order).
+/// Iterates element-by-element using `MatrixOps::get(i, j)` to handle
+/// backends where column stride may not equal nrows (e.g. faer).
 ///
-/// nalgebra stores matrices in column-major order.  By creating an F-contiguous
-/// NumPy array we can do a single `memcpy` instead of a row-by-row transpose.
-///
-/// # Performance
-/// - O(n) memcpy — no element-wise transpose needed.
-/// - Returned array is F-contiguous.  NumPy handles layout transparently so
-///   Python code works identically regardless of memory order.
-pub fn dmatrix_to_numpy<'py>(
-	py: Python<'py>,
-	matrix: &DMatrix<f64>,
-) -> PyResult<Bound<'py, PyArray2<f64>>> {
+/// The returned array is C-contiguous (row-major).
+pub fn mat_to_numpy<'py>(py: Python<'py>, matrix: &Mat64) -> PyResult<Bound<'py, PyArray2<f64>>> {
 	let nrows = matrix.nrows();
 	let ncols = matrix.ncols();
 
-	// Create F-order array (column-major) — matches nalgebra's internal layout.
-	// `fortran_order = true` in PyArray2::zeros.
-	let array = PyArray2::zeros(py, [nrows, ncols], true);
+	// Create a C-order (row-major) array
+	let array = PyArray2::zeros(py, [nrows, ncols], false);
 	unsafe {
-		// nalgebra column-major slice → F-order array: straight memcpy
-		let src = matrix.as_slice();
-		let dst = array.as_array_mut().as_mut_ptr();
-		std::ptr::copy_nonoverlapping(src.as_ptr(), dst, nrows * ncols);
+		let ptr: *mut f64 = array.as_array_mut().as_mut_ptr();
+		for i in 0..nrows {
+			for j in 0..ncols {
+				*ptr.add(i * ncols + j) = MatrixOps::get(matrix, i, j);
+			}
+		}
 	}
 	Ok(array)
 }

@@ -20,16 +20,19 @@ rayon = { workspace = true }
 wide = { workspace = true }
 cudarc = { workspace = true, optional = true }
 cust = { workspace = true, optional = true }
+faer = { version = "0.24", optional = true }
 parking_lot = "0.12"
 dashmap = "6.1"
 lru = "0.12"
 
 [features]
-default = ["std", "serde", "parallel"]
+default = ["std", "serde", "parallel", "faer-backend"]
 std = []
 serde = ["dep:serde", "nalgebra/serde-serialize"]
 test-utils = []
 cuda = ["dep:cudarc", "dep:cust"]
+nalgebra-backend = []
+faer-backend = ["dep:faer"]
 parallel = []
 
 [dev-dependencies]

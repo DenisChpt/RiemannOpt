@@ -99,21 +99,21 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Hyperbolic;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DVector;
+//! use riemannopt_core::linalg::{self, VectorOps};
 //!
 //! // Create ℍ² (Poincaré disk)
 //! let hyperbolic = Hyperbolic::<f64>::new(2)?;
 //!
 //! // Random point in the ball
-//! let mut x = DVector::zeros(2);
+//! let mut x = linalg::Vec::<f64>::zeros(2);
 //! hyperbolic.random_point(&mut x)?;
 //! assert!(x.norm() < 1.0);
 //!
 //! // Tangent vector
-//! let v = DVector::from_vec(vec![0.1, 0.2]);
+//! let v = VectorOps::from_slice(&[0.1, 0.2]);
 //!
 //! // Retraction
-//! let mut y = DVector::zeros(2);
+//! let mut y = linalg::Vec::<f64>::zeros(2);
 //! hyperbolic.retract(&x, &v, &mut y)?;
 //!
 //! // Verify y is in the ball
@@ -121,11 +121,11 @@
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::DVector;
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
 	error::{ManifoldError, Result},
+	linalg::{self, LinAlgBackend, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -253,7 +253,13 @@ impl<T: Scalar> Hyperbolic<T> {
 	pub fn curvature(&self) -> T {
 		self.curvature
 	}
+}
 
+impl<T> Hyperbolic<T>
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Validates that a point lies in the Poincaré ball.
 	///
 	/// # Mathematical Check
@@ -264,9 +270,9 @@ impl<T: Scalar> Hyperbolic<T> {
 	///
 	/// - `DimensionMismatch`: If x.len() ≠ n
 	/// - `NotOnManifold`: If ‖x‖ ≥ 1 - boundary_tolerance
-	pub fn check_point(&self, x: &DVector<T>) -> Result<()> {
-		if x.len() != self.n {
-			return Err(ManifoldError::dimension_mismatch(self.n, x.len()));
+	pub fn check_point(&self, x: &linalg::Vec<T>) -> Result<()> {
+		if VectorOps::len(x) != self.n {
+			return Err(ManifoldError::dimension_mismatch(self.n, VectorOps::len(x)));
 		}
 
 		let norm_squared = x.norm_squared();
@@ -294,11 +300,11 @@ impl<T: Scalar> Hyperbolic<T> {
 	///
 	/// - `DimensionMismatch`: If dimensions don't match
 	/// - `NotOnManifold`: If x is not in the Poincaré ball
-	pub fn check_tangent(&self, x: &DVector<T>, v: &DVector<T>) -> Result<()> {
+	pub fn check_tangent(&self, x: &linalg::Vec<T>, v: &linalg::Vec<T>) -> Result<()> {
 		self.check_point(x)?;
 
-		if v.len() != self.n {
-			return Err(ManifoldError::dimension_mismatch(self.n, v.len()));
+		if VectorOps::len(v) != self.n {
+			return Err(ManifoldError::dimension_mismatch(self.n, VectorOps::len(v)));
 		}
 
 		Ok(())
@@ -320,7 +326,7 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// # Returns
 	///
 	/// The point exp_x(v) in the Poincaré ball.
-	pub fn exp_map(&self, x: &DVector<T>, v: &DVector<T>) -> Result<DVector<T>> {
+	pub fn exp_map(&self, x: &linalg::Vec<T>, v: &linalg::Vec<T>) -> Result<linalg::Vec<T>> {
 		self.check_tangent(x, v)?;
 		Ok(self.exponential_map(x, v))
 	}
@@ -341,7 +347,7 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// # Returns
 	///
 	/// The tangent vector log_x(y) ∈ T_x ℍⁿ.
-	pub fn log_map(&self, x: &DVector<T>, y: &DVector<T>) -> Result<DVector<T>> {
+	pub fn log_map(&self, x: &linalg::Vec<T>, y: &linalg::Vec<T>) -> Result<linalg::Vec<T>> {
 		self.check_point(x)?;
 		self.check_point(y)?;
 		Ok(self.logarithmic_map(x, y))
@@ -361,7 +367,7 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// # Returns
 	///
 	/// The hyperbolic distance d(x, y) ≥ 0.
-	pub fn geodesic_distance(&self, x: &DVector<T>, y: &DVector<T>) -> Result<T> {
+	pub fn geodesic_distance(&self, x: &linalg::Vec<T>, y: &linalg::Vec<T>) -> Result<T> {
 		self.check_point(x)?;
 		self.check_point(y)?;
 		Ok(self.hyperbolic_distance(x, y))
@@ -380,18 +386,18 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// The parallel transported vector at y.
 	pub fn parallel_transport(
 		&self,
-		x: &DVector<T>,
-		y: &DVector<T>,
-		v: &DVector<T>,
-	) -> Result<DVector<T>> {
+		x: &linalg::Vec<T>,
+		y: &linalg::Vec<T>,
+		v: &linalg::Vec<T>,
+	) -> Result<linalg::Vec<T>> {
 		self.check_tangent(x, v)?;
 		self.check_point(y)?;
 		Ok(self.parallel_transport_vector(x, y, v))
 	}
 
 	/// Checks if a point is in the Poincare ball (||x|| < √(-1/K)).
-	fn is_in_poincare_ball(&self, point: &DVector<T>, tolerance: T) -> bool {
-		if point.len() != self.n {
+	fn is_in_poincare_ball(&self, point: &linalg::Vec<T>, tolerance: T) -> bool {
+		if VectorOps::len(point) != self.n {
 			return false;
 		}
 
@@ -408,7 +414,7 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// For general curvature K < 0, the ball has radius √(-1/K).
 	/// If the point is outside the ball, project it to a point
 	/// slightly inside the boundary for numerical stability.
-	fn project_to_poincare_ball(&self, point: &DVector<T>) -> DVector<T> {
+	fn project_to_poincare_ball(&self, point: &linalg::Vec<T>) -> linalg::Vec<T> {
 		let norm = point.norm();
 		let neg_curv = -self.curvature;
 		let ball_radius = <T as Float>::sqrt(neg_curv);
@@ -417,7 +423,9 @@ impl<T: Scalar> Hyperbolic<T> {
 		if norm > max_norm {
 			// Project to boundary with tolerance (slightly inside)
 			let safe_norm = max_norm * <T as Scalar>::from_f64(PROJECTION_SAFETY_MARGIN);
-			point * (safe_norm / norm)
+			let mut result = point.clone();
+			result.scale_mut(safe_norm / norm);
+			result
 		} else {
 			point.clone()
 		}
@@ -426,7 +434,7 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// Computes the conformal factor lambda(x) for general curvature K.
 	/// For K = -1: lambda(x) = 2 / (1 - ||x||^2)
 	/// For general K < 0: lambda(x) = 2/√(-K) / (1 - ||x||²/(-K))
-	fn conformal_factor(&self, point: &DVector<T>) -> T {
+	fn conformal_factor(&self, point: &linalg::Vec<T>) -> T {
 		let norm_squared = point.norm_squared();
 		let neg_curv = -self.curvature;
 		let sqrt_neg_curv = <T as Float>::sqrt(neg_curv);
@@ -438,8 +446,8 @@ impl<T: Scalar> Hyperbolic<T> {
 	///
 	/// For curvature K < 0:
 	/// d(x,y) = 1/√(-K) * arcosh(1 + 2||x-y||^2 / ((1-||x||^2/(-K))(1-||y||^2/(-K))))
-	fn hyperbolic_distance(&self, x: &DVector<T>, y: &DVector<T>) -> T {
-		let diff = x - y;
+	fn hyperbolic_distance(&self, x: &linalg::Vec<T>, y: &linalg::Vec<T>) -> T {
+		let diff = VectorOps::sub(x, y);
 		let diff_norm_sq = diff.norm_squared();
 
 		let x_norm_sq = x.norm_squared();
@@ -460,7 +468,7 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// Computes the exponential map in the Poincare ball model.
 	///
 	/// The exponential map moves along geodesics from a point in a given direction.
-	fn exponential_map(&self, point: &DVector<T>, tangent: &DVector<T>) -> DVector<T> {
+	fn exponential_map(&self, point: &linalg::Vec<T>, tangent: &linalg::Vec<T>) -> linalg::Vec<T> {
 		let tangent_norm = tangent.norm();
 
 		if tangent_norm < <T as Scalar>::from_f64(1e-16) {
@@ -473,22 +481,28 @@ impl<T: Scalar> Hyperbolic<T> {
 
 		// Exponential map formula in Poincare ball
 		let alpha = <T as Float>::tanh(scaled_norm);
-		let normalized_tangent = tangent / tangent_norm;
+		let mut normalized_tangent = tangent.clone();
+		normalized_tangent.div_scalar_mut(tangent_norm);
 
-		let numerator = point + &normalized_tangent * alpha;
+		// numerator = point + normalized_tangent * alpha
+		let mut numerator = point.clone();
+		numerator.axpy(alpha, &normalized_tangent, T::one());
+
+		// denominator = 1 + alpha * point.dot(&normalized_tangent)
 		let denominator = T::one() + alpha * point.dot(&normalized_tangent);
 
-		self.project_to_poincare_ball(&(numerator / denominator))
+		numerator.div_scalar_mut(denominator);
+		self.project_to_poincare_ball(&numerator)
 	}
 
 	/// Computes the logarithmic map in the Poincare ball model.
 	///
 	/// The logarithmic map finds the tangent vector from point to other.
-	fn logarithmic_map(&self, point: &DVector<T>, other: &DVector<T>) -> DVector<T> {
+	fn logarithmic_map(&self, point: &linalg::Vec<T>, other: &linalg::Vec<T>) -> linalg::Vec<T> {
 		// Check if points are the same
-		let diff = other - point;
+		let diff = VectorOps::sub(other, point);
 		if diff.norm() < <T as Scalar>::from_f64(1e-16) {
-			return DVector::zeros(self.n);
+			return VectorOps::zeros(self.n);
 		}
 
 		// Use a simpler approach based on the geodesic connecting the points
@@ -500,36 +514,47 @@ impl<T: Scalar> Hyperbolic<T> {
 		let lambda = self.conformal_factor(point);
 
 		// The vector in the tangent space pointing from x to y
-		let direction = &diff / diff.norm();
+		let diff_norm = diff.norm();
+		let mut direction = diff;
+		direction.div_scalar_mut(diff_norm);
 
 		// Scale by the geodesic distance and metric factor
-		direction * (dist * <T as Scalar>::from_f64(2.0) / lambda)
+		direction.scale_mut(dist * <T as Scalar>::from_f64(2.0) / lambda);
+		direction
 	}
 
 	/// Projects a vector to the tangent space at a point.
 	///
 	/// In the Poincare ball model, all vectors are valid tangent vectors,
 	/// so this is essentially the identity operation.
-	fn project_to_tangent(&self, _point: &DVector<T>, vector: &DVector<T>) -> DVector<T> {
+	fn project_to_tangent(
+		&self,
+		_point: &linalg::Vec<T>,
+		vector: &linalg::Vec<T>,
+	) -> linalg::Vec<T> {
 		// In Poincare ball, tangent space is full R^n
 		vector.clone()
 	}
 
 	/// Generates a random point in the Poincare ball.
-	fn random_poincare_point(&self, result: &mut DVector<T>) -> Result<()> {
+	fn random_poincare_point(&self, result: &mut linalg::Vec<T>) -> Result<()> {
 		let mut rng = rand::rng();
 
+		// Ensure result has correct size
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
+		}
+
 		// Generate random direction
-		result.resize_vertically_mut(self.n, T::zero());
 		for i in 0..self.n {
 			let val: f64 = StandardNormal.sample(&mut rng);
-			result[i] = <T as Scalar>::from_f64(val);
+			*result.get_mut(i) = <T as Scalar>::from_f64(val);
 		}
 
 		// Normalize and scale by random radius
 		let norm = result.norm();
 		if norm > <T as Scalar>::from_f64(1e-16) {
-			*result /= norm;
+			result.div_scalar_mut(norm);
 
 			// Random radius with appropriate distribution for uniform distribution in ball
 			let u: f64 = rand::random();
@@ -539,7 +564,7 @@ impl<T: Scalar> Hyperbolic<T> {
 			let max_radius = ball_radius - self.boundary_tolerance.to_f64();
 			let scaled_radius = radius * max_radius;
 
-			*result *= <T as Scalar>::from_f64(scaled_radius);
+			result.scale_mut(<T as Scalar>::from_f64(scaled_radius));
 		} else {
 			// Return origin if we got zero vector
 			result.fill(T::zero());
@@ -553,15 +578,15 @@ impl<T: Scalar> Hyperbolic<T> {
 	/// Transports a tangent vector along the geodesic from one point to another.
 	fn parallel_transport_vector(
 		&self,
-		from: &DVector<T>,
-		to: &DVector<T>,
-		vector: &DVector<T>,
-	) -> DVector<T> {
+		from: &linalg::Vec<T>,
+		to: &linalg::Vec<T>,
+		vector: &linalg::Vec<T>,
+	) -> linalg::Vec<T> {
 		// Exact parallel transport formula for the Poincaré ball model
 		// Based on the gyrovector formalism and the Levi-Civita connection
 
 		// If from == to, no transport needed
-		let diff = to - from;
+		let diff = VectorOps::sub(to, from);
 		if diff.norm() < <T as Scalar>::from_f64(1e-16) {
 			return vector.clone();
 		}
@@ -583,20 +608,37 @@ impl<T: Scalar> Hyperbolic<T> {
 			// Points are nearly antipodal in the ball - use simple scaling
 			let lambda_from = self.conformal_factor(from);
 			let lambda_to = self.conformal_factor(to);
-			return vector * (lambda_from / lambda_to);
+			let mut result = vector.clone();
+			result.scale_mut(lambda_from / lambda_to);
+			return result;
 		}
 
 		let scale_factor = <T as Scalar>::from_f64(2.0) / (T::one() - self.curvature * to_norm_sq);
-		let term1 = to * to_dot_v;
-		let term2 = (to + from) * (from_dot_v / denominator);
 
-		vector + (term1 - term2) * scale_factor
+		// term1 = to * to_dot_v
+		let mut term1 = to.clone();
+		term1.scale_mut(to_dot_v);
+
+		// term2 = (to + from) * (from_dot_v / denominator)
+		let mut term2 = VectorOps::add(to, from);
+		term2.scale_mut(from_dot_v / denominator);
+
+		// result = vector + (term1 - term2) * scale_factor
+		let mut result = vector.clone();
+		term1.sub_assign(&term2);
+		term1.scale_mut(scale_factor);
+		result.add_assign(&term1);
+		result
 	}
 }
 
-impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
-	type Point = DVector<T>;
-	type TangentVector = DVector<T>;
+impl<T> Manifold<T> for Hyperbolic<T>
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Vec<T>;
+	type TangentVector = linalg::Vec<T>;
 
 	fn name(&self) -> &str {
 		"Hyperbolic"
@@ -617,21 +659,21 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		_tolerance: T,
 	) -> bool {
 		// In Poincare ball model, all vectors of correct dimension are tangent vectors
-		vector.len() == self.n
+		VectorOps::len(vector) == self.n
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		// Ensure result has correct size
-		if result.len() != self.n {
-			*result = DVector::zeros(self.n);
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
 		}
 
-		if point.len() != self.n {
+		if VectorOps::len(point) != self.n {
 			// Handle wrong dimension by padding/truncating
-			let mut temp = DVector::<T>::zeros(self.n);
-			let copy_len = point.len().min(self.n);
+			let mut temp: linalg::Vec<T> = VectorOps::zeros(self.n);
+			let copy_len = VectorOps::len(point).min(self.n);
 			for i in 0..copy_len {
-				temp[i] = point[i];
+				*temp.get_mut(i) = point.get(i);
 			}
 			let projected = self.project_to_poincare_ball(&temp);
 			result.copy_from(&projected);
@@ -648,14 +690,14 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Ensure result has correct size
-		if result.len() != self.n {
-			*result = DVector::zeros(self.n);
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
 		}
 
-		if point.len() != self.n || vector.len() != self.n {
+		if VectorOps::len(point) != self.n || VectorOps::len(vector) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				point.len().max(vector.len()),
+				VectorOps::len(point).max(VectorOps::len(vector)),
 			));
 		}
 
@@ -670,10 +712,15 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
 	) -> Result<T> {
-		if point.len() != self.n || u.len() != self.n || v.len() != self.n {
+		if VectorOps::len(point) != self.n
+			|| VectorOps::len(u) != self.n
+			|| VectorOps::len(v) != self.n
+		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				point.len().max(u.len()).max(v.len()),
+				VectorOps::len(point)
+					.max(VectorOps::len(u))
+					.max(VectorOps::len(v)),
 			));
 		}
 
@@ -690,14 +737,14 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		result: &mut Self::Point,
 	) -> Result<()> {
 		// Ensure result has correct size
-		if result.len() != self.n {
-			*result = DVector::zeros(self.n);
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
 		}
 
-		if point.len() != self.n || tangent.len() != self.n {
+		if VectorOps::len(point) != self.n || VectorOps::len(tangent) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				point.len().max(tangent.len()),
+				VectorOps::len(point).max(VectorOps::len(tangent)),
 			));
 		}
 
@@ -714,14 +761,14 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Ensure result has correct size
-		if result.len() != self.n {
-			*result = DVector::zeros(self.n);
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
 		}
 
-		if point.len() != self.n || other.len() != self.n {
+		if VectorOps::len(point) != self.n || VectorOps::len(other) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				point.len().max(other.len()),
+				VectorOps::len(point).max(VectorOps::len(other)),
 			));
 		}
 
@@ -738,14 +785,14 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Ensure result has correct size
-		if result.len() != self.n {
-			*result = DVector::zeros(self.n);
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
 		}
 
-		if point.len() != self.n || euclidean_grad.len() != self.n {
+		if VectorOps::len(point) != self.n || VectorOps::len(euclidean_grad) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				point.len().max(euclidean_grad.len()),
+				VectorOps::len(point).max(VectorOps::len(euclidean_grad)),
 			));
 		}
 
@@ -756,7 +803,8 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		let k_norm_sq = self.curvature * norm_squared; // This is negative
 		let factor = (T::one() - k_norm_sq) * (T::one() - k_norm_sq) / <T as Scalar>::from_f64(4.0);
 
-		result.copy_from(&(euclidean_grad * factor));
+		result.copy_from(euclidean_grad);
+		result.scale_mut(factor);
 		Ok(())
 	}
 
@@ -766,20 +814,23 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
 		// Ensure result has correct size
-		if result.len() != self.n {
-			*result = DVector::zeros(self.n);
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
 		}
 
-		if point.len() != self.n {
-			return Err(ManifoldError::dimension_mismatch(self.n, point.len()));
+		if VectorOps::len(point) != self.n {
+			return Err(ManifoldError::dimension_mismatch(
+				self.n,
+				VectorOps::len(point),
+			));
 		}
 
 		let mut rng = rand::rng();
-		let mut tangent = DVector::<T>::zeros(self.n);
+		let mut tangent: linalg::Vec<T> = VectorOps::zeros(self.n);
 
 		for i in 0..self.n {
 			let val: f64 = StandardNormal.sample(&mut rng);
-			tangent[i] = <T as Scalar>::from_f64(val);
+			*tangent.get_mut(i) = <T as Scalar>::from_f64(val);
 		}
 
 		let proj = self.project_to_tangent(point, &tangent);
@@ -799,14 +850,19 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Ensure result has correct size
-		if result.len() != self.n {
-			*result = DVector::zeros(self.n);
+		if VectorOps::len(result) != self.n {
+			*result = VectorOps::zeros(self.n);
 		}
 
-		if from.len() != self.n || to.len() != self.n || vector.len() != self.n {
+		if VectorOps::len(from) != self.n
+			|| VectorOps::len(to) != self.n
+			|| VectorOps::len(vector) != self.n
+		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				from.len().max(to.len()).max(vector.len()),
+				VectorOps::len(from)
+					.max(VectorOps::len(to))
+					.max(VectorOps::len(vector)),
 			));
 		}
 
@@ -816,10 +872,10 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		if x.len() != self.n || y.len() != self.n {
+		if VectorOps::len(x) != self.n || VectorOps::len(y) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				x.len().max(y.len()),
+				VectorOps::len(x).max(VectorOps::len(y)),
 			));
 		}
 
@@ -840,7 +896,7 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		// In the Poincaré ball model, tangent vectors are just vectors in R^n
 		// Scaling preserves the tangent space property
 		result.copy_from(tangent);
-		*result *= scalar;
+		result.scale_mut(scalar);
 		Ok(())
 	}
 
@@ -856,7 +912,7 @@ impl<T: Scalar> Manifold<T> for Hyperbolic<T> {
 		// In the Poincaré ball model, tangent space at a point is just R^n
 		// So addition is standard vector addition
 		result.copy_from(v1);
-		*result += v2;
+		result.add_assign(v2);
 		Ok(())
 	}
 }

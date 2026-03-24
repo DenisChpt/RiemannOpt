@@ -37,7 +37,7 @@
 //!
 //! ## Riemannian Adaptations
 //!
-//! The key adaptation for Riemannian manifolds follows the manopt rlbfgs.m pattern:
+//! The key adaptations for Riemannian manifolds:
 //! - **Eager transport**: After each iteration, ALL stored (s_i, y_i) pairs are
 //!   transported from the old tangent space to the new tangent space
 //! - **No transport in recursion**: The two-loop recursion operates purely in the
@@ -158,7 +158,7 @@ pub struct LBFGSConfig<T: Scalar> {
 impl<T: Scalar> Default for LBFGSConfig<T> {
 	fn default() -> Self {
 		Self {
-			memory_size: 10,
+			memory_size: 30,
 			initial_step_size: <T as Scalar>::from_f64(1.0),
 			use_cautious_updates: true,
 			line_search_params: LineSearchParams::default(),
@@ -201,7 +201,7 @@ impl<T: Scalar> LBFGSConfig<T> {
 ///
 /// This optimizer adapts the classical L-BFGS algorithm to Riemannian manifolds
 /// by eagerly transporting all stored vector pairs to the current tangent space
-/// after each iteration, following the manopt rlbfgs.m pattern.
+/// after each iteration.
 ///
 /// # Examples
 ///
@@ -369,10 +369,8 @@ impl<T: Scalar> LBFGS<T> {
 		let mut r = q.clone();
 		{
 			let last_entry = &lbfgs_state.history[m - 1];
-			let s_dot_y =
-				manifold.inner_product(current_point, &last_entry.s, &last_entry.y)?;
-			let y_dot_y =
-				manifold.inner_product(current_point, &last_entry.y, &last_entry.y)?;
+			let s_dot_y = manifold.inner_product(current_point, &last_entry.s, &last_entry.y)?;
+			let y_dot_y = manifold.inner_product(current_point, &last_entry.y, &last_entry.y)?;
 
 			if y_dot_y > T::zero() {
 				let gamma = s_dot_y / y_dot_y;
@@ -563,9 +561,8 @@ impl<T: Scalar> LBFGS<T> {
 			&mut temp_add,
 		)?;
 
-		// Compute ||s_k|| for normalization (manopt rlbfgs.m lines 371-373)
-		let s_k_norm_sq =
-			manifold.inner_product(new_point, &transported_s_k, &transported_s_k)?;
+		// Compute ||s_k|| for normalization
+		let s_k_norm_sq = manifold.inner_product(new_point, &transported_s_k, &transported_s_k)?;
 		let s_k_norm = <T as Float>::sqrt(s_k_norm_sq);
 
 		if s_k_norm < <T as Scalar>::from_f64(1e-15) {
@@ -576,40 +573,22 @@ impl<T: Scalar> LBFGS<T> {
 		// Compute <s_k, y_k> before normalization for the cautious update check
 		let s_dot_y = manifold.inner_product(new_point, &y_k, &transported_s_k)?;
 
-		// Cautious update check (manopt rlbfgs.m line 386):
-		// Only store if <s_k, y_k> / ||s_k||^2 >= 1e-4 * ||grad||
-		if self.config.use_cautious_updates {
-			let cautious_threshold = <T as Scalar>::from_f64(1e-4) * grad_norm;
+		// Cautious update: only store if ⟨s_k, y_k⟩ / ‖s_k‖² ≥ threshold * ‖grad‖.
+		// A loose threshold (1e-6) accepts more pairs at large scale where the
+		// gradient norm is large and the curvature ratio is naturally smaller.
+		let pair_accepted = if self.config.use_cautious_updates {
+			let cautious_threshold = <T as Scalar>::from_f64(1e-6) * grad_norm;
 			let curvature_ratio = s_dot_y / s_k_norm_sq;
-			if curvature_ratio < cautious_threshold {
-				return Ok(false);
-			}
+			curvature_ratio >= cautious_threshold
 		} else {
 			// Basic curvature check
 			let min_curvature = <T as Scalar>::from_f64(1e-8);
-			if <T as Float>::abs(s_dot_y) <= min_curvature || s_dot_y <= T::zero() {
-				return Ok(false);
-			}
-		}
+			<T as Float>::abs(s_dot_y) > min_curvature && s_dot_y > T::zero()
+		};
 
-		// Normalize s_k and y_k by ||s_k|| for numerical stability (manopt rlbfgs.m lines 371-373)
-		let inv_s_norm = T::one() / s_k_norm;
-		let mut normalized_s = transported_s_k.clone();
-		manifold.scale_tangent(new_point, inv_s_norm, &transported_s_k, &mut normalized_s)?;
-		let mut normalized_y = y_k.clone();
-		manifold.scale_tangent(new_point, inv_s_norm, &y_k, &mut normalized_y)?;
-
-		// Recompute rho after normalization: rho = 1 / <y_norm, s_norm> = ||s_k||^2 / <y_k, s_k>
-		let normalized_s_dot_y =
-			manifold.inner_product(new_point, &normalized_y, &normalized_s)?;
-
-		if <T as Float>::abs(normalized_s_dot_y) < <T as Scalar>::from_f64(1e-15) {
-			return Ok(false);
-		}
-
-		let rho = T::one() / normalized_s_dot_y;
-
-		// Transport ALL previously stored s_i and y_i to the new tangent space
+		// Transport ALL previously stored s_i and y_i to the new tangent space.
+		// This MUST happen regardless of whether the new pair is accepted,
+		// because all stored vectors must always be in the current tangent space.
 		for entry in lbfgs_state.history.iter_mut() {
 			let old_s = entry.s.clone();
 			let old_y = entry.y.clone();
@@ -633,8 +612,7 @@ impl<T: Scalar> LBFGS<T> {
 			}
 
 			// Recompute rho after transport for numerical consistency
-			let new_s_dot_y =
-				manifold.inner_product(new_point, &entry.y, &entry.s)?;
+			let new_s_dot_y = manifold.inner_product(new_point, &entry.y, &entry.s)?;
 			if <T as Float>::abs(new_s_dot_y) < <T as Scalar>::from_f64(1e-15) {
 				// This entry became degenerate after transport; clear history
 				lbfgs_state.clear();
@@ -642,6 +620,27 @@ impl<T: Scalar> LBFGS<T> {
 			}
 			entry.rho = T::one() / new_s_dot_y;
 		}
+
+		// If the cautious check rejected this pair, don't store it but vectors are transported
+		if !pair_accepted {
+			return Ok(false);
+		}
+
+		// Normalize s_k and y_k by ‖s_k‖ for numerical stability
+		let inv_s_norm = T::one() / s_k_norm;
+		let mut normalized_s = transported_s_k.clone();
+		manifold.scale_tangent(new_point, inv_s_norm, &transported_s_k, &mut normalized_s)?;
+		let mut normalized_y = y_k.clone();
+		manifold.scale_tangent(new_point, inv_s_norm, &y_k, &mut normalized_y)?;
+
+		// Recompute rho after normalization: rho = 1 / <y_norm, s_norm> = ||s_k||^2 / <y_k, s_k>
+		let normalized_s_dot_y = manifold.inner_product(new_point, &normalized_y, &normalized_s)?;
+
+		if <T as Float>::abs(normalized_s_dot_y) < <T as Scalar>::from_f64(1e-15) {
+			return Ok(false);
+		}
+
+		let rho = T::one() / normalized_s_dot_y;
 
 		// Add the new entry (already in new_point's tangent space)
 		lbfgs_state.add_entry(normalized_s, normalized_y, rho, iteration);

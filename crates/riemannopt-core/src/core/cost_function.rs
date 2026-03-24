@@ -14,6 +14,7 @@
 
 use crate::{
 	error::{ManifoldError, Result},
+	linalg::{self, LinAlgBackend, MatrixOps},
 	memory::{workspace::Workspace, BufferId},
 	types::Scalar,
 };
@@ -124,7 +125,10 @@ pub trait CostFunction<T: Scalar>: Debug {
 	/// # Default Implementation
 	///
 	/// Returns `NotImplemented` error. Override for second-order methods.
-	fn hessian(&self, _point: &Self::Point) -> Result<OMatrix<T, nalgebra::Dyn, nalgebra::Dyn>> {
+	fn hessian(&self, _point: &Self::Point) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		Err(ManifoldError::not_implemented(
 			"Hessian computation not implemented for this cost function",
 		))
@@ -304,11 +308,17 @@ where
 		Ok(&self.a * point + &self.b)
 	}
 
-	fn hessian(&self, _point: &Self::Point) -> Result<OMatrix<T, nalgebra::Dyn, nalgebra::Dyn>> {
-		// Convert from static/generic matrix to dynamic matrix
-		let dyn_matrix =
-			nalgebra::DMatrix::from_row_slice(self.a.nrows(), self.a.ncols(), self.a.as_slice());
-		Ok(dyn_matrix)
+	fn hessian(&self, _point: &Self::Point) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		// Convert from generic nalgebra OMatrix to linalg::Mat via column-major slice
+		let (nrows, ncols) = (self.a.nrows(), self.a.ncols());
+		Ok(linalg::Mat::<T>::from_column_slice(
+			nrows,
+			ncols,
+			self.a.as_slice(),
+		))
 	}
 
 	fn hessian_vector_product(
@@ -423,7 +433,10 @@ where
 		self.inner.gradient(point)
 	}
 
-	fn hessian(&self, point: &Self::Point) -> Result<OMatrix<T, nalgebra::Dyn, nalgebra::Dyn>> {
+	fn hessian(&self, point: &Self::Point) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.hessian_count.fetch_add(1, Ordering::Relaxed);
 		self.inner.hessian(point)
 	}
@@ -685,7 +698,12 @@ mod tests {
 
 		// Hessian should be identity
 		let hessian = cost.hessian(&point).unwrap();
-		assert_eq!(hessian, DMatrix::identity(3, 3));
+		for i in 0..3 {
+			for j in 0..3 {
+				let expected = if i == j { 1.0 } else { 0.0 };
+				assert!((hessian.get(i, j) - expected).abs() < 1e-14);
+			}
+		}
 	}
 
 	#[test]

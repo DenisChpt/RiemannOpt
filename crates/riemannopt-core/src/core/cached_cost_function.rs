@@ -5,8 +5,13 @@
 //! This is critical for optimization performance as algorithms often need
 //! the cost, gradient, and sometimes Hessian at the same point.
 
-use crate::{core::cost_function::CostFunction, error::Result, memory::Workspace, types::Scalar};
-use nalgebra::OMatrix;
+use crate::{
+	core::cost_function::CostFunction,
+	error::Result,
+	linalg::{self, LinAlgBackend},
+	memory::Workspace,
+	types::Scalar,
+};
 use std::cell::RefCell;
 use std::fmt::Debug;
 
@@ -43,6 +48,7 @@ pub struct CachedCostFunction<'a, C, T>
 where
 	C: CostFunction<T> + ?Sized,
 	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
 {
 	/// The underlying cost function
 	inner: &'a C,
@@ -54,6 +60,7 @@ impl<'a, C, T> Debug for CachedCostFunction<'a, C, T>
 where
 	C: CostFunction<T> + ?Sized,
 	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
 {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("CachedCostFunction")
@@ -67,6 +74,7 @@ where
 struct CacheStorage<T, P, TV>
 where
 	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
 {
 	/// The last point that was evaluated
 	point_cache: Option<P>,
@@ -75,7 +83,7 @@ where
 	/// Cached gradient value
 	grad_cache: Option<TV>,
 	/// Cached Hessian value
-	hess_cache: Option<OMatrix<T, nalgebra::Dyn, nalgebra::Dyn>>,
+	hess_cache: Option<linalg::Mat<T>>,
 	/// Number of cache hits for cost
 	cost_hits: usize,
 	/// Number of cache misses for cost
@@ -93,6 +101,7 @@ where
 impl<T, P, TV> Default for CacheStorage<T, P, TV>
 where
 	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
 {
 	fn default() -> Self {
 		Self {
@@ -114,6 +123,7 @@ impl<'a, C, T> CachedCostFunction<'a, C, T>
 where
 	C: CostFunction<T> + ?Sized,
 	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
 {
 	/// Creates a new cached cost function wrapper.
 	pub fn new(inner: &'a C) -> Self {
@@ -190,6 +200,7 @@ impl<'a, C, T> CachedCostFunction<'a, C, T>
 where
 	C: CostFunction<T> + ?Sized,
 	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
 	C::Point: CacheComparable + Clone,
 	C::TangentVector: Clone,
 {
@@ -218,6 +229,7 @@ impl<'a, C, T> CostFunction<T> for CachedCostFunction<'a, C, T>
 where
 	C: CostFunction<T> + ?Sized,
 	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
 	C::Point: CacheComparable + Clone,
 	C::TangentVector: Clone,
 {
@@ -333,7 +345,10 @@ where
 		}
 	}
 
-	fn hessian(&self, point: &Self::Point) -> Result<OMatrix<T, nalgebra::Dyn, nalgebra::Dyn>> {
+	fn hessian(&self, point: &Self::Point) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.check_and_invalidate(point);
 
 		let mut cache = self.cache.borrow_mut();

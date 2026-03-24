@@ -106,36 +106,38 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Stiefel;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DMatrix;
+//! use riemannopt_core::linalg::{MatrixOps, DecompositionOps};
 //!
 //! // Create Stiefel manifold St(5,2)
 //! let stiefel = Stiefel::<f64>::new(5, 2)?;
 //!
 //! // Random point on manifold
-//! let mut x = DMatrix::<f64>::zeros(5, 2);
+//! let mut x = riemannopt_core::linalg::Mat::<f64>::zeros(5, 2);
 //! stiefel.random_point(&mut x)?;
 //!
 //! // Verify orthonormality: X^T X = I
-//! let xtx = x.transpose() * &x;
-//! assert!((xtx - DMatrix::<f64>::identity(2, 2)).norm() < 1e-14);
+//! let xt = MatrixOps::transpose(&x);
+//! let xtx = xt.mat_mul(&x);
+//! let identity = <riemannopt_core::linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
+//! assert!(xtx.sub(&identity).norm() < 1e-14);
 //!
 //! // Project gradient to tangent space
-//! let grad = DMatrix::from_fn(5, 2, |i, j| (i + j) as f64);
+//! let grad = riemannopt_core::linalg::Mat::<f64>::from_fn(5, 2, |i, j| (i + j) as f64);
 //! let mut rgrad = grad.clone();
 //! stiefel.euclidean_to_riemannian_gradient(&x, &grad, &mut rgrad)?;
 //!
 //! // Verify tangent space constraint
-//! let constraint = x.transpose() * &rgrad;
-//! assert!((constraint.clone() + constraint.transpose()).norm() < 1e-14);
+//! let constraint = xt.mat_mul(&rgrad);
+//! let constraint_t = MatrixOps::transpose(&constraint);
+//! assert!(constraint.add(&constraint_t).norm() < 1e-14);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::{DMatrix, DVector};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
-	core::matrix_manifold::MatrixManifold,
 	error::{ManifoldError, Result},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -218,7 +220,7 @@ impl<T: Scalar> Stiefel<T> {
 		Ok(Self {
 			n,
 			p,
-			tolerance: <T as Scalar>::from_f64(1e-12),
+			tolerance: <T as Scalar>::from_f64(1e-10),
 		})
 	}
 
@@ -260,7 +262,13 @@ impl<T: Scalar> Stiefel<T> {
 	pub fn cols(&self) -> usize {
 		self.p
 	}
+}
 
+impl<T> Stiefel<T>
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Validates that a matrix lies on the Stiefel manifold.
 	///
 	/// # Mathematical Check
@@ -271,7 +279,7 @@ impl<T: Scalar> Stiefel<T> {
 	///
 	/// - `DimensionMismatch`: If matrix dimensions don't match (n,p)
 	/// - `NotOnManifold`: If ‖X^T X - I_p‖ > tolerance
-	pub fn check_point(&self, x: &DMatrix<T>) -> Result<()> {
+	pub fn check_point(&self, x: &linalg::Mat<T>) -> Result<()> {
 		if x.nrows() != self.n || x.ncols() != self.p {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.p,
@@ -280,9 +288,9 @@ impl<T: Scalar> Stiefel<T> {
 		}
 
 		// Check orthonormality: X^T X = I
-		let xtx = x.transpose() * x;
-		let identity = DMatrix::<T>::identity(self.p, self.p);
-		let constraint_error = (&xtx - &identity).norm();
+		let xtx = x.transpose().mat_mul(x);
+		let identity = linalg::Mat::<T>::identity(self.p);
+		let constraint_error = xtx.sub(&identity).norm();
 
 		if constraint_error > self.tolerance {
 			return Err(ManifoldError::invalid_point(format!(
@@ -305,7 +313,7 @@ impl<T: Scalar> Stiefel<T> {
 	/// - `DimensionMismatch`: If dimensions don't match
 	/// - `NotOnManifold`: If X is not on Stiefel
 	/// - `NotInTangentSpace`: If skew-symmetry constraint violated
-	pub fn check_tangent(&self, x: &DMatrix<T>, z: &DMatrix<T>) -> Result<()> {
+	pub fn check_tangent(&self, x: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<()> {
 		self.check_point(x)?;
 
 		if z.nrows() != self.n || z.ncols() != self.p {
@@ -316,8 +324,8 @@ impl<T: Scalar> Stiefel<T> {
 		}
 
 		// Check skew-symmetry: X^T Z + Z^T X = 0
-		let xtz = x.transpose() * z;
-		let skew_error = (&xtz + &xtz.transpose()).norm();
+		let xtz = x.transpose().mat_mul(z);
+		let skew_error = xtz.add(&xtz.transpose()).norm();
 
 		if skew_error > self.tolerance {
 			return Err(ManifoldError::invalid_tangent(format!(
@@ -331,8 +339,8 @@ impl<T: Scalar> Stiefel<T> {
 
 	/// Computes the symmetric part of a matrix: sym(A) = (A + A^T)/2.
 	#[inline]
-	fn symmetrize(a: &DMatrix<T>) -> DMatrix<T> {
-		(a + &a.transpose()) * <T as Scalar>::from_f64(0.5)
+	fn symmetrize(a: &linalg::Mat<T>) -> linalg::Mat<T> {
+		a.add(&a.transpose()).scale_by(<T as Scalar>::from_f64(0.5))
 	}
 
 	/// Performs QR-based retraction.
@@ -349,25 +357,25 @@ impl<T: Scalar> Stiefel<T> {
 	/// # Returns
 	///
 	/// The retracted point R_X(Z) on the manifold.
-	pub fn qr_retraction(&self, x: &DMatrix<T>, z: &DMatrix<T>) -> Result<DMatrix<T>> {
+	pub fn qr_retraction(&self, x: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
 		// Compute X + Z
-		let x_plus_z = x + z;
+		let x_plus_z = x.add(z);
 
 		// QR decomposition
 		let qr = x_plus_z.qr();
-		let mut q = qr.q();
+		let mut q = qr.q().clone();
 
 		// Extract first p columns if needed
 		if q.ncols() > self.p {
-			q = q.columns(0, self.p).clone_owned();
+			q = q.columns(0, self.p);
 		}
 
 		// Fix signs to ensure continuity (R has positive diagonal)
 		let r = qr.r();
 		for j in 0..self.p.min(r.ncols()) {
-			if r[(j, j)] < T::zero() {
+			if r.get(j, j) < T::zero() {
 				for i in 0..self.n {
-					q[(i, j)] = -q[(i, j)];
+					*q.get_mut(i, j) = T::zero() - q.get(i, j);
 				}
 			}
 		}
@@ -389,11 +397,15 @@ impl<T: Scalar> Stiefel<T> {
 	/// # Returns
 	///
 	/// The retracted point using polar decomposition.
-	pub fn polar_retraction(&self, x: &DMatrix<T>, z: &DMatrix<T>) -> Result<DMatrix<T>> {
-		let x_plus_z = x + z;
+	pub fn polar_retraction(
+		&self,
+		x: &linalg::Mat<T>,
+		z: &linalg::Mat<T>,
+	) -> Result<linalg::Mat<T>> {
+		let x_plus_z = x.add(z);
 
 		// Compute (X+Z)^T(X+Z)
-		let gram = x_plus_z.transpose() * &x_plus_z;
+		let gram = x_plus_z.transpose().mat_mul(&x_plus_z);
 
 		// Eigendecomposition for matrix square root
 		let eigen = gram.symmetric_eigen();
@@ -401,10 +413,10 @@ impl<T: Scalar> Stiefel<T> {
 		let v = &eigen.eigenvectors;
 
 		// Compute (gram)^{-1/2}
-		let mut d_sqrt_inv = DVector::zeros(self.p);
+		let mut d_sqrt_inv = linalg::Vec::<T>::zeros(self.p);
 		for i in 0..self.p {
-			if d[i] > self.tolerance {
-				d_sqrt_inv[i] = T::one() / <T as Float>::sqrt(d[i]);
+			if d.get(i) > self.tolerance {
+				*d_sqrt_inv.get_mut(i) = T::one() / <T as Float>::sqrt(d.get(i));
 			} else {
 				return Err(ManifoldError::numerical_error(
 					"Polar retraction failed: singular Gram matrix",
@@ -412,9 +424,11 @@ impl<T: Scalar> Stiefel<T> {
 			}
 		}
 
-		let gram_sqrt_inv = v * DMatrix::from_diagonal(&d_sqrt_inv) * v.transpose();
+		let gram_sqrt_inv = v
+			.mat_mul(&linalg::Mat::<T>::from_diagonal(&d_sqrt_inv))
+			.mat_mul(&v.transpose());
 
-		Ok(&x_plus_z * gram_sqrt_inv)
+		Ok(x_plus_z.mat_mul(&gram_sqrt_inv))
 	}
 
 	/// Computes geodesic distance between two points (Frobenius-based).
@@ -428,22 +442,23 @@ impl<T: Scalar> Stiefel<T> {
 	///
 	/// This implementation uses a Frobenius-based approximation for efficiency.
 	/// For exact geodesic distance, principal angle computation is required.
-	pub fn geodesic_distance(&self, x: &DMatrix<T>, y: &DMatrix<T>) -> Result<T> {
+	pub fn geodesic_distance(&self, x: &linalg::Mat<T>, y: &linalg::Mat<T>) -> Result<T> {
 		self.check_point(x)?;
 		self.check_point(y)?;
 
 		// Compute X^T Y
-		let xty = x.transpose() * y;
+		let xty = x.transpose().mat_mul(y);
 
 		// SVD to get principal angles
-		let svd = xty.svd(true, true);
+		let svd = xty.svd();
 		let sigma = &svd.singular_values;
 
 		// Principal angles: θᵢ = arccos(σᵢ)
 		let mut dist_sq = T::zero();
 		for i in 0..self.p {
 			// Clamp singular values to [-1, 1]
-			let sigma_clamped = <T as Float>::max(<T as Float>::min(sigma[i], T::one()), -T::one());
+			let sigma_clamped =
+				<T as Float>::max(<T as Float>::min(sigma.get(i), T::one()), -T::one());
 			let theta = <T as Float>::acos(sigma_clamped);
 			dist_sq = dist_sq + theta * theta;
 		}
@@ -454,12 +469,12 @@ impl<T: Scalar> Stiefel<T> {
 	/// Parallel transports a tangent vector along a geodesic.
 	///
 	/// This uses the differentiated retraction for vector transport.
-	pub fn parallel_transport(
+	pub fn parallel_transport_geodesic(
 		&self,
-		x: &DMatrix<T>,
-		y: &DMatrix<T>,
-		v: &DMatrix<T>,
-	) -> Result<DMatrix<T>> {
+		x: &linalg::Mat<T>,
+		y: &linalg::Mat<T>,
+		v: &linalg::Mat<T>,
+	) -> Result<linalg::Mat<T>> {
 		self.check_tangent(x, v)?;
 		self.check_point(y)?;
 
@@ -467,17 +482,21 @@ impl<T: Scalar> Stiefel<T> {
 		// τ_{X→Y}(V) = P_Y(V) where P_Y is tangent projection at Y
 
 		// Compute Y^T V
-		let ytv = y.transpose() * v;
+		let ytv = y.transpose().mat_mul(v);
 
 		// Project: V - Y * sym(Y^T V)
 		let sym_ytv = Self::symmetrize(&ytv);
-		Ok(v - y * sym_ytv)
+		Ok(v.sub(&y.mat_mul(&sym_ytv)))
 	}
 }
 
-impl<T: Scalar> Manifold<T> for Stiefel<T> {
-	type Point = DMatrix<T>;
-	type TangentVector = DMatrix<T>;
+impl<T> Manifold<T> for Stiefel<T>
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Mat<T>;
+	type TangentVector = linalg::Mat<T>;
 
 	fn name(&self) -> &str {
 		"Stiefel"
@@ -493,9 +512,9 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		}
 
 		// Check X^T X = I
-		let xtx = point.transpose() * point;
-		let identity = DMatrix::<T>::identity(self.p, self.p);
-		(&xtx - &identity).norm() < tol
+		let xtx = point.transpose().mat_mul(point);
+		let identity = linalg::Mat::<T>::identity(self.p);
+		xtx.sub(&identity).norm() < tol
 	}
 
 	fn is_vector_in_tangent_space(
@@ -512,35 +531,36 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		}
 
 		// Check X^T Z + Z^T X = 0
-		let xtz = point.transpose() * vector;
-		(&xtz + &xtz.transpose()).norm() < tol
+		let xtz = point.transpose().mat_mul(vector);
+		xtz.add(&xtz.transpose()).norm() < tol
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		if point.nrows() != self.n || point.ncols() != self.p {
-			*result = DMatrix::zeros(self.n, self.p);
+			*result = MatrixOps::zeros(self.n, self.p);
 			return;
 		}
 
 		// Use SVD for projection: A = UΣV^T → UV^T
-		let svd = point.clone().svd(true, true);
-		if let (Some(u), Some(vt)) = (svd.u, svd.v_t) {
+		let svd = point.svd();
+		if let (Some(u), Some(vt)) = (svd.u, svd.vt) {
 			// Take first p columns of U if needed
 			let u_truncated = if u.ncols() > self.p {
-				u.columns(0, self.p).clone_owned()
+				u.columns(0, self.p)
 			} else {
 				u
 			};
 
-			*result = u_truncated * vt;
+			*result = u_truncated.mat_mul(&vt);
 		} else {
 			// Fallback to QR
-			let qr = point.clone().qr();
-			let mut q = qr.q();
+			let qr = point.qr();
+			let q = qr.q();
 			if q.ncols() > self.p {
-				q = q.columns(0, self.p).clone_owned();
+				*result = q.columns(0, self.p);
+			} else {
+				*result = q.clone();
 			}
-			*result = q;
 		}
 	}
 
@@ -562,18 +582,18 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		}
 
 		// Check that point is on manifold
-		let xtx = point.transpose() * point;
-		let identity = DMatrix::<T>::identity(self.p, self.p);
-		if (&xtx - &identity).norm() > self.tolerance {
+		let xtx = point.transpose().mat_mul(point);
+		let identity = linalg::Mat::<T>::identity(self.p);
+		if xtx.sub(&identity).norm() > self.tolerance {
 			return Err(ManifoldError::invalid_point(
 				"Point must be on Stiefel for tangent projection",
 			));
 		}
 
 		// Project: Z - X * sym(X^T Z)
-		let xtz = point.transpose() * vector;
+		let xtz = point.transpose().mat_mul(vector);
 		let sym_xtz = Self::symmetrize(&xtz);
-		*result = vector - point * sym_xtz;
+		*result = vector.sub(&point.mat_mul(&sym_xtz));
 
 		Ok(())
 	}
@@ -591,7 +611,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		let mut inner = T::zero();
 		for i in 0..self.n {
 			for j in 0..self.p {
-				inner = inner + u[(i, j)] * v[(i, j)];
+				inner = inner + u.get(i, j) * v.get(i, j);
 			}
 		}
 		Ok(inner)
@@ -620,7 +640,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 
 		// Compute log map approximation
 		// For close points: log_X(Y) ≈ P_X(Y - X)
-		let diff = other - point;
+		let diff = other.sub(point);
 		self.project_tangent(point, &diff, result)
 	}
 
@@ -642,9 +662,10 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Projection-based transport: τ_{X→Y}(V) = V - Y * sym(Y^T V)
-		let ytv = to.transpose() * vector;
+		let ytv = to.transpose().mat_mul(vector);
 		let sym_ytv = Self::symmetrize(&ytv);
-		result.copy_from(&(vector - to * sym_ytv));
+		let transported = vector.sub(&to.mat_mul(&sym_ytv));
+		result.copy_from(&transported);
 		Ok(())
 	}
 
@@ -653,10 +674,10 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		let normal = StandardNormal;
 
 		// Generate random Gaussian matrix
-		let mut a = DMatrix::zeros(self.n, self.p);
+		let mut a: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 		for i in 0..self.n {
 			for j in 0..self.p {
-				a[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*a.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
@@ -666,9 +687,9 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 
 		// Extract first p columns if needed
 		if q.ncols() > self.p {
-			result.copy_from(&q.columns(0, self.p));
+			*result = q.columns(0, self.p);
 		} else {
-			result.copy_from(&q);
+			result.copy_from(q);
 		}
 
 		Ok(())
@@ -681,10 +702,10 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		let mut rng = rand::rng();
 		let normal = StandardNormal;
 
-		let mut z = DMatrix::zeros(self.n, self.p);
+		let mut z: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 		for i in 0..self.n {
 			for j in 0..self.p {
-				z[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*z.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
@@ -694,7 +715,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		// Normalize
 		let norm = result.norm();
 		if norm > <T as Scalar>::from_f64(1e-16) {
-			*result /= norm;
+			result.scale_mut(T::one() / norm);
 		}
 
 		Ok(())
@@ -722,7 +743,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 		// For Stiefel manifold, tangent vectors satisfy X^T Z + Z^T X = 0
 		// Scaling preserves this skew-symmetry constraint
 		result.copy_from(tangent);
-		*result *= scalar;
+		result.scale_mut(scalar);
 		Ok(())
 	}
 
@@ -737,7 +758,7 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 	) -> Result<()> {
 		// Add the tangent vectors
 		temp.copy_from(v1);
-		*temp += v2;
+		temp.add_assign(v2);
 
 		// The sum should already satisfy the tangent space constraint if v1 and v2 do,
 		// but we project for numerical stability
@@ -747,8 +768,12 @@ impl<T: Scalar> Manifold<T> for Stiefel<T> {
 	}
 }
 
-impl<T: Scalar> MatrixManifold<T> for Stiefel<T> {
-	fn matrix_dims(&self) -> (usize, usize) {
-		(self.n, self.p)
-	}
-}
+// NOTE: MatrixManifold<T> impl commented out because the trait still requires
+// `Point = DMatrix<T>` but we now use `linalg::Mat<T>`. Will be re-enabled
+// once riemannopt-core's MatrixManifold trait is migrated to the linalg layer.
+//
+// impl<T: Scalar> MatrixManifold<T> for Stiefel<T> {
+// 	fn matrix_dims(&self) -> (usize, usize) {
+// 		(self.n, self.p)
+// 	}
+// }

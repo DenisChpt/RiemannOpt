@@ -7,12 +7,17 @@ use nalgebra::{Const, Dim, DimName, Dyn, OMatrix, OVector, RealField, Scalar as 
 use num_traits::{Float, FromPrimitive};
 use std::fmt::{Debug, Display};
 
+use crate::linalg::RealScalar;
+
 /// Trait for scalar types used in optimization (f32 or f64).
 ///
 /// This trait combines all the necessary numeric traits required
-/// for Riemannian optimization algorithms.
+/// for Riemannian optimization algorithms. It extends [`RealScalar`]
+/// (the backend-agnostic scalar trait) with nalgebra bounds needed
+/// during the transition period.
 pub trait Scalar:
-	NalgebraScalar
+	RealScalar
+	+ NalgebraScalar
 	+ RealField
 	+ Float
 	+ FromPrimitive

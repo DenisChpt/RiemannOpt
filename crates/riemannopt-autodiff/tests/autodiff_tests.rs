@@ -245,30 +245,30 @@ fn test_complex_expression() {
 
 #[test]
 fn test_autodiff_cost_function() {
-	use nalgebra::DVector;
 	use riemannopt_autodiff::AutoDiffCostFunction;
 	use riemannopt_core::cost_function::CostFunction;
+	use riemannopt_core::linalg::VectorOps;
 
 	// f(x) = ||x||^2
 	let cf = AutoDiffCostFunction::new(3, |x| x.dot(x));
-	let point = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+	let point = VectorOps::from_slice(&[1.0, 2.0, 3.0]);
 
 	let cost = cf.cost(&point).unwrap();
 	assert!((cost - 14.0).abs() < 1e-12);
 
 	let (c, g) = cf.cost_and_gradient_alloc(&point).unwrap();
 	assert!((c - 14.0).abs() < 1e-12);
-	assert!((g[0] - 2.0).abs() < 1e-12);
-	assert!((g[1] - 4.0).abs() < 1e-12);
-	assert!((g[2] - 6.0).abs() < 1e-12);
+	assert!((VectorOps::get(&g, 0) - 2.0).abs() < 1e-12);
+	assert!((VectorOps::get(&g, 1) - 4.0).abs() < 1e-12);
+	assert!((VectorOps::get(&g, 2) - 6.0).abs() < 1e-12);
 }
 
 #[test]
 fn test_autodiff_with_optimizer() {
-	use nalgebra::DVector;
 	use riemannopt_autodiff::AutoDiffCostFunction;
 	use riemannopt_core::{
 		cost_function::CostFunction,
+		linalg::VectorOps,
 		optimization::optimizer::{Optimizer, StoppingCriterion},
 	};
 	use riemannopt_manifolds::Euclidean;
@@ -277,7 +277,7 @@ fn test_autodiff_with_optimizer() {
 	// min ||x||^2 on R^5 — solution is x=0
 	let cf = AutoDiffCostFunction::new(5, |x| x.dot(x));
 	let eucl = Euclidean::<f64>::new(5).unwrap();
-	let x0 = DVector::from_element(5, 1.0);
+	let x0 = VectorOps::from_fn(5, |_| 1.0);
 
 	let mut opt = ConjugateGradient::with_default_config();
 	let crit = StoppingCriterion::new()
@@ -290,9 +290,9 @@ fn test_autodiff_with_optimizer() {
 
 #[test]
 fn test_autodiff_mat_cost_function() {
-	use nalgebra::DMatrix;
 	use riemannopt_autodiff::AutoDiffMatCostFunction;
 	use riemannopt_core::cost_function::CostFunction;
+	use riemannopt_core::linalg::{self, MatrixOps};
 
 	// f(X) = tr(X^T X) = ||X||_F^2
 	let _cf = AutoDiffMatCostFunction::new(3, 2, |x| x.matmul(x).trace());
@@ -301,13 +301,17 @@ fn test_autodiff_mat_cost_function() {
 	// Use sum of squares instead: f(X) = sum(X*X)
 	let cf2 = AutoDiffMatCostFunction::new(3, 2, |x| (x * x).sum());
 
-	let point = DMatrix::from_column_slice(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+	let point = <linalg::Mat<f64> as MatrixOps<f64>>::from_column_slice(
+		3,
+		2,
+		&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+	);
 	let cost = cf2.cost(&point).unwrap();
 	assert!((cost - 91.0).abs() < 1e-12); // 1+4+9+16+25+36
 
 	let (c, g) = cf2.cost_and_gradient_alloc(&point).unwrap();
 	assert!((c - 91.0).abs() < 1e-12);
 	// grad of sum(X*X) = 2X
-	assert!((g[(0, 0)] - 2.0).abs() < 1e-12);
-	assert!((g[(2, 1)] - 12.0).abs() < 1e-12);
+	assert!((MatrixOps::get(&g, 0, 0) - 2.0).abs() < 1e-12);
+	assert!((MatrixOps::get(&g, 2, 1) - 12.0).abs() < 1e-12);
 }

@@ -1,7 +1,7 @@
 //! Integration tests for the Sphere manifold
 
 use approx::assert_relative_eq;
-use nalgebra::DVector;
+use riemannopt_core::linalg::{self, VectorOps};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Sphere;
 
@@ -20,23 +20,23 @@ fn test_sphere_projection() {
 	let sphere = Sphere::<f64>::new(3).unwrap();
 
 	// Test projection of a non-unit vector
-	let x = DVector::from_vec(vec![3.0, 4.0, 0.0]);
-	let mut proj = DVector::zeros(3);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[3.0, 4.0, 0.0]);
+	let mut proj: linalg::Vec<f64> = VectorOps::zeros(3);
 	sphere.project_point(&x, &mut proj);
 
 	// Check result is on sphere
 	assert_relative_eq!(proj.norm(), 1.0, epsilon = 1e-14);
-	assert_relative_eq!(proj[0], 0.6, epsilon = 1e-14);
-	assert_relative_eq!(proj[1], 0.8, epsilon = 1e-14);
+	assert!((proj.get(0) - 0.6).abs() < 1e-14);
+	assert!((proj.get(1) - 0.8).abs() < 1e-14);
 }
 
 #[test]
 fn test_sphere_tangent_projection() {
 	let sphere = Sphere::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-	let v = DVector::from_vec(vec![0.5, 1.0, 2.0]);
-	let mut v_tangent = DVector::zeros(3);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.5, 1.0, 2.0]);
+	let mut v_tangent: linalg::Vec<f64> = VectorOps::zeros(3);
 
 	sphere.project_tangent(&x, &v, &mut v_tangent).unwrap();
 
@@ -44,17 +44,21 @@ fn test_sphere_tangent_projection() {
 	assert_relative_eq!(x.dot(&v_tangent), 0.0, epsilon = 1e-14);
 
 	// Check projection formula: v_tangent = v - <v,x>x
-	let expected = &v - &x * x.dot(&v);
-	assert_relative_eq!(v_tangent, expected, epsilon = 1e-14);
+	let xdv = x.dot(&v);
+	let mut expected = x.clone();
+	expected.scale_mut(xdv);
+	let expected = VectorOps::sub(&v, &expected);
+	let diff = VectorOps::sub(&v_tangent, &expected);
+	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);
 }
 
 #[test]
 fn test_sphere_retraction() {
 	let sphere = Sphere::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-	let v = DVector::from_vec(vec![0.0, 0.5, 0.0]);
-	let mut y = DVector::zeros(3);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 0.5, 0.0]);
+	let mut y: linalg::Vec<f64> = VectorOps::zeros(3);
 
 	// Test retraction
 	sphere.retract(&x, &v, &mut y).unwrap();
@@ -63,19 +67,20 @@ fn test_sphere_retraction() {
 	assert_relative_eq!(y.norm(), 1.0, epsilon = 1e-14);
 
 	// Test zero retraction returns same point
-	let zero = DVector::zeros(3);
-	let mut x_recovered = DVector::zeros(3);
+	let zero: linalg::Vec<f64> = VectorOps::zeros(3);
+	let mut x_recovered: linalg::Vec<f64> = VectorOps::zeros(3);
 	sphere.retract(&x, &zero, &mut x_recovered).unwrap();
-	assert_relative_eq!(x, x_recovered, epsilon = 1e-14);
+	let diff = VectorOps::sub(&x, &x_recovered);
+	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);
 }
 
 #[test]
 fn test_sphere_inner_product() {
 	let sphere = Sphere::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-	let u = DVector::from_vec(vec![0.0, 1.0, 0.0]);
-	let v = DVector::from_vec(vec![0.0, 0.0, 1.0]);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
+	let u: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 1.0, 0.0]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 0.0, 1.0]);
 
 	// Test inner product (should be standard Euclidean)
 	let inner_uv = sphere.inner_product(&x, &u, &v).unwrap();
@@ -101,9 +106,9 @@ fn test_sphere_random_point() {
 fn test_sphere_parallel_transport() {
 	let sphere = Sphere::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-	let y = DVector::from_vec(vec![0.0, 1.0, 0.0]);
-	let v = DVector::from_vec(vec![0.0, 0.0, 1.0]);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
+	let y: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 1.0, 0.0]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 0.0, 1.0]);
 
 	let transported = sphere.parallel_transport(&x, &y, &v).unwrap();
 

@@ -32,14 +32,20 @@ impl Gradients {
 		&self.data[off..off + len]
 	}
 
-	/// Gradient as a `nalgebra::DVector`.
-	pub fn wrt_vec(&self, v: Var) -> nalgebra::DVector<f64> {
-		nalgebra::DVector::from_column_slice(self.wrt(v))
+	/// Gradient as a vector using the active linalg backend.
+	pub fn wrt_vec(&self, v: Var) -> riemannopt_core::linalg::Vec<f64> {
+		use riemannopt_core::linalg::VectorOps;
+		VectorOps::from_slice(self.wrt(v))
 	}
 
-	/// Gradient as a `nalgebra::DMatrix` with the given shape.
-	pub fn wrt_mat(&self, v: Var, rows: usize, cols: usize) -> nalgebra::DMatrix<f64> {
-		nalgebra::DMatrix::from_column_slice(rows, cols, self.wrt(v))
+	/// Gradient as a matrix using the active linalg backend.
+	pub fn wrt_mat(&self, v: Var, rows: usize, cols: usize) -> riemannopt_core::linalg::Mat<f64> {
+		use riemannopt_core::linalg::MatrixOps;
+		<riemannopt_core::linalg::Mat<f64> as MatrixOps<f64>>::from_column_slice(
+			rows,
+			cols,
+			self.wrt(v),
+		)
 	}
 
 	/// Mutable gradient slice for node `i`.
