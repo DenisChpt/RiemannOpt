@@ -63,7 +63,6 @@ use num_traits::Float;
 use riemannopt_core::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::Result,
-	memory::workspace::{BufferId, Workspace},
 	optimization::{
 		line_search::LineSearchParams,
 		optimizer::{OptimizationResult, Optimizer, StoppingCriterion, TerminationReason},
@@ -253,7 +252,6 @@ impl<T: Scalar> LBFGS<T> {
 		gradient_norm: Option<T>,
 		current_point: &M::Point,
 		previous_point: &Option<M::Point>,
-		_workspace: &mut Workspace<T>,
 		criterion: &StoppingCriterion<T>,
 	) -> Option<TerminationReason>
 	where
@@ -329,7 +327,6 @@ impl<T: Scalar> LBFGS<T> {
 		gradient: &M::TangentVector,
 		lbfgs_state: &LBFGSState<T, M::TangentVector>,
 		direction: &mut M::TangentVector,
-		_workspace: &mut Workspace<T>,
 	) -> Result<()>
 	where
 		M: Manifold<T>,
@@ -414,7 +411,6 @@ impl<T: Scalar> LBFGS<T> {
 		direction: &M::TangentVector,
 		current_cost: T,
 		gradient: &M::TangentVector,
-		_workspace: &mut Workspace<T>,
 		function_evaluations: &mut usize,
 		gradient_evaluations: &mut usize,
 	) -> Result<T>
@@ -452,7 +448,7 @@ impl<T: Scalar> LBFGS<T> {
 				// Check curvature condition
 				let mut euclidean_grad = gradient.clone();
 				let _trial_gradient_cost =
-					cost_fn.cost_and_gradient(&trial_point, _workspace, &mut euclidean_grad)?;
+					cost_fn.cost_and_gradient(&trial_point, &mut euclidean_grad)?;
 				*function_evaluations += 1;
 				*gradient_evaluations += 1;
 
@@ -520,7 +516,6 @@ impl<T: Scalar> LBFGS<T> {
 		step_size: T,
 		grad_norm: T,
 		lbfgs_state: &mut LBFGSState<T, M::TangentVector>,
-		_workspace: &mut Workspace<T>,
 		iteration: usize,
 	) -> Result<bool>
 	where
@@ -667,20 +662,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
 		let start_time = Instant::now();
-		let n = manifold.dimension();
-		let mut workspace = Workspace::with_size(n);
-
-		// Pre-allocate workspace buffers
-		workspace.preallocate_vector(BufferId::Gradient, n);
-		workspace.preallocate_vector(BufferId::Direction, n);
-		workspace.preallocate_vector(BufferId::Temp1, n);
-		workspace.preallocate_vector(BufferId::Temp2, n);
-
-		// Additional buffers for L-BFGS operations
-		for i in 0..self.config.memory_size {
-			workspace.preallocate_vector(BufferId::Custom((i * 2) as u32), n);
-			workspace.preallocate_vector(BufferId::Custom((i * 2 + 1) as u32), n);
-		}
 
 		// Initialize state
 		let initial_cost = cost_fn.cost(initial_point)?;
@@ -695,6 +676,12 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 		let mut iteration = 0;
 		let mut function_evaluations = 1;
 		let mut gradient_evaluations = 0;
+
+		// Two-strike restart: when step_size falls below minstepsize,
+		// clear history and retry once as steepest descent. If it happens
+		// again, terminate.
+		let minstepsize = <T as Scalar>::from_f64(1e-10);
+		let mut ultimatum = false;
 
 		// Compute initial gradient to get the right type
 		let mut euclidean_grad = cost_fn.gradient(&initial_point)?;
@@ -715,7 +702,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 				gradient_norm,
 				&current_point,
 				&previous_point,
-				&mut workspace,
 				stopping_criterion,
 			);
 
@@ -733,8 +719,7 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 			}
 
 			// Compute gradient at current point
-			let _new_cost =
-				cost_fn.cost_and_gradient(&current_point, &mut workspace, &mut euclidean_grad)?;
+			let _new_cost = cost_fn.cost_and_gradient(&current_point, &mut euclidean_grad)?;
 			function_evaluations += 1;
 			gradient_evaluations += 1;
 
@@ -759,7 +744,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 				&riemannian_grad,
 				&lbfgs_state,
 				&mut direction,
-				&mut workspace,
 			)?;
 
 			// Perform line search
@@ -770,10 +754,34 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 				&direction,
 				current_cost,
 				&riemannian_grad,
-				&mut workspace,
 				&mut function_evaluations,
 				&mut gradient_evaluations,
 			)?;
+
+			// Two-strike restart: if step_size is too small, the BFGS Hessian
+			// approximation may be stale. Clear history and retry as steepest
+			// descent. If it fails again, terminate.
+			if step_size < minstepsize {
+				if !ultimatum {
+					lbfgs_state.clear();
+					ultimatum = true;
+					// Re-run this iteration with empty history (steepest descent)
+					continue;
+				} else {
+					return Ok(OptimizationResult::new(
+						current_point,
+						current_cost,
+						iteration,
+						start_time.elapsed(),
+						TerminationReason::Converged,
+					)
+					.with_function_evaluations(function_evaluations)
+					.with_gradient_evaluations(gradient_evaluations)
+					.with_gradient_norm(gradient_norm.unwrap_or(T::zero())));
+				}
+			} else {
+				ultimatum = false;
+			}
 
 			// Take the step using retraction
 			let mut scaled_direction = direction.clone();
@@ -787,7 +795,7 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 			let mut new_riemannian_grad = riemannian_grad.clone();
 
 			let new_cost_verify =
-				cost_fn.cost_and_gradient(&new_point, &mut workspace, &mut new_euclidean_grad)?;
+				cost_fn.cost_and_gradient(&new_point, &mut new_euclidean_grad)?;
 			function_evaluations += 1;
 			gradient_evaluations += 1;
 
@@ -808,7 +816,6 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 				step_size,
 				grad_norm,
 				&mut lbfgs_state,
-				&mut workspace,
 				iteration,
 			)?;
 

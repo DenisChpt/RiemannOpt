@@ -19,7 +19,6 @@
 //! - **Orthogonal projections**: Removing normal components
 //! - **Tangent vector arithmetic**: Addition, scaling, inner products
 //! - **SIMD optimizations**: Vectorized operations for high-dimensional problems
-//! - **Workspace management**: Memory-efficient batch operations
 //!
 //! ## Riemannian Metrics (`metric`, `metric_simd`)
 //! Inner product computations respecting manifold geometry:
@@ -36,15 +35,6 @@
 //!
 //! # Computational Architecture
 //!
-//! ## Workspace-Based Design
-//! All operations support workspace-based memory management for efficiency:
-//! ```rust,ignore
-//! # use riemannopt_core::prelude::*;
-//! let mut workspace = Workspace::new();
-//! // Operations reuse pre-allocated memory
-//! manifold.retract(&point, &tangent, &mut result, &mut workspace)?;
-//! ```
-//!
 //! ## SIMD Acceleration
 //! High-dimensional operations leverage SIMD instructions:
 //! - **Vectorized arithmetic**: Parallel floating-point operations
@@ -59,8 +49,6 @@
 //!     manifold: &M,
 //!     initial_point: &M::Point
 //! ) -> Result<M::Point> {
-//!     // Generic operations work with any manifold
-//!     let mut workspace = Workspace::new();
 //!     let mut result = initial_point.clone();
 //!     // ... optimization logic ...
 //!     Ok(result)
@@ -70,9 +58,7 @@
 //! # Performance Considerations
 //!
 //! ## Memory Management
-//! - **Workspace reuse**: Minimizes allocation overhead
 //! - **In-place operations**: Reduces memory traffic
-//! - **Buffer pooling**: Efficient memory recycling
 //!
 //! ## Numerical Stability
 //! - **Numerically stable algorithms**: QR, SVD, Cholesky decompositions
@@ -87,20 +73,14 @@
 pub mod fisher;
 pub mod metric;
 pub mod metric_simd;
-pub mod metric_workspace;
 pub mod retraction;
-pub mod retraction_workspace;
 pub mod tangent;
 pub mod tangent_simd;
-pub mod tangent_workspace;
 
 // Re-export manifold operations
 pub use fisher::*;
 pub use metric::*;
 pub use metric_simd::*;
-pub use metric_workspace::*;
 pub use retraction::*;
-pub use retraction_workspace::*;
 pub use tangent::*;
 pub use tangent_simd::*;
-pub use tangent_workspace::*;

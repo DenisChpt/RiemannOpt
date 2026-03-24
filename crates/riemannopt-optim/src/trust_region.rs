@@ -32,7 +32,6 @@ use num_traits::Float;
 use riemannopt_core::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::Result,
-	memory::workspace::Workspace,
 	optimization::optimizer::{
 		OptimizationResult, Optimizer, StoppingCriterion, TerminationReason,
 	},
@@ -232,7 +231,6 @@ impl<T: Scalar> TrustRegion<T> {
 		gradient_norm: Option<T>,
 		current_point: &M::Point,
 		previous_point: &Option<M::Point>,
-		_workspace: &mut Workspace<T>,
 		criterion: &StoppingCriterion<T>,
 		trust_radius: T,
 	) -> Option<TerminationReason>
@@ -312,7 +310,6 @@ impl<T: Scalar> TrustRegion<T> {
 		gradient: &M::TangentVector,
 		direction: &M::TangentVector,
 		result: &mut M::TangentVector,
-		workspace: &mut Workspace<T>,
 	) -> Result<()>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -338,11 +335,8 @@ impl<T: Scalar> TrustRegion<T> {
 
 		// Compute gradient at perturbed point
 		let mut perturbed_euclidean_grad = gradient.clone();
-		let _cost = cost_fn.cost_and_gradient(
-			&perturbed_point,
-			workspace,
-			&mut perturbed_euclidean_grad,
-		)?;
+		let _cost =
+			cost_fn.cost_and_gradient(&perturbed_point, &mut perturbed_euclidean_grad)?;
 
 		let mut perturbed_grad = perturbed_euclidean_grad.clone();
 		manifold.euclidean_to_riemannian_gradient(
@@ -417,7 +411,6 @@ impl<T: Scalar> TrustRegion<T> {
 		gradient: &M::TangentVector,
 		radius: T,
 		cg_workspace: &mut CGWorkspace<T, M::TangentVector>,
-		workspace: &mut Workspace<T>,
 	) -> Result<()>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -459,7 +452,6 @@ impl<T: Scalar> TrustRegion<T> {
 					gradient,
 					&cg_workspace.d,
 					&mut cg_workspace.hd,
-					workspace,
 				)?;
 			}
 
@@ -590,7 +582,6 @@ impl<T: Scalar> TrustRegion<T> {
 		value: T,
 		gradient: &M::TangentVector,
 		step: &M::TangentVector,
-		workspace: &mut Workspace<T>,
 	) -> Result<T>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -604,7 +595,7 @@ impl<T: Scalar> TrustRegion<T> {
 			hs = cost_fn.hessian_vector_product(point, step)?;
 		} else {
 			self.finite_diff_hessian_vec_product(
-				cost_fn, manifold, point, gradient, step, &mut hs, workspace,
+				cost_fn, manifold, point, gradient, step, &mut hs,
 			)?;
 		}
 
@@ -632,11 +623,6 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
 		let start_time = Instant::now();
-		let n = manifold.dimension();
-		let mut workspace = Workspace::with_size(n);
-
-		// Pre-allocate workspace buffers
-		// Note: These will be allocated as needed when calling manifold methods
 
 		// Initialize state
 		let initial_cost = cost_fn.cost(initial_point)?;
@@ -687,7 +673,6 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 				gradient_norm,
 				&current_point,
 				&previous_point,
-				&mut workspace,
 				stopping_criterion,
 				trust_radius,
 			);
@@ -706,8 +691,7 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 			}
 
 			// Compute gradient at current point
-			let _new_cost =
-				cost_fn.cost_and_gradient(&current_point, &mut workspace, &mut euclidean_grad)?;
+			let _new_cost = cost_fn.cost_and_gradient(&current_point, &mut euclidean_grad)?;
 			function_evaluations += 1;
 			gradient_evaluations += 1;
 
@@ -732,7 +716,6 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 				&riemannian_grad,
 				trust_radius,
 				&mut cg_workspace,
-				&mut workspace,
 			)?;
 
 			// Get step from CG workspace
@@ -747,7 +730,6 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 				current_cost,
 				&riemannian_grad,
 				step,
-				&mut workspace,
 			)?;
 			let predicted_reduction = model_current - model_step;
 

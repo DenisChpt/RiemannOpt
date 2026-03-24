@@ -80,7 +80,6 @@ use std::time::Instant;
 use riemannopt_core::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::{ManifoldError, Result},
-	memory::workspace::{BufferId, Workspace},
 	optimization::{
 		line_search::{BacktrackingLineSearch, LineSearch, LineSearchParams},
 		optimizer::{OptimizationResult, Optimizer, StoppingCriterion, TerminationReason},
@@ -164,7 +163,6 @@ impl<T: Scalar> Newton<T> {
 		point: &M::Point,
 		gradient: &M::TangentVector,
 		result: &mut M::TangentVector,
-		workspace: &mut Workspace<T>,
 	) -> Result<()> {
 		// Allocate CG workspace vectors as proper TangentVectors
 		let mut d = gradient.clone(); // Newton direction
@@ -186,7 +184,7 @@ impl<T: Scalar> Newton<T> {
 		for _ in 0..self.config.max_cg_iterations {
 			// Compute Hessian-vector product: hp = H*p
 			self.hessian_vector_product(
-				manifold, cost_fn, point, gradient, &p, &mut hp, workspace,
+				manifold, cost_fn, point, gradient, &p, &mut hp,
 			)?;
 
 			// Add regularization: hp = hp + reg*p
@@ -258,7 +256,6 @@ impl<T: Scalar> Newton<T> {
 		_gradient: &M::TangentVector,
 		vector: &M::TangentVector,
 		result: &mut M::TangentVector,
-		_workspace: &mut Workspace<T>,
 	) -> Result<()> {
 		if self.config.use_gauss_newton {
 			// Gauss-Newton approximation not implemented yet
@@ -325,7 +322,6 @@ impl<T: Scalar> Newton<T> {
 		current_point: &M::Point,
 		previous_point: Option<&M::Point>,
 		manifold: &M,
-		_workspace: &mut Workspace<T>,
 	) -> Option<TerminationReason> {
 		// Check iteration limit
 		if let Some(max_iter) = criterion.max_iterations {
@@ -405,31 +401,6 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 	{
 		let start_time = Instant::now();
 
-		// Allocate workspace with appropriate size and pre-allocate all buffers
-		let n = manifold.dimension();
-		let mut workspace = Workspace::with_size(n);
-
-		// Pre-allocate all buffers needed for Newton method
-		// Standard optimization buffers
-		workspace.preallocate_vector(BufferId::Gradient, n);
-		workspace.preallocate_vector(BufferId::Direction, n);
-		workspace.preallocate_vector(BufferId::PreviousGradient, n);
-
-		// Hessian-vector product buffers
-		workspace.preallocate_vector(BufferId::Temp1, n);
-		workspace.preallocate_vector(BufferId::Temp2, n);
-		workspace.preallocate_vector(BufferId::Temp3, n);
-
-		// CG solver buffers (Custom 10-16)
-		for i in 10..=16 {
-			workspace.preallocate_vector(BufferId::Custom(i), n);
-		}
-
-		// Hessian finite difference buffers (Custom 20-22)
-		for i in 20..=22 {
-			workspace.preallocate_vector(BufferId::Custom(i), n);
-		}
-
 		// Initialize state
 		let mut current_point = initial_point.clone();
 		let mut previous_point = None;
@@ -473,7 +444,6 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 				&current_point,
 				previous_point.as_ref(),
 				manifold,
-				&mut workspace,
 			) {
 				let duration = start_time.elapsed();
 
@@ -503,7 +473,6 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 				&current_point,
 				&riemannian_grad,
 				&mut newton_dir,
-				&mut workspace,
 			)?;
 
 			// Perform line search

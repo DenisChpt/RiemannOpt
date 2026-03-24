@@ -443,6 +443,8 @@ pub fn optimize(
 			None,
 			None,
 			None,
+			None,
+			None,
 		)
 	} else if let Ok(mut opt) = opt_obj.extract::<PyRefMut<PyAdam>>(py) {
 		optimize_dispatcher(
@@ -453,6 +455,8 @@ pub fn optimize(
 			initial_point,
 			max_iterations,
 			Some(gradient_tolerance),
+			None,
+			None,
 			None,
 			None,
 			None,
@@ -469,6 +473,8 @@ pub fn optimize(
 			None,
 			None,
 			None,
+			None,
+			None,
 		)
 	} else if let Ok(mut opt) = opt_obj.extract::<PyRefMut<PyConjugateGradient>>(py) {
 		optimize_dispatcher(
@@ -479,6 +485,8 @@ pub fn optimize(
 			initial_point,
 			max_iterations,
 			Some(gradient_tolerance),
+			None,
+			None,
 			None,
 			None,
 			None,
@@ -495,6 +503,8 @@ pub fn optimize(
 			None,
 			None,
 			None,
+			None,
+			None,
 		)
 	} else if let Ok(mut opt) = opt_obj.extract::<PyRefMut<PyNewton>>(py) {
 		optimize_dispatcher(
@@ -508,6 +518,8 @@ pub fn optimize(
 			None,
 			None,
 			None,
+			None,
+			None,
 		)
 	} else if let Ok(mut opt) = opt_obj.extract::<PyRefMut<PyNaturalGradient>>(py) {
 		optimize_dispatcher(
@@ -518,6 +530,8 @@ pub fn optimize(
 			initial_point,
 			max_iterations,
 			Some(gradient_tolerance),
+			None,
+			None,
 			None,
 			None,
 			None,

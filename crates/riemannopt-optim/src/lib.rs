@@ -42,9 +42,6 @@ pub mod natural_gradient;
 pub mod newton;
 pub mod sgd;
 pub mod trust_region;
-// pub mod parallel_sgd;
-
-mod utils;
 
 // Re-export main optimizers for convenience
 pub use adam::{Adam, AdamConfig, AdamState, AdamStateBuilder};
@@ -56,9 +53,6 @@ pub use natural_gradient::{FisherApproximation, NaturalGradient, NaturalGradient
 pub use newton::{Newton, NewtonConfig};
 pub use sgd::{MomentumMethod, MomentumState, SGDConfig, SGD};
 pub use trust_region::{TrustRegion, TrustRegionConfig};
-// pub use natural_gradient::{NaturalGradient, NaturalGradientConfig};
-// pub use parallel_sgd::ParallelSGDUtils;
-// pub use newton::{Newton, NewtonConfig}; // Temporarily disabled - needs refactoring
 
 // Re-export commonly used items from core
 pub use riemannopt_core::optimization::{
@@ -69,8 +63,6 @@ pub use riemannopt_core::optimization::{
 	preconditioner::{IdentityPreconditioner, Preconditioner},
 	step_size::StepSizeSchedule,
 };
-
-// pub use riemannopt_core::manifold_ops::fisher::FisherApproximation;
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,6 @@ use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
 	linalg::{self, MatrixOps, VectorOps},
-	memory::workspace::Workspace,
 };
 
 use crate::{backward::backward, Tape, TapeGuard, Var};
@@ -102,7 +101,6 @@ where
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Vec<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Vec<f64>,
 	) -> Result<f64> {
 		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
@@ -146,7 +144,6 @@ where
 	fn gradient_fd(
 		&self,
 		point: &linalg::Vec<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Vec<f64>,
 	) -> Result<()> {
 		let g = self.gradient(point)?;
@@ -214,7 +211,6 @@ where
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Mat<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Mat<f64>,
 	) -> Result<f64> {
 		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
@@ -260,7 +256,6 @@ where
 	fn gradient_fd(
 		&self,
 		point: &linalg::Mat<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Mat<f64>,
 	) -> Result<()> {
 		gradient.copy_from(&self.gradient(point)?);

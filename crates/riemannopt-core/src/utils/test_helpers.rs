@@ -234,7 +234,6 @@ impl CostFunction<f64> for RayleighQuotient {
 	fn cost_and_gradient(
 		&self,
 		x: &DVector<f64>,
-		_workspace: &mut crate::memory::Workspace<f64>,
 		gradient: &mut DVector<f64>,
 	) -> Result<f64> {
 		let ax = &self.matrix * x;
@@ -307,7 +306,6 @@ impl CostFunction<f64> for SphericalRosenbrock {
 	fn cost_and_gradient(
 		&self,
 		x: &DVector<f64>,
-		_workspace: &mut crate::memory::Workspace<f64>,
 		gradient: &mut DVector<f64>,
 	) -> Result<f64> {
 		let mut cost = 0.0;

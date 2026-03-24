@@ -8,7 +8,6 @@ use riemannopt_core::{
 	error::Result as ManifoldResult,
 	linalg::{self, DecompositionOps, MatrixOps, VectorOps},
 	manifold::Manifold,
-	memory::workspace::Workspace,
 	optimization::optimizer::{Optimizer, StoppingCriterion},
 };
 use riemannopt_manifolds::{Euclidean, Grassmann, Sphere, Stiefel};
@@ -84,7 +83,6 @@ impl CostFunction<f64> for RayleighQuotient {
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Vec<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Vec<f64>,
 	) -> ManifoldResult<f64> {
 		let ax = self.a.mat_vec(point);
@@ -168,7 +166,6 @@ impl CostFunction<f64> for TraceMinimization {
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Mat<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Mat<f64>,
 	) -> ManifoldResult<f64> {
 		let ay = self.a.mat_mul(point);
@@ -248,7 +245,6 @@ impl CostFunction<f64> for Procrustes {
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Mat<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Mat<f64>,
 	) -> ManifoldResult<f64> {
 		let ax = self.a.mat_mul(point);
@@ -322,7 +318,6 @@ impl CostFunction<f64> for SimpleQuadratic {
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Vec<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Vec<f64>,
 	) -> ManifoldResult<f64> {
 		gradient.copy_from(point);
@@ -407,7 +402,6 @@ impl CostFunction<f64> for ShiftedQuadratic {
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Vec<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Vec<f64>,
 	) -> ManifoldResult<f64> {
 		let n = self.a_diag.len();

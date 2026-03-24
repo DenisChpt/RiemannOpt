@@ -34,7 +34,6 @@ use num_traits::Float;
 use riemannopt_core::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::Result,
-	memory::workspace::{BufferId, Workspace},
 	optimization::optimizer::{
 		OptimizationResult, Optimizer, StoppingCriterion, TerminationReason,
 	},
@@ -294,7 +293,6 @@ impl<T: Scalar> Adam<T> {
 		gradient_norm: Option<T>,
 		current_point: &M::Point,
 		previous_point: &Option<M::Point>,
-		_workspace: &mut Workspace<T>,
 		criterion: &StoppingCriterion<T>,
 	) -> Option<TerminationReason>
 	where
@@ -368,7 +366,6 @@ impl<T: Scalar> Adam<T> {
 		gradient: &M::TangentVector,
 		adam_state: &mut AdamState<T, M::TangentVector>,
 		direction: &mut M::TangentVector,
-		_workspace: &mut Workspace<T>,
 	) -> Result<()>
 	where
 		M: Manifold<T>,
@@ -556,18 +553,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
 		let start_time = Instant::now();
-		let n = manifold.dimension();
-		let mut workspace = Workspace::with_size(n);
-
-		// Pre-allocate workspace buffers
-		workspace.preallocate_vector(BufferId::Gradient, n);
-		workspace.preallocate_vector(BufferId::Direction, n);
-		workspace.preallocate_vector(BufferId::Temp1, n);
-		workspace.preallocate_vector(BufferId::Momentum, n); // For m
-		workspace.preallocate_vector(BufferId::SecondMoment, n); // For v
-		if self.config.use_amsgrad {
-			workspace.preallocate_vector(BufferId::Temp2, n); // For v_max
-		}
 
 		// Initialize state
 		let initial_cost = cost_fn.cost(initial_point)?;
@@ -605,7 +590,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 				gradient_norm,
 				&current_point,
 				&previous_point,
-				&mut workspace,
 				stopping_criterion,
 			);
 
@@ -623,8 +607,7 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 			}
 
 			// Compute gradient at current point
-			let new_cost =
-				cost_fn.cost_and_gradient(&current_point, &mut workspace, &mut euclidean_grad)?;
+			let new_cost = cost_fn.cost_and_gradient(&current_point, &mut euclidean_grad)?;
 			function_evaluations += 1;
 			gradient_evaluations += 1;
 
@@ -664,7 +647,6 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 				&riemannian_grad,
 				&mut adam_state,
 				&mut direction,
-				&mut workspace,
 			)?;
 
 			// Scale by negative learning rate and take step

@@ -197,7 +197,7 @@ impl PyNewton {
 	/// -------
 	/// OptimizationResult
 	///     Object containing the optimized point, final cost, and optimization statistics
-	#[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None, callback=None, target_value=None, max_time=None))]
+	#[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None, callback=None, target_value=None, max_time=None))]
 	pub fn optimize(
 		&mut self,
 		py: Python<'_>,
@@ -206,6 +206,8 @@ impl PyNewton {
 		initial_point: PyObject,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 		callback: Option<PyObject>,
 		target_value: Option<f64>,
 		max_time: Option<f64>,
@@ -233,6 +235,8 @@ impl PyNewton {
 			initial_point,
 			max_iterations,
 			gradient_tolerance,
+			function_tolerance,
+			point_tolerance,
 			callback,
 			target_value,
 			max_time,

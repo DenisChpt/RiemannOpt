@@ -15,7 +15,6 @@
 use crate::{
 	error::{ManifoldError, Result},
 	linalg::{self, LinAlgBackend, MatrixOps},
-	memory::{workspace::Workspace, BufferId},
 	types::Scalar,
 };
 use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, OMatrix, OVector};
@@ -65,7 +64,7 @@ pub trait CostFunction<T: Scalar>: Debug {
 		Ok((cost, gradient))
 	}
 
-	/// Evaluates the cost and Euclidean gradient using workspace.
+	/// Evaluates the cost and Euclidean gradient in-place.
 	///
 	/// This is the primary method that avoids allocations.
 	/// Implementations should override this method for optimal performance.
@@ -73,7 +72,6 @@ pub trait CostFunction<T: Scalar>: Debug {
 	/// # Arguments
 	///
 	/// * `point` - A point on the manifold
-	/// * `workspace` - Pre-allocated workspace
 	/// * `gradient` - Output buffer for the gradient
 	///
 	/// # Returns
@@ -82,12 +80,11 @@ pub trait CostFunction<T: Scalar>: Debug {
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<T>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<T> {
 		// Default implementation: compute gradient using finite differences
 		let cost = self.cost(point)?;
-		self.gradient_fd(point, workspace, gradient)?;
+		self.gradient_fd(point, gradient)?;
 		Ok(cost)
 	}
 
@@ -172,15 +169,13 @@ pub trait CostFunction<T: Scalar>: Debug {
 	/// An approximation of the gradient.
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector>;
 
-	/// Compute gradient using finite differences with pre-allocated workspace.
+	/// Compute gradient using finite differences in-place.
 	///
-	/// This method avoids allocations by using pre-allocated buffers from the workspace.
-	/// It's especially beneficial when computing gradients repeatedly during optimization.
+	/// This method writes the result directly into the provided gradient buffer.
 	///
 	/// # Arguments
 	///
 	/// * `point` - A point on the manifold
-	/// * `workspace` - Pre-allocated workspace containing necessary buffers
 	/// * `gradient` - Output buffer for the gradient
 	///
 	/// # Errors
@@ -189,7 +184,6 @@ pub trait CostFunction<T: Scalar>: Debug {
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<T>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		// For generic dimensions, we can't easily use workspace DVector buffers
@@ -292,10 +286,8 @@ where
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<T>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<T> {
-		// For QuadraticCost, we don't need workspace buffers
 		// Compute Ax directly into gradient
 		gradient.copy_from(&self.b);
 		gradient.gemv(T::one(), &self.a, point, T::one());
@@ -458,149 +450,22 @@ where
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<T>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		self.gradient_count.fetch_add(1, Ordering::Relaxed);
-		self.inner.gradient_fd(point, workspace, gradient)
+		self.inner.gradient_fd(point, gradient)
 	}
 
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<T>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<T> {
 		self.cost_count.fetch_add(1, Ordering::Relaxed);
 		self.gradient_count.fetch_add(1, Ordering::Relaxed);
-		self.inner.cost_and_gradient(point, workspace, gradient)
+		self.inner.cost_and_gradient(point, gradient)
 	}
 }
-
-/// Extension trait for parallel gradient computation on dynamic vectors.
-pub trait CostFunctionParallel<T: crate::compute::cpu::ScalarDispatch>: CostFunction<T> {
-	/// Compute gradient in parallel for dynamic vectors.
-	///
-	/// This method is only available when the Point type can be converted to/from DVector.
-	fn gradient_fd_parallel_dvec(
-		&self,
-		point: &nalgebra::DVector<T>,
-		config: &crate::compute::cpu::parallel::ParallelConfig,
-	) -> Result<nalgebra::DVector<T>>
-	where
-		Self: Sync,
-		Self::Point: From<nalgebra::DVector<T>> + AsRef<nalgebra::DVector<T>>,
-	{
-		use super::cost_function_simd::gradient_fd_simd_parallel;
-
-		let cost_fn = |p: &nalgebra::DVector<T>| -> Result<T> {
-			let point_typed = Self::Point::from(p.clone());
-			self.cost(&point_typed)
-		};
-
-		gradient_fd_simd_parallel(&cost_fn, point, config)
-	}
-}
-
-/// Helper function to compute gradient using finite differences with workspace for dynamic vectors.
-///
-/// This function provides an efficient implementation for dynamic-dimensional problems
-/// by reusing pre-allocated buffers from the workspace.
-pub fn gradient_fd_dvec<T, F>(
-	cost_fn: &F,
-	point: &nalgebra::DVector<T>,
-	workspace: &mut Workspace<T>,
-) -> Result<()>
-where
-	T: Scalar + Float,
-	F: Fn(&nalgebra::DVector<T>) -> Result<T>,
-{
-	let n = point.len();
-	let h = T::fd_epsilon();
-
-	// Pre-allocate buffers if needed
-	workspace.preallocate_vector(BufferId::Gradient, n);
-	workspace.preallocate_vector(BufferId::UnitVector, n);
-	workspace.preallocate_vector(BufferId::PointPlus, n);
-	workspace.preallocate_vector(BufferId::PointMinus, n);
-
-	// Clear gradient buffer
-	workspace
-		.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::Gradient)
-		.ok_or_else(|| {
-			ManifoldError::invalid_parameter("Failed to get gradient buffer".to_string())
-		})?
-		.fill(T::zero());
-
-	for i in 0..n {
-		// Clear and set unit vector
-		{
-			let e_i = workspace
-				.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::UnitVector)
-				.ok_or_else(|| {
-					ManifoldError::invalid_parameter("Failed to get unit vector buffer".to_string())
-				})?;
-			e_i.fill(T::zero());
-			e_i[i] = T::one();
-		}
-
-		// Compute point + h*e_i
-		{
-			let point_plus = workspace
-				.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::PointPlus)
-				.ok_or_else(|| {
-					ManifoldError::invalid_parameter("Failed to get point plus buffer".to_string())
-				})?;
-			point_plus.copy_from(point);
-			point_plus[i] += h;
-		}
-
-		// Compute point - h*e_i
-		{
-			let point_minus = workspace
-				.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::PointMinus)
-				.ok_or_else(|| {
-					ManifoldError::invalid_parameter("Failed to get point minus buffer".to_string())
-				})?;
-			point_minus.copy_from(point);
-			point_minus[i] -= h;
-		}
-
-		// Central difference
-		let f_plus = {
-			let point_plus = workspace
-				.get_buffer::<nalgebra::DVector<T>>(BufferId::PointPlus)
-				.ok_or_else(|| {
-					ManifoldError::invalid_parameter("Failed to get point plus buffer".to_string())
-				})?;
-			cost_fn(point_plus)?
-		};
-
-		let f_minus = {
-			let point_minus = workspace
-				.get_buffer::<nalgebra::DVector<T>>(BufferId::PointMinus)
-				.ok_or_else(|| {
-					ManifoldError::invalid_parameter("Failed to get point minus buffer".to_string())
-				})?;
-			cost_fn(point_minus)?
-		};
-
-		// Update gradient
-		{
-			let gradient = workspace
-				.get_buffer_mut::<nalgebra::DVector<T>>(BufferId::Gradient)
-				.ok_or_else(|| {
-					ManifoldError::invalid_parameter("Failed to get gradient buffer".to_string())
-				})?;
-			gradient[i] = (f_plus - f_minus) / (h + h);
-		}
-	}
-
-	Ok(())
-}
-
-// Blanket implementation for all cost functions
-impl<T: crate::compute::cpu::ScalarDispatch, C: CostFunction<T>> CostFunctionParallel<T> for C {}
 
 /// Utilities for checking gradient and Hessian implementations.
 pub struct DerivativeChecker;
@@ -832,35 +697,6 @@ mod tests {
 		assert!(passes);
 		assert!(error < 1e-10);
 	}
-
-	// TODO: Re-implement these tests when Hessian checking is added back
-	// #[test]
-	// fn test_derivative_checker_hessian() {
-	//     let cost = QuadraticCost::<f64, Dyn>::simple(Dyn(2));
-	//     let point = DVector::from_vec(vec![1.0, 2.0]);
-
-	//     let (passes, error) = DerivativeChecker::check_hessian(&cost, &point, 1e-6).unwrap();
-	//     assert!(passes);
-	//     assert!(error < 1e-10);
-	// }
-
-	// #[test]
-	// fn test_derivative_checker_symmetry() {
-	//     // Create an asymmetric "Hessian" to test the checker
-	//     let mut a = DMatrix::zeros(2, 2);
-	//     a[(0, 0)] = 1.0;
-	//     a[(1, 1)] = 1.0;
-	//     a[(0, 1)] = 2.0;
-	//     a[(1, 0)] = 2.0; // Symmetric
-
-	//     let cost = QuadraticCost::new(a, DVector::zeros(2), 0.0);
-	//     let point = DVector::from_vec(vec![1.0, 1.0]);
-
-	//     let (is_symmetric, asymmetry) =
-	//         DerivativeChecker::check_hessian_symmetry(&cost, &point, 1e-10).unwrap();
-	//     assert!(is_symmetric);
-	//     assert!(asymmetry < 1e-10);
-	// }
 
 	#[test]
 	fn test_gradient_fd_parallel() {

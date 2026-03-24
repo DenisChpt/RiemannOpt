@@ -8,7 +8,6 @@ use crate::linalg::{self, LinAlgBackend};
 use crate::{
 	core::cost_function::CostFunction,
 	error::Result,
-	memory::Workspace,
 	types::{constants, Scalar},
 };
 use nalgebra::DVector;
@@ -192,11 +191,10 @@ where
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		if !self.config.cache_values && !self.config.cache_gradients {
-			return self.inner.cost_and_gradient(point, workspace, gradient);
+			return self.inner.cost_and_gradient(point, gradient);
 		}
 
 		// Try to read from cache first
@@ -217,7 +215,7 @@ where
 
 		// Cache miss - compute both
 		self.stats.lock().combined_misses += 1;
-		let cost = self.inner.cost_and_gradient(point, workspace, gradient)?;
+		let cost = self.inner.cost_and_gradient(point, gradient)?;
 
 		// Update cache
 		let mut cache_write = self.cache.write();

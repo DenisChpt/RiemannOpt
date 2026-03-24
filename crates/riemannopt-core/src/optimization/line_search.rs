@@ -136,7 +136,6 @@
 use crate::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::{ManifoldError, Result},
-	memory::workspace::Workspace,
 	types::Scalar,
 };
 use num_traits::Float;
@@ -881,12 +880,8 @@ where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		M: Manifold<T>,
 	{
-		// Validate parameters
-		params.validate()?;
-
-		// Near-zero or non-descent directional derivative: return current point
-		let min_deriv = <T as Scalar>::from_f64(1e-30);
-		if directional_deriv >= T::zero() || <T as Float>::abs(directional_deriv) < min_deriv {
+		// Non-descent direction: return current point
+		if directional_deriv >= T::zero() {
 			return Ok(LineSearchResult {
 				step_size: T::zero(),
 				new_point: point.clone(),
@@ -898,41 +893,56 @@ where
 			});
 		}
 
-		// For now, provide a simplified implementation
-		// Full implementation would require proper handling of generic point/tangent types
-		let step_size = params.initial_step_size;
-		let _workspace: Workspace<T> = Workspace::new();
-
-		// Create new point - this requires the manifold to handle allocation
+		let mut alpha = params.initial_step_size;
 		let mut new_point = point.clone();
-		let _scaled_direction = direction.clone();
+		let mut func_evals = 0;
 
-		// Scale direction - requires proper trait bounds
-		// scaled_direction *= step_size;
+		for _ in 0..params.max_iterations {
+			// Retract along alpha * direction
+			let mut scaled_dir = direction.clone();
+			manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
+			manifold.retract(point, &scaled_dir, &mut new_point)?;
 
-		// Use manifold's retract with a simple step
-		manifold.retract(point, direction, &mut new_point)?;
+			let new_value = cost_fn.cost(&new_point)?;
+			func_evals += 1;
 
-		// Evaluate at new point
-		let new_value = cost_fn.cost(&new_point)?;
+			// Armijo condition: f(new) <= f(x) + c₁ * α * df₀
+			if new_value <= value + params.c1 * alpha * directional_deriv {
+				return Ok(LineSearchResult {
+					step_size: alpha,
+					new_point,
+					new_value,
+					new_gradient: None,
+					function_evals: func_evals,
+					gradient_evals: 0,
+					success: true,
+				});
+			}
 
-		// Simple Armijo check
-		let expected_decrease = params.c1 * step_size * directional_deriv;
-		if new_value <= value + expected_decrease {
-			Ok(LineSearchResult {
-				step_size,
-				new_point,
-				new_value,
-				new_gradient: None,
-				function_evals: 1,
-				gradient_evals: 0,
-				success: true,
-			})
-		} else {
-			Err(ManifoldError::numerical_error(
-				"Backtracking line search failed: Armijo condition not satisfied",
-			))
+			// Contract step size
+			alpha = alpha * params.rho;
+
+			if alpha < params.min_step_size {
+				break;
+			}
 		}
+
+		// Return best effort (last tried point)
+		let mut scaled_dir = direction.clone();
+		manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
+		manifold.retract(point, &scaled_dir, &mut new_point)?;
+		let new_value = cost_fn.cost(&new_point)?;
+		func_evals += 1;
+
+		Ok(LineSearchResult {
+			step_size: alpha,
+			new_point,
+			new_value,
+			new_gradient: None,
+			function_evals: func_evals,
+			gradient_evals: 0,
+			success: new_value < value,
+		})
 	}
 
 	fn name(&self) -> &str {
@@ -1304,9 +1314,8 @@ impl StrongWolfeLineSearch {
 		M: Manifold<T>,
 	{
 		// Compute Euclidean gradient at trial point, then convert
-		let mut workspace = Workspace::new();
 		let mut euc_grad = direction.clone();
-		cost_fn.cost_and_gradient(trial_point, &mut workspace, &mut euc_grad)?;
+		cost_fn.cost_and_gradient(trial_point, &mut euc_grad)?;
 		let mut riem_grad = euc_grad.clone();
 		manifold.euclidean_to_riemannian_gradient(trial_point, &euc_grad, &mut riem_grad)?;
 
@@ -1729,7 +1738,6 @@ where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		M: Manifold<T>,
 	{
-		let _workspace: Workspace<T> = Workspace::new();
 		let mut new_point = point.clone();
 
 		// Use manifold's retract - scaling would require trait bounds on TangentVector
