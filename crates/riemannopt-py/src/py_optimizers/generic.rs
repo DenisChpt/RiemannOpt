@@ -74,6 +74,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 	initial_point: PyObject,
 	max_iterations: usize,
 	gradient_tolerance: Option<f64>,
+	function_tolerance: Option<f64>,
+	point_tolerance: Option<f64>,
 	_callback: Option<PyObject>, // For future use
 	_target_value: Option<f64>,  // For future use
 	_max_time: Option<f64>,      // For future use
@@ -99,6 +101,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -118,6 +122,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -137,6 +143,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -156,6 +164,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -175,6 +185,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -194,6 +206,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -213,6 +227,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -232,6 +248,8 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					arr.readonly(),
 					max_iterations,
 					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
 				)
 				.map(|r| r.into_py(py))
 		}
@@ -249,6 +267,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray1<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	/// Optimize on a Stiefel manifold
@@ -260,6 +280,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray2<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	/// Optimize on a Grassmann manifold
@@ -271,6 +293,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray2<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	/// Optimize on an SPD manifold
@@ -282,6 +306,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray2<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	/// Optimize on a Hyperbolic manifold
@@ -293,6 +319,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray1<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	/// Optimize on an Oblique manifold
@@ -304,6 +332,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray2<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	// /// Optimize on a FixedRank manifold
@@ -315,6 +345,8 @@ pub trait PyOptimizerGeneric {
 	//     initial_point: PyReadonlyArray2<'_, f64>,
 	//     max_iterations: usize,
 	//     gradient_tolerance: Option<f64>,
+	//     function_tolerance: Option<f64>,
+	//     point_tolerance: Option<f64>,
 	// ) -> PyResult<PyOptimizationResult>;
 
 	/// Optimize on a PSDCone manifold
@@ -326,6 +358,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray2<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	/// Optimize on a Euclidean manifold
@@ -337,6 +371,8 @@ pub trait PyOptimizerGeneric {
 		initial_point: PyReadonlyArray1<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
 	) -> PyResult<PyOptimizationResult>;
 
 	/// Try to run optimization with a native Rust cost function.
@@ -363,7 +399,7 @@ macro_rules! impl_optimizer_methods {
             /// Native cost functions (RayleighQuotient, TraceMinimization, etc.) run
             /// entirely in Rust with zero Python callback overhead. Python cost functions
             /// (created via create_cost_function) are still supported via callbacks.
-            #[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, manifold, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize(
                 &mut self,
                 py: Python<'_>,
@@ -372,6 +408,8 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyObject,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 use crate::py_optimizers::generic::optimize_dispatcher;
 
@@ -397,11 +435,13 @@ macro_rules! impl_optimizer_methods {
                     initial_point,
                     max_iterations,
                     gradient_tolerance,
+                    function_tolerance,
+                    point_tolerance,
                     None, None, None,
                 )
             }
             /// Optimize on a Sphere manifold
-            #[pyo3(signature = (cost_function, sphere, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, sphere, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_sphere(
                 &mut self,
                 py: Python<'_>,
@@ -410,15 +450,17 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray1<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_sphere_impl(
                     py, &*cost_function, &*sphere, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
 
             /// Optimize on a Stiefel manifold
-            #[pyo3(signature = (cost_function, stiefel, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, stiefel, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_stiefel(
                 &mut self,
                 py: Python<'_>,
@@ -427,14 +469,16 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray2<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_stiefel_impl(
                     py, &*cost_function, &*stiefel, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
             /// Optimize on a Grassmann manifold
-            #[pyo3(signature = (cost_function, grassmann, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, grassmann, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_grassmann(
                 &mut self,
                 py: Python<'_>,
@@ -443,15 +487,17 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray2<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_grassmann_impl(
                     py, &*cost_function, &*grassmann, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
 
             /// Optimize on an SPD manifold
-            #[pyo3(signature = (cost_function, spd, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, spd, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_spd(
                 &mut self,
                 py: Python<'_>,
@@ -460,15 +506,17 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray2<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_spd_impl(
                     py, &*cost_function, &*spd, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
 
             /// Optimize on a Hyperbolic manifold
-            #[pyo3(signature = (cost_function, hyperbolic, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, hyperbolic, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_hyperbolic(
                 &mut self,
                 py: Python<'_>,
@@ -477,15 +525,17 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray1<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_hyperbolic_impl(
                     py, &*cost_function, &*hyperbolic, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
 
             /// Optimize on an Oblique manifold
-            #[pyo3(signature = (cost_function, oblique, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, oblique, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_oblique(
                 &mut self,
                 py: Python<'_>,
@@ -494,15 +544,17 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray2<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_oblique_impl(
                     py, &*cost_function, &*oblique, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
 
             // /// Optimize on a FixedRank manifold
-            // #[pyo3(signature = (cost_function, fixed_rank, initial_point, max_iterations, gradient_tolerance=None))]
+            // #[pyo3(signature = (cost_function, fixed_rank, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             // pub fn optimize_fixed_rank(
             //     &mut self,
             //     py: Python<'_>,
@@ -511,15 +563,17 @@ macro_rules! impl_optimizer_methods {
             //     initial_point: PyReadonlyArray2<'_, f64>,
             //     max_iterations: usize,
             //     gradient_tolerance: Option<f64>,
+            //     function_tolerance: Option<f64>,
+            //     point_tolerance: Option<f64>,
             // ) -> PyResult<PyObject> {
             //     self.optimize_fixed_rank_impl(
             //         py, &*cost_function, &*fixed_rank, initial_point,
-            //         max_iterations, gradient_tolerance
+            //         max_iterations, gradient_tolerance, function_tolerance, point_tolerance
             //     ).map(|r| r.into_py(py))
             // }
 
             /// Optimize on a PSDCone manifold
-            #[pyo3(signature = (cost_function, psd_cone, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, psd_cone, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_psd_cone(
                 &mut self,
                 py: Python<'_>,
@@ -528,15 +582,17 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray2<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_psd_cone_impl(
                     py, &*cost_function, &*psd_cone, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
 
             /// Optimize on a Euclidean manifold
-            #[pyo3(signature = (cost_function, euclidean, initial_point, max_iterations, gradient_tolerance=None))]
+            #[pyo3(signature = (cost_function, euclidean, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
             pub fn optimize_euclidean(
                 &mut self,
                 py: Python<'_>,
@@ -545,10 +601,12 @@ macro_rules! impl_optimizer_methods {
                 initial_point: PyReadonlyArray1<'_, f64>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
             ) -> PyResult<PyObject> {
                 self.optimize_euclidean_impl(
                     py, &*cost_function, &*euclidean, initial_point,
-                    max_iterations, gradient_tolerance
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
                 ).map(|r| r.into_py(py))
             }
     };
@@ -567,6 +625,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray1<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionSphere;
 
@@ -574,6 +634,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);
@@ -597,6 +663,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray2<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionStiefel;
 
@@ -604,6 +672,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);
@@ -628,6 +702,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray2<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionMatrix;
 
@@ -635,6 +711,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);
@@ -660,6 +742,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray2<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionMatrix;
 
@@ -667,6 +751,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);
@@ -690,6 +780,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray1<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionVector;
 
@@ -697,6 +789,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);
@@ -722,6 +820,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray2<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionMatrix;
 
@@ -729,6 +829,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);
@@ -752,6 +858,8 @@ macro_rules! impl_optimizer_generic_default {
 			//     initial_point: PyReadonlyArray2<'_, f64>,
 			//     max_iterations: usize,
 			//     gradient_tolerance: Option<f64>,
+			//     function_tolerance: Option<f64>,
+			//     point_tolerance: Option<f64>,
 			// ) -> PyResult<PyOptimizationResult> {
 			//     use crate::py_cost::PyCostFunctionMatrix;
 			//
@@ -759,6 +867,12 @@ macro_rules! impl_optimizer_generic_default {
 			//     let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 			//     if let Some(tol) = gradient_tolerance {
 			//         criterion = criterion.with_gradient_tolerance(tol);
+			//     }
+			//     if let Some(tol) = function_tolerance {
+			//         criterion = criterion.with_function_tolerance(tol);
+			//     }
+			//     if let Some(tol) = point_tolerance {
+			//         criterion = criterion.with_point_tolerance(tol);
 			//     }
 			//
 			//     let config: $config_type = $create_config(self);
@@ -782,6 +896,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray2<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionPSDCone;
 
@@ -792,6 +908,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);
@@ -819,6 +941,8 @@ macro_rules! impl_optimizer_generic_default {
 				initial_point: PyReadonlyArray1<'_, f64>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionVector;
 
@@ -826,6 +950,12 @@ macro_rules! impl_optimizer_generic_default {
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
 				}
 
 				let config: $config_type = $create_config(self);

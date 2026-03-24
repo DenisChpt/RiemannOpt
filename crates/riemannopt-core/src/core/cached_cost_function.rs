@@ -9,7 +9,6 @@ use crate::{
 	core::cost_function::CostFunction,
 	error::Result,
 	linalg::{self, LinAlgBackend},
-	memory::Workspace,
 	types::Scalar,
 };
 use std::cell::RefCell;
@@ -255,7 +254,6 @@ where
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<T>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<T> {
 		self.check_and_invalidate(point);
@@ -281,7 +279,7 @@ where
 				// Drop the borrow before calling inner function
 				drop(cache);
 
-				let cost = self.inner.cost_and_gradient(point, workspace, gradient)?;
+				let cost = self.inner.cost_and_gradient(point, gradient)?;
 
 				// Re-borrow to update cache
 				let mut cache = self.cache.borrow_mut();
@@ -387,11 +385,10 @@ where
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<T>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		// For finite differences, we don't use caching
-		self.inner.gradient_fd(point, workspace, gradient)
+		self.inner.gradient_fd(point, gradient)
 	}
 
 	fn gradient_fd_parallel(

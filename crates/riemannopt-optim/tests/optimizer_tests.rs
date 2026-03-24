@@ -11,7 +11,6 @@ use riemannopt_core::{
 	core::cost_function::CostFunction,
 	error::Result as ManifoldResult,
 	linalg::{self, MatrixOps, VectorOps},
-	memory::workspace::Workspace,
 	optimization::optimizer::{Optimizer, StoppingCriterion},
 };
 use riemannopt_manifolds::{Euclidean, Sphere};
@@ -65,7 +64,6 @@ impl CostFunction<f64> for RayleighQuotient {
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Vec<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Vec<f64>,
 	) -> ManifoldResult<f64> {
 		let ax = self.a.mat_vec(point);
@@ -138,7 +136,6 @@ impl CostFunction<f64> for SimpleQuadratic {
 	fn cost_and_gradient(
 		&self,
 		point: &linalg::Vec<f64>,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut linalg::Vec<f64>,
 	) -> ManifoldResult<f64> {
 		gradient.copy_from(point);

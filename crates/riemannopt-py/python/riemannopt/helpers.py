@@ -63,6 +63,8 @@ def optimize(
     optimizer: str = "Adam",
     max_iterations: int = 1000,
     gradient_tolerance: float = 1e-6,
+    function_tolerance: Optional[float] = None,
+    point_tolerance: Optional[float] = None,
     callback: Optional[Callable[..., Any]] = None,
     **optimizer_kwargs: Any,
 ) -> Any:
@@ -83,6 +85,10 @@ def optimize(
         Maximum number of iterations.
     gradient_tolerance : float
         Convergence threshold on the Riemannian gradient norm.
+    function_tolerance : float, optional
+        Stop when ``|f(xₖ) - f(xₖ₋₁)| < function_tolerance``.
+    point_tolerance : float, optional
+        Stop when ``d(xₖ, xₖ₋₁) < point_tolerance``.
     callback : callable, optional
         ``(iteration, point, cost, grad_norm) -> bool``.  Return ``False``
         to stop early.
@@ -143,6 +149,8 @@ def optimize(
         initial_point=initial_point,
         max_iterations=max_iterations,
         gradient_tolerance=gradient_tolerance,
+        function_tolerance=function_tolerance,
+        point_tolerance=point_tolerance,
         callback=cb,
     )
 

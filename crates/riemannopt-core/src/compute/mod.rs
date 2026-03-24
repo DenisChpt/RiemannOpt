@@ -6,7 +6,7 @@ pub mod gpu;
 pub mod specialized;
 
 // Re-export backend types
-pub use backend::{BackendSelection, BackendSelector, ComputeBackend};
+pub use backend::ComputeBackend;
 
 // Re-export CPU operations
 pub use cpu::*;

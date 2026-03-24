@@ -74,7 +74,6 @@ use std::time::Instant;
 use riemannopt_core::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::Result,
-	memory::workspace::Workspace,
 	optimization::optimizer::{
 		OptimizationResult, Optimizer, StoppingCriterion, TerminationReason,
 	},
@@ -164,56 +163,6 @@ impl<T: Scalar> NaturalGradient<T> {
 		Self { config }
 	}
 
-	/// Compute diagonal Fisher approximation using workspace to avoid allocations
-	#[allow(dead_code)]
-	fn compute_diagonal_fisher<M: Manifold<T>>(
-		&self,
-		_manifold: &M,
-		_point: &M::Point,
-		_gradient: &M::TangentVector,
-		_workspace: &mut Workspace<T>,
-	) -> Result<()> {
-		// Get or create the Fisher matrix buffer (we use it as a diagonal vector here)
-		// Get the dimension from manifold
-		let n = _manifold.dimension();
-		// Note: In a full implementation, would use workspace for Fisher matrix storage
-		let _ = n; // Suppress unused variable warning
-
-		// Simple diagonal approximation: F_ii = |g_i|^2 + damping
-		// This is a placeholder - in practice, you'd compute this from samples
-		// Note: We can't directly index gradient as it's an abstract TangentVector type
-		// In a real implementation, this would use manifold-specific operations
-
-		Ok(())
-	}
-
-	/// Compute empirical Fisher approximation using workspace to avoid allocations
-	#[allow(dead_code)]
-	fn compute_empirical_fisher<
-		M: Manifold<T>,
-		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
-	>(
-		&self,
-		_cost_fn: &C,
-		_manifold: &M,
-		_point: &M::Point,
-		_workspace: &mut Workspace<T>,
-	) -> Result<()> {
-		// Get or create the Fisher matrix buffer
-		let n = _manifold.dimension();
-		// Note: In a full implementation, would use workspace for Fisher matrix storage
-		let _ = n; // Suppress unused variable warning
-
-		// Empirical Fisher computation would go here
-		// For now, this is a placeholder
-		// In practice, you'd:
-		// 1. Sample mini-batch of data
-		// 2. Compute gradients for each sample
-		// 3. Accumulate outer products: F += (1/N) * g_i * g_i^T
-
-		Ok(())
-	}
-
 	/// Apply Fisher information matrix to gradient
 	fn apply_fisher_inverse<M: Manifold<T>>(
 		&self,
@@ -221,7 +170,6 @@ impl<T: Scalar> NaturalGradient<T> {
 		point: &M::Point,
 		gradient: &M::TangentVector,
 		result: &mut M::TangentVector,
-		_workspace: &mut Workspace<T>,
 	) -> Result<()> {
 		match self.config.fisher_approximation {
 			FisherApproximation::Identity => {
@@ -261,7 +209,6 @@ impl<T: Scalar> NaturalGradient<T> {
 		current_point: &M::Point,
 		previous_point: Option<&M::Point>,
 		manifold: &M,
-		_workspace: &mut Workspace<T>,
 	) -> Option<TerminationReason> {
 		// Check iteration limit
 		if let Some(max_iter) = criterion.max_iterations {
@@ -341,13 +288,6 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
 	{
 		let start_time = Instant::now();
 
-		// Allocate workspace with appropriate size
-		let n = manifold.dimension();
-		let mut workspace = Workspace::with_size(n);
-
-		// Pre-allocate all required buffers
-		// Note: These will be allocated as needed when calling manifold methods
-
 		// Initialize state
 		let mut current_point = initial_point.clone();
 		let mut previous_point = None;
@@ -389,7 +329,6 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
 				&current_point,
 				previous_point.as_ref(),
 				manifold,
-				&mut workspace,
 			) {
 				let duration = start_time.elapsed();
 
@@ -418,7 +357,6 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
 				&current_point,
 				&riemannian_grad,
 				&mut natural_grad,
-				&mut workspace,
 			)?;
 
 			// Scale by negative learning rate (descent direction)

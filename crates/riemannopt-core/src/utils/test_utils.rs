@@ -7,7 +7,7 @@
 #[allow(unused_imports)]
 use crate::{
 	core::manifold::Manifold, error::Result, manifold_ops::retraction::Retraction,
-	memory::workspace::Workspace, types::Scalar,
+	types::Scalar,
 };
 // Removed unused imports
 

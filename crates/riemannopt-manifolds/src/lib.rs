@@ -14,7 +14,6 @@ pub mod psd_cone;
 pub mod spd;
 pub mod sphere;
 pub mod stiefel;
-pub mod stiefel_small;
 pub mod utils;
 
 #[cfg(feature = "parallel")]

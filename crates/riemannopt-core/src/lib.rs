@@ -32,7 +32,6 @@ pub mod config;
 pub mod core;
 pub mod linalg;
 pub mod manifold_ops;
-pub mod memory;
 pub mod numerical;
 pub mod optimization;
 pub mod profiling;
@@ -115,26 +114,16 @@ pub mod prelude {
 		ExponentialRetraction,
 		MatrixMetricTensor,
 		MatrixMetricType,
-		MatrixMetricWorkspace,
-		MatrixRetractionWorkspace,
-		MetricOps,
 		MetricUtils,
 		PolarRetraction,
 		ProjectionRetraction,
 		QRRetraction,
 		Retraction,
-		RetractionOps,
 		RetractionOrder,
 		// From tangent
 		TangentSpace,
-		// From tangent_workspace
-		TangentVectorWorkspace,
 		// From metric
 		VectorMetricTensor,
-		// From metric_workspace
-		VectorMetricWorkspace,
-		// From retraction_workspace
-		VectorRetractionWorkspace,
 		VectorTangentSpace,
 	};
 

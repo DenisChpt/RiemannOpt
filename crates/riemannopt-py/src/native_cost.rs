@@ -10,7 +10,6 @@ use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
 	linalg::{DecompositionOps, MatrixOps, VectorOps},
-	memory::workspace::Workspace,
 };
 
 use crate::array_utils::{mat_to_numpy, numpy_to_mat, numpy_to_vec, vec_to_numpy, Mat64, Vec64};
@@ -94,7 +93,6 @@ impl CostFunction<f64> for PyRayleighQuotient {
 	fn cost_and_gradient(
 		&self,
 		point: &Vec64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Vec64,
 	) -> Result<f64> {
 		let ax = self.a.mat_vec(point);
@@ -123,7 +121,6 @@ impl CostFunction<f64> for PyRayleighQuotient {
 	fn gradient_fd(
 		&self,
 		point: &Vec64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Vec64,
 	) -> Result<()> {
 		let g = self.a.mat_vec(point);
@@ -212,7 +209,6 @@ impl CostFunction<f64> for PyTraceMinimization {
 	fn cost_and_gradient(
 		&self,
 		point: &Mat64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Mat64,
 	) -> Result<f64> {
 		let ay = self.a.mat_mul(point);
@@ -241,7 +237,6 @@ impl CostFunction<f64> for PyTraceMinimization {
 	fn gradient_fd(
 		&self,
 		point: &Mat64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Mat64,
 	) -> Result<()> {
 		*gradient = CostFunction::gradient(self, point)?;
@@ -346,7 +341,6 @@ impl CostFunction<f64> for PyBrockett {
 	fn cost_and_gradient(
 		&self,
 		point: &Mat64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Mat64,
 	) -> Result<f64> {
 		let ax = self.a.mat_mul(point);
@@ -379,7 +373,6 @@ impl CostFunction<f64> for PyBrockett {
 	fn gradient_fd(
 		&self,
 		point: &Mat64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Mat64,
 	) -> Result<()> {
 		*gradient = CostFunction::gradient(self, point)?;
@@ -489,7 +482,6 @@ impl CostFunction<f64> for PyLogDetDivergence {
 	fn cost_and_gradient(
 		&self,
 		point: &Mat64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Mat64,
 	) -> Result<f64> {
 		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
@@ -519,7 +511,6 @@ impl CostFunction<f64> for PyLogDetDivergence {
 	fn gradient_fd(
 		&self,
 		point: &Mat64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Mat64,
 	) -> Result<()> {
 		*gradient = CostFunction::gradient(self, point)?;
@@ -613,7 +604,6 @@ impl CostFunction<f64> for PyQuadratic {
 	fn cost_and_gradient(
 		&self,
 		point: &Vec64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Vec64,
 	) -> Result<f64> {
 		let ax = self.a.mat_vec(point);
@@ -638,7 +628,6 @@ impl CostFunction<f64> for PyQuadratic {
 	fn gradient_fd(
 		&self,
 		point: &Vec64,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Vec64,
 	) -> Result<()> {
 		let g = VectorOps::add(&self.a.mat_vec(point), &self.b);

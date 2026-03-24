@@ -8,7 +8,6 @@ use crate::{
 	core::manifold::Manifold,
 	error::{ManifoldError, Result},
 	manifold_ops::retraction::Retraction,
-	memory::Workspace,
 	types::Scalar,
 };
 use nalgebra::RealField;
@@ -84,7 +83,7 @@ impl NumericalValidator {
 		_cost_fn: F,
 		gradient_fn: impl Fn(&M::Point) -> Result<M::TangentVector>,
 		config: &NumericalValidationConfig<T>,
-		_workspace: &mut Workspace<T>,
+
 	) -> Result<GradientCheckResult<T>>
 	where
 		T: Scalar,
@@ -142,7 +141,7 @@ impl NumericalValidator {
 		point: &M::Point,
 		tangent: &M::TangentVector,
 		config: &NumericalValidationConfig<T>,
-		_workspace: &mut Workspace<T>,
+
 	) -> Result<ConvergenceResult<T>>
 	where
 		T: Scalar + RealField,
@@ -194,7 +193,7 @@ impl NumericalValidator {
 		test_points: &[M::Point],
 		test_vectors: &[M::TangentVector],
 		tol: T,
-		_workspace: &mut Workspace<T>,
+
 	) -> Result<()>
 	where
 		T: Scalar,
@@ -247,7 +246,7 @@ impl NumericalValidator {
 		_tangent: &M::TangentVector,
 		num_trials: usize,
 		perturbation_scale: T,
-		_workspace: &mut Workspace<T>,
+
 	) -> Result<()>
 	where
 		T: Scalar,

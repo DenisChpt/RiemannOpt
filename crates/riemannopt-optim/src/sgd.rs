@@ -42,7 +42,6 @@ use num_traits::Float;
 use riemannopt_core::{
 	core::{cost_function::CostFunction, manifold::Manifold},
 	error::Result,
-	memory::workspace::{BufferId, Workspace},
 	optimization::{
 		line_search::{BacktrackingLineSearch, LineSearch},
 		optimizer::{OptimizationResult, Optimizer, StoppingCriterion, TerminationReason},
@@ -238,7 +237,6 @@ impl<T: Scalar> SGD<T> {
 		gradient_norm: Option<T>,
 		current_point: &M::Point,
 		previous_point: &Option<M::Point>,
-		_workspace: &mut Workspace<T>,
 		criterion: &StoppingCriterion<T>,
 	) -> Option<TerminationReason>
 	where
@@ -311,7 +309,6 @@ impl<T: Scalar> SGD<T> {
 		previous_point: &Option<M::Point>,
 		momentum_state: &mut MomentumState<T, M::TangentVector>,
 		gradient: &mut M::TangentVector,
-		_workspace: &mut Workspace<T>,
 	) -> Result<()>
 	where
 		M: Manifold<T>,
@@ -404,20 +401,6 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
 		let start_time = Instant::now();
-		let n = manifold.dimension();
-		let mut workspace = Workspace::with_size(n);
-
-		// Pre-allocate workspace buffers
-		workspace.preallocate_vector(BufferId::Gradient, n);
-		workspace.preallocate_vector(BufferId::Direction, n);
-		workspace.preallocate_vector(BufferId::Temp1, n);
-
-		if !matches!(self.config.momentum, MomentumMethod::None) {
-			workspace.preallocate_vector(BufferId::Momentum, n);
-			if matches!(self.config.momentum, MomentumMethod::Nesterov { .. }) {
-				workspace.preallocate_vector(BufferId::Temp2, n);
-			}
-		}
 
 		// Initialize state
 		let initial_cost = cost_fn.cost(initial_point)?;
@@ -450,7 +433,6 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 				gradient_norm,
 				&current_point,
 				&previous_point,
-				&mut workspace,
 				stopping_criterion,
 			);
 
@@ -468,8 +450,7 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 			}
 
 			// Compute gradient at current point
-			let new_cost =
-				cost_fn.cost_and_gradient(&current_point, &mut workspace, &mut euclidean_grad)?;
+			let new_cost = cost_fn.cost_and_gradient(&current_point, &mut euclidean_grad)?;
 			function_evaluations += 1;
 			gradient_evaluations += 1;
 
@@ -493,7 +474,6 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 				&previous_point,
 				&mut momentum_state,
 				&mut riemannian_grad,
-				&mut workspace,
 			)?;
 
 			// Determine step size

@@ -21,7 +21,6 @@ use riemannopt_core::linalg::{MatrixOps, VectorOps};
 use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
-	memory::workspace::Workspace,
 };
 use std::sync::Arc;
 
@@ -351,7 +350,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionSphere {
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		let py_point = PyPoint::Vector(point.clone());
@@ -359,7 +357,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionSphere {
 		let cost = <PyCostFunction as CostFunction<f64>>::cost_and_gradient(
 			&*self.inner,
 			&py_point,
-			workspace,
 			&mut py_gradient,
 		)?;
 		match py_gradient {
@@ -407,7 +404,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionSphere {
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		let py_point = PyPoint::Vector(point.clone());
@@ -415,7 +411,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionSphere {
 		<PyCostFunction as CostFunction<f64>>::gradient_fd(
 			&*self.inner,
 			&py_point,
-			workspace,
 			&mut py_gradient,
 		)?;
 		match py_gradient {
@@ -471,7 +466,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionStiefel {
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		let py_point = PyPoint::Matrix(point.clone());
@@ -479,7 +473,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionStiefel {
 		let cost = <PyCostFunction as CostFunction<f64>>::cost_and_gradient(
 			&*self.inner,
 			&py_point,
-			workspace,
 			&mut py_gradient,
 		)?;
 		match py_gradient {
@@ -527,7 +520,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionStiefel {
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		let py_point = PyPoint::Matrix(point.clone());
@@ -535,7 +527,6 @@ impl<'a> CostFunction<f64> for PyCostFunctionStiefel {
 		<PyCostFunction as CostFunction<f64>>::gradient_fd(
 			&*self.inner,
 			&py_point,
-			workspace,
 			&mut py_gradient,
 		)?;
 		match py_gradient {
@@ -718,7 +709,6 @@ impl CostFunction<f64> for PyCostFunction {
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		// For now, use the allocating version
@@ -836,7 +826,6 @@ impl CostFunction<f64> for PyCostFunction {
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		// For now, use the allocating version
@@ -1266,7 +1255,6 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
@@ -1298,7 +1286,6 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		let grad = self.gradient_fd_alloc(point)?;
@@ -1456,7 +1443,6 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
@@ -1490,7 +1476,6 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		let grad = self.gradient_fd_alloc(point)?;
@@ -1696,7 +1681,6 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 	fn cost_and_gradient(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
@@ -1728,7 +1712,6 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 	fn gradient_fd(
 		&self,
 		point: &Self::Point,
-		_workspace: &mut Workspace<f64>,
 		gradient: &mut Self::TangentVector,
 	) -> Result<()> {
 		let grad = self.gradient_fd_alloc(point)?;
