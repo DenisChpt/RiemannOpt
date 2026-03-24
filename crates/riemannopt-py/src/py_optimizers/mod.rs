@@ -208,6 +208,7 @@ pub fn create_optimizer(
 				max_line_search_iterations: 20,
 				c1: 1e-4,
 				c2: 0.1,
+				line_search: "adaptive".to_string(),
 			};
 			if let Some(kw) = kwargs {
 				if let Ok(Some(m)) = kw.get_item("method") {
@@ -224,6 +225,9 @@ pub fn create_optimizer(
 				}
 				if let Ok(Some(c2)) = kw.get_item("c2") {
 					opt.c2 = c2.extract()?;
+				}
+				if let Ok(Some(ls)) = kw.get_item("line_search") {
+					opt.line_search = ls.extract()?;
 				}
 			}
 			// Validate method

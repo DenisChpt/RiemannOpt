@@ -11,7 +11,7 @@ use riemannopt_core::{
 	line_search::LineSearchParams,
 	optimizer::{Optimizer, StoppingCriterion},
 };
-use riemannopt_optim::{CGConfig, ConjugateGradient, ConjugateGradientMethod};
+use riemannopt_optim::{CGConfig, CGLineSearchType, ConjugateGradient, ConjugateGradientMethod};
 
 use super::base::{PyOptimizationResult, PyOptimizerBase};
 use crate::{
@@ -82,18 +82,20 @@ pub struct PyConjugateGradient {
 	pub max_line_search_iterations: usize,
 	pub c1: f64,
 	pub c2: f64,
+	pub line_search: String,
 }
 
 #[pymethods]
 impl PyConjugateGradient {
 	#[new]
-	#[pyo3(signature = (method="FletcherReeves", reset_every=None, max_line_search_iterations=20, c1=1e-4, c2=0.1))]
+	#[pyo3(signature = (method="FletcherReeves", reset_every=None, max_line_search_iterations=20, c1=1e-4, c2=0.1, line_search="adaptive"))]
 	fn new(
 		method: &str,
 		reset_every: Option<usize>,
 		max_line_search_iterations: usize,
 		c1: f64,
 		c2: f64,
+		line_search: &str,
 	) -> PyResult<Self> {
 		// Validate method
 		let valid_methods = [
@@ -111,6 +113,15 @@ impl PyConjugateGradient {
 			)));
 		}
 
+		// Validate line search type
+		let valid_ls = ["adaptive", "strong_wolfe"];
+		if !valid_ls.contains(&line_search) {
+			return Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"Invalid line_search '{}'. Choose from: {:?}",
+				line_search, valid_ls
+			)));
+		}
+
 		// Validate parameters
 		if max_line_search_iterations == 0 {
 			return Err(pyo3::exceptions::PyValueError::new_err(
@@ -122,9 +133,10 @@ impl PyConjugateGradient {
 				"c1 must be in (0, 1)",
 			));
 		}
-		if c2 <= c1 || c2 >= 1.0 {
+		// c2 validation only matters for Strong Wolfe
+		if line_search == "strong_wolfe" && (c2 <= c1 || c2 >= 1.0) {
 			return Err(pyo3::exceptions::PyValueError::new_err(
-				"c2 must be in (c1, 1)",
+				"c2 must be in (c1, 1) for strong_wolfe line search",
 			));
 		}
 
@@ -134,13 +146,14 @@ impl PyConjugateGradient {
 			max_line_search_iterations,
 			c1,
 			c2,
+			line_search: line_search.to_string(),
 		})
 	}
 
 	fn __repr__(&self) -> String {
 		format!(
-            "ConjugateGradient(method='{}', reset_every={:?}, max_line_search_iterations={}, c1={}, c2={})",
-            self.method, self.reset_every, self.max_line_search_iterations, self.c1, self.c2
+            "ConjugateGradient(method='{}', reset_every={:?}, max_line_search_iterations={}, c1={}, c2={}, line_search='{}')",
+            self.method, self.reset_every, self.max_line_search_iterations, self.c1, self.c2, self.line_search
         )
 	}
 
@@ -156,6 +169,7 @@ impl PyConjugateGradient {
 		)?;
 		dict.set_item("c1", self.c1)?;
 		dict.set_item("c2", self.c2)?;
+		dict.set_item("line_search", &self.line_search)?;
 		Ok(dict.into())
 	}
 
@@ -262,9 +276,9 @@ impl PyOptimizerBase for PyConjugateGradient {
 				"c1 must be in (0, 1)",
 			));
 		}
-		if self.c2 <= self.c1 || self.c2 >= 1.0 {
+		if self.line_search == "strong_wolfe" && (self.c2 <= self.c1 || self.c2 >= 1.0) {
 			return Err(pyo3::exceptions::PyValueError::new_err(
-				"c2 must be in (c1, 1)",
+				"c2 must be in (c1, 1) for strong_wolfe line search",
 			));
 		}
 		Ok(())
@@ -297,6 +311,11 @@ impl_optimizer_generic_default!(
 			rho: 0.5,
 		};
 
+		let ls_type = match opt.line_search.as_str() {
+			"strong_wolfe" => CGLineSearchType::StrongWolfe,
+			_ => CGLineSearchType::Adaptive,
+		};
+
 		CGConfig {
 			method: cg_method,
 			restart_period: opt.reset_every.unwrap_or(100), // Default restart period
@@ -304,6 +323,7 @@ impl_optimizer_generic_default!(
 			min_beta: None,
 			max_beta: None,
 			line_search_params,
+			line_search_type: ls_type,
 		}
 	}
 );

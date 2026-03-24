@@ -402,7 +402,10 @@ impl<T: Scalar> LBFGS<T> {
 		Ok(())
 	}
 
-	/// Performs line search to find an appropriate step size.
+	/// Performs Strong Wolfe line search.
+	///
+	/// L-BFGS requires Wolfe conditions for good Hessian approximation quality,
+	/// especially on curved manifolds.
 	fn perform_line_search<M, C>(
 		&self,
 		cost_fn: &C,
@@ -418,10 +421,8 @@ impl<T: Scalar> LBFGS<T> {
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		M: Manifold<T>,
 	{
-		// Compute directional derivative
 		let directional_derivative = manifold.inner_product(point, gradient, direction)?;
 
-		// Use line search parameters from config
 		let c1 = self.config.line_search_params.c1;
 		let c2 = self.config.line_search_params.c2;
 		let max_iterations = self.config.line_search_params.max_iterations;
@@ -431,21 +432,18 @@ impl<T: Scalar> LBFGS<T> {
 		let alpha_max = <T as Scalar>::from_f64(10.0);
 
 		for _iter in 0..max_iterations {
-			// Try the step
 			let mut scaled_direction = direction.clone();
 			manifold.scale_tangent(point, alpha, direction, &mut scaled_direction)?;
 
 			let mut trial_point = point.clone();
 			manifold.retract(point, &scaled_direction, &mut trial_point)?;
 
-			// Evaluate cost
 			let trial_cost = cost_fn.cost(&trial_point)?;
 			*function_evaluations += 1;
 
-			// Check Armijo condition
 			let expected_decrease = c1 * alpha * directional_derivative;
 			if trial_cost <= current_cost + expected_decrease {
-				// Check curvature condition
+				// Armijo satisfied — check curvature condition
 				let mut euclidean_grad = gradient.clone();
 				let _trial_gradient_cost =
 					cost_fn.cost_and_gradient(&trial_point, &mut euclidean_grad)?;
@@ -459,7 +457,6 @@ impl<T: Scalar> LBFGS<T> {
 					&mut trial_gradient,
 				)?;
 
-				// Transport direction to trial point for curvature check
 				let mut transported_direction = direction.clone();
 				manifold.parallel_transport(
 					point,
@@ -480,15 +477,12 @@ impl<T: Scalar> LBFGS<T> {
 					return Ok(alpha);
 				}
 
-				// If curvature condition not satisfied, increase alpha (zoom phase would go here)
 				if trial_directional < directional_derivative {
 					alpha = <T as Float>::min(alpha * <T as Scalar>::from_f64(2.0), alpha_max);
 				} else {
-					// Curvature condition violated in other direction, reduce alpha
 					alpha *= <T as Scalar>::from_f64(0.5);
 				}
 			} else {
-				// Armijo condition not satisfied, reduce alpha
 				alpha *= <T as Scalar>::from_f64(0.5);
 			}
 

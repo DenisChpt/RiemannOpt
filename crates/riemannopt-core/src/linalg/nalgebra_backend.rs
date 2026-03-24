@@ -275,6 +275,10 @@ where
 	fn gemm(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
 		nalgebra::Matrix::gemm(self, alpha, a, b, beta);
 	}
+
+	fn gemm_at(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
+		nalgebra::Matrix::gemm_tr(self, alpha, a, b, beta);
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

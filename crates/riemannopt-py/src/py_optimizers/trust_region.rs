@@ -306,6 +306,8 @@ impl_optimizer_generic_default!(
 			max_cg_iterations: opt.max_subproblem_iterations,
 			cg_tolerance: 1e-6,
 			use_exact_hessian: true,
+			kappa: 0.1,
+			theta: 1.0,
 		}
 	}
 );

@@ -313,6 +313,15 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 
 	/// C = alpha * A * B + beta * C  (GEMM).
 	fn gemm(&mut self, alpha: T, a: &Self, b: &Self, beta: T);
+
+	/// C = alpha * A^T * B + beta * C  (GEMM with left operand transposed).
+	///
+	/// Avoids allocating a transposed copy of A. Backends with native transpose
+	/// views (faer, nalgebra) override this for zero-alloc performance.
+	fn gemm_at(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
+		let at = a.transpose();
+		self.gemm(alpha, &at, b, beta);
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -8,7 +8,6 @@
 use faer::linalg::solvers::SolveCore;
 use faer::Conj;
 use faer::{Col, Mat, Side};
-use num_traits::Float;
 
 use super::traits::{DecompositionOps, LinAlgBackend, MatrixOps, VectorOps};
 use super::types::{CholeskyResult, EigenResult, QrResult, SvdResult};
@@ -49,11 +48,7 @@ macro_rules! impl_faer_vector_ops {
 			}
 
 			fn from_slice(data: &[$t]) -> Self {
-				let mut v = Col::zeros(data.len());
-				for (i, &val) in data.iter().enumerate() {
-					v[i] = val;
-				}
-				v
+				Col::from_fn(data.len(), |i| data[i])
 			}
 
 			fn len(&self) -> usize {
@@ -61,11 +56,8 @@ macro_rules! impl_faer_vector_ops {
 			}
 
 			fn dot(&self, other: &Self) -> $t {
-				let mut sum: $t = 0.0;
-				for i in 0..self.nrows() {
-					sum += self[i] * other[i];
-				}
-				sum
+				// faer: col^T * col returns the scalar dot product directly.
+				self.as_ref().transpose() * other.as_ref()
 			}
 
 			fn get(&self, i: usize) -> $t {
@@ -88,27 +80,22 @@ macro_rules! impl_faer_vector_ops {
 			}
 
 			fn copy_from(&mut self, other: &Self) {
-				for i in 0..self.nrows() {
-					self[i] = other[i];
-				}
+				self.as_mut().copy_from(other.as_ref());
 			}
 
 			fn fill(&mut self, value: $t) {
-				for i in 0..self.nrows() {
-					self[i] = value;
-				}
+				self.as_mut().fill(value);
 			}
 
 			fn axpy(&mut self, alpha: $t, x: &Self, beta: $t) {
-				for i in 0..self.nrows() {
-					self[i] = beta * self[i] + alpha * x[i];
-				}
+				// self = beta * self + alpha * x
+				faer::zip!(self.as_mut(), x.as_ref()).for_each(|faer::unzip!(s, x)| {
+					*s = beta * *s + alpha * *x;
+				});
 			}
 
 			fn scale_mut(&mut self, alpha: $t) {
-				for i in 0..self.nrows() {
-					self[i] *= alpha;
-				}
+				*self *= faer::Scale(alpha);
 			}
 
 			fn map(&self, mut f: impl FnMut($t) -> $t) -> Self {
@@ -149,9 +136,7 @@ macro_rules! impl_faer_matrix_ops {
 			fn from_diagonal(diag: &Self::Col) -> Self {
 				let n = diag.nrows();
 				let mut m = Mat::zeros(n, n);
-				for i in 0..n {
-					m[(i, i)] = diag[i];
-				}
+				m.as_mut().diagonal_mut().column_vector_mut().copy_from(diag.as_ref());
 				m
 			}
 
@@ -164,23 +149,11 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			fn norm(&self) -> $t {
-				let mut sum: $t = 0.0;
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						let v = self[(i, j)];
-						sum += v * v;
-					}
-				}
-				<$t as Float>::sqrt(sum)
+				self.as_ref().norm_l2()
 			}
 
 			fn trace(&self) -> $t {
-				let n = self.nrows().min(self.ncols());
-				let mut t: $t = 0.0;
-				for i in 0..n {
-					t += self[(i, i)];
-				}
-				t
+				self.as_ref().diagonal().column_vector().sum()
 			}
 
 			fn get(&self, i: usize, j: usize) -> $t {
@@ -192,11 +165,7 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			fn column(&self, j: usize) -> Self::Col {
-				let mut result = Col::zeros(self.nrows());
-				for i in 0..self.nrows() {
-					result[i] = self[(i, j)];
-				}
-				result
+				self.as_ref().col(j).to_owned()
 			}
 
 			fn columns(&self, start: usize, count: usize) -> Self {
@@ -208,17 +177,13 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			fn set_column(&mut self, j: usize, col: &Self::Col) {
-				for i in 0..self.nrows() {
-					self[(i, j)] = col[i];
-				}
+				self.as_mut().col_mut(j).copy_from(col.as_ref());
 			}
 
 			fn set_rows(&mut self, start: usize, src: &Self) {
-				for j in 0..self.ncols() {
-					for i in 0..src.nrows() {
-						self[(start + i, j)] = src[(i, j)];
-					}
-				}
+				self.as_mut()
+					.subrows_mut(start, src.nrows())
+					.copy_from(src.as_ref());
 			}
 
 			fn as_slice(&self) -> &[$t] {
@@ -254,41 +219,23 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			fn column_as_mut_slice(&mut self, j: usize) -> &mut [$t] {
-				let nrows = (*self).nrows();
-				let stride = self.col_stride();
-				let ptr = self.as_ptr_mut();
-				unsafe {
-					let col_ptr = ptr.offset(j as isize * stride);
-					std::slice::from_raw_parts_mut(col_ptr, nrows)
-				}
+				self.col_as_slice_mut(j)
 			}
 
 			fn from_column_slice(nrows: usize, ncols: usize, data: &[$t]) -> Self {
-				Mat::from_fn(nrows, ncols, |i, j| data[j * nrows + i])
+				faer::MatRef::from_column_major_slice(data, nrows, ncols).to_owned()
 			}
 
 			fn copy_from(&mut self, other: &Self) {
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						self[(i, j)] = other[(i, j)];
-					}
-				}
+				self.as_mut().copy_from(other.as_ref());
 			}
 
 			fn fill(&mut self, value: $t) {
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						self[(i, j)] = value;
-					}
-				}
+				self.as_mut().fill(value);
 			}
 
 			fn scale_mut(&mut self, alpha: $t) {
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						self[(i, j)] *= alpha;
-					}
-				}
+				*self *= faer::Scale(alpha);
 			}
 
 			fn transpose(&self) -> Self {
@@ -304,57 +251,70 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			fn add(&self, other: &Self) -> Self {
-				let mut result = self.clone();
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						result[(i, j)] += other[(i, j)];
-					}
-				}
-				result
+				self + other
 			}
 
 			fn sub(&self, other: &Self) -> Self {
-				let mut result = self.clone();
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						result[(i, j)] -= other[(i, j)];
-					}
-				}
-				result
+				self - other
 			}
 
 			fn scale_by(&self, alpha: $t) -> Self {
-				let mut result = self.clone();
-				for j in 0..result.ncols() {
-					for i in 0..result.nrows() {
-						result[(i, j)] *= alpha;
-					}
-				}
-				result
+				self * faer::Scale(alpha)
 			}
 
 			fn add_assign(&mut self, other: &Self) {
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						self[(i, j)] += other[(i, j)];
-					}
-				}
+				*self += other;
 			}
 
 			fn sub_assign(&mut self, other: &Self) {
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						self[(i, j)] -= other[(i, j)];
-					}
-				}
+				*self -= other;
 			}
 
 			fn gemm(&mut self, alpha: $t, a: &Self, b: &Self, beta: $t) {
-				let ab = a * b;
-				for j in 0..self.ncols() {
-					for i in 0..self.nrows() {
-						self[(i, j)] = alpha * ab[(i, j)] + beta * self[(i, j)];
-					}
+				let par = faer::get_global_parallelism();
+				
+				if beta == 0.0 {
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Replace,
+						a.as_ref(),
+						b.as_ref(),
+						alpha,
+						par,
+					);
+				} else {
+					self.scale_mut(beta);
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Add,
+						a.as_ref(),
+						b.as_ref(),
+						alpha,
+						par,
+					);
+				}
+			}
+
+			fn gemm_at(&mut self, alpha: $t, a: &Self, b: &Self, beta: $t) {
+				if beta == 0.0 {
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Replace,
+						a.as_ref().transpose(),
+						b.as_ref(),
+						alpha,
+						faer::Par::Seq,
+					);
+				} else {
+					self.scale_mut(beta);
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Add,
+						a.as_ref().transpose(),
+						b.as_ref(),
+						alpha,
+						faer::Par::Seq,
+					);
 				}
 			}
 		}
@@ -374,16 +334,8 @@ macro_rules! impl_faer_decomposition_ops {
 			fn svd(&self) -> SvdResult<$t, Self> {
 				let svd = self.thin_svd().expect("SVD failed");
 				let u_mat = svd.U().to_owned();
-				let v_mat = svd.V().to_owned();
-				let s_diag = svd.S().column_vector();
-				let k = s_diag.nrows();
-
-				let mut singular_values = Col::zeros(k);
-				for i in 0..k {
-					singular_values[i] = s_diag[i];
-				}
-
-				let vt = v_mat.transpose().to_owned();
+				let singular_values = svd.S().column_vector().to_owned();
+				let vt = svd.V().transpose().to_owned();
 
 				SvdResult {
 					u: Some(u_mat),
@@ -404,13 +356,7 @@ macro_rules! impl_faer_decomposition_ops {
 					.self_adjoint_eigen(Side::Lower)
 					.expect("Eigendecomposition failed");
 				let eigenvectors = eigen.U().to_owned();
-				let s_diag = eigen.S().column_vector();
-				let n = s_diag.nrows();
-
-				let mut eigenvalues = Col::zeros(n);
-				for i in 0..n {
-					eigenvalues[i] = s_diag[i];
-				}
+				let eigenvalues = eigen.S().column_vector().to_owned();
 
 				EigenResult {
 					eigenvalues,

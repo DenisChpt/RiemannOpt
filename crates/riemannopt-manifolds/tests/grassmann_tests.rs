@@ -1,7 +1,7 @@
 //! Integration tests for the Grassmann manifold
 
 use approx::assert_relative_eq;
-use riemannopt_core::linalg::{self, MatrixOps, VectorOps};
+use riemannopt_core::linalg::{self, MatrixOps};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Grassmann;
 

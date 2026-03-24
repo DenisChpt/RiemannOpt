@@ -61,10 +61,15 @@ pub struct TrustRegionConfig<T: Scalar> {
 	pub decrease_factor: T,
 	/// Maximum iterations for the CG subproblem solver
 	pub max_cg_iterations: Option<usize>,
-	/// Tolerance for the CG subproblem solver
+	/// Tolerance for the CG subproblem solver (absolute fallback)
 	pub cg_tolerance: T,
 	/// Whether to use exact Hessian (true) or finite differences (false)
 	pub use_exact_hessian: bool,
+	/// TCG linear convergence target (default 0.1, like pymanopt/Manopt).
+	/// TCG stops when residual ≤ initial_residual × min(initial_residual^theta, kappa).
+	pub kappa: T,
+	/// TCG superlinear convergence exponent (default 1.0).
+	pub theta: T,
 }
 
 impl<T: Scalar> Default for TrustRegionConfig<T> {
@@ -81,6 +86,8 @@ impl<T: Scalar> Default for TrustRegionConfig<T> {
 			max_cg_iterations: None,
 			cg_tolerance: <T as Scalar>::from_f64(1e-6),
 			use_exact_hessian: false,
+			kappa: <T as Scalar>::from_f64(0.1),
+			theta: T::one(),
 		}
 	}
 }
@@ -130,6 +137,18 @@ impl<T: Scalar> TrustRegionConfig<T> {
 	/// Sets the CG tolerance.
 	pub fn with_cg_tolerance(mut self, tol: T) -> Self {
 		self.cg_tolerance = tol;
+		self
+	}
+
+	/// Sets kappa (TCG linear convergence target, default 0.1).
+	pub fn with_kappa(mut self, kappa: T) -> Self {
+		self.kappa = kappa;
+		self
+	}
+
+	/// Sets theta (TCG superlinear convergence exponent, default 1.0).
+	pub fn with_theta(mut self, theta: T) -> Self {
+		self.theta = theta;
 		self
 	}
 }
@@ -366,6 +385,49 @@ impl<T: Scalar> TrustRegion<T> {
 		Ok(())
 	}
 
+	/// Computes the Riemannian Hessian-vector product.
+	///
+	/// When using exact Hessian, converts Euclidean HVP → Riemannian HVP via
+	/// `manifold.euclidean_to_riemannian_hessian`. When using FD, the FD method
+	/// already approximates the Riemannian Hessian directly.
+	fn riemannian_hvp<M, C>(
+		&self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		riemannian_grad: &M::TangentVector,
+		euclidean_grad: &M::TangentVector,
+		direction: &M::TangentVector,
+		result: &mut M::TangentVector,
+	) -> Result<()>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		if self.config.use_exact_hessian {
+			// Get Euclidean HVP from cost function
+			let ehvp = cost_fn.hessian_vector_product(point, direction)?;
+			// Convert to Riemannian HVP (accounts for manifold curvature)
+			manifold.euclidean_to_riemannian_hessian(
+				point,
+				euclidean_grad,
+				&ehvp,
+				direction,
+				result,
+			)?;
+		} else {
+			self.finite_diff_hessian_vec_product(
+				cost_fn,
+				manifold,
+				point,
+				riemannian_grad,
+				direction,
+				result,
+			)?;
+		}
+		Ok(())
+	}
+
 	/// Finds the intersection of the line s + tau*d with the trust region boundary.
 	fn boundary_intersection<M>(
 		s: &M::TangentVector,
@@ -402,13 +464,18 @@ impl<T: Scalar> TrustRegion<T> {
 		}
 	}
 
-	/// Solves the trust region subproblem using Steihaug-CG.
+	/// Solves the trust region subproblem using Steihaug-CG with relative convergence.
+	///
+	/// Uses the Eisenstat-Walker forcing sequence: TCG stops when
+	/// ‖r‖ ≤ ‖r₀‖ × min(‖r₀‖^θ, κ), ensuring the inner solver accuracy
+	/// is proportional to the outer progress (no wasted work).
 	fn solve_subproblem<M, C>(
 		&self,
 		cost_fn: &C,
 		manifold: &M,
 		point: &M::Point,
 		gradient: &M::TangentVector,
+		euclidean_grad: &M::TangentVector,
 		radius: T,
 		cg_workspace: &mut CGWorkspace<T, M::TangentVector>,
 	) -> Result<()>
@@ -430,30 +497,40 @@ impl<T: Scalar> TrustRegion<T> {
 		cg_workspace.d = cg_workspace.r.clone();
 
 		let mut r_norm_sq = manifold.inner_product(point, &cg_workspace.r, &cg_workspace.r)?;
+		let r0_norm = <T as Float>::sqrt(r_norm_sq);
+
+		// Relative convergence target (Eisenstat-Walker forcing sequence):
+		// Stop when ‖r‖ ≤ ‖r₀‖ × min(‖r₀‖^θ, κ)
+		let target_norm = r0_norm
+			* <T as Float>::min(
+				<T as Float>::powf(r0_norm, self.config.theta),
+				self.config.kappa,
+			);
 
 		// Check if gradient is already small
-		if <T as Float>::sqrt(r_norm_sq) < self.config.cg_tolerance {
+		if r0_norm < self.config.cg_tolerance {
 			cg_workspace.boundary_hit = false;
 			return Ok(());
 		}
 
 		cg_workspace.boundary_hit = false;
 
-		for _ in 0..max_iter {
-			// Compute Hessian-vector product
-			if self.config.use_exact_hessian {
-				cg_workspace.hd = cost_fn.hessian_vector_product(point, &cg_workspace.d)?;
-			} else {
-				// Use finite differences for Hessian-vector product
-				self.finite_diff_hessian_vec_product(
-					cost_fn,
-					manifold,
-					point,
-					gradient,
-					&cg_workspace.d,
-					&mut cg_workspace.hd,
-				)?;
-			}
+		// Track model value for early stopping on model increase
+		// Model: m(s) = f + ⟨g, s⟩ + ½⟨s, Hs⟩
+		// At s=0: m(0) = f, so model_decrease starts at 0
+		let mut model_decrease = T::zero();
+
+		for j in 0..max_iter {
+			// Compute Riemannian Hessian-vector product
+			self.riemannian_hvp(
+				cost_fn,
+				manifold,
+				point,
+				gradient,
+				euclidean_grad,
+				&cg_workspace.d,
+				&mut cg_workspace.hd,
+			)?;
 
 			let dhd = manifold.inner_product(point, &cg_workspace.d, &cg_workspace.hd)?;
 
@@ -470,7 +547,6 @@ impl<T: Scalar> TrustRegion<T> {
 
 				// s += tau * d
 				let s_copy = cg_workspace.s.clone();
-				// Allocate temporary buffers for axpy_tangent
 				let mut temp1 = gradient.clone();
 				let mut temp2 = gradient.clone();
 				manifold.axpy_tangent(
@@ -520,7 +596,6 @@ impl<T: Scalar> TrustRegion<T> {
 
 				// s += tau * d
 				let s_copy = cg_workspace.s.clone();
-				// Allocate temporary buffers for axpy_tangent
 				let mut temp1 = gradient.clone();
 				let mut temp2 = gradient.clone();
 				manifold.axpy_tangent(
@@ -536,6 +611,19 @@ impl<T: Scalar> TrustRegion<T> {
 				break;
 			}
 
+			// Track model change: Δm = ⟨r, d⟩ α (where r=-g-Hs approx)
+			// More precisely: new model decrease = old + α⟨r,d⟩ - ½α²⟨d,Hd⟩
+			let rd = manifold.inner_product(point, &cg_workspace.r, &cg_workspace.d)?;
+			let new_model_decrease =
+				model_decrease + alpha * rd;
+
+			// Model increase detection: if the model got worse, revert to previous s
+			if j > 0 && new_model_decrease < model_decrease {
+				// Keep the previous s (don't update), stop iterating
+				break;
+			}
+			model_decrease = new_model_decrease;
+
 			// Update CG iteration
 			cg_workspace.s = cg_workspace.temp.clone(); // s = s_new
 
@@ -547,9 +635,10 @@ impl<T: Scalar> TrustRegion<T> {
 			manifold.add_tangents(point, &r_copy, &scaled_hd, &mut cg_workspace.r, &mut temp)?;
 
 			let r_norm_sq_new = manifold.inner_product(point, &cg_workspace.r, &cg_workspace.r)?;
+			let r_norm_new = <T as Float>::sqrt(r_norm_sq_new);
 
-			// Check convergence
-			if <T as Float>::sqrt(r_norm_sq_new) < self.config.cg_tolerance {
+			// Relative convergence check (Eisenstat-Walker)
+			if r_norm_new <= target_norm {
 				break;
 			}
 
@@ -581,6 +670,7 @@ impl<T: Scalar> TrustRegion<T> {
 		point: &M::Point,
 		value: T,
 		gradient: &M::TangentVector,
+		euclidean_grad: &M::TangentVector,
 		step: &M::TangentVector,
 	) -> Result<T>
 	where
@@ -589,15 +679,17 @@ impl<T: Scalar> TrustRegion<T> {
 	{
 		let gs = manifold.inner_product(point, gradient, step)?;
 
-		// Compute Hessian-vector product
+		// Compute Riemannian Hessian-vector product
 		let mut hs = step.clone();
-		if self.config.use_exact_hessian {
-			hs = cost_fn.hessian_vector_product(point, step)?;
-		} else {
-			self.finite_diff_hessian_vec_product(
-				cost_fn, manifold, point, gradient, step, &mut hs,
-			)?;
-		}
+		self.riemannian_hvp(
+			cost_fn,
+			manifold,
+			point,
+			gradient,
+			euclidean_grad,
+			step,
+			&mut hs,
+		)?;
 
 		let shs = manifold.inner_product(point, step, &hs)?;
 
@@ -634,7 +726,15 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 		let mut iteration = 0;
 		let mut function_evaluations = 1;
 		let mut gradient_evaluations = 0;
-		let mut trust_radius = self.config.initial_radius;
+		// Dimension-aware trust region radius:
+		// Use max(config, sqrt(dim)/8) so large manifolds get adequate radii.
+		let dim_f = manifold.dimension() as f64;
+		let typical_dist = <T as Scalar>::from_f64(dim_f.sqrt());
+		let mut trust_radius = <T as Float>::max(
+			self.config.initial_radius,
+			typical_dist / <T as Scalar>::from_f64(8.0),
+		);
+		let max_radius = <T as Float>::max(self.config.max_radius, typical_dist);
 
 		// Compute initial gradient to get the right type for CG workspace
 		let mut euclidean_grad = cost_fn.gradient(&initial_point)?;
@@ -714,6 +814,7 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 				manifold,
 				&current_point,
 				&riemannian_grad,
+				&euclidean_grad,
 				trust_radius,
 				&mut cg_workspace,
 			)?;
@@ -729,6 +830,7 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 				&current_point,
 				current_cost,
 				&riemannian_grad,
+				&euclidean_grad,
 				step,
 			)?;
 			let predicted_reduction = model_current - model_step;
@@ -743,8 +845,11 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 			// Compute actual reduction
 			let actual_reduction = current_cost - trial_value;
 
-			// Compute reduction ratio
-			let ratio = if <T as Float>::abs(predicted_reduction) > T::epsilon() {
+			// Compute reduction ratio with numerical regularization (cf. pymanopt)
+			let rho_reg = <T as Float>::max(T::one(), <T as Float>::abs(current_cost))
+				* T::epsilon()
+				* <T as Scalar>::from_f64(1e3);
+			let ratio = if <T as Float>::abs(predicted_reduction) > rho_reg {
 				actual_reduction / predicted_reduction
 			} else {
 				T::zero()
@@ -768,7 +873,7 @@ impl<T: Scalar> Optimizer<T> for TrustRegion<T> {
 				// Good agreement and hit boundary: expand trust region
 				trust_radius = <T as Float>::min(
 					trust_radius * self.config.increase_factor,
-					self.config.max_radius,
+					max_radius,
 				);
 			}
 		}

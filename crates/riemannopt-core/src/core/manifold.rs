@@ -404,6 +404,32 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		result: &mut Self::TangentVector,
 	) -> Result<()>;
 
+	/// Converts an Euclidean Hessian-vector product to the Riemannian Hessian-vector product.
+	///
+	/// Given the Euclidean gradient ∇f, the Euclidean Hessian-vector product ∇²f[ξ],
+	/// and a tangent vector ξ ∈ T_p ℳ, computes the Riemannian Hessian-vector product
+	/// Hess f[ξ] which accounts for the manifold curvature.
+	///
+	/// # Default Implementation
+	///
+	/// Projects the Euclidean Hessian-vector product onto the tangent space.
+	/// This is exact for Euclidean space and a reasonable approximation for
+	/// manifolds where the curvature correction is small. Manifolds with
+	/// significant curvature (Grassmann, Stiefel, Sphere) should override this.
+	fn euclidean_to_riemannian_hessian(
+		&self,
+		point: &Self::Point,
+		euclidean_grad: &Self::TangentVector,
+		euclidean_hvp: &Self::TangentVector,
+		tangent_vector: &Self::TangentVector,
+		result: &mut Self::TangentVector,
+	) -> Result<()> {
+		// Default: just project the Euclidean HVP onto the tangent space
+		let _ = euclidean_grad;
+		let _ = tangent_vector;
+		self.project_tangent(point, euclidean_hvp, result)
+	}
+
 	/// Performs parallel transport of a vector along a retraction.
 	///
 	/// Parallel transport moves a tangent vector from one point to another
