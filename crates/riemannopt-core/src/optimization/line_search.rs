@@ -1105,11 +1105,14 @@ where
 		}
 
 		// Adapt hint for next iteration:
-		// 1 or 2 evals → keep alpha; >2 evals → double alpha for next time
-		let next_alpha = if cost_evaluations <= 2 {
-			alpha
+		// 1 eval (accepted immediately) → α was conservative, grow it
+		// 2 evals (one backtrack) → α is about right, keep it
+		// 3+ evals (multiple backtracks) → α was too large, keep the contracted value
+		let two = <T as Scalar>::from_f64(2.0);
+		let next_alpha = if cost_evaluations == 1 {
+			alpha * two
 		} else {
-			alpha * <T as Scalar>::from_f64(2.0)
+			alpha
 		};
 		self.previous_alpha = Some(next_alpha);
 

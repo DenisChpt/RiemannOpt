@@ -57,6 +57,10 @@ pub enum ConjugateGradientMethod {
 	HestenesStiefel,
 	/// Dai-Yuan
 	DaiYuan,
+	/// Hager-Zhang — aggressive with η_HZ safeguard ensuring descent
+	HagerZhang,
+	/// Liu-Storey — conservative hybrid min(β_LS, β_CD)
+	LiuStorey,
 }
 
 /// State for conjugate gradient optimization.
@@ -203,6 +207,16 @@ impl<T: Scalar> CGConfig<T> {
 	/// Creates a configuration for Dai-Yuan method.
 	pub fn dai_yuan() -> Self {
 		Self::new().with_method(ConjugateGradientMethod::DaiYuan)
+	}
+
+	/// Creates a configuration for Hager-Zhang method.
+	pub fn hager_zhang() -> Self {
+		Self::new().with_method(ConjugateGradientMethod::HagerZhang)
+	}
+
+	/// Creates a configuration for Liu-Storey method.
+	pub fn liu_storey() -> Self {
+		Self::new().with_method(ConjugateGradientMethod::LiuStorey)
 	}
 }
 
@@ -379,11 +393,12 @@ impl<T: Scalar> ConjugateGradient<T> {
 		// `direction` now holds τ(d_{k-1})
 
 		// grad_diff = g_k - τ(g_{k-1})
+		let old_grad_transported = transported_prev_grad.clone();
 		let mut grad_diff = gradient.clone();
 		manifold.scale_tangent(
 			current_point,
 			-T::one(),
-			&transported_prev_grad,
+			&old_grad_transported,
 			&mut grad_diff,
 		)?;
 		let neg_transported = grad_diff.clone();
@@ -446,6 +461,58 @@ impl<T: Scalar> ConjugateGradient<T> {
 					T::zero()
 				}
 			}
+			ConjugateGradientMethod::HagerZhang => {
+				// β_HZ = (y^T g_{k+1} - 2‖y‖² (d^T g_{k+1})/(d^T y)) / (d^T y)
+				// with safeguard η_HZ = -1/(‖d‖ · min(0.01, ‖grad‖))
+				let den =
+					manifold.inner_product(current_point, &grad_diff, direction)?;
+				if <T as Float>::abs(den) < T::epsilon() {
+					T::zero()
+				} else {
+					let y_dot_g =
+						manifold.inner_product(current_point, &grad_diff, gradient)?;
+					let y_norm_sq =
+						manifold.inner_product(current_point, &grad_diff, &grad_diff)?;
+					let d_dot_g =
+						manifold.inner_product(current_point, direction, gradient)?;
+					let beta = (y_dot_g
+						- <T as Scalar>::from_f64(2.0) * y_norm_sq * d_dot_g / den)
+						/ den;
+					// η_HZ safeguard: ensures sufficient descent
+					let d_norm = <T as Float>::sqrt(
+						manifold.inner_product(current_point, direction, direction)?,
+					);
+					let grad_norm = <T as Float>::sqrt(grad_norm_sq);
+					let eta = -T::one()
+						/ (d_norm
+							* <T as Float>::min(
+								<T as Scalar>::from_f64(0.01),
+								grad_norm,
+							));
+					<T as Float>::max(beta, eta)
+				}
+			}
+			ConjugateGradientMethod::LiuStorey => {
+				// β_LS = min(y^T g_{k+1} / (-d^T g_k), ‖g_{k+1}‖² / (-d^T g_k))
+				// clamped to max(0, ·)
+				let neg_d_dot_old_g = -manifold.inner_product(
+					current_point,
+					direction,
+					&old_grad_transported,
+				)?;
+				if neg_d_dot_old_g < T::epsilon() {
+					T::zero()
+				} else {
+					let y_dot_g =
+						manifold.inner_product(current_point, &grad_diff, gradient)?;
+					let beta_ls = y_dot_g / neg_d_dot_old_g;
+					let beta_cd = grad_norm_sq / neg_d_dot_old_g;
+					<T as Float>::max(
+						T::zero(),
+						<T as Float>::min(beta_ls, beta_cd),
+					)
+				}
+			}
 		};
 
 		// Apply beta bounds
@@ -485,14 +552,7 @@ impl<T: Scalar> ConjugateGradient<T> {
 		Ok(false)
 	}
 
-	/// Performs Strong Wolfe line search to find an appropriate step size.
-	///
-	/// Uses an adaptive initial step size:
-	/// - First iteration: `α₀ = 1 / ‖d‖` to normalize the step
-	/// - Subsequent iterations: reuse the previous accepted step × 2
-	///
-	/// Returns the full `LineSearchResult` so the optimizer can reuse the
-	/// new point, cost value, and gradient (avoiding redundant evaluations).
+	/// Performs Strong Wolfe line search with adaptive initial step size.
 	fn perform_line_search<M, C>(
 		&self,
 		cost_fn: &C,
@@ -509,18 +569,13 @@ impl<T: Scalar> ConjugateGradient<T> {
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		M: Manifold<T>,
 	{
-		// Compute directional derivative: φ'(0) = ⟨grad f, d⟩
 		let directional_derivative = manifold.inner_product(point, gradient, direction)?;
 
-		// Adaptive initial step size:
-		// First iteration: normalize by direction norm to avoid overshooting
-		// Subsequent iterations: double the last accepted step (optimistic)
-		let dir_norm_sq = manifold.inner_product(point, direction, direction)?;
-		let dir_norm = <T as Float>::sqrt(dir_norm_sq);
-		let initial_step = if let Some(prev_alpha) = cg_state.last_step_size {
-			let two = <T as Scalar>::from_f64(2.0);
+		// Adaptive initial step: double last accepted step, or 1/‖d‖ on first iteration
+		let dir_norm = <T as Float>::sqrt(manifold.inner_product(point, direction, direction)?);
+		let initial_step = if let Some(prev) = cg_state.last_step_size {
 			<T as Float>::min(
-				prev_alpha * two,
+				prev * <T as Scalar>::from_f64(2.0),
 				self.config.line_search_params.max_step_size,
 			)
 		} else if dir_norm > T::zero() {
@@ -529,19 +584,13 @@ impl<T: Scalar> ConjugateGradient<T> {
 			T::one()
 		};
 
-		// Override initial step size in params
 		let mut params = self.config.line_search_params.clone();
 		params.initial_step_size = initial_step;
 
 		let mut ls = StrongWolfeLineSearch::new();
 		let result = ls.search_with_deriv(
-			cost_fn,
-			manifold,
-			point,
-			current_cost,
-			direction,
-			directional_derivative,
-			&params,
+			cost_fn, manifold, point, current_cost, direction,
+			directional_derivative, &params,
 		)?;
 
 		*function_evaluations += result.function_evals;
@@ -565,6 +614,8 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 			}
 			ConjugateGradientMethod::HestenesStiefel => "Riemannian CG-HS",
 			ConjugateGradientMethod::DaiYuan => "Riemannian CG-DY",
+			ConjugateGradientMethod::HagerZhang => "Riemannian CG-HZ",
+			ConjugateGradientMethod::LiuStorey => "Riemannian CG-LS",
 		}
 	}
 
@@ -709,11 +760,9 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 				&mut gradient_evaluations,
 				&cg_state,
 			)?;
-			// Detect stagnation: if the step size falls below machine epsilon
-			// relative to the direction norm, the line search can no longer make
-			// meaningful progress. Terminate early instead of wasting iterations.
-			let min_step = <T as Scalar>::from_f64(1e-10);
-			if ls_result.step_size < min_step && iteration > 0 {
+			// If the line search failed entirely (zero step), terminate —
+			// the algorithm can no longer make progress.
+			if ls_result.step_size <= T::zero() && iteration > 0 {
 				return Ok(OptimizationResult::new(
 					current_point,
 					current_cost,

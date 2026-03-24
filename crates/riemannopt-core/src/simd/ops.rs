@@ -9,21 +9,6 @@
 //! - Element-wise vector operations
 //! - Matrix-vector multiplication
 //! - Optimized manifold projections
-//!
-//! # Example
-//!
-//! ```rust
-//! use riemannopt_core::compute::cpu::{SimdDispatcher, get_dispatcher, SimdBackend};
-//! use nalgebra::DVector;
-//!
-//! let a = DVector::from_vec(vec![1.0_f32; 100]);
-//! let b = DVector::from_vec(vec![2.0_f32; 100]);
-//!
-//! // SIMD-accelerated dot product using dispatcher
-//! let dispatcher = get_dispatcher::<f32>();
-//! let dot = dispatcher.dot_product(&a, &b);
-//! assert_eq!(dot, 200.0);
-//! ```
 
 use crate::types::Scalar;
 use nalgebra::{DMatrix, DVector, DVectorView};
@@ -440,61 +425,10 @@ impl SimdMatrixOps {
 	}
 }
 
-/// SIMD-accelerated manifold operations (internal use only)
-pub(crate) mod simd_manifolds {
-	use super::*;
-	use crate::compute::cpu::{get_dispatcher, ScalarDispatch, SimdBackend};
-
-	/// SIMD sphere projection
-	#[allow(dead_code)]
-	pub fn project_sphere_simd<T: SimdOps + ScalarDispatch>(point: &mut DVector<T>) {
-		let dispatcher = get_dispatcher::<T>();
-		let _norm = dispatcher.normalize(point);
-	}
-
-	/// SIMD orthogonalization for Stiefel using Modified Gram-Schmidt
-	#[allow(dead_code)]
-	pub fn orthogonalize_simd<T: SimdOps + ScalarDispatch>(matrix: &mut DMatrix<T>) {
-		let p = matrix.ncols();
-		let dispatcher = get_dispatcher::<T>();
-
-		for j in 0..p {
-			// Get a mutable view of column j
-			let col_j_norm = {
-				let col_j = matrix.column(j);
-				let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
-				dispatcher.norm(&col_j_vec)
-			};
-
-			// Normalize column j in-place
-			if col_j_norm > T::zero() {
-				let inv_norm = T::one() / col_j_norm;
-				matrix.column_mut(j).scale_mut(inv_norm);
-			}
-
-			// Orthogonalize remaining columns against column j
-			for k in (j + 1)..p {
-				// Compute dot product between columns j and k
-				let dot = {
-					let col_j = matrix.column(j);
-					let col_k = matrix.column(k);
-					let col_j_vec = DVector::from_iterator(col_j.len(), col_j.iter().cloned());
-					let col_k_vec = DVector::from_iterator(col_k.len(), col_k.iter().cloned());
-					dispatcher.dot_product(&col_j_vec, &col_k_vec)
-				};
-
-				// Update column k: col_k -= dot * col_j
-				let col_j_clone = matrix.column(j).clone_owned();
-				matrix.column_mut(k).axpy(-dot, &col_j_clone, T::one());
-			}
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::compute::cpu::{get_dispatcher, SimdBackend};
+	use crate::simd::{get_dispatcher, SimdBackend};
 	use approx::assert_relative_eq;
 
 	#[test]

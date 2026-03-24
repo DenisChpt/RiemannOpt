@@ -5,10 +5,7 @@
 //! geometric operations.
 
 #[allow(unused_imports)]
-use crate::{
-	core::manifold::Manifold, error::Result, manifold_ops::retraction::Retraction,
-	types::Scalar,
-};
+use crate::{core::manifold::Manifold, error::Result, types::Scalar};
 // Removed unused imports
 
 // Re-export test manifolds for use in other crates

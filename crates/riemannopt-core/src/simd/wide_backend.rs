@@ -1,7 +1,7 @@
 //! SIMD backend using the `wide` crate for portable SIMD operations.
 
-use super::SimdBackend;
-use crate::compute::cpu::simd::{SimdMatrixOps, SimdOps, SimdVector, SimdVectorOps};
+use super::dispatch::SimdBackend;
+use super::ops::{SimdMatrixOps, SimdOps, SimdVector, SimdVectorOps};
 use nalgebra::{DMatrix, DVector};
 use std::marker::PhantomData;
 

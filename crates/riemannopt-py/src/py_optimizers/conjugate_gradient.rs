@@ -41,7 +41,7 @@ use crate::{
 /// ----------
 /// method : str, default="FletcherReeves"
 ///     The CG update formula. Options: "FletcherReeves", "PolakRibiere",
-///     "HestenesStiefel", "DaiYuan".
+///     "HestenesStiefel", "DaiYuan", "HagerZhang", "LiuStorey".
 /// reset_every : int, default=None
 ///     Reset to steepest descent every N iterations. If None, uses n
 ///     (dimension) as the reset frequency.
@@ -101,6 +101,8 @@ impl PyConjugateGradient {
 			"PolakRibiere",
 			"HestenesStiefel",
 			"DaiYuan",
+			"HagerZhang",
+			"LiuStorey",
 		];
 		if !valid_methods.contains(&method) {
 			return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -241,6 +243,8 @@ impl PyOptimizerBase for PyConjugateGradient {
 			"PolakRibiere",
 			"HestenesStiefel",
 			"DaiYuan",
+			"HagerZhang",
+			"LiuStorey",
 		];
 		if !valid_methods.contains(&self.method.as_str()) {
 			return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -278,6 +282,8 @@ impl_optimizer_generic_default!(
 			"PolakRibiere" => ConjugateGradientMethod::PolakRibiere,
 			"HestenesStiefel" => ConjugateGradientMethod::HestenesStiefel,
 			"DaiYuan" => ConjugateGradientMethod::DaiYuan,
+			"HagerZhang" => ConjugateGradientMethod::HagerZhang,
+			"LiuStorey" => ConjugateGradientMethod::LiuStorey,
 			_ => ConjugateGradientMethod::FletcherReeves,
 		};
 

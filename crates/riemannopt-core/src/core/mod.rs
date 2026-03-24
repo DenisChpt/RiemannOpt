@@ -6,7 +6,6 @@ pub mod cost_function;
 pub mod error;
 pub mod manifold;
 pub mod matrix_manifold;
-pub mod traits;
 pub mod types;
 
 // Re-export core types

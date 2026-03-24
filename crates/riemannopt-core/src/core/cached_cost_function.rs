@@ -391,18 +391,6 @@ where
 		self.inner.gradient_fd(point, gradient)
 	}
 
-	fn gradient_fd_parallel(
-		&self,
-		point: &Self::Point,
-		_config: &crate::compute::cpu::parallel::ParallelConfig,
-	) -> Result<Self::TangentVector>
-	where
-		Self: Sync,
-	{
-		// For finite differences, we don't use caching, but we can't call
-		// the parallel method on inner if it's not Sync, so fall back to sequential
-		self.gradient_fd_alloc(point)
-	}
 }
 
 #[cfg(test)]
