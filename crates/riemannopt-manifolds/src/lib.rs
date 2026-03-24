@@ -16,9 +16,6 @@ pub mod sphere;
 pub mod stiefel;
 pub mod utils;
 
-#[cfg(feature = "parallel")]
-pub mod sphere_simd;
-
 // Re-export main manifolds for convenience
 pub use euclidean::Euclidean;
 pub use fixed_rank::FixedRank;
