@@ -40,7 +40,7 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// memory_size : int, default=10
+/// memory_size : int, default=30
 ///     Number of vector pairs to store for Hessian approximation.
 /// max_line_search_iterations : int, default=20
 ///     Maximum iterations for line search.
@@ -83,7 +83,7 @@ pub struct PyLBFGS {
 #[pymethods]
 impl PyLBFGS {
 	#[new]
-	#[pyo3(signature = (memory_size=10, max_line_search_iterations=20, c1=1e-4, c2=0.9, initial_step_size=1.0))]
+	#[pyo3(signature = (memory_size=30, max_line_search_iterations=20, c1=1e-4, c2=0.9, initial_step_size=1.0))]
 	fn new(
 		memory_size: usize,
 		max_line_search_iterations: usize,
@@ -272,7 +272,7 @@ impl_optimizer_generic_default!(PyLBFGS, LBFGS<f64>, LBFGSConfig<f64>, |opt: &Py
 	LBFGSConfig {
 		memory_size: opt.memory_size,
 		initial_step_size: opt.initial_step_size,
-		use_cautious_updates: false,
+		use_cautious_updates: true,
 		line_search_params,
 	}
 });

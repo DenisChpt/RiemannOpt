@@ -298,13 +298,13 @@ impl<T: Scalar> Newton<T> {
 		manifold.euclidean_to_riemannian_gradient(point, &current_grad, &mut current_grad_riem)?;
 
 		// Compute finite difference: (grad_transported - current_grad_riem) / eps
-		// First: temp = -current_grad_riem
 		manifold.scale_tangent(point, -T::one(), &current_grad_riem, &mut temp)?;
-		// Then: result = grad_transported + temp
 		manifold.add_tangents(point, &grad_transported, &temp, result, &mut temp2)?;
-		// Finally: result = result / eps (in-place)
 		manifold.scale_tangent(point, T::one() / eps, result, &mut temp)?;
-		result.clone_from(&temp);
+
+		// Project back to tangent space — the FD approximation accumulates
+		// numerical errors that can push the result out of T_x M
+		manifold.project_tangent(point, &temp, result)?;
 
 		Ok(())
 	}
