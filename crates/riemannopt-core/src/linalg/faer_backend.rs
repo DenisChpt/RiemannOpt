@@ -5,8 +5,7 @@
 //!
 //! Enable with feature flag `faer-backend`.
 
-use faer::linalg::solvers::SolveCore;
-use faer::Conj;
+use faer::linalg::solvers::{DenseSolveCore, Solve};
 use faer::{Col, Mat, Side};
 
 use super::traits::{DecompositionOps, LinAlgBackend, MatrixOps, VectorOps};
@@ -56,8 +55,15 @@ macro_rules! impl_faer_vector_ops {
 			}
 
 			fn dot(&self, other: &Self) -> $t {
-				// faer: col^T * col returns the scalar dot product directly.
 				self.as_ref().transpose() * other.as_ref()
+			}
+
+			fn norm(&self) -> $t {
+				self.as_ref().norm_l2()
+			}
+
+			fn norm_squared(&self) -> $t {
+				self.as_ref().squared_norm_l2()
 			}
 
 			fn get(&self, i: usize) -> $t {
@@ -69,14 +75,13 @@ macro_rules! impl_faer_vector_ops {
 			}
 
 			fn as_slice(&self) -> &[$t] {
-				let ptr = self.as_ptr();
-				unsafe { std::slice::from_raw_parts(ptr, self.nrows()) }
+				// Owned Col<T> always has stride 1 → try_as_col_major never fails.
+				self.as_ref().try_as_col_major().unwrap().as_slice()
 			}
 
 			fn as_mut_slice(&mut self) -> &mut [$t] {
-				let ptr = self.as_ptr_mut();
-				let len = self.nrows();
-				unsafe { std::slice::from_raw_parts_mut(ptr, len) }
+				// Owned Col<T> always has stride 1 → try_as_col_major_mut never fails.
+				self.as_mut().try_as_col_major_mut().unwrap().as_slice_mut()
 			}
 
 			fn copy_from(&mut self, other: &Self) {
@@ -103,7 +108,7 @@ macro_rules! impl_faer_vector_ops {
 			}
 
 			fn iter(&self) -> impl Iterator<Item = $t> + '_ {
-				(0..self.nrows()).map(|i| self[i])
+				self.as_ref().iter().copied()
 			}
 		}
 	};
@@ -270,6 +275,10 @@ macro_rules! impl_faer_matrix_ops {
 				*self -= other;
 			}
 
+			fn column_dot(&self, j: usize, other: &Self, k: usize) -> $t {
+				self.as_ref().col(j).transpose() * other.as_ref().col(k)
+			}
+
 			fn gemm(&mut self, alpha: $t, a: &Self, b: &Self, beta: $t) {
 				let par = faer::get_global_parallelism();
 				
@@ -296,6 +305,8 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			fn gemm_at(&mut self, alpha: $t, a: &Self, b: &Self, beta: $t) {
+				let par = faer::get_global_parallelism();
+
 				if beta == 0.0 {
 					faer::linalg::matmul::matmul(
 						self.as_mut(),
@@ -303,7 +314,7 @@ macro_rules! impl_faer_matrix_ops {
 						a.as_ref().transpose(),
 						b.as_ref(),
 						alpha,
-						faer::Par::Seq,
+						par,
 					);
 				} else {
 					self.scale_mut(beta);
@@ -313,7 +324,7 @@ macro_rules! impl_faer_matrix_ops {
 						a.as_ref().transpose(),
 						b.as_ref(),
 						alpha,
-						faer::Par::Seq,
+						par,
 					);
 				}
 			}
@@ -345,7 +356,7 @@ macro_rules! impl_faer_decomposition_ops {
 			}
 
 			fn qr(&self) -> QrResult<$t, Self> {
-				let qr = (*self).qr();
+				let qr = self.qr();
 				let q = qr.compute_thin_Q();
 				let r = qr.thin_R().to_owned();
 				QrResult::new(q, r)
@@ -379,17 +390,16 @@ macro_rules! impl_faer_decomposition_ops {
 				if n != self.ncols() {
 					return None;
 				}
-				let lu = self.partial_piv_lu();
-				let mut result = Mat::identity(n, n);
-				lu.solve_in_place_with_conj(Conj::No, result.as_mut());
-				Some(result)
+				// DenseSolveCore::inverse uses a specialized triangular inverse
+				// algorithm — faster than solving LU against identity.
+				Some(self.partial_piv_lu().inverse())
 			}
 
 			fn cholesky_solve(&self, rhs: &Self) -> Option<Self> {
 				match self.llt(Side::Lower) {
 					Ok(llt) => {
 						let mut result = rhs.clone();
-						llt.solve_in_place_with_conj(Conj::No, result.as_mut());
+						llt.solve_in_place(result.as_mut());
 						Some(result)
 					}
 					Err(_) => None,
