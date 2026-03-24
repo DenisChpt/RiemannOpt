@@ -492,7 +492,8 @@ fn check_rayleigh_minimizer(x: &linalg::Vec<f64>, tol: f64) {
 /// For A = diag(1, 2, ..., n), the p smallest are e_1, ..., e_p.
 /// The projection matrix P = Y Y^T should satisfy P e_i = e_i for i = 1..p.
 fn check_subspace_minimizer(y: &linalg::Mat<f64>, p: usize, tol: f64) {
-	let proj = y.mat_mul(&MatrixOps::transpose(y));
+	let mut proj = linalg::Mat::<f64>::zeros(y.nrows(), y.nrows());
+	proj.gemm_bt(1.0, y, y, 0.0);
 	let nrows = y.nrows();
 	for i in 0..p {
 		let ei: linalg::Vec<f64> = VectorOps::from_fn(nrows, |k| if k == i { 1.0 } else { 0.0 });

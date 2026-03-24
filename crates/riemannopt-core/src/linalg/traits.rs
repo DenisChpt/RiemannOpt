@@ -1,13 +1,13 @@
 //! Backend-agnostic linear algebra traits.
 //!
 //! These traits define the operations that any linear algebra backend must support.
-//! Implementations exist for nalgebra (default) and optionally faer.
+//! Implementations exist for faer (default) and nalgebra.
 //!
 //! # Zero-Cost Abstraction
 //!
 //! All traits are monomorphized at compile time — there is no dynamic dispatch
-//! overhead. `Sphere<f64, NalgebraBackend>` compiles to the same code as if
-//! nalgebra types were used directly.
+//! overhead. `Sphere<f64, FaerBackend>` compiles to the same code as if
+//! faer types were used directly.
 
 use num_traits::Float;
 use std::fmt::Debug;
@@ -321,6 +321,14 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 	fn gemm_at(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
 		let at = a.transpose();
 		self.gemm(alpha, &at, b, beta);
+	}
+
+	/// C = alpha * A * B^T + beta * C  (GEMM with right operand transposed).
+	///
+	/// Avoids allocating a transposed copy of B.
+	fn gemm_bt(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
+		let bt = b.transpose();
+		self.gemm(alpha, a, &bt, beta);
 	}
 }
 

@@ -826,7 +826,7 @@ impl<T: Scalar> Optimizer<T> for LBFGS<T> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use riemannopt_core::types::DVector;
+	use riemannopt_core::linalg;
 
 	#[test]
 	fn test_lbfgs_config() {
@@ -842,7 +842,7 @@ mod tests {
 
 	#[test]
 	fn test_lbfgs_state() {
-		let state = LBFGSState::<f64, DVector<f64>>::new(5);
+		let state = LBFGSState::<f64, linalg::Vec<f64>>::new(5);
 		assert_eq!(state.memory_size, 5);
 		assert_eq!(state.history.len(), 0);
 	}

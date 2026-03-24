@@ -7,8 +7,9 @@
 
 use crate::{
 	error::Result,
+	linalg::{self, LinAlgBackend, VectorOps},
 	manifold::Manifold,
-	types::{DVector, Scalar},
+	types::Scalar,
 };
 use num_traits::Float;
 
@@ -27,9 +28,12 @@ impl TestEuclideanManifold {
 	}
 }
 
-impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
-	type Point = DVector<T>;
-	type TangentVector = DVector<T>;
+impl<T: Scalar> Manifold<T> for TestEuclideanManifold
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Vec<T>;
+	type TangentVector = linalg::Vec<T>;
 	fn name(&self) -> &str {
 		"TestEuclidean"
 	}
@@ -52,7 +56,7 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		result.copy_from(point);
+		VectorOps::copy_from(result, point);
 	}
 
 	fn project_tangent(
@@ -61,7 +65,7 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(vector);
+		VectorOps::copy_from(result, vector);
 		Ok(())
 	}
 
@@ -71,7 +75,7 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
 	) -> Result<T> {
-		Ok(u.dot(v))
+		Ok(VectorOps::dot(u, v))
 	}
 
 	fn retract(
@@ -80,7 +84,8 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
 	) -> Result<()> {
-		result.copy_from(&(point + tangent));
+		VectorOps::copy_from(result, point);
+		VectorOps::add_assign(result, tangent);
 		Ok(())
 	}
 
@@ -90,7 +95,8 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(&(other - point));
+		VectorOps::copy_from(result, other);
+		VectorOps::sub_assign(result, point);
 		Ok(())
 	}
 
@@ -100,26 +106,27 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 		grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(grad);
+		VectorOps::copy_from(result, grad);
 		Ok(())
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-		*result = DVector::from_fn(self.dim, |_, _| {
+		*result = linalg::Vec::<T>::from_fn(self.dim, |_| {
 			<T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
 		});
 		Ok(())
 	}
 
 	fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
-		*result = DVector::from_fn(self.dim, |_, _| {
+		*result = linalg::Vec::<T>::from_fn(self.dim, |_| {
 			<T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
 		});
 		Ok(())
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		Ok((y - x).norm())
+		let diff = VectorOps::sub(y, x);
+		Ok(VectorOps::norm(&diff))
 	}
 
 	fn scale_tangent(
@@ -129,7 +136,8 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 		tangent: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(&(tangent * scalar));
+		VectorOps::copy_from(result, tangent);
+		VectorOps::scale_mut(result, scalar);
 		Ok(())
 	}
 
@@ -142,7 +150,8 @@ impl<T: Scalar> Manifold<T> for TestEuclideanManifold {
 		// Temporary buffer for projection if needed
 		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(&(v1 + v2));
+		VectorOps::copy_from(result, v1);
+		VectorOps::add_assign(result, v2);
 		Ok(())
 	}
 }
@@ -161,9 +170,12 @@ impl TestSphereManifold {
 	}
 }
 
-impl<T: Scalar> Manifold<T> for TestSphereManifold {
-	type Point = DVector<T>;
-	type TangentVector = DVector<T>;
+impl<T: Scalar> Manifold<T> for TestSphereManifold
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Vec<T>;
+	type TangentVector = linalg::Vec<T>;
 	fn name(&self) -> &str {
 		"TestSphere"
 	}
@@ -172,39 +184,41 @@ impl<T: Scalar> Manifold<T> for TestSphereManifold {
 		self.dim - 1 // S^{n-1} has dimension n-1
 	}
 
-	fn is_point_on_manifold(&self, point: &DVector<T>, tolerance: T) -> bool {
-		<T as Float>::abs(point.norm_squared() - T::one()) < tolerance
+	fn is_point_on_manifold(&self, point: &Self::Point, tolerance: T) -> bool {
+		<T as Float>::abs(VectorOps::norm_squared(point) - T::one()) < tolerance
 	}
 
 	fn is_vector_in_tangent_space(
 		&self,
-		point: &DVector<T>,
-		vector: &DVector<T>,
+		point: &Self::Point,
+		vector: &Self::TangentVector,
 		tolerance: T,
 	) -> bool {
-		<T as Float>::abs(point.dot(vector)) < tolerance
+		<T as Float>::abs(VectorOps::dot(point, vector)) < tolerance
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		let norm = point.norm();
+		let norm = VectorOps::norm(point);
 		if norm > T::epsilon() {
-			result.copy_from(&(point / norm));
+			VectorOps::copy_from(result, point);
+			VectorOps::scale_mut(result, T::one() / norm);
 		} else {
 			// Return a default point on the sphere
-			*result = DVector::zeros(self.dim);
-			result[0] = T::one();
+			*result = linalg::Vec::<T>::zeros(self.dim);
+			*VectorOps::get_mut(result, 0) = T::one();
 		}
 	}
 
 	fn project_tangent(
 		&self,
-		point: &DVector<T>,
-		vector: &DVector<T>,
-		result: &mut DVector<T>,
+		point: &Self::Point,
+		vector: &Self::TangentVector,
+		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Project to tangent space: v - <v, p>p
-		let inner = point.dot(vector);
-		result.copy_from(&(vector - point * inner));
+		let inner = VectorOps::dot(point, vector);
+		VectorOps::copy_from(result, vector);
+		result.axpy(T::zero() - inner, point, T::one());
 		Ok(())
 	}
 
@@ -214,57 +228,59 @@ impl<T: Scalar> Manifold<T> for TestSphereManifold {
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
 	) -> Result<T> {
-		Ok(u.dot(v))
+		Ok(VectorOps::dot(u, v))
 	}
 
 	fn retract(
 		&self,
-		point: &DVector<T>,
-		tangent: &DVector<T>,
-		result: &mut DVector<T>,
+		point: &Self::Point,
+		tangent: &Self::TangentVector,
+		result: &mut Self::Point,
 	) -> Result<()> {
 		// Simple projection retraction
-		let y = point + tangent;
+		VectorOps::copy_from(result, point);
+		VectorOps::add_assign(result, tangent);
+		let y = result.clone();
 		self.project_point(&y, result);
 		Ok(())
 	}
 
 	fn inverse_retract(
 		&self,
-		point: &DVector<T>,
-		other: &DVector<T>,
-		result: &mut DVector<T>,
+		point: &Self::Point,
+		other: &Self::Point,
+		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Project the difference onto the tangent space
-		let diff = other - point;
+		let diff = VectorOps::sub(other, point);
 		self.project_tangent(point, &diff, result)
 	}
 
 	fn euclidean_to_riemannian_gradient(
 		&self,
-		point: &DVector<T>,
-		grad: &DVector<T>,
-		result: &mut DVector<T>,
+		point: &Self::Point,
+		grad: &Self::TangentVector,
+		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		self.project_tangent(point, grad, result)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
 		// Generate random point and normalize
-		*result = DVector::from_fn(self.dim, |_, _| {
+		*result = linalg::Vec::<T>::from_fn(self.dim, |_| {
 			<T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
 		});
-		let norm = result.norm();
+		let norm = VectorOps::norm(result);
 		if norm > T::epsilon() {
-			*result /= norm;
+			VectorOps::scale_mut(result, T::one() / norm);
 		} else {
-			result[0] = T::one();
+			*VectorOps::get_mut(result, 0) = T::one();
 		}
 		Ok(())
 	}
 
-	fn random_tangent(&self, point: &DVector<T>, result: &mut DVector<T>) -> Result<()> {
-		let v = DVector::from_fn(self.dim, |_, _| {
+	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
+		let v = linalg::Vec::<T>::from_fn(self.dim, |_| {
 			<T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
 		});
 		self.project_tangent(point, &v, result)
@@ -272,10 +288,10 @@ impl<T: Scalar> Manifold<T> for TestSphereManifold {
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
 		// Geodesic distance on sphere: arccos(<x, y>)
-		let inner = x.dot(y);
-		let inner = <T as num_traits::Float>::max(inner, -T::one());
-		let inner = <T as num_traits::Float>::min(inner, T::one());
-		Ok(<T as num_traits::Float>::acos(inner))
+		let inner = VectorOps::dot(x, y);
+		let inner = <T as Float>::max(inner, -T::one());
+		let inner = <T as Float>::min(inner, T::one());
+		Ok(<T as Float>::acos(inner))
 	}
 
 	fn scale_tangent(
@@ -286,7 +302,8 @@ impl<T: Scalar> Manifold<T> for TestSphereManifold {
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// For sphere, scaling in tangent space is just scalar multiplication
-		result.copy_from(&(tangent * scalar));
+		VectorOps::copy_from(result, tangent);
+		VectorOps::scale_mut(result, scalar);
 		Ok(())
 	}
 
@@ -300,8 +317,8 @@ impl<T: Scalar> Manifold<T> for TestSphereManifold {
 		temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Add vectors and project to ensure result is in tangent space
-		let sum = v1 + v2;
-		temp.copy_from(&sum);
+		VectorOps::copy_from(temp, v1);
+		VectorOps::add_assign(temp, v2);
 		self.project_tangent(point, temp, result)
 	}
 }
@@ -320,9 +337,12 @@ impl MinimalTestManifold {
 	}
 }
 
-impl<T: Scalar> Manifold<T> for MinimalTestManifold {
-	type Point = DVector<T>;
-	type TangentVector = DVector<T>;
+impl<T: Scalar> Manifold<T> for MinimalTestManifold
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Vec<T>;
+	type TangentVector = linalg::Vec<T>;
 	fn name(&self) -> &str {
 		"MinimalTest"
 	}
@@ -345,7 +365,7 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		result.copy_from(point);
+		VectorOps::copy_from(result, point);
 	}
 
 	fn project_tangent(
@@ -354,7 +374,7 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(vector);
+		VectorOps::copy_from(result, vector);
 		Ok(())
 	}
 
@@ -364,7 +384,7 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
 	) -> Result<T> {
-		Ok(u.dot(v))
+		Ok(VectorOps::dot(u, v))
 	}
 
 	fn retract(
@@ -373,7 +393,8 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
 	) -> Result<()> {
-		result.copy_from(&(point + tangent));
+		VectorOps::copy_from(result, point);
+		VectorOps::add_assign(result, tangent);
 		Ok(())
 	}
 
@@ -383,7 +404,8 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(&(other - point));
+		VectorOps::copy_from(result, other);
+		VectorOps::sub_assign(result, point);
 		Ok(())
 	}
 
@@ -393,22 +415,23 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 		grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(grad);
+		VectorOps::copy_from(result, grad);
 		Ok(())
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
-		*result = DVector::zeros(self.dim);
+		*result = linalg::Vec::<T>::zeros(self.dim);
 		Ok(())
 	}
 
 	fn random_tangent(&self, _point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
-		*result = DVector::zeros(self.dim);
+		*result = linalg::Vec::<T>::zeros(self.dim);
 		Ok(())
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		Ok((y - x).norm())
+		let diff = VectorOps::sub(y, x);
+		Ok(VectorOps::norm(&diff))
 	}
 
 	fn scale_tangent(
@@ -418,7 +441,8 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 		tangent: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(&(tangent * scalar));
+		VectorOps::copy_from(result, tangent);
+		VectorOps::scale_mut(result, scalar);
 		Ok(())
 	}
 
@@ -431,7 +455,8 @@ impl<T: Scalar> Manifold<T> for MinimalTestManifold {
 		// Temporary buffer for projection if needed
 		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		result.copy_from(&(v1 + v2));
+		VectorOps::copy_from(result, v1);
+		VectorOps::add_assign(result, v2);
 		Ok(())
 	}
 }

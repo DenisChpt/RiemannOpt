@@ -88,14 +88,17 @@ pub mod test_helpers {
 	use super::*;
 
 	/// Generates a random unit vector
-	pub fn random_unit_vector<T: Scalar>(n: usize) -> crate::types::DVector<T> {
-		let mut v = crate::types::DVector::zeros(n);
-		for i in 0..n {
-			v[i] = <T as Scalar>::from_f64(((i + 1) as f64).sin());
-		}
-		let norm = v.norm();
+	pub fn random_unit_vector<T: Scalar>(n: usize) -> crate::linalg::Vec<T>
+	where
+		crate::linalg::DefaultBackend: crate::linalg::LinAlgBackend<T>,
+	{
+		use crate::linalg::VectorOps;
+		let mut v = crate::linalg::Vec::<T>::from_fn(n, |i| {
+			<T as Scalar>::from_f64(((i + 1) as f64).sin())
+		});
+		let norm = VectorOps::norm(&v);
 		if norm > T::epsilon() {
-			v /= norm;
+			VectorOps::scale_mut(&mut v, T::one() / norm);
 		}
 		v
 	}

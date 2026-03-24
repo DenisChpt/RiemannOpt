@@ -3,7 +3,6 @@
 //! This module provides common type aliases, traits for numeric types,
 //! and constants used throughout the library.
 
-use nalgebra::{Const, Dim, DimName, Dyn, OMatrix, OVector, RealField, Scalar as NalgebraScalar};
 use num_traits::{Float, FromPrimitive};
 use std::fmt::{Debug, Display};
 
@@ -13,12 +12,10 @@ use crate::linalg::RealScalar;
 ///
 /// This trait combines all the necessary numeric traits required
 /// for Riemannian optimization algorithms. It extends [`RealScalar`]
-/// (the backend-agnostic scalar trait) with nalgebra bounds needed
-/// during the transition period.
+/// (the backend-agnostic scalar trait) with additional constants and
+/// conversion methods.
 pub trait Scalar:
 	RealScalar
-	+ NalgebraScalar
-	+ RealField
 	+ Float
 	+ FromPrimitive
 	+ Display
@@ -137,67 +134,6 @@ impl Scalar for f64 {
 	const FD_EPSILON: Self = 1.4901161193847656e-8;
 }
 
-/// Type alias for a dynamically-sized matrix.
-pub type DMatrix<T> = OMatrix<T, Dyn, Dyn>;
-
-/// Type alias for a statically-sized matrix.
-pub type SMatrix<T, const R: usize, const C: usize> = OMatrix<T, Const<R>, Const<C>>;
-
-/// Type alias for a square matrix with dynamic size.
-pub type DSquareMatrix<T> = OMatrix<T, Dyn, Dyn>;
-
-/// Type alias for a square matrix with static size.
-pub type SSquareMatrix<T, const N: usize> = OMatrix<T, Const<N>, Const<N>>;
-
-/// Type alias for a dynamically-sized vector.
-pub type DVector<T> = OVector<T, Dyn>;
-
-/// Type alias for a statically-sized vector.
-pub type SVector<T, const N: usize> = OVector<T, Const<N>>;
-
-/// Type alias for a general matrix with potentially different row and column dimensions.
-pub type Matrix<T, R, C> = OMatrix<T, R, C>;
-
-/// Type alias for a general vector.
-pub type Vector<T, D> = OVector<T, D>;
-
-/// Dimension trait for compile-time dimension checking.
-pub trait Dimension: Dim + DimName + Copy + Debug + Send + Sync + 'static {}
-
-impl<D> Dimension for D where D: Dim + DimName + Copy + Debug + Send + Sync + 'static {}
-
-/// Type alias for dimensions that can be either static or dynamic.
-pub type DimOrDynamic<const N: usize> = Const<N>;
-
-/// Helper trait for operations that work with both static and dynamic dimensions.
-pub trait DimensionOps: Dim {
-	/// Get the value of the dimension if it's known at compile time.
-	fn try_to_usize(&self) -> Option<usize>;
-
-	/// Check if this dimension equals another dimension.
-	fn is_equal(&self, other: &Self) -> bool;
-}
-
-impl DimensionOps for Dyn {
-	fn try_to_usize(&self) -> Option<usize> {
-		Some(self.value())
-	}
-
-	fn is_equal(&self, other: &Self) -> bool {
-		self.value() == other.value()
-	}
-}
-
-impl<const N: usize> DimensionOps for Const<N> {
-	fn try_to_usize(&self) -> Option<usize> {
-		Some(N)
-	}
-
-	fn is_equal(&self, _other: &Self) -> bool {
-		true // Const<N> dimensions are always equal if they have the same N
-	}
-}
-
 /// Numerical constants for different precision levels.
 pub mod constants {
 	use super::Scalar;
@@ -294,36 +230,6 @@ mod tests {
 
 		let back_f64 = val_f32.to_f64();
 		assert_relative_eq!(back_f64, val_f32 as f64);
-	}
-
-	#[test]
-	fn test_matrix_type_aliases() {
-		// Test dynamic matrix
-		let _dm: DMatrix<f64> = DMatrix::zeros(3, 4);
-
-		// Test static matrix
-		let _sm: SMatrix<f64, 3, 4> = SMatrix::zeros();
-
-		// Test square matrices
-		let _dsq: DSquareMatrix<f64> = DSquareMatrix::identity(5, 5);
-		let _ssq: SSquareMatrix<f64, 5> = SSquareMatrix::identity();
-
-		// Test vectors
-		let _dv: DVector<f64> = DVector::zeros(10);
-		let _sv: SVector<f64, 10> = SVector::zeros();
-	}
-
-	#[test]
-	fn test_dimension_ops() {
-		let dyn_dim = Dyn(5);
-		assert_eq!(dyn_dim.try_to_usize(), Some(5));
-
-		let const_dim = Const::<5>;
-		assert_eq!(const_dim.try_to_usize(), Some(5));
-
-		assert!(dyn_dim.is_equal(&Dyn(5)));
-		assert!(!dyn_dim.is_equal(&Dyn(6)));
-		assert!(const_dim.is_equal(&Const::<5>));
 	}
 
 	#[test]
