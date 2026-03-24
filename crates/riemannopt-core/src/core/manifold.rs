@@ -171,8 +171,8 @@ use std::fmt::Debug;
 /// }
 /// ```
 pub trait Manifold<T: Scalar>: Debug + Send + Sync {
-	/// The type of data for a point (e.g., DVector<T> or DMatrix<T>).
-	type Point: Clone + Debug + Send + Sync + Default;
+	/// The type of data for a point (e.g., linalg::Vec<T> or linalg::Mat<T>).
+	type Point: Clone + Debug + Send + Sync;
 	/// The type of data for a tangent vector.
 	type TangentVector: Clone + Debug + Send + Sync;
 	/// Returns a human-readable name for the manifold.

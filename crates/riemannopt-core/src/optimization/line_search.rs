@@ -440,12 +440,12 @@ where
 	///
 	/// # Parameter Values
 	/// - c₁ = 10⁻⁴ (standard sufficient decrease)
-	/// - c₂ = 0.4 (tight curvature — preserves conjugacy on Riemannian manifolds)
+	/// - c₂ = 0.9 (relaxed curvature — allows larger steps for CG)
 	/// - max_iterations = 30
 	pub fn for_conjugate_gradient() -> Self {
 		Self {
 			c1: <T as Scalar>::from_f64(1e-4),
-			c2: <T as Scalar>::from_f64(0.4),
+			c2: <T as Scalar>::from_f64(0.9),
 			initial_step_size: T::one(),
 			max_step_size: <T as Scalar>::from_f64(10.0),
 			min_step_size: <T as Scalar>::from_f64(1e-12),
@@ -937,6 +937,188 @@ where
 
 	fn name(&self) -> &str {
 		"Backtracking"
+	}
+}
+
+/// Adaptive line search with Armijo condition and step size memory.
+///
+/// Uses only the sufficient decrease (Armijo) condition and remembers the last
+/// accepted step size as the initial guess for the next iteration. This makes it
+/// very fast (typically 1-2 function evaluations) at the cost of weaker theoretical
+/// guarantees compared to Strong Wolfe.
+///
+/// # Algorithm
+///
+/// 1. Start with `α = previous_α` (or `1/‖d‖` on first call)
+/// 2. While `f(R_x(αd)) > f(x) + c₁·α·⟨∇f(x), d⟩`: `α *= contraction_factor`
+/// 3. If `f(new_x) > f(x)`: reject step entirely (`α = 0`)
+/// 4. Adapt hint for next call based on number of evaluations
+#[derive(Debug, Clone)]
+pub struct AdaptiveLineSearch<T: Scalar> {
+	/// Remembered step size from previous successful search
+	previous_alpha: Option<T>,
+	/// Backtracking contraction factor (default: 0.5)
+	contraction_factor: T,
+	/// Sufficient decrease parameter (default: 0.5, much more aggressive than Strong Wolfe's 1e-4)
+	sufficient_decrease: T,
+	/// Maximum backtracking iterations (default: 10)
+	max_iterations: usize,
+	/// Initial step size when no previous alpha is available (default: 1.0)
+	initial_step_size: T,
+}
+
+impl<T: Scalar> AdaptiveLineSearch<T> {
+	/// Creates a new adaptive line search with default parameters.
+	pub fn new() -> Self {
+		Self {
+			previous_alpha: None,
+			contraction_factor: <T as Scalar>::from_f64(0.5),
+			sufficient_decrease: <T as Scalar>::from_f64(0.5),
+			max_iterations: 10,
+			initial_step_size: T::one(),
+		}
+	}
+
+	/// Sets the contraction factor (default: 0.5).
+	pub fn with_contraction_factor(mut self, factor: T) -> Self {
+		self.contraction_factor = factor;
+		self
+	}
+
+	/// Sets the sufficient decrease parameter (default: 0.5).
+	pub fn with_sufficient_decrease(mut self, c: T) -> Self {
+		self.sufficient_decrease = c;
+		self
+	}
+
+	/// Sets the maximum number of backtracking iterations (default: 10).
+	pub fn with_max_iterations(mut self, n: usize) -> Self {
+		self.max_iterations = n;
+		self
+	}
+}
+
+impl<T: Scalar> Default for AdaptiveLineSearch<T> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl<T> LineSearch<T> for AdaptiveLineSearch<T>
+where
+	T: Scalar,
+{
+	fn search_with_deriv<C, M>(
+		&mut self,
+		cost_fn: &C,
+		manifold: &M,
+		point: &M::Point,
+		value: T,
+		direction: &M::TangentVector,
+		directional_deriv: T,
+		params: &LineSearchParams<T>,
+	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
+	where
+		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
+		M: Manifold<T>,
+	{
+		// Non-descent direction: return current point
+		if directional_deriv >= T::zero() {
+			return Ok(LineSearchResult {
+				step_size: T::zero(),
+				new_point: point.clone(),
+				new_value: value,
+				new_gradient: None,
+				function_evals: 0,
+				gradient_evals: 0,
+				success: false,
+			});
+		}
+
+		// Use c1 from params as the Armijo sufficient decrease parameter
+		let suff_decrease = if self.sufficient_decrease > T::zero() {
+			self.sufficient_decrease
+		} else {
+			params.c1
+		};
+
+		// Compute direction norm for initial step normalization
+		let norm_d = <T as Float>::sqrt(manifold.inner_product(point, direction, direction)?);
+
+		// Determine initial alpha
+		let mut alpha = if let Some(prev) = self.previous_alpha {
+			prev
+		} else if norm_d > T::zero() {
+			self.initial_step_size / norm_d
+		} else {
+			self.initial_step_size
+		};
+
+		// Backtracking loop
+		let mut new_point = point.clone();
+		let mut new_value;
+		let mut cost_evaluations = 0;
+
+		loop {
+			// Retract along direction with step size alpha
+			let mut scaled_dir = direction.clone();
+			manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
+			manifold.retract(point, &scaled_dir, &mut new_point)?;
+			new_value = cost_fn.cost(&new_point)?;
+			cost_evaluations += 1;
+
+			// Armijo condition: f(new) <= f(x) + c * alpha * df0
+			if new_value <= value + suff_decrease * alpha * directional_deriv {
+				break;
+			}
+
+			// Contract step size
+			alpha = alpha * self.contraction_factor;
+
+			if cost_evaluations >= self.max_iterations {
+				break;
+			}
+		}
+
+		// Safety: if step made things worse, reject entirely
+		if new_value > value {
+			self.previous_alpha = None;
+			return Ok(LineSearchResult {
+				step_size: T::zero(),
+				new_point: point.clone(),
+				new_value: value,
+				new_gradient: None,
+				function_evals: cost_evaluations,
+				gradient_evals: 0,
+				success: false,
+			});
+		}
+
+		// Adapt hint for next iteration:
+		// 1 or 2 evals → keep alpha; >2 evals → double alpha for next time
+		let next_alpha = if cost_evaluations <= 2 {
+			alpha
+		} else {
+			alpha * <T as Scalar>::from_f64(2.0)
+		};
+		self.previous_alpha = Some(next_alpha);
+
+		// Return physical step size = alpha * norm_d
+		let physical_step = alpha * norm_d;
+
+		Ok(LineSearchResult {
+			step_size: physical_step,
+			new_point,
+			new_value,
+			new_gradient: None,
+			function_evals: cost_evaluations,
+			gradient_evals: 0,
+			success: true,
+		})
+	}
+
+	fn name(&self) -> &str {
+		"Adaptive"
 	}
 }
 

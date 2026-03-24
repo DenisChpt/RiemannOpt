@@ -3,9 +3,11 @@
 //! This module defines the central types used throughout the Python bindings
 //! to ensure consistent and efficient data handling between Python and Rust.
 
-use nalgebra::{DMatrix, DVector};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
+use riemannopt_core::linalg::VectorOps;
+
+use crate::array_utils::{Mat64, Vec64};
 
 /// Represents a point on a manifold.
 ///
@@ -14,24 +16,24 @@ use pyo3::prelude::*;
 #[derive(Clone, Debug)]
 pub enum PyPoint {
 	/// Point represented as a vector (for manifolds like Sphere, Hyperbolic)
-	Vector(DVector<f64>),
+	Vector(Vec64),
 	/// Point represented as a matrix (for manifolds like Stiefel, SPD)
-	Matrix(DMatrix<f64>),
+	Matrix(Mat64),
 }
 
 impl PyPoint {
 	/// Create a PyPoint from a 1D NumPy array.
 	pub fn from_numpy_1d(array: PyReadonlyArray1<'_, f64>) -> PyResult<Self> {
-		let vec = DVector::from_row_slice(array.as_slice()?);
+		let vec = crate::array_utils::numpy_to_vec(array)?;
 		Ok(PyPoint::Vector(vec))
 	}
 
 	/// Create a PyPoint from a 2D NumPy array.
 	///
 	/// Handles both C-contiguous (row-major) and F-contiguous (column-major)
-	/// arrays correctly by delegating to [`numpy_to_dmatrix`].
+	/// arrays correctly by delegating to [`numpy_to_mat`].
 	pub fn from_numpy_2d(array: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
-		let mat = crate::array_utils::numpy_to_dmatrix(array)?;
+		let mat = crate::array_utils::numpy_to_mat(array)?;
 		Ok(PyPoint::Matrix(mat))
 	}
 
@@ -48,7 +50,7 @@ impl PyPoint {
 	/// Convert to a 2D NumPy array (for matrix points).
 	pub fn to_numpy_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
 		match self {
-			PyPoint::Matrix(mat) => crate::array_utils::dmatrix_to_numpy(py, mat),
+			PyPoint::Matrix(mat) => crate::array_utils::mat_to_numpy(py, mat),
 			PyPoint::Vector(_) => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
 				"Cannot convert vector point to 2D array",
 			)),
@@ -56,7 +58,7 @@ impl PyPoint {
 	}
 
 	/// Get dimensions of the point.
-	pub fn shape(&self) -> Vec<usize> {
+	pub fn shape(&self) -> std::vec::Vec<usize> {
 		match self {
 			PyPoint::Vector(vec) => vec![vec.len()],
 			PyPoint::Matrix(mat) => vec![mat.nrows(), mat.ncols()],
@@ -74,7 +76,7 @@ impl PyPoint {
 	}
 
 	/// Get as vector reference (returns None if matrix).
-	pub fn as_vector(&self) -> Option<&DVector<f64>> {
+	pub fn as_vector(&self) -> Option<&Vec64> {
 		match self {
 			PyPoint::Vector(v) => Some(v),
 			_ => None,
@@ -82,7 +84,7 @@ impl PyPoint {
 	}
 
 	/// Get as matrix reference (returns None if vector).
-	pub fn as_matrix(&self) -> Option<&DMatrix<f64>> {
+	pub fn as_matrix(&self) -> Option<&Mat64> {
 		match self {
 			PyPoint::Matrix(m) => Some(m),
 			_ => None,

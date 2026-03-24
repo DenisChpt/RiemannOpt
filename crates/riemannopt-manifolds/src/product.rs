@@ -65,7 +65,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::{Product, Sphere};
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DVector;
+//! use riemannopt_core::linalg::{self, VectorOps};
 //!
 //! // Create S² × S³ - two sphere manifolds
 //! let sphere1 = Sphere::<f64>::new(3)?;
@@ -73,21 +73,23 @@
 //! let product = Product::new(vec![Box::new(sphere1), Box::new(sphere2)]);
 //!
 //! // Points are concatenated vectors
-//! let mut x = DVector::<f64>::zeros(product.component_dimensions().iter().sum());
-//! product.random_point(&mut x)?;
+//! let mut x: linalg::Vec<f64> = VectorOps::zeros(product.component_dimensions().iter().sum());
+//! <Product as Manifold<f64>>::random_point(&product, &mut x)?;
 //!
 //! // Access components
 //! let x_sphere1 = product.split_point::<f64>(&x, 0)?;
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::DVector;
-
 use riemannopt_core::{
 	error::{ManifoldError, Result},
+	linalg::{self, LinAlgBackend, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
+
+// Type aliases for the concrete f64 backend types used internally
+type Vec64 = linalg::Vec<f64>;
 
 /// A dynamic product manifold combining multiple manifolds.
 ///
@@ -106,7 +108,7 @@ use riemannopt_core::{
 #[derive(Debug)]
 pub struct Product {
 	/// Component manifolds stored as trait objects
-	manifolds: Vec<Box<dyn Manifold<f64, Point = DVector<f64>, TangentVector = DVector<f64>>>>,
+	manifolds: Vec<Box<dyn Manifold<f64, Point = Vec64, TangentVector = Vec64>>>,
 	/// Dimensions of each component manifold
 	dimensions: Vec<usize>,
 	/// Cumulative dimensions for efficient indexing
@@ -139,7 +141,7 @@ impl Product {
 	/// let product = Product::new(vec![Box::new(sphere1), Box::new(sphere2)]);
 	/// ```
 	pub fn new(
-		manifolds: Vec<Box<dyn Manifold<f64, Point = DVector<f64>, TangentVector = DVector<f64>>>>,
+		manifolds: Vec<Box<dyn Manifold<f64, Point = Vec64, TangentVector = Vec64>>>,
 	) -> Self {
 		assert!(
 			!manifolds.is_empty(),
@@ -150,9 +152,9 @@ impl Product {
 			.iter()
 			.map(|m| {
 				// Get dimension by creating a default point and getting a random point
-				let mut p = DVector::<f64>::default();
+				let mut p = <Vec64 as VectorOps<f64>>::zeros(0);
 				m.random_point(&mut p).unwrap();
-				p.len()
+				VectorOps::len(&p)
 			})
 			.collect();
 
@@ -185,6 +187,72 @@ impl Product {
 		&self.dimensions
 	}
 
+	/// Internal: split an f64 vector into components
+	fn split_f64(&self, vector: &Vec64, component_idx: Option<usize>) -> Result<Vec<Vec64>> {
+		if VectorOps::len(vector) != self.total_dim {
+			return Err(ManifoldError::dimension_mismatch(
+				self.total_dim,
+				VectorOps::len(vector),
+			));
+		}
+
+		if let Some(idx) = component_idx {
+			if idx >= self.manifolds.len() {
+				return Err(ManifoldError::invalid_parameter(format!(
+					"Component index {} out of bounds",
+					idx
+				)));
+			}
+
+			let start = self.cumulative_dims[idx];
+			let dim = self.dimensions[idx];
+			let component =
+				<Vec64 as VectorOps<f64>>::from_fn(dim, |i| VectorOps::get(vector, start + i));
+			Ok(vec![component])
+		} else {
+			let mut components = Vec::with_capacity(self.manifolds.len());
+			for i in 0..self.manifolds.len() {
+				let start = self.cumulative_dims[i];
+				let dim = self.dimensions[i];
+				let component =
+					<Vec64 as VectorOps<f64>>::from_fn(dim, |j| VectorOps::get(vector, start + j));
+				components.push(component);
+			}
+			Ok(components)
+		}
+	}
+
+	/// Internal: combine f64 component vectors into one
+	fn combine_f64(&self, components: &[Vec64]) -> Result<Vec64> {
+		if components.len() != self.manifolds.len() {
+			return Err(ManifoldError::invalid_parameter(format!(
+				"Expected {} components, got {}",
+				self.manifolds.len(),
+				components.len()
+			)));
+		}
+
+		for (i, comp) in components.iter().enumerate() {
+			if VectorOps::len(comp) != self.dimensions[i] {
+				return Err(ManifoldError::dimension_mismatch(
+					self.dimensions[i],
+					VectorOps::len(comp),
+				));
+			}
+		}
+
+		let mut combined = <Vec64 as VectorOps<f64>>::zeros(self.total_dim);
+		for (i, comp) in components.iter().enumerate() {
+			let start = self.cumulative_dims[i];
+			let dim = self.dimensions[i];
+			for j in 0..dim {
+				*VectorOps::get_mut(&mut combined, start + j) = VectorOps::get(comp, j);
+			}
+		}
+
+		Ok(combined)
+	}
+
 	/// Splits a product space vector into component vectors.
 	///
 	/// # Arguments
@@ -203,13 +271,16 @@ impl Product {
 	/// - Component index is out of bounds
 	pub fn split_vector<T: Scalar>(
 		&self,
-		vector: &DVector<T>,
+		vector: &linalg::Vec<T>,
 		component_idx: Option<usize>,
-	) -> Result<Vec<DVector<T>>> {
-		if vector.len() != self.total_dim {
+	) -> Result<Vec<linalg::Vec<T>>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if VectorOps::len(vector) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				vector.len(),
+				VectorOps::len(vector),
 			));
 		}
 
@@ -223,14 +294,19 @@ impl Product {
 
 			let start = self.cumulative_dims[idx];
 			let dim = self.dimensions[idx];
-			let component = vector.rows(start, dim).clone_owned();
+			let component = <linalg::Vec<T> as VectorOps<T>>::from_fn(dim, |i| {
+				VectorOps::get(vector, start + i)
+			});
 			Ok(vec![component])
 		} else {
 			let mut components = Vec::with_capacity(self.manifolds.len());
 			for i in 0..self.manifolds.len() {
 				let start = self.cumulative_dims[i];
 				let dim = self.dimensions[i];
-				components.push(vector.rows(start, dim).clone_owned());
+				let component = <linalg::Vec<T> as VectorOps<T>>::from_fn(dim, |j| {
+					VectorOps::get(vector, start + j)
+				});
+				components.push(component);
 			}
 			Ok(components)
 		}
@@ -251,7 +327,13 @@ impl Product {
 	/// Returns error if:
 	/// - Number of components doesn't match manifold count
 	/// - Component dimensions don't match expected dimensions
-	pub fn combine_vectors<T: Scalar>(&self, components: &[DVector<T>]) -> Result<DVector<T>> {
+	pub fn combine_vectors<T: Scalar>(
+		&self,
+		components: &[linalg::Vec<T>],
+	) -> Result<linalg::Vec<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		if components.len() != self.manifolds.len() {
 			return Err(ManifoldError::invalid_parameter(format!(
 				"Expected {} components, got {}",
@@ -261,19 +343,21 @@ impl Product {
 		}
 
 		for (i, comp) in components.iter().enumerate() {
-			if comp.len() != self.dimensions[i] {
+			if VectorOps::len(comp) != self.dimensions[i] {
 				return Err(ManifoldError::dimension_mismatch(
 					self.dimensions[i],
-					comp.len(),
+					VectorOps::len(comp),
 				));
 			}
 		}
 
-		let mut combined = DVector::zeros(self.total_dim);
+		let mut combined = <linalg::Vec<T> as VectorOps<T>>::zeros(self.total_dim);
 		for (i, comp) in components.iter().enumerate() {
 			let start = self.cumulative_dims[i];
 			let dim = self.dimensions[i];
-			combined.rows_mut(start, dim).copy_from(comp);
+			for j in 0..dim {
+				*VectorOps::get_mut(&mut combined, start + j) = VectorOps::get(comp, j);
+			}
 		}
 
 		Ok(combined)
@@ -289,24 +373,46 @@ impl Product {
 	/// # Returns
 	///
 	/// The component at the specified index.
-	pub fn split_point<T: Scalar>(&self, point: &DVector<T>, idx: usize) -> Result<DVector<T>> {
+	pub fn split_point<T: Scalar>(
+		&self,
+		point: &linalg::Vec<T>,
+		idx: usize,
+	) -> Result<linalg::Vec<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		let components = self.split_vector(point, Some(idx))?;
 		Ok(components.into_iter().next().unwrap())
 	}
 
-	/// Helper to convert between scalar types
-	fn convert_scalar<T1: Scalar, T2: Scalar>(vec: &DVector<T1>) -> DVector<T2> {
-		DVector::from_iterator(
-			vec.len(),
-			vec.iter()
-				.map(|&x| <T2 as Scalar>::from_f64(<T1 as Scalar>::to_f64(x))),
-		)
+	/// Helper to convert a generic T vector to f64
+	fn to_f64<T: Scalar>(vec: &linalg::Vec<T>) -> Vec64
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		<Vec64 as VectorOps<f64>>::from_fn(VectorOps::len(vec), |i| {
+			<T as Scalar>::to_f64(VectorOps::get(vec, i))
+		})
+	}
+
+	/// Helper to convert an f64 vector to generic T
+	fn from_f64<T: Scalar>(vec: &Vec64) -> linalg::Vec<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		<linalg::Vec<T> as VectorOps<T>>::from_fn(VectorOps::len(vec), |i| {
+			<T as Scalar>::from_f64(VectorOps::get(vec, i))
+		})
 	}
 }
 
-impl<T: Scalar> Manifold<T> for Product {
-	type Point = DVector<T>;
-	type TangentVector = DVector<T>;
+impl<T> Manifold<T> for Product
+where
+	T: Scalar,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Vec<T>;
+	type TangentVector = linalg::Vec<T>;
 
 	fn name(&self) -> &str {
 		"Product"
@@ -317,15 +423,14 @@ impl<T: Scalar> Manifold<T> for Product {
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-		if point.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim {
 			return false;
 		}
 
-		// Convert to f64 for trait objects
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
+		let point_f64 = Self::to_f64(point);
 		let tol_f64 = <T as Scalar>::to_f64(tol);
 
-		if let Ok(components) = self.split_vector(&point_f64, None) {
+		if let Ok(components) = self.split_f64(&point_f64, None) {
 			components
 				.iter()
 				.zip(self.manifolds.iter())
@@ -341,17 +446,17 @@ impl<T: Scalar> Manifold<T> for Product {
 		vector: &Self::TangentVector,
 		tol: T,
 	) -> bool {
-		if point.len() != self.total_dim || vector.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(vector) != self.total_dim {
 			return false;
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let vector_f64 = Self::convert_scalar::<T, f64>(vector);
+		let point_f64 = Self::to_f64(point);
+		let vector_f64 = Self::to_f64(vector);
 		let tol_f64 = <T as Scalar>::to_f64(tol);
 
 		match (
-			self.split_vector(&point_f64, None),
-			self.split_vector(&vector_f64, None),
+			self.split_f64(&point_f64, None),
+			self.split_f64(&vector_f64, None),
 		) {
 			(Ok(point_comps), Ok(vector_comps)) => point_comps
 				.iter()
@@ -364,24 +469,25 @@ impl<T: Scalar> Manifold<T> for Product {
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
+		let point_f64 = Self::to_f64(point);
 
 		// Handle dimension mismatch by padding or truncating
-		let padded_point = if point_f64.len() != self.total_dim {
-			let mut p = DVector::zeros(self.total_dim);
-			let copy_len = point_f64.len().min(self.total_dim);
-			p.rows_mut(0, copy_len)
-				.copy_from(&point_f64.rows(0, copy_len));
+		let padded_point = if VectorOps::len(&point_f64) != self.total_dim {
+			let mut p = <Vec64 as VectorOps<f64>>::zeros(self.total_dim);
+			let copy_len = VectorOps::len(&point_f64).min(self.total_dim);
+			for i in 0..copy_len {
+				*VectorOps::get_mut(&mut p, i) = VectorOps::get(&point_f64, i);
+			}
 			p
 		} else {
-			point_f64.clone()
+			point_f64
 		};
 
-		if let Ok(components) = self.split_vector(&padded_point, None) {
+		if let Ok(components) = self.split_f64(&padded_point, None) {
 			let mut projected_components = Vec::with_capacity(self.manifolds.len());
 			for (comp, manifold) in components.iter().zip(self.manifolds.iter()) {
 				let mut proj_comp = comp.clone();
@@ -389,8 +495,8 @@ impl<T: Scalar> Manifold<T> for Product {
 				projected_components.push(proj_comp);
 			}
 
-			if let Ok(combined) = self.combine_vectors(&projected_components) {
-				*result = Self::convert_scalar::<f64, T>(&combined);
+			if let Ok(combined) = self.combine_f64(&projected_components) {
+				*result = Self::from_f64(&combined);
 			}
 		}
 	}
@@ -401,23 +507,23 @@ impl<T: Scalar> Manifold<T> for Product {
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || vector.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(vector) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(vector.len()),
+				VectorOps::len(point).max(VectorOps::len(vector)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let vector_f64 = Self::convert_scalar::<T, f64>(vector);
+		let point_f64 = Self::to_f64(point);
+		let vector_f64 = Self::to_f64(vector);
 
-		let point_comps = self.split_vector(&point_f64, None)?;
-		let vector_comps = self.split_vector(&vector_f64, None)?;
+		let point_comps = self.split_f64(&point_f64, None)?;
+		let vector_comps = self.split_f64(&vector_f64, None)?;
 
 		let mut projected_components = Vec::with_capacity(self.manifolds.len());
 
@@ -431,8 +537,8 @@ impl<T: Scalar> Manifold<T> for Product {
 			projected_components.push(proj_v);
 		}
 
-		let combined = self.combine_vectors(&projected_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&projected_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
@@ -442,20 +548,25 @@ impl<T: Scalar> Manifold<T> for Product {
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
 	) -> Result<T> {
-		if point.len() != self.total_dim || u.len() != self.total_dim || v.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim
+			|| VectorOps::len(u) != self.total_dim
+			|| VectorOps::len(v) != self.total_dim
+		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(u.len()).max(v.len()),
+				VectorOps::len(point)
+					.max(VectorOps::len(u))
+					.max(VectorOps::len(v)),
 			));
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let u_f64 = Self::convert_scalar::<T, f64>(u);
-		let v_f64 = Self::convert_scalar::<T, f64>(v);
+		let point_f64 = Self::to_f64(point);
+		let u_f64 = Self::to_f64(u);
+		let v_f64 = Self::to_f64(v);
 
-		let point_comps = self.split_vector(&point_f64, None)?;
-		let u_comps = self.split_vector(&u_f64, None)?;
-		let v_comps = self.split_vector(&v_f64, None)?;
+		let point_comps = self.split_f64(&point_f64, None)?;
+		let u_comps = self.split_f64(&u_f64, None)?;
+		let v_comps = self.split_f64(&v_f64, None)?;
 
 		let mut total_inner = 0.0;
 
@@ -476,23 +587,23 @@ impl<T: Scalar> Manifold<T> for Product {
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
 	) -> Result<()> {
-		if point.len() != self.total_dim || tangent.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(tangent) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(tangent.len()),
+				VectorOps::len(point).max(VectorOps::len(tangent)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let tangent_f64 = Self::convert_scalar::<T, f64>(tangent);
+		let point_f64 = Self::to_f64(point);
+		let tangent_f64 = Self::to_f64(tangent);
 
-		let point_comps = self.split_vector(&point_f64, None)?;
-		let tangent_comps = self.split_vector(&tangent_f64, None)?;
+		let point_comps = self.split_f64(&point_f64, None)?;
+		let tangent_comps = self.split_f64(&tangent_f64, None)?;
 
 		let mut retracted_components = Vec::with_capacity(self.manifolds.len());
 
@@ -506,8 +617,8 @@ impl<T: Scalar> Manifold<T> for Product {
 			retracted_components.push(ret);
 		}
 
-		let combined = self.combine_vectors(&retracted_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&retracted_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
@@ -517,23 +628,23 @@ impl<T: Scalar> Manifold<T> for Product {
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || other.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(other) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(other.len()),
+				VectorOps::len(point).max(VectorOps::len(other)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let other_f64 = Self::convert_scalar::<T, f64>(other);
+		let point_f64 = Self::to_f64(point);
+		let other_f64 = Self::to_f64(other);
 
-		let point_comps = self.split_vector(&point_f64, None)?;
-		let other_comps = self.split_vector(&other_f64, None)?;
+		let point_comps = self.split_f64(&point_f64, None)?;
+		let other_comps = self.split_f64(&other_f64, None)?;
 
 		let mut tangent_components = Vec::with_capacity(self.manifolds.len());
 
@@ -542,13 +653,13 @@ impl<T: Scalar> Manifold<T> for Product {
 			.zip(other_comps.iter())
 			.zip(self.manifolds.iter())
 		{
-			let mut tan = DVector::zeros(p.len());
+			let mut tan = <Vec64 as VectorOps<f64>>::zeros(VectorOps::len(p));
 			manifold.inverse_retract(p, o, &mut tan)?;
 			tangent_components.push(tan);
 		}
 
-		let combined = self.combine_vectors(&tangent_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&tangent_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
@@ -558,23 +669,25 @@ impl<T: Scalar> Manifold<T> for Product {
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || euclidean_grad.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim
+			|| VectorOps::len(euclidean_grad) != self.total_dim
+		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(euclidean_grad.len()),
+				VectorOps::len(point).max(VectorOps::len(euclidean_grad)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let grad_f64 = Self::convert_scalar::<T, f64>(euclidean_grad);
+		let point_f64 = Self::to_f64(point);
+		let grad_f64 = Self::to_f64(euclidean_grad);
 
-		let point_comps = self.split_vector(&point_f64, None)?;
-		let grad_comps = self.split_vector(&grad_f64, None)?;
+		let point_comps = self.split_f64(&point_f64, None)?;
+		let grad_comps = self.split_f64(&grad_f64, None)?;
 
 		let mut rgrad_components = Vec::with_capacity(self.manifolds.len());
 
@@ -588,8 +701,8 @@ impl<T: Scalar> Manifold<T> for Product {
 			rgrad_components.push(rgrad);
 		}
 
-		let combined = self.combine_vectors(&rgrad_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&rgrad_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
@@ -597,58 +710,58 @@ impl<T: Scalar> Manifold<T> for Product {
 		let mut components = Vec::with_capacity(self.manifolds.len());
 
 		for manifold in &self.manifolds {
-			let mut component = DVector::<f64>::zeros(manifold.dimension());
+			let mut component = <Vec64 as VectorOps<f64>>::zeros(manifold.dimension());
 			manifold.random_point(&mut component)?;
 			components.push(component);
 		}
 
-		let combined = self.combine_vectors(&components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
-		if point.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len(),
+				VectorOps::len(point),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let point_comps = self.split_vector(&point_f64, None)?;
+		let point_f64 = Self::to_f64(point);
+		let point_comps = self.split_f64(&point_f64, None)?;
 
 		let mut tangent_components = Vec::with_capacity(self.manifolds.len());
 
 		for (p, manifold) in point_comps.iter().zip(self.manifolds.iter()) {
-			let mut tan = DVector::zeros(p.len());
+			let mut tan = <Vec64 as VectorOps<f64>>::zeros(VectorOps::len(p));
 			manifold.random_tangent(p, &mut tan)?;
 			tangent_components.push(tan);
 		}
 
-		let combined = self.combine_vectors(&tangent_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&tangent_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		if x.len() != self.total_dim || y.len() != self.total_dim {
+		if VectorOps::len(x) != self.total_dim || VectorOps::len(y) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				x.len().max(y.len()),
+				VectorOps::len(x).max(VectorOps::len(y)),
 			));
 		}
 
-		let x_f64 = Self::convert_scalar::<T, f64>(x);
-		let y_f64 = Self::convert_scalar::<T, f64>(y);
+		let x_f64 = Self::to_f64(x);
+		let y_f64 = Self::to_f64(y);
 
-		let x_comps = self.split_vector(&x_f64, None)?;
-		let y_comps = self.split_vector(&y_f64, None)?;
+		let x_comps = self.split_f64(&x_f64, None)?;
+		let y_comps = self.split_f64(&y_f64, None)?;
 
 		let mut dist_sq = 0.0;
 
@@ -671,28 +784,30 @@ impl<T: Scalar> Manifold<T> for Product {
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if from.len() != self.total_dim
-			|| to.len() != self.total_dim
-			|| vector.len() != self.total_dim
+		if VectorOps::len(from) != self.total_dim
+			|| VectorOps::len(to) != self.total_dim
+			|| VectorOps::len(vector) != self.total_dim
 		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				from.len().max(to.len()).max(vector.len()),
+				VectorOps::len(from)
+					.max(VectorOps::len(to))
+					.max(VectorOps::len(vector)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let from_f64 = Self::convert_scalar::<T, f64>(from);
-		let to_f64 = Self::convert_scalar::<T, f64>(to);
-		let vector_f64 = Self::convert_scalar::<T, f64>(vector);
+		let from_f64 = Self::to_f64(from);
+		let to_f64 = Self::to_f64(to);
+		let vector_f64 = Self::to_f64(vector);
 
-		let from_comps = self.split_vector(&from_f64, None)?;
-		let to_comps = self.split_vector(&to_f64, None)?;
-		let vector_comps = self.split_vector(&vector_f64, None)?;
+		let from_comps = self.split_f64(&from_f64, None)?;
+		let to_comps = self.split_f64(&to_f64, None)?;
+		let vector_comps = self.split_f64(&vector_f64, None)?;
 
 		let mut transported_components = Vec::with_capacity(self.manifolds.len());
 
@@ -707,8 +822,8 @@ impl<T: Scalar> Manifold<T> for Product {
 			transported_components.push(trans);
 		}
 
-		let combined = self.combine_vectors(&transported_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&transported_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
@@ -727,24 +842,24 @@ impl<T: Scalar> Manifold<T> for Product {
 		tangent: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || tangent.len() != self.total_dim {
+		if VectorOps::len(point) != self.total_dim || VectorOps::len(tangent) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(tangent.len()),
+				VectorOps::len(point).max(VectorOps::len(tangent)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let tangent_f64 = Self::convert_scalar::<T, f64>(tangent);
+		let point_f64 = Self::to_f64(point);
+		let tangent_f64 = Self::to_f64(tangent);
 		let scalar_f64 = scalar.to_f64();
 
-		let point_comps = self.split_vector(&point_f64, None)?;
-		let tangent_comps = self.split_vector(&tangent_f64, None)?;
+		let point_comps = self.split_f64(&point_f64, None)?;
+		let tangent_comps = self.split_f64(&tangent_f64, None)?;
 
 		let mut scaled_components = Vec::with_capacity(self.manifolds.len());
 
@@ -758,8 +873,8 @@ impl<T: Scalar> Manifold<T> for Product {
 			scaled_components.push(scaled);
 		}
 
-		let combined = self.combine_vectors(&scaled_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&scaled_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 
@@ -772,29 +887,32 @@ impl<T: Scalar> Manifold<T> for Product {
 		// Temporary buffer for projection if needed
 		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.len() != self.total_dim || v1.len() != self.total_dim || v2.len() != self.total_dim
+		if VectorOps::len(point) != self.total_dim
+			|| VectorOps::len(v1) != self.total_dim
+			|| VectorOps::len(v2) != self.total_dim
 		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				point.len().max(v1.len()).max(v2.len()),
+				VectorOps::len(point)
+					.max(VectorOps::len(v1))
+					.max(VectorOps::len(v2)),
 			));
 		}
 
 		// Ensure result has correct size
-		if result.len() != self.total_dim {
-			*result = DVector::zeros(self.total_dim);
+		if VectorOps::len(result) != self.total_dim {
+			*result = VectorOps::zeros(self.total_dim);
 		}
 
-		let point_f64 = Self::convert_scalar::<T, f64>(point);
-		let v1_f64 = Self::convert_scalar::<T, f64>(v1);
-		let v2_f64 = Self::convert_scalar::<T, f64>(v2);
+		let point_f64 = Self::to_f64(point);
+		let v1_f64 = Self::to_f64(v1);
+		let v2_f64 = Self::to_f64(v2);
 
-		let point_comps = self.split_vector(&point_f64, None)?;
-		let v1_comps = self.split_vector(&v1_f64, None)?;
-		let v2_comps = self.split_vector(&v2_f64, None)?;
+		let point_comps = self.split_f64(&point_f64, None)?;
+		let v1_comps = self.split_f64(&v1_f64, None)?;
+		let v2_comps = self.split_f64(&v2_f64, None)?;
 
 		let mut sum_components = Vec::with_capacity(self.manifolds.len());
-		let mut temp_f64 = DVector::<f64>::zeros(0);
 
 		for (((p, v1_i), v2_i), manifold) in point_comps
 			.iter()
@@ -803,13 +921,13 @@ impl<T: Scalar> Manifold<T> for Product {
 			.zip(self.manifolds.iter())
 		{
 			let mut sum = v1_i.clone();
-			temp_f64.resize_vertically_mut(v1_i.len(), 0.0);
+			let mut temp_f64 = <Vec64 as VectorOps<f64>>::zeros(VectorOps::len(v1_i));
 			manifold.add_tangents(p, v1_i, v2_i, &mut sum, &mut temp_f64)?;
 			sum_components.push(sum);
 		}
 
-		let combined = self.combine_vectors(&sum_components)?;
-		*result = Self::convert_scalar::<f64, T>(&combined);
+		let combined = self.combine_f64(&sum_components)?;
+		*result = Self::from_f64(&combined);
 		Ok(())
 	}
 }

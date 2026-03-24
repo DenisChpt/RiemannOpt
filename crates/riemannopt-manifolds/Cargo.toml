@@ -20,10 +20,12 @@ thiserror = { workspace = true }
 rayon = { workspace = true, optional = true }
 
 [features]
-default = ["std", "parallel"]
+default = ["std", "parallel", "faer-backend"]
 std = ["riemannopt-core/std"]
 parallel = ["rayon", "nalgebra/rayon"]
 serde = ["riemannopt-core/serde"]
+nalgebra-backend = ["riemannopt-core/nalgebra-backend"]
+faer-backend = ["riemannopt-core/faer-backend"]
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -1,10 +1,12 @@
-use nalgebra::DVector;
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
+use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use riemannopt_core::linalg::VectorOps;
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Euclidean;
+
+use crate::array_utils::{numpy_to_vec, vec_to_numpy, Vec64};
 
 // Helper macro to check array dimensions
 macro_rules! check_dim {
@@ -25,7 +27,7 @@ macro_rules! check_dim {
 /// The Euclidean manifold is the standard n-dimensional vector space equipped
 /// with the usual Euclidean metric. All Riemannian operations are trivial:
 /// - Projection is identity
-/// - Retraction is addition  
+/// - Retraction is addition
 /// - Inner product is dot product
 /// - Parallel transport is identity
 ///
@@ -150,7 +152,7 @@ impl PyEuclidean {
 		if point.len()? != self.inner.dimension() {
 			return Ok(false);
 		}
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
+		let point = numpy_to_vec(point)?;
 		Ok(self
 			.inner
 			.is_point_on_manifold(&point, tol.unwrap_or(1e-10)))
@@ -176,12 +178,12 @@ impl PyEuclidean {
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
 		check_dim!(point, self.inner.dimension(), "point");
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let mut result = DVector::zeros(self.inner.dimension());
+		let point = numpy_to_vec(point)?;
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner.project_point(&point, &mut result);
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Project a vector onto the tangent space at a point.
@@ -222,15 +224,15 @@ impl PyEuclidean {
 			)));
 		}
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let vector = DVector::from_column_slice(vector.as_slice().unwrap());
-		let mut result = DVector::zeros(self.inner.dimension());
+		let point = numpy_to_vec(point)?;
+		let vector = numpy_to_vec(vector)?;
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
 			.project_tangent(&point, &vector, &mut result)
 			.map_err(|e| PyValueError::new_err(format!("Projection failed: {}", e)))?;
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian inner product between two tangent vectors.
@@ -281,9 +283,9 @@ impl PyEuclidean {
 			)));
 		}
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let u = DVector::from_column_slice(u.as_slice().unwrap());
-		let v = DVector::from_column_slice(v.as_slice().unwrap());
+		let point = numpy_to_vec(point)?;
+		let u = numpy_to_vec(u)?;
+		let v = numpy_to_vec(v)?;
 
 		self.inner
 			.inner_product(&point, &u, &v)
@@ -327,8 +329,8 @@ impl PyEuclidean {
 			)));
 		}
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let vector = DVector::from_column_slice(vector.as_slice().unwrap());
+		let point = numpy_to_vec(point)?;
+		let vector = numpy_to_vec(vector)?;
 
 		self.inner
 			.norm(&point, &vector)
@@ -373,15 +375,15 @@ impl PyEuclidean {
 			)));
 		}
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let tangent = DVector::from_column_slice(tangent.as_slice().unwrap());
-		let mut result = DVector::zeros(self.inner.dimension());
+		let point = numpy_to_vec(point)?;
+		let tangent = numpy_to_vec(tangent)?;
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
 			.retract(&point, &tangent, &mut result)
 			.map_err(|e| PyValueError::new_err(format!("Retraction failed: {}", e)))?;
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Compute the inverse retraction (logarithmic map).
@@ -422,15 +424,15 @@ impl PyEuclidean {
 			)));
 		}
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let other = DVector::from_column_slice(other.as_slice().unwrap());
-		let mut result = DVector::zeros(self.inner.dimension());
+		let point = numpy_to_vec(point)?;
+		let other = numpy_to_vec(other)?;
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
 			.inverse_retract(&point, &other, &mut result)
 			.map_err(|e| PyValueError::new_err(format!("Inverse retraction failed: {}", e)))?;
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Convert Euclidean gradient to Riemannian gradient.
@@ -471,15 +473,15 @@ impl PyEuclidean {
 			)));
 		}
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let euclidean_grad = DVector::from_column_slice(euclidean_grad.as_slice().unwrap());
-		let mut result = DVector::zeros(self.inner.dimension());
+		let point = numpy_to_vec(point)?;
+		let euclidean_grad = numpy_to_vec(euclidean_grad)?;
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
 			.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut result)
 			.map_err(|e| PyValueError::new_err(format!("Gradient conversion failed: {}", e)))?;
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Perform parallel transport of a vector.
@@ -531,16 +533,16 @@ impl PyEuclidean {
 			)));
 		}
 
-		let from_point = DVector::from_column_slice(from_point.as_slice().unwrap());
-		let to_point = DVector::from_column_slice(to_point.as_slice().unwrap());
-		let vector = DVector::from_column_slice(vector.as_slice().unwrap());
-		let mut result = DVector::zeros(self.inner.dimension());
+		let from_point = numpy_to_vec(from_point)?;
+		let to_point = numpy_to_vec(to_point)?;
+		let vector = numpy_to_vec(vector)?;
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
 			.parallel_transport(&from_point, &to_point, &vector, &mut result)
 			.map_err(|e| PyValueError::new_err(format!("Parallel transport failed: {}", e)))?;
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Generate a random point on the manifold.
@@ -552,13 +554,13 @@ impl PyEuclidean {
 	/// ndarray
 	///     Random point in ℝ^n
 	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let mut result = DVector::zeros(self.inner.dimension());
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
 			.random_point(&mut result)
 			.map_err(|e| PyValueError::new_err(format!("Random point generation failed: {}", e)))?;
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Generate a random tangent vector at a point.
@@ -588,8 +590,8 @@ impl PyEuclidean {
 			)));
 		}
 
-		let point = DVector::from_column_slice(point.as_slice().unwrap());
-		let mut result = DVector::zeros(self.inner.dimension());
+		let point = numpy_to_vec(point)?;
+		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
 			.random_tangent(&point, &mut result)
@@ -597,7 +599,7 @@ impl PyEuclidean {
 				PyValueError::new_err(format!("Random tangent generation failed: {}", e))
 			})?;
 
-		Ok(result.as_slice().to_vec().into_pyarray(py))
+		vec_to_numpy(py, &result)
 	}
 
 	/// Compute the geodesic distance between two points.
@@ -633,8 +635,8 @@ impl PyEuclidean {
 			)));
 		}
 
-		let x = DVector::from_column_slice(x.as_slice().unwrap());
-		let y = DVector::from_column_slice(y.as_slice().unwrap());
+		let x = numpy_to_vec(x)?;
+		let y = numpy_to_vec(y)?;
 
 		self.inner
 			.distance(&x, &y)

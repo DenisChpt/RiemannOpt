@@ -3,14 +3,14 @@
 //! The product manifold is the Cartesian product of multiple manifolds,
 //! allowing optimization over multiple coupled variables with different geometries.
 
-use nalgebra::DVector;
 use numpy::PyArrayMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
+use riemannopt_core::linalg::{MatrixOps, VectorOps};
 
 use super::base::{PointType, PyManifoldBase};
 use crate::{
-	array_utils::{dmatrix_to_numpy, dvector_to_numpy, numpy_to_dmatrix, numpy_to_dvector},
+	array_utils::{mat_to_numpy, numpy_to_mat, numpy_to_vec, vec_to_numpy, Mat64, Vec64},
 	error::dimension_mismatch,
 };
 
@@ -540,46 +540,49 @@ impl PyProductManifold {
 #[allow(dead_code)]
 impl PyProductManifold {
 	/// Convert a tuple of component points to a concatenated vector representation
-	fn tuple_to_vector(
-		&self,
-		_py: Python<'_>,
-		tuple: &Bound<'_, PyTuple>,
-	) -> PyResult<DVector<f64>> {
+	fn tuple_to_vector(&self, _py: Python<'_>, tuple: &Bound<'_, PyTuple>) -> PyResult<Vec64> {
 		if tuple.len() != self.manifolds.len() {
 			return Err(dimension_mismatch(&[self.manifolds.len()], &[tuple.len()]));
 		}
 
-		let mut concatenated = DVector::zeros(self.total_ambient_dim);
+		let mut concatenated: Vec64 = VectorOps::zeros(self.total_ambient_dim);
 		let mut offset = 0;
 
 		for (_manifold, component) in self.manifolds.iter().zip(tuple.iter()) {
 			// Get the numpy array representation of this component
-			let array = if let Ok(arr) = component.downcast::<numpy::PyArray1<f64>>() {
-				// Vector case
-				numpy_to_dvector(arr.readonly())?
-			} else if let Ok(arr) = component.downcast::<numpy::PyArray2<f64>>() {
-				// Matrix case - flatten to vector
-				let mat = numpy_to_dmatrix(arr.readonly())?;
-				DVector::from_iterator(mat.nrows() * mat.ncols(), mat.iter().cloned())
-			} else {
-				return Err(pyo3::exceptions::PyTypeError::new_err(
-					"Product manifold components must be numpy arrays",
-				));
-			};
+			let data: std::vec::Vec<f64> =
+				if let Ok(arr) = component.downcast::<numpy::PyArray1<f64>>() {
+					let v = numpy_to_vec(arr.readonly())?;
+					(0..VectorOps::len(&v))
+						.map(|i| VectorOps::get(&v, i))
+						.collect()
+				} else if let Ok(arr) = component.downcast::<numpy::PyArray2<f64>>() {
+					let mat = numpy_to_mat(arr.readonly())?;
+					let mut d = std::vec::Vec::with_capacity(mat.nrows() * mat.ncols());
+					for j in 0..mat.ncols() {
+						for i in 0..mat.nrows() {
+							d.push(MatrixOps::get(&mat, i, j));
+						}
+					}
+					d
+				} else {
+					return Err(pyo3::exceptions::PyTypeError::new_err(
+						"Product manifold components must be numpy arrays",
+					));
+				};
 
 			// Copy to the appropriate position in the concatenated vector
-			let component_dim = array.len();
-			concatenated
-				.rows_mut(offset, component_dim)
-				.copy_from(&array);
-			offset += component_dim;
+			for (k, &val) in data.iter().enumerate() {
+				*concatenated.get_mut(offset + k) = val;
+			}
+			offset += data.len();
 		}
 
 		Ok(concatenated)
 	}
 
 	/// Convert a concatenated vector to a tuple of component points
-	fn vector_to_tuple(&self, py: Python<'_>, vector: &DVector<f64>) -> PyResult<PyObject> {
+	fn vector_to_tuple(&self, py: Python<'_>, vector: &Vec64) -> PyResult<PyObject> {
 		if vector.len() != self.total_ambient_dim {
 			return Err(dimension_mismatch(
 				&[self.total_ambient_dim],
@@ -595,7 +598,8 @@ impl PyProductManifold {
 			let ambient_dim: usize = manifold.getattr(py, "ambient_dim")?.extract(py)?;
 
 			// Extract the component vector
-			let component_vec = vector.rows(offset, ambient_dim).clone_owned();
+			let component_vec: Vec64 =
+				VectorOps::from_fn(ambient_dim, |i| VectorOps::get(vector, offset + i));
 
 			// Check if this manifold uses matrix representation
 			let point_type: String = manifold
@@ -606,7 +610,7 @@ impl PyProductManifold {
 			let component_array = match point_type.as_str() {
 				"Sphere" | "Hyperbolic" => {
 					// Vector manifolds
-					dvector_to_numpy(py, &component_vec)?.into()
+					vec_to_numpy(py, &component_vec)?.into()
 				}
 				"Stiefel" | "Grassmann" | "SPD" | "Oblique" | "PSDCone" => {
 					// Matrix manifolds - need to get shape
@@ -615,38 +619,32 @@ impl PyProductManifold {
 						if let Ok(p) = manifold.getattr(py, "p") {
 							// Stiefel, Grassmann
 							let p: usize = p.extract(py)?;
-							let mat = nalgebra::DMatrix::from_iterator(
-								n,
-								p,
-								component_vec.iter().cloned(),
-							);
-							dmatrix_to_numpy(py, &mat)?.into()
+							let mat: Mat64 = MatrixOps::from_fn(n, p, |i, j| {
+								VectorOps::get(&component_vec, j * n + i)
+							});
+							mat_to_numpy(py, &mat)?.into()
 						} else {
 							// SPD, PSDCone - square matrices
-							let mat = nalgebra::DMatrix::from_iterator(
-								n,
-								n,
-								component_vec.iter().cloned(),
-							);
-							dmatrix_to_numpy(py, &mat)?.into()
+							let mat: Mat64 = MatrixOps::from_fn(n, n, |i, j| {
+								VectorOps::get(&component_vec, j * n + i)
+							});
+							mat_to_numpy(py, &mat)?.into()
 						}
 					} else if let Ok(shape) = manifold.getattr(py, "shape") {
 						// Oblique manifold
 						let shape: (usize, usize) = shape.extract(py)?;
-						let mat = nalgebra::DMatrix::from_iterator(
-							shape.0,
-							shape.1,
-							component_vec.iter().cloned(),
-						);
-						crate::array_utils::dmatrix_to_numpy(py, &mat)?.into()
+						let mat: Mat64 = MatrixOps::from_fn(shape.0, shape.1, |i, j| {
+							VectorOps::get(&component_vec, j * shape.0 + i)
+						});
+						crate::array_utils::mat_to_numpy(py, &mat)?.into()
 					} else {
 						// Default to vector
-						dvector_to_numpy(py, &component_vec)?.into()
+						vec_to_numpy(py, &component_vec)?.into()
 					}
 				}
 				_ => {
 					// Unknown manifold type, default to vector
-					dvector_to_numpy(py, &component_vec)?.into()
+					vec_to_numpy(py, &component_vec)?.into()
 				}
 			};
 

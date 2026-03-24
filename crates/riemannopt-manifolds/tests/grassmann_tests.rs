@@ -1,7 +1,7 @@
 //! Integration tests for the Grassmann manifold
 
 use approx::assert_relative_eq;
-use nalgebra::DMatrix;
+use riemannopt_core::linalg::{self, MatrixOps, VectorOps};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Grassmann;
 
@@ -36,15 +36,18 @@ fn test_grassmann_projection() {
 	let gr = Grassmann::<f64>::new(4, 2).unwrap();
 
 	// Create a non-orthonormal matrix
-	let a = DMatrix::from_fn(4, 2, |i, j| ((i + 1) as f64) * 0.3 + ((j + 1) as f64) * 0.2);
+	let a = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(4, 2, |i, j| {
+		((i + 1) as f64) * 0.3 + ((j + 1) as f64) * 0.2
+	});
 
-	let mut proj = DMatrix::zeros(4, 2);
+	let mut proj = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	gr.project_point(&a, &mut proj);
 
 	// Check Y^T Y = I
-	let yty = proj.transpose() * &proj;
-	let eye = DMatrix::identity(2, 2);
-	assert_relative_eq!(yty, eye, epsilon = 1e-12);
+	let yty = MatrixOps::mat_mul(&MatrixOps::transpose(&proj), &proj);
+	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
+	let diff = MatrixOps::sub(&yty, &eye);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
 }
 
 #[test]
@@ -52,20 +55,20 @@ fn test_grassmann_tangent_projection() {
 	let gr = Grassmann::<f64>::new(5, 2).unwrap();
 
 	// Create a point on the manifold
-	let mut y = DMatrix::zeros(5, 2);
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_point(&mut y).unwrap();
 
 	// Create an arbitrary matrix
-	let z = DMatrix::from_fn(5, 2, |i, j| {
+	let z = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(5, 2, |i, j| {
 		((i as f64) - 2.0) * 0.1 + ((j as f64) - 0.5) * 0.3
 	});
 
-	let mut z_tangent = DMatrix::zeros(5, 2);
+	let mut z_tangent = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.project_tangent(&y, &z, &mut z_tangent).unwrap();
 
 	// Check horizontality: Y^T Z = 0
-	let ytz = y.transpose() * &z_tangent;
-	assert_relative_eq!(ytz.norm(), 0.0, epsilon = 1e-12);
+	let ytz = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &z_tangent);
+	assert_relative_eq!(MatrixOps::norm(&ytz), 0.0, epsilon = 1e-12);
 }
 
 #[test]
@@ -73,40 +76,42 @@ fn test_grassmann_retraction() {
 	let gr = Grassmann::<f64>::new(4, 2).unwrap();
 
 	// Create a point on manifold
-	let mut y = DMatrix::zeros(4, 2);
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	gr.random_point(&mut y).unwrap();
 
 	// Create a tangent vector
-	let mut v = DMatrix::zeros(4, 2);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	gr.random_tangent(&y, &mut v).unwrap();
-	v *= 0.1;
+	v.scale_mut(0.1);
 
-	let mut result = DMatrix::zeros(4, 2);
+	let mut result = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	gr.retract(&y, &v, &mut result).unwrap();
 
 	// Result should be on manifold: Y^T Y = I
-	let rtr = result.transpose() * &result;
-	let eye = DMatrix::identity(2, 2);
-	assert_relative_eq!(rtr, eye, epsilon = 1e-12);
+	let rtr = MatrixOps::mat_mul(&MatrixOps::transpose(&result), &result);
+	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
+	let diff = MatrixOps::sub(&rtr, &eye);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
 
 	// Zero retraction returns same point
-	let zero = DMatrix::zeros(4, 2);
-	let mut y_recovered = DMatrix::zeros(4, 2);
+	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
+	let mut y_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	gr.retract(&y, &zero, &mut y_recovered).unwrap();
-	assert_relative_eq!(y, y_recovered, epsilon = 1e-12);
+	let diff = MatrixOps::sub(&y, &y_recovered);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
 }
 
 #[test]
 fn test_grassmann_inner_product() {
 	let gr = Grassmann::<f64>::new(5, 2).unwrap();
 
-	let mut y = DMatrix::zeros(5, 2);
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_point(&mut y).unwrap();
 
-	let mut u = DMatrix::zeros(5, 2);
+	let mut u = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_tangent(&y, &mut u).unwrap();
 
-	let mut v = DMatrix::zeros(5, 2);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_tangent(&y, &mut v).unwrap();
 
 	// Test symmetry
@@ -124,13 +129,14 @@ fn test_grassmann_random_point() {
 	let gr = Grassmann::<f64>::new(6, 3).unwrap();
 
 	for _ in 0..5 {
-		let mut y = DMatrix::zeros(6, 3);
+		let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 3);
 		gr.random_point(&mut y).unwrap();
 
 		// Check Y^T Y = I
-		let yty = y.transpose() * &y;
-		let eye = DMatrix::identity(3, 3);
-		assert_relative_eq!(yty, eye, epsilon = 1e-12);
+		let yty = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &y);
+		let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
+		let diff = MatrixOps::sub(&yty, &eye);
+		assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
 	}
 }
 
@@ -138,55 +144,57 @@ fn test_grassmann_random_point() {
 fn test_grassmann_parallel_transport() {
 	let gr = Grassmann::<f64>::new(5, 2).unwrap();
 
-	let mut y1 = DMatrix::zeros(5, 2);
+	let mut y1 = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_point(&mut y1).unwrap();
 
-	let mut y2 = DMatrix::zeros(5, 2);
+	let mut y2 = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_point(&mut y2).unwrap();
 
-	let mut v = DMatrix::zeros(5, 2);
+	let mut v = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_tangent(&y1, &mut v).unwrap();
 
-	let transported = gr.parallel_transport(&y1, &y2, &v).unwrap();
+	let mut transported = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
+	gr.parallel_transport(&y1, &y2, &v, &mut transported)
+		.unwrap();
 
 	// Check transported vector is in tangent space at y2: Y2^T transported = 0
-	let y2t_transported = y2.transpose() * &transported;
-	assert_relative_eq!(y2t_transported.norm(), 0.0, epsilon = 1e-10);
+	let y2t_transported = MatrixOps::mat_mul(&MatrixOps::transpose(&y2), &transported);
+	assert_relative_eq!(MatrixOps::norm(&y2t_transported), 0.0, epsilon = 1e-10);
 
 	// Check norm is reasonable (should be preserved or close)
-	assert!(transported.norm() > 0.0);
+	assert!(MatrixOps::norm(&transported) > 0.0);
 }
 
 #[test]
 fn test_grassmann_euclidean_to_riemannian_gradient() {
 	let gr = Grassmann::<f64>::new(5, 2).unwrap();
 
-	let mut y = DMatrix::zeros(5, 2);
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.random_point(&mut y).unwrap();
 
 	// Create an arbitrary euclidean gradient
-	let egrad = DMatrix::from_fn(5, 2, |i, j| {
+	let egrad = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(5, 2, |i, j| {
 		((i + 1) as f64) * 0.1 - ((j + 1) as f64) * 0.05
 	});
 
-	let mut rgrad = DMatrix::zeros(5, 2);
+	let mut rgrad = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
 	gr.euclidean_to_riemannian_gradient(&y, &egrad, &mut rgrad)
 		.unwrap();
 
 	// Result should be in tangent space: Y^T rgrad = 0
-	let ytr = y.transpose() * &rgrad;
-	assert_relative_eq!(ytr.norm(), 0.0, epsilon = 1e-12);
+	let ytr = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &rgrad);
+	assert_relative_eq!(MatrixOps::norm(&ytr), 0.0, epsilon = 1e-12);
 }
 
 #[test]
 fn test_grassmann_is_point_on_manifold() {
 	let gr = Grassmann::<f64>::new(4, 2).unwrap();
 
-	let mut y = DMatrix::zeros(4, 2);
+	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	gr.random_point(&mut y).unwrap();
 	assert!(gr.is_point_on_manifold(&y, 1e-10));
 
 	// A non-orthonormal matrix should not be on manifold
-	let bad = DMatrix::from_fn(4, 2, |i, j| (i + j) as f64);
+	let bad = <linalg::Mat<f64> as MatrixOps<f64>>::from_fn(4, 2, |i, j| (i + j) as f64);
 	assert!(!gr.is_point_on_manifold(&bad, 1e-10));
 }

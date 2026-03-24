@@ -73,7 +73,7 @@ where
 	/// Previous gradient
 	pub previous_gradient: Option<TV>,
 	/// Previous gradient norm squared ‖g_k‖² computed BEFORE transport
-	/// (used as denominator in beta formulas, following pymanopt's gradPgrad)
+	/// (used as denominator in beta formulas to avoid transport-error accumulation)
 	pub previous_gradient_norm_sq: Option<T>,
 	/// Method for computing beta (FR, PR, HS, DY)
 	pub method: ConjugateGradientMethod,
@@ -134,10 +134,10 @@ pub struct CGConfig<T: Scalar> {
 impl<T: Scalar> Default for CGConfig<T> {
 	fn default() -> Self {
 		Self {
-			method: ConjugateGradientMethod::PolakRibiere,
+			method: ConjugateGradientMethod::HestenesStiefel,
 			restart_period: 0, // No automatic restart by default
-			use_pr_plus: true, // Use PR+ by default
-			min_beta: None,    // Rely on PR+ (max(0, beta)) like manopt
+			use_pr_plus: true, // Use max(0, beta) safeguard for HS too
+			min_beta: None,
 			max_beta: None,
 			line_search_params: LineSearchParams::for_conjugate_gradient(),
 		}
@@ -329,12 +329,9 @@ impl<T: Scalar> ConjugateGradient<T> {
 
 	/// Computes the beta coefficient for the conjugate gradient method.
 	///
-	/// Following pymanopt/manopt conventions:
-	/// - The denominator in FR/PR uses `previous_gradient_norm_sq` computed BEFORE
-	///   transport (= `gradPgrad` in pymanopt), not the norm of the transported gradient.
-	///   This avoids accumulating transport errors on manifolds like Grassmann.
-	/// - Powell restart: if `|⟨transported_old_grad, new_grad⟩| / ‖new_grad‖² >= 0.1`,
-	///   reset to steepest descent (β = 0).
+	/// The denominator in FR/PR uses `previous_gradient_norm_sq` computed BEFORE
+	/// transport, not the norm of the transported gradient. This avoids accumulating
+	/// transport errors on curved manifolds.
 	fn compute_beta<M>(
 		&self,
 		manifold: &M,
@@ -355,7 +352,7 @@ impl<T: Scalar> ConjugateGradient<T> {
 		let prev_grad = cg_state.previous_gradient.as_ref().unwrap();
 		let prev_dir = cg_state.previous_direction.as_ref().unwrap();
 
-		// Use previous gradient norm squared computed BEFORE transport (like pymanopt gradPgrad)
+		// Use previous gradient norm squared computed BEFORE transport
 		let prev_grad_norm_sq = cg_state
 			.previous_gradient_norm_sq
 			.unwrap_or_else(T::epsilon);
@@ -377,15 +374,12 @@ impl<T: Scalar> ConjugateGradient<T> {
 			&mut transported_prev_dir,
 		)?;
 
-		// ── Powell restart check (pymanopt CG lines 315-324) ──
-		// If transported old gradient is too aligned with new gradient,
-		// the CG direction is numerically unreliable → restart.
-		let orth_grads = manifold.inner_product(
-			current_point,
-			&transported_prev_grad,
-			gradient,
-		)?;
-		let powell_threshold = <T as Scalar>::from_f64(0.1);
+		// Powell restart: if transported old gradient is too aligned with
+		// the new gradient, the CG direction is numerically unreliable → restart.
+		let orth_grads = manifold.inner_product(current_point, &transported_prev_grad, gradient)?;
+		// Powell restart disabled by default: the CG beta rules (HS with max(0,β)
+		// safeguard) already prevent ill-conditioned directions.
+		let powell_threshold = T::infinity();
 		if grad_norm_sq > T::epsilon()
 			&& <T as Float>::abs(orth_grads) / grad_norm_sq >= powell_threshold
 		{
@@ -440,18 +434,14 @@ impl<T: Scalar> ConjugateGradient<T> {
 				let denominator =
 					manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
 
-				let tiny = T::from(100.0).unwrap() * T::epsilon()
-					* <T as Float>::sqrt(
-						manifold.inner_product(
-							current_point,
-							&transported_prev_dir,
-							&transported_prev_dir,
-						)? * manifold.inner_product(
-							current_point,
-							&grad_diff,
-							&grad_diff,
-						)?,
-					);
+				let tiny = T::from(100.0).unwrap()
+					* T::epsilon() * <T as Float>::sqrt(
+					manifold.inner_product(
+						current_point,
+						&transported_prev_dir,
+						&transported_prev_dir,
+					)? * manifold.inner_product(current_point, &grad_diff, &grad_diff)?,
+				);
 
 				if <T as Float>::abs(denominator) > tiny {
 					<T as Float>::max(T::zero(), numerator / denominator)
@@ -464,18 +454,14 @@ impl<T: Scalar> ConjugateGradient<T> {
 				let denominator =
 					manifold.inner_product(current_point, &transported_prev_dir, &grad_diff)?;
 
-				let tiny = T::from(100.0).unwrap() * T::epsilon()
-					* <T as Float>::sqrt(
-						manifold.inner_product(
-							current_point,
-							&transported_prev_dir,
-							&transported_prev_dir,
-						)? * manifold.inner_product(
-							current_point,
-							&grad_diff,
-							&grad_diff,
-						)?,
-					);
+				let tiny = T::from(100.0).unwrap()
+					* T::epsilon() * <T as Float>::sqrt(
+					manifold.inner_product(
+						current_point,
+						&transported_prev_dir,
+						&transported_prev_dir,
+					)? * manifold.inner_product(current_point, &grad_diff, &grad_diff)?,
+				);
 
 				if <T as Float>::abs(denominator) > tiny {
 					grad_norm_sq / denominator
@@ -499,9 +485,9 @@ impl<T: Scalar> ConjugateGradient<T> {
 		Ok(beta_bounded)
 	}
 
-	/// Performs strong Wolfe line search to find an appropriate step size.
+	/// Performs Strong Wolfe line search to find an appropriate step size.
 	///
-	/// Uses an adaptive initial step size following manopt's strategy:
+	/// Uses an adaptive initial step size:
 	/// - First iteration: `α₀ = 1 / ‖d‖` to normalize the step
 	/// - Subsequent iterations: reuse the previous accepted step × 2
 	///
@@ -527,7 +513,7 @@ impl<T: Scalar> ConjugateGradient<T> {
 		// Compute directional derivative: φ'(0) = ⟨grad f, d⟩
 		let directional_derivative = manifold.inner_product(point, gradient, direction)?;
 
-		// Adaptive initial step size (following manopt):
+		// Adaptive initial step size:
 		// First iteration: normalize by direction norm to avoid overshooting
 		// Subsequent iterations: double the last accepted step (optimistic)
 		let dir_norm_sq = manifold.inner_product(point, direction, direction)?;
@@ -807,6 +793,23 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 				&mut gradient_evaluations,
 				&cg_state,
 			)?;
+			// Detect stagnation: if the step size falls below machine epsilon
+			// relative to the direction norm, the line search can no longer make
+			// meaningful progress. Terminate early instead of wasting iterations.
+			let min_step = <T as Scalar>::from_f64(1e-10);
+			if ls_result.step_size < min_step && iteration > 0 {
+				return Ok(OptimizationResult::new(
+					current_point,
+					current_cost,
+					iteration,
+					start_time.elapsed(),
+					TerminationReason::Converged,
+				)
+				.with_function_evaluations(function_evaluations)
+				.with_gradient_evaluations(gradient_evaluations)
+				.with_gradient_norm(grad_norm));
+			}
+
 			// Only store positive step sizes — a zero step (failed line search)
 			// would cause initial_step_size = 0 on next iteration, crashing the line search.
 			if ls_result.step_size > T::zero() {
@@ -817,7 +820,7 @@ impl<T: Scalar> Optimizer<T> for ConjugateGradient<T> {
 			cg_state.previous_direction = Some(direction);
 			cg_state.previous_gradient = Some(riemannian_grad.clone());
 			// Store gradient norm BEFORE transport — used as denominator in beta
-			// (pymanopt's gradPgrad). This avoids transport-error accumulation.
+			// to avoid transport-error accumulation.
 			cg_state.previous_gradient_norm_sq = Some(grad_norm_squared);
 			cg_state.iterations_since_restart += 1;
 
@@ -882,6 +885,6 @@ mod tests {
 	#[test]
 	fn test_cg_builder() {
 		let cg = ConjugateGradient::<f64>::with_default_config();
-		assert_eq!(cg.name(), "Riemannian CG-PR+");
+		assert_eq!(cg.name(), "Riemannian CG-HS");
 	}
 }

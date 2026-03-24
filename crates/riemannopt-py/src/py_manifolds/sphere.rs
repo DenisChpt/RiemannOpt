@@ -3,14 +3,14 @@
 //! This module provides a Python-friendly interface to the Sphere manifold,
 //! handling all workspace management and type conversions internally.
 
-use nalgebra::{DMatrix, DVector};
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
+use riemannopt_core::linalg::VectorOps;
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Sphere;
 
 use super::base::{array_to_point, PointType, PyManifoldBase};
-use crate::array_utils::{dvector_to_numpy, numpy_to_dvector};
+use crate::array_utils::{numpy_to_vec, vec_to_numpy, Mat64, Vec64};
 use crate::error::to_py_err;
 use crate::types::PyPoint;
 
@@ -87,7 +87,7 @@ impl PySphere {
 		py: Python<'py>,
 		point: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let point_vec = numpy_to_dvector(point)?;
+		let point_vec = numpy_to_vec(point)?;
 
 		// Validate dimension
 		if point_vec.len() != self.dimension {
@@ -97,11 +97,11 @@ impl PySphere {
 			));
 		}
 
-		let mut result = DVector::zeros(self.dimension);
+		let mut result: Vec64 = VectorOps::zeros(self.dimension);
 
 		self.inner.project_point(&point_vec, &mut result);
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian exponential map.
@@ -120,8 +120,8 @@ impl PySphere {
 		point: PyReadonlyArray1<'_, f64>,
 		tangent: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let point_vec = numpy_to_dvector(point)?;
-		let tangent_vec = numpy_to_dvector(tangent)?;
+		let point_vec = numpy_to_vec(point)?;
+		let tangent_vec = numpy_to_vec(tangent)?;
 
 		// Validate dimensions
 		if point_vec.len() != self.dimension || tangent_vec.len() != self.dimension {
@@ -136,7 +136,7 @@ impl PySphere {
 			.exp_map(&point_vec, &tangent_vec)
 			.map_err(to_py_err)?;
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian logarithm map.
@@ -155,8 +155,8 @@ impl PySphere {
 		point: PyReadonlyArray1<'_, f64>,
 		other: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let point_vec = numpy_to_dvector(point)?;
-		let other_vec = numpy_to_dvector(other)?;
+		let point_vec = numpy_to_vec(point)?;
+		let other_vec = numpy_to_vec(other)?;
 
 		// Validate dimensions
 		if point_vec.len() != self.dimension || other_vec.len() != self.dimension {
@@ -166,12 +166,12 @@ impl PySphere {
 			));
 		}
 
-		let mut result = DVector::zeros(self.dimension);
+		let mut result: Vec64 = VectorOps::zeros(self.dimension);
 		self.inner
 			.inverse_retract(&point_vec, &other_vec, &mut result)
 			.map_err(to_py_err)?;
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	/// Retract a tangent vector to the manifold.
@@ -190,8 +190,8 @@ impl PySphere {
 		point: PyReadonlyArray1<'_, f64>,
 		tangent: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let point_vec = numpy_to_dvector(point)?;
-		let tangent_vec = numpy_to_dvector(tangent)?;
+		let point_vec = numpy_to_vec(point)?;
+		let tangent_vec = numpy_to_vec(tangent)?;
 
 		// Validate dimensions
 		if point_vec.len() != self.dimension || tangent_vec.len() != self.dimension {
@@ -201,13 +201,13 @@ impl PySphere {
 			));
 		}
 
-		let mut result = DVector::zeros(self.dimension);
+		let mut result: Vec64 = VectorOps::zeros(self.dimension);
 
 		self.inner
 			.retract(&point_vec, &tangent_vec, &mut result)
 			.map_err(to_py_err)?;
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	/// Project a vector onto the tangent space.
@@ -224,8 +224,8 @@ impl PySphere {
 		point: PyReadonlyArray1<'_, f64>,
 		vector: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let point_vec = numpy_to_dvector(point)?;
-		let vector_vec = numpy_to_dvector(vector)?;
+		let point_vec = numpy_to_vec(point)?;
+		let vector_vec = numpy_to_vec(vector)?;
 
 		// Validate dimensions
 		if point_vec.len() != self.dimension || vector_vec.len() != self.dimension {
@@ -235,13 +235,13 @@ impl PySphere {
 			));
 		}
 
-		let mut result = DVector::zeros(self.dimension);
+		let mut result: Vec64 = VectorOps::zeros(self.dimension);
 
 		self.inner
 			.project_tangent(&point_vec, &vector_vec, &mut result)
 			.map_err(to_py_err)?;
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian inner product.
@@ -260,9 +260,9 @@ impl PySphere {
 		u: PyReadonlyArray1<'_, f64>,
 		v: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<f64> {
-		let point_vec = numpy_to_dvector(point)?;
-		let u_vec = numpy_to_dvector(u)?;
-		let v_vec = numpy_to_dvector(v)?;
+		let point_vec = numpy_to_vec(point)?;
+		let u_vec = numpy_to_vec(u)?;
+		let v_vec = numpy_to_vec(v)?;
 
 		// Validate dimensions
 		if point_vec.len() != self.dimension
@@ -294,8 +294,8 @@ impl PySphere {
 		point: PyReadonlyArray1<'_, f64>,
 		tangent: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<f64> {
-		let point_vec = numpy_to_dvector(point)?;
-		let tangent_vec = numpy_to_dvector(tangent)?;
+		let point_vec = numpy_to_vec(point)?;
+		let tangent_vec = numpy_to_vec(tangent)?;
 
 		// Validate dimensions
 		if point_vec.len() != self.dimension || tangent_vec.len() != self.dimension {
@@ -325,8 +325,8 @@ impl PySphere {
 		x: PyReadonlyArray1<'_, f64>,
 		y: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<f64> {
-		let x_vec = numpy_to_dvector(x)?;
-		let y_vec = numpy_to_dvector(y)?;
+		let x_vec = numpy_to_vec(x)?;
+		let y_vec = numpy_to_vec(y)?;
 
 		// Validate dimensions
 		if x_vec.len() != self.dimension || y_vec.len() != self.dimension {
@@ -346,7 +346,7 @@ impl PySphere {
 	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
 		let result = self.inner.random_point();
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	/// Generate a random tangent vector at a point.
@@ -364,7 +364,7 @@ impl PySphere {
 		point: PyReadonlyArray1<'_, f64>,
 		scale: f64,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let point_vec = numpy_to_dvector(point)?;
+		let point_vec = numpy_to_vec(point)?;
 
 		// Validate dimension
 		if point_vec.len() != self.dimension {
@@ -378,10 +378,10 @@ impl PySphere {
 
 		// Scale the result if needed
 		if scale != 1.0 {
-			result *= scale;
+			result.scale_mut(scale);
 		}
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	/// Parallel transport a tangent vector along a geodesic.
@@ -400,9 +400,9 @@ impl PySphere {
 		to_point: PyReadonlyArray1<'_, f64>,
 		tangent: PyReadonlyArray1<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let from_vec = numpy_to_dvector(from_point)?;
-		let to_vec = numpy_to_dvector(to_point)?;
-		let tangent_vec = numpy_to_dvector(tangent)?;
+		let from_vec = numpy_to_vec(from_point)?;
+		let to_vec = numpy_to_vec(to_point)?;
+		let tangent_vec = numpy_to_vec(tangent)?;
 
 		// Validate dimensions
 		if from_vec.len() != self.dimension
@@ -420,7 +420,7 @@ impl PySphere {
 			.parallel_transport(&from_vec, &to_vec, &tangent_vec)
 			.map_err(to_py_err)?;
 
-		dvector_to_numpy(py, &result)
+		vec_to_numpy(py, &result)
 	}
 
 	// Include common methods from macro
@@ -506,32 +506,22 @@ impl PySphere {
 	}
 
 	/// Check if a vector point is on the manifold.
-	fn contains_vector(&self, point: &DVector<f64>, atol: f64) -> PyResult<bool> {
+	fn contains_vector(&self, point: &Vec64, atol: f64) -> PyResult<bool> {
 		Ok(self.inner.is_point_on_manifold(point, atol))
 	}
 
 	/// Check if a matrix point is on the manifold (not applicable for sphere).
-	fn contains_matrix(&self, _mat: &DMatrix<f64>, _atol: f64) -> PyResult<bool> {
+	fn contains_matrix(&self, _mat: &Mat64, _atol: f64) -> PyResult<bool> {
 		Err(crate::error::type_error("vector point", "matrix point"))
 	}
 
 	/// Check if a vector is in the tangent space.
-	fn is_tangent_vector(
-		&self,
-		point: &DVector<f64>,
-		vector: &DVector<f64>,
-		atol: f64,
-	) -> PyResult<bool> {
+	fn is_tangent_vector(&self, point: &Vec64, vector: &Vec64, atol: f64) -> PyResult<bool> {
 		Ok(self.inner.is_vector_in_tangent_space(point, vector, atol))
 	}
 
 	/// Check if a matrix is in the tangent space (not applicable for sphere).
-	fn is_tangent_matrix(
-		&self,
-		_point: &DMatrix<f64>,
-		_vector: &DMatrix<f64>,
-		_atol: f64,
-	) -> PyResult<bool> {
+	fn is_tangent_matrix(&self, _point: &Mat64, _vector: &Mat64, _atol: f64) -> PyResult<bool> {
 		Err(crate::error::type_error("vector tangent", "matrix tangent"))
 	}
 }

@@ -93,21 +93,21 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Oblique;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DMatrix;
+//! use riemannopt_core::linalg::{MatrixOps, VectorOps};
 //!
 //! // Create OB(3,2) - two unit vectors in ℝ³
 //! let oblique = Oblique::new(3, 2)?;
 //!
 //! // Random point with unit-norm columns
-//! let mut x = DMatrix::<f64>::zeros(3, 2);
-//! oblique.random_point(&mut x)?;
+//! let mut x = riemannopt_core::linalg::Mat::<f64>::zeros(3, 2);
+//! <Oblique as Manifold<f64>>::random_point(&oblique, &mut x)?;
 //! for j in 0..2 {
 //!     assert!((x.column(j).norm() - 1.0).abs() < 1e-14);
 //! }
 //!
 //! // Tangent vector
-//! let mut v = DMatrix::<f64>::zeros(3, 2);
-//! oblique.random_tangent(&x, &mut v)?;
+//! let mut v = riemannopt_core::linalg::Mat::<f64>::zeros(3, 2);
+//! <Oblique as Manifold<f64>>::random_tangent(&oblique, &x, &mut v)?;
 //!
 //! // Verify orthogonality: x_j^T v_j = 0
 //! for j in 0..2 {
@@ -116,14 +116,13 @@
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::DMatrix;
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use std::fmt::Debug;
 
 use riemannopt_core::{
-	core::matrix_manifold::MatrixManifold,
 	error::{ManifoldError, Result},
+	linalg::{self, LinAlgBackend, MatrixOps, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -224,7 +223,9 @@ impl Oblique {
 	pub fn manifold_dim(&self) -> usize {
 		self.p * (self.n - 1)
 	}
+}
 
+impl Oblique {
 	/// Validates that a matrix has unit-norm columns.
 	///
 	/// # Mathematical Check
@@ -235,7 +236,10 @@ impl Oblique {
 	///
 	/// - `DimensionMismatch`: If matrix dimensions don't match (n,p)
 	/// - `NotOnManifold`: If any column doesn't have unit norm
-	pub fn check_point<T: Scalar>(&self, x: &DMatrix<T>) -> Result<()> {
+	pub fn check_point<T: Scalar + Float>(&self, x: &linalg::Mat<T>) -> Result<()>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		if x.nrows() != self.n || x.ncols() != self.p {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.p),
@@ -244,7 +248,8 @@ impl Oblique {
 		}
 
 		for j in 0..self.p {
-			let col_norm = x.column(j).norm();
+			let col = x.column(j);
+			let col_norm = col.norm();
 			if <T as Float>::abs(col_norm - T::one()) > <T as Scalar>::from_f64(self.tolerance) {
 				return Err(ManifoldError::invalid_point(format!(
 					"Column {} has norm {} (expected 1.0, tolerance: {})",
@@ -267,7 +272,14 @@ impl Oblique {
 	/// - `DimensionMismatch`: If dimensions don't match
 	/// - `NotOnManifold`: If X is not on Oblique
 	/// - `NotInTangentSpace`: If orthogonality constraints violated
-	pub fn check_tangent<T: Scalar>(&self, x: &DMatrix<T>, v: &DMatrix<T>) -> Result<()> {
+	pub fn check_tangent<T: Scalar + Float>(
+		&self,
+		x: &linalg::Mat<T>,
+		v: &linalg::Mat<T>,
+	) -> Result<()>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.check_point(x)?;
 
 		if v.nrows() != self.n || v.ncols() != self.p {
@@ -278,7 +290,9 @@ impl Oblique {
 		}
 
 		for j in 0..self.p {
-			let inner = x.column(j).dot(&v.column(j));
+			let x_col = x.column(j);
+			let v_col = v.column(j);
+			let inner = x_col.dot(&v_col);
 			if <T as Float>::abs(inner) > <T as Scalar>::from_f64(self.tolerance) {
 				return Err(ManifoldError::invalid_tangent(format!(
 					"Column {} violates orthogonality: x_j^T v_j = {} (tolerance: {})",
@@ -293,20 +307,31 @@ impl Oblique {
 	/// Normalizes columns of a matrix to unit norm.
 	///
 	/// Zero columns are mapped to the first standard basis vector e_1.
-	fn normalize_columns<T: Scalar>(&self, matrix: &DMatrix<T>, result: &mut DMatrix<T>) {
+	fn normalize_columns<T: Scalar + Float>(
+		&self,
+		matrix: &linalg::Mat<T>,
+		result: &mut linalg::Mat<T>,
+	) where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		result.copy_from(matrix);
 
 		for j in 0..self.p {
 			let col_norm = result.column(j).norm();
 			if col_norm > <T as Scalar>::from_f64(1e-16) {
-				let mut col_mut = result.column_mut(j);
-				col_mut /= col_norm;
+				let inv_norm = T::one() / col_norm;
+				let col_slice = result.column_as_mut_slice(j);
+				for val in col_slice.iter_mut() {
+					*val = *val * inv_norm;
+				}
 			} else {
 				// Handle zero columns by setting to e_1
-				let mut col_mut = result.column_mut(j);
-				col_mut.fill(T::zero());
+				let col_slice = result.column_as_mut_slice(j);
+				for val in col_slice.iter_mut() {
+					*val = T::zero();
+				}
 				if self.n > 0 {
-					col_mut[0] = T::one();
+					col_slice[0] = T::one();
 				}
 			}
 		}
@@ -329,28 +354,38 @@ impl Oblique {
 	/// # Returns
 	///
 	/// The point exp_X(V) on the manifold.
-	pub fn exp_map<T: Scalar>(&self, x: &DMatrix<T>, v: &DMatrix<T>) -> Result<DMatrix<T>> {
+	pub fn exp_map<T: Scalar + Float>(
+		&self,
+		x: &linalg::Mat<T>,
+		v: &linalg::Mat<T>,
+	) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.check_tangent(x, v)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 
 		for j in 0..self.p {
 			let x_col = x.column(j);
 			let v_col = v.column(j);
 			let v_norm = v_col.norm();
 
-			let mut result_col = result.column_mut(j);
+			let col_slice = result.column_as_mut_slice(j);
 
 			if v_norm < <T as Scalar>::from_f64(1e-16) {
-				result_col.copy_from(&x_col);
+				// Copy x_col
+				for i in 0..self.n {
+					col_slice[i] = x_col.get(i);
+				}
 			} else {
 				let cos_norm = <T as Float>::cos(v_norm);
 				let sin_norm = <T as Float>::sin(v_norm);
 
 				// exp_{x_j}(v_j) = cos(‖v_j‖)x_j + sin(‖v_j‖)v_j/‖v_j‖
-				result_col.copy_from(&x_col);
-				result_col *= cos_norm;
-				result_col.axpy(sin_norm / v_norm, &v_col, T::one());
+				for i in 0..self.n {
+					col_slice[i] = cos_norm * x_col.get(i) + (sin_norm / v_norm) * v_col.get(i);
+				}
 			}
 		}
 
@@ -375,11 +410,18 @@ impl Oblique {
 	/// # Returns
 	///
 	/// The tangent vector log_X(Y) ∈ T_X OB(n,p).
-	pub fn log_map<T: Scalar>(&self, x: &DMatrix<T>, y: &DMatrix<T>) -> Result<DMatrix<T>> {
+	pub fn log_map<T: Scalar + Float>(
+		&self,
+		x: &linalg::Mat<T>,
+		y: &linalg::Mat<T>,
+	) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.check_point(x)?;
 		self.check_point(y)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 
 		for j in 0..self.p {
 			let x_col = x.column(j);
@@ -406,10 +448,10 @@ impl Oblique {
 
 			// log_{x_j}(y_j) = θ/sin(θ) · (y_j - cos(θ)x_j)
 			let scale = theta / sin_theta;
-			let mut result_col = result.column_mut(j);
-			result_col.copy_from(&y_col);
-			result_col.axpy(-clamped, &x_col, T::one());
-			result_col *= scale;
+			let col_slice = result.column_as_mut_slice(j);
+			for i in 0..self.n {
+				col_slice[i] = scale * (y_col.get(i) - clamped * x_col.get(i));
+			}
 		}
 
 		Ok(result)
@@ -432,14 +474,23 @@ impl Oblique {
 	/// # Returns
 	///
 	/// The geodesic distance d(X, Y) ≥ 0.
-	pub fn geodesic_distance<T: Scalar>(&self, x: &DMatrix<T>, y: &DMatrix<T>) -> Result<T> {
+	pub fn geodesic_distance<T: Scalar + Float>(
+		&self,
+		x: &linalg::Mat<T>,
+		y: &linalg::Mat<T>,
+	) -> Result<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.check_point(x)?;
 		self.check_point(y)?;
 
 		let mut dist_squared = T::zero();
 
 		for j in 0..self.p {
-			let inner = x.column(j).dot(&y.column(j));
+			let x_col = x.column(j);
+			let y_col = y.column(j);
+			let inner = x_col.dot(&y_col);
 			let clamped = <T as Float>::max(<T as Float>::min(inner, T::one()), -T::one());
 			let angle = <T as Float>::acos(clamped);
 			dist_squared = dist_squared + angle * angle;
@@ -457,22 +508,25 @@ impl Oblique {
 	/// # Arguments
 	///
 	/// * `x` - Starting point
-	/// * `y` - Ending point  
+	/// * `y` - Ending point
 	/// * `v` - Tangent vector at x
 	///
 	/// # Returns
 	///
 	/// The parallel transported vector at y.
-	pub fn parallel_transport<T: Scalar>(
+	pub fn parallel_transport_geodesic<T: Scalar + Float>(
 		&self,
-		x: &DMatrix<T>,
-		y: &DMatrix<T>,
-		v: &DMatrix<T>,
-	) -> Result<DMatrix<T>> {
+		x: &linalg::Mat<T>,
+		y: &linalg::Mat<T>,
+		v: &linalg::Mat<T>,
+	) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.check_tangent(x, v)?;
 		self.check_point(y)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 
 		for j in 0..self.p {
 			let x_col = x.column(j);
@@ -482,32 +536,42 @@ impl Oblique {
 			let inner = x_col.dot(&y_col);
 			let clamped = <T as Float>::max(<T as Float>::min(inner, T::one()), -T::one());
 
+			let col_slice = result.column_as_mut_slice(j);
+
 			// Same point - no transport needed
 			if <T as Float>::abs(clamped - T::one()) < <T as Scalar>::from_f64(1e-14) {
-				result.column_mut(j).copy_from(&v_col);
+				for i in 0..self.n {
+					col_slice[i] = v_col.get(i);
+				}
 				continue;
 			}
 
 			// Antipodal points - transport is ambiguous but we keep the vector
 			if <T as Float>::abs(clamped + T::one()) < <T as Scalar>::from_f64(1e-14) {
-				result.column_mut(j).copy_from(&v_col);
+				for i in 0..self.n {
+					col_slice[i] = v_col.get(i);
+				}
 				continue;
 			}
 
 			// General transport formula on sphere
 			let factor = (x_col.dot(&v_col) + y_col.dot(&v_col)) / (T::one() + inner);
-			let mut result_col = result.column_mut(j);
-			result_col.copy_from(&v_col);
-			result_col.axpy(-factor, &(&x_col + &y_col), T::one());
+			for i in 0..self.n {
+				col_slice[i] = v_col.get(i) - factor * (x_col.get(i) + y_col.get(i));
+			}
 		}
 
 		Ok(result)
 	}
 }
 
-impl<T: Scalar> Manifold<T> for Oblique {
-	type Point = DMatrix<T>;
-	type TangentVector = DMatrix<T>;
+impl<T> Manifold<T> for Oblique
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Mat<T>;
+	type TangentVector = linalg::Mat<T>;
 
 	fn name(&self) -> &str {
 		"Oblique"
@@ -524,7 +588,8 @@ impl<T: Scalar> Manifold<T> for Oblique {
 
 		// Check each column has unit norm
 		for j in 0..self.p {
-			let col_norm = point.column(j).norm();
+			let col = point.column(j);
+			let col_norm = col.norm();
 			if <T as Float>::abs(col_norm - T::one()) > tol {
 				return false;
 			}
@@ -579,8 +644,10 @@ impl<T: Scalar> Manifold<T> for Oblique {
 			let v_col = vector.column(j);
 			let inner = x_col.dot(&v_col);
 
-			let mut result_col = result.column_mut(j);
-			result_col.axpy(-inner, &x_col, T::one());
+			let col_slice = result.column_as_mut_slice(j);
+			for i in 0..self.n {
+				col_slice[i] = col_slice[i] - inner * x_col.get(i);
+			}
 		}
 
 		Ok(())
@@ -595,7 +662,9 @@ impl<T: Scalar> Manifold<T> for Oblique {
 		// Sum of column-wise inner products
 		let mut total = T::zero();
 		for j in 0..self.p {
-			total += u.column(j).dot(&v.column(j));
+			let u_col = u.column(j);
+			let v_col = v.column(j);
+			total = total + u_col.dot(&v_col);
 		}
 		Ok(total)
 	}
@@ -607,13 +676,17 @@ impl<T: Scalar> Manifold<T> for Oblique {
 		result: &mut Self::Point,
 	) -> Result<()> {
 		// Normalize each column of (X + V)
-		result.copy_from(&(point + tangent));
+		let sum = point.add(tangent);
+		result.copy_from(&sum);
 
 		for j in 0..self.p {
 			let col_norm = result.column(j).norm();
 			if col_norm > T::zero() {
-				let mut col_mut = result.column_mut(j);
-				col_mut /= col_norm;
+				let inv_norm = T::one() / col_norm;
+				let col_slice = result.column_as_mut_slice(j);
+				for val in col_slice.iter_mut() {
+					*val = *val * inv_norm;
+				}
 			}
 		}
 
@@ -647,10 +720,10 @@ impl<T: Scalar> Manifold<T> for Oblique {
 			if sin_theta > <T as Scalar>::from_f64(1e-10) {
 				// v = theta / sin(theta) * (y - cos(theta) * x)
 				let scale = theta / sin_theta;
-				let mut result_col = result.column_mut(j);
-				result_col.copy_from(&y_col);
-				result_col.axpy(-clamped, &x_col, T::one());
-				result_col *= scale;
+				let col_slice = result.column_as_mut_slice(j);
+				for i in 0..self.n {
+					col_slice[i] = scale * (y_col.get(i) - clamped * x_col.get(i));
+				}
 			}
 		}
 
@@ -675,18 +748,30 @@ impl<T: Scalar> Manifold<T> for Oblique {
 		let mut rng = rand::rng();
 		let normal = StandardNormal;
 
-		result.resize_mut(self.n, self.p, T::zero());
+		// Ensure result has correct dimensions
+		if result.nrows() != self.n || result.ncols() != self.p {
+			*result = MatrixOps::zeros(self.n, self.p);
+		}
 
 		// Generate random columns and normalize
 		for j in 0..self.p {
+			let col_slice = result.column_as_mut_slice(j);
 			for i in 0..self.n {
-				result[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				col_slice[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 
-			let col_norm = result.column(j).norm();
+			// Compute norm
+			let mut norm_sq = T::zero();
+			for i in 0..self.n {
+				norm_sq = norm_sq + col_slice[i] * col_slice[i];
+			}
+			let col_norm = <T as Float>::sqrt(norm_sq);
+
 			if col_norm > T::zero() {
-				let mut col_mut = result.column_mut(j);
-				col_mut /= col_norm;
+				let inv_norm = T::one() / col_norm;
+				for val in col_slice.iter_mut() {
+					*val = *val * inv_norm;
+				}
 			}
 		}
 
@@ -697,10 +782,16 @@ impl<T: Scalar> Manifold<T> for Oblique {
 		let mut rng = rand::rng();
 		let normal = StandardNormal;
 
+		// Ensure result has correct dimensions
+		if result.nrows() != self.n || result.ncols() != self.p {
+			*result = MatrixOps::zeros(self.n, self.p);
+		}
+
 		// Generate random matrix
-		for i in 0..self.n {
-			for j in 0..self.p {
-				result[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+		for j in 0..self.p {
+			let col_slice = result.column_as_mut_slice(j);
+			for i in 0..self.n {
+				col_slice[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
@@ -729,15 +820,21 @@ impl<T: Scalar> Manifold<T> for Oblique {
 			let inner = x_col.dot(&y_col);
 			let clamped = <T as Float>::min(<T as Float>::max(inner, -T::one()), T::one());
 
+			let col_slice = result.column_as_mut_slice(j);
+
 			if <T as Float>::abs(clamped - T::one()) < <T as Scalar>::from_f64(1e-10) {
 				// Same point, no transport needed
-				result.column_mut(j).copy_from(&v_col);
+				for i in 0..self.n {
+					col_slice[i] = v_col.get(i);
+				}
 				continue;
 			}
 
 			if <T as Float>::abs(clamped + T::one()) < <T as Scalar>::from_f64(1e-10) {
 				// Antipodal points
-				result.column_mut(j).copy_from(&v_col);
+				for i in 0..self.n {
+					col_slice[i] = v_col.get(i);
+				}
 				continue;
 			}
 
@@ -746,20 +843,19 @@ impl<T: Scalar> Manifold<T> for Oblique {
 			let sin_theta = <T as Float>::sin(theta);
 
 			// Tangent direction at x towards y
-			let mut xi = y_col.clone_owned();
-			xi.axpy(-clamped, &x_col, T::one());
-			xi /= sin_theta;
+			let mut xi = linalg::Vec::<T>::zeros(self.n);
+			for i in 0..self.n {
+				*xi.get_mut(i) = y_col.get(i) - clamped * x_col.get(i);
+			}
+			xi.scale_mut(T::one() / sin_theta);
 
-			// Transport formula
+			// Transport formula: τ(v) = v - sin(θ)⟨v,ξ⟩·x + (cos(θ)-1)⟨v,ξ⟩·ξ
 			let v_xi_inner = v_col.dot(&xi);
-			let mut result_col = result.column_mut(j);
-			result_col.copy_from(&v_col);
-			result_col.axpy(-sin_theta * v_xi_inner, &x_col, T::one());
-			result_col.axpy(
-				(T::one() - <T as Float>::cos(theta)) * v_xi_inner,
-				&xi,
-				T::one(),
-			);
+			let sin_coeff = T::zero() - sin_theta * v_xi_inner;
+			let cos_coeff = (<T as Float>::cos(theta) - T::one()) * v_xi_inner;
+			for i in 0..self.n {
+				col_slice[i] = v_col.get(i) + sin_coeff * x_col.get(i) + cos_coeff * xi.get(i);
+			}
 		}
 
 		Ok(())
@@ -777,7 +873,7 @@ impl<T: Scalar> Manifold<T> for Oblique {
 			let clamped = <T as Float>::min(<T as Float>::max(inner, -T::one()), T::one());
 			let angle = <T as Float>::acos(clamped);
 
-			dist_squared += angle * angle;
+			dist_squared = dist_squared + angle * angle;
 		}
 
 		Ok(<T as Float>::sqrt(dist_squared))
@@ -801,7 +897,7 @@ impl<T: Scalar> Manifold<T> for Oblique {
 		// For Oblique manifold, tangent vectors have orthogonal columns to the point columns
 		// Scaling preserves this orthogonality
 		result.copy_from(tangent);
-		*result *= scalar;
+		result.scale_mut(scalar);
 		Ok(())
 	}
 
@@ -816,7 +912,7 @@ impl<T: Scalar> Manifold<T> for Oblique {
 	) -> Result<()> {
 		// Add the tangent vectors
 		temp.copy_from(v1);
-		*temp += v2;
+		temp.add_assign(v2);
 
 		// The sum should already satisfy the tangent space constraint if v1 and v2 do,
 		// but we project for numerical stability
@@ -826,8 +922,12 @@ impl<T: Scalar> Manifold<T> for Oblique {
 	}
 }
 
-impl<T: Scalar> MatrixManifold<T> for Oblique {
-	fn matrix_dims(&self) -> (usize, usize) {
-		(self.n, self.p)
-	}
-}
+// NOTE: MatrixManifold<T> impl commented out because the trait still requires
+// `Point = DMatrix<T>` but we now use `linalg::Mat<T>`. Will be re-enabled
+// once riemannopt-core's MatrixManifold trait is migrated to the linalg layer.
+//
+// impl<T: Scalar> MatrixManifold<T> for Oblique {
+// 	fn matrix_dims(&self) -> (usize, usize) {
+// 		(self.n, self.p)
+// 	}
+// }

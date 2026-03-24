@@ -4,16 +4,16 @@
 //! Parameters (matrices A, b, N) are converted from NumPy once at construction
 //! time, then all cost/gradient evaluations happen in pure Rust.
 
-use nalgebra::{DMatrix, DVector};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
+	linalg::{DecompositionOps, MatrixOps, VectorOps},
 	memory::workspace::Workspace,
 };
 
-use crate::array_utils::{dmatrix_to_numpy, dvector_to_numpy, numpy_to_dmatrix, numpy_to_dvector};
+use crate::array_utils::{mat_to_numpy, numpy_to_mat, numpy_to_vec, vec_to_numpy, Mat64, Vec64};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  1. Rayleigh Quotient: f(x) = x^T A x,  grad = 2Ax
@@ -26,7 +26,7 @@ use crate::array_utils::{dmatrix_to_numpy, dvector_to_numpy, numpy_to_dmatrix, n
 #[pyclass(name = "RayleighQuotient", module = "riemannopt")]
 #[derive(Clone)]
 pub struct PyRayleighQuotient {
-	a: DMatrix<f64>,
+	a: Mat64,
 	dim: usize,
 }
 
@@ -34,7 +34,7 @@ pub struct PyRayleighQuotient {
 impl PyRayleighQuotient {
 	#[new]
 	fn new(a: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
-		let mat = numpy_to_dmatrix(a)?;
+		let mat = numpy_to_mat(a)?;
 		let dim = mat.nrows();
 		if mat.ncols() != dim {
 			return Err(pyo3::exceptions::PyValueError::new_err(
@@ -46,8 +46,8 @@ impl PyRayleighQuotient {
 
 	#[pyo3(name = "cost")]
 	fn py_cost(&self, x: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
-		let xv = numpy_to_dvector(x)?;
-		let ax = &self.a * &xv;
+		let xv = numpy_to_vec(x)?;
+		let ax = self.a.mat_vec(&xv);
 		Ok(xv.dot(&ax))
 	}
 
@@ -57,9 +57,10 @@ impl PyRayleighQuotient {
 		py: Python<'py>,
 		x: PyReadonlyArray1<'py, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let xv = numpy_to_dvector(x)?;
-		let grad = &self.a * &xv * 2.0;
-		dvector_to_numpy(py, &grad)
+		let xv = numpy_to_vec(x)?;
+		let mut grad = self.a.mat_vec(&xv);
+		grad.scale_mut(2.0);
+		vec_to_numpy(py, &grad)
 	}
 
 	fn __repr__(&self) -> String {
@@ -74,56 +75,60 @@ impl std::fmt::Debug for PyRayleighQuotient {
 }
 
 impl CostFunction<f64> for PyRayleighQuotient {
-	type Point = DVector<f64>;
-	type TangentVector = DVector<f64>;
+	type Point = Vec64;
+	type TangentVector = Vec64;
 
-	fn cost(&self, point: &DVector<f64>) -> Result<f64> {
-		let ax = &self.a * point;
+	fn cost(&self, point: &Vec64) -> Result<f64> {
+		let ax = self.a.mat_vec(point);
 		Ok(point.dot(&ax))
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
-		let ax = &self.a * point;
+	fn cost_and_gradient_alloc(&self, point: &Vec64) -> Result<(f64, Vec64)> {
+		let ax = self.a.mat_vec(point);
 		let cost = point.dot(&ax);
-		let gradient = &ax * 2.0;
+		let mut gradient = ax;
+		gradient.scale_mut(2.0);
 		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DVector<f64>,
+		point: &Vec64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DVector<f64>,
+		gradient: &mut Vec64,
 	) -> Result<f64> {
-		let ax = &self.a * point;
+		let ax = self.a.mat_vec(point);
 		let cost = point.dot(&ax);
-		*gradient = &ax * 2.0;
+		gradient.copy_from(&ax);
+		gradient.scale_mut(2.0);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
-		Ok(&self.a * point * 2.0)
+	fn gradient(&self, point: &Vec64) -> Result<Vec64> {
+		let mut g = self.a.mat_vec(point);
+		g.scale_mut(2.0);
+		Ok(g)
 	}
 
-	fn hessian_vector_product(
-		&self,
-		_point: &DVector<f64>,
-		vector: &DVector<f64>,
-	) -> Result<DVector<f64>> {
-		Ok(&self.a * vector * 2.0)
+	fn hessian_vector_product(&self, _point: &Vec64, vector: &Vec64) -> Result<Vec64> {
+		let mut hv = self.a.mat_vec(vector);
+		hv.scale_mut(2.0);
+		Ok(hv)
 	}
 
-	fn gradient_fd_alloc(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
+	fn gradient_fd_alloc(&self, point: &Vec64) -> Result<Vec64> {
 		CostFunction::gradient(self, point)
 	}
 
 	fn gradient_fd(
 		&self,
-		point: &DVector<f64>,
+		point: &Vec64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DVector<f64>,
+		gradient: &mut Vec64,
 	) -> Result<()> {
-		*gradient = &self.a * point * 2.0;
+		let g = self.a.mat_vec(point);
+		gradient.copy_from(&g);
+		gradient.scale_mut(2.0);
 		Ok(())
 	}
 }
@@ -139,7 +144,7 @@ impl CostFunction<f64> for PyRayleighQuotient {
 #[pyclass(name = "TraceMinimization", module = "riemannopt")]
 #[derive(Clone)]
 pub struct PyTraceMinimization {
-	a: DMatrix<f64>,
+	a: Mat64,
 	rows: usize,
 }
 
@@ -147,7 +152,7 @@ pub struct PyTraceMinimization {
 impl PyTraceMinimization {
 	#[new]
 	fn new(a: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
-		let mat = numpy_to_dmatrix(a)?;
+		let mat = numpy_to_mat(a)?;
 		let n = mat.nrows();
 		if mat.ncols() != n {
 			return Err(pyo3::exceptions::PyValueError::new_err(
@@ -159,9 +164,9 @@ impl PyTraceMinimization {
 
 	#[pyo3(name = "cost")]
 	fn py_cost(&self, y: PyReadonlyArray2<'_, f64>) -> PyResult<f64> {
-		let ym = numpy_to_dmatrix(y)?;
-		let ay = &self.a * &ym;
-		Ok((ym.transpose() * ay).trace())
+		let ym = numpy_to_mat(y)?;
+		let ay = self.a.mat_mul(&ym);
+		Ok(MatrixOps::transpose(&ym).mat_mul(&ay).trace())
 	}
 
 	#[pyo3(name = "gradient")]
@@ -170,9 +175,10 @@ impl PyTraceMinimization {
 		py: Python<'py>,
 		y: PyReadonlyArray2<'py, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let ym = numpy_to_dmatrix(y)?;
-		let grad = &self.a * &ym * 2.0;
-		dmatrix_to_numpy(py, &grad)
+		let ym = numpy_to_mat(y)?;
+		let mut grad = self.a.mat_mul(&ym);
+		grad.scale_mut(2.0);
+		mat_to_numpy(py, &grad)
 	}
 
 	fn __repr__(&self) -> String {
@@ -187,56 +193,58 @@ impl std::fmt::Debug for PyTraceMinimization {
 }
 
 impl CostFunction<f64> for PyTraceMinimization {
-	type Point = DMatrix<f64>;
-	type TangentVector = DMatrix<f64>;
+	type Point = Mat64;
+	type TangentVector = Mat64;
 
-	fn cost(&self, point: &DMatrix<f64>) -> Result<f64> {
-		let ay = &self.a * point;
-		Ok((point.transpose() * ay).trace())
+	fn cost(&self, point: &Mat64) -> Result<f64> {
+		let ay = self.a.mat_mul(point);
+		Ok(MatrixOps::transpose(point).mat_mul(&ay).trace())
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DMatrix<f64>) -> Result<(f64, DMatrix<f64>)> {
-		let ay = &self.a * point;
-		let cost = (point.transpose() * &ay).trace();
-		let gradient = &ay * 2.0;
+	fn cost_and_gradient_alloc(&self, point: &Mat64) -> Result<(f64, Mat64)> {
+		let ay = self.a.mat_mul(point);
+		let cost = MatrixOps::transpose(point).mat_mul(&ay).trace();
+		let mut gradient = ay;
+		gradient.scale_mut(2.0);
 		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DMatrix<f64>,
+		point: &Mat64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut Mat64,
 	) -> Result<f64> {
-		let ay = &self.a * point;
-		let cost = (point.transpose() * &ay).trace();
-		*gradient = &ay * 2.0;
+		let ay = self.a.mat_mul(point);
+		let cost = MatrixOps::transpose(point).mat_mul(&ay).trace();
+		gradient.copy_from(&ay);
+		gradient.scale_mut(2.0);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DMatrix<f64>) -> Result<DMatrix<f64>> {
-		Ok(&self.a * point * 2.0)
+	fn gradient(&self, point: &Mat64) -> Result<Mat64> {
+		let mut g = self.a.mat_mul(point);
+		g.scale_mut(2.0);
+		Ok(g)
 	}
 
-	fn hessian_vector_product(
-		&self,
-		_point: &DMatrix<f64>,
-		vector: &DMatrix<f64>,
-	) -> Result<DMatrix<f64>> {
-		Ok(&self.a * vector * 2.0)
+	fn hessian_vector_product(&self, _point: &Mat64, vector: &Mat64) -> Result<Mat64> {
+		let mut hv = self.a.mat_mul(vector);
+		hv.scale_mut(2.0);
+		Ok(hv)
 	}
 
-	fn gradient_fd_alloc(&self, point: &DMatrix<f64>) -> Result<DMatrix<f64>> {
+	fn gradient_fd_alloc(&self, point: &Mat64) -> Result<Mat64> {
 		CostFunction::gradient(self, point)
 	}
 
 	fn gradient_fd(
 		&self,
-		point: &DMatrix<f64>,
+		point: &Mat64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut Mat64,
 	) -> Result<()> {
-		*gradient = &self.a * point * 2.0;
+		*gradient = CostFunction::gradient(self, point)?;
 		Ok(())
 	}
 }
@@ -251,8 +259,8 @@ impl CostFunction<f64> for PyTraceMinimization {
 #[pyclass(name = "Brockett", module = "riemannopt")]
 #[derive(Clone)]
 pub struct PyBrockett {
-	a: DMatrix<f64>,
-	n_mat: DMatrix<f64>,
+	a: Mat64,
+	n_mat: Mat64,
 	rows: usize,
 	cols: usize,
 }
@@ -261,8 +269,8 @@ pub struct PyBrockett {
 impl PyBrockett {
 	#[new]
 	fn new(a: PyReadonlyArray2<'_, f64>, n: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
-		let a_mat = numpy_to_dmatrix(a)?;
-		let n_mat = numpy_to_dmatrix(n)?;
+		let a_mat = numpy_to_mat(a)?;
+		let n_mat = numpy_to_mat(n)?;
 		let rows = a_mat.nrows();
 		let cols = n_mat.nrows();
 		if a_mat.ncols() != rows {
@@ -281,9 +289,12 @@ impl PyBrockett {
 
 	#[pyo3(name = "cost")]
 	fn py_cost(&self, x: PyReadonlyArray2<'_, f64>) -> PyResult<f64> {
-		let xm = numpy_to_dmatrix(x)?;
-		let ax = &self.a * &xm;
-		Ok((xm.transpose() * ax * &self.n_mat).trace())
+		let xm = numpy_to_mat(x)?;
+		let ax = self.a.mat_mul(&xm);
+		Ok(MatrixOps::transpose(&xm)
+			.mat_mul(&ax)
+			.mat_mul(&self.n_mat)
+			.trace())
 	}
 
 	#[pyo3(name = "gradient")]
@@ -292,9 +303,10 @@ impl PyBrockett {
 		py: Python<'py>,
 		x: PyReadonlyArray2<'py, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let xm = numpy_to_dmatrix(x)?;
-		let grad = &self.a * &xm * &self.n_mat * 2.0;
-		dmatrix_to_numpy(py, &grad)
+		let xm = numpy_to_mat(x)?;
+		let mut grad = self.a.mat_mul(&xm).mat_mul(&self.n_mat);
+		grad.scale_mut(2.0);
+		mat_to_numpy(py, &grad)
 	}
 
 	fn __repr__(&self) -> String {
@@ -309,56 +321,68 @@ impl std::fmt::Debug for PyBrockett {
 }
 
 impl CostFunction<f64> for PyBrockett {
-	type Point = DMatrix<f64>;
-	type TangentVector = DMatrix<f64>;
+	type Point = Mat64;
+	type TangentVector = Mat64;
 
-	fn cost(&self, point: &DMatrix<f64>) -> Result<f64> {
-		let ax = &self.a * point;
-		Ok((point.transpose() * ax * &self.n_mat).trace())
+	fn cost(&self, point: &Mat64) -> Result<f64> {
+		let ax = self.a.mat_mul(point);
+		Ok(MatrixOps::transpose(point)
+			.mat_mul(&ax)
+			.mat_mul(&self.n_mat)
+			.trace())
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DMatrix<f64>) -> Result<(f64, DMatrix<f64>)> {
-		let ax = &self.a * point;
-		let cost = (point.transpose() * &ax * &self.n_mat).trace();
-		let gradient = &ax * &self.n_mat * 2.0;
+	fn cost_and_gradient_alloc(&self, point: &Mat64) -> Result<(f64, Mat64)> {
+		let ax = self.a.mat_mul(point);
+		let cost = MatrixOps::transpose(point)
+			.mat_mul(&ax)
+			.mat_mul(&self.n_mat)
+			.trace();
+		let mut gradient = ax.mat_mul(&self.n_mat);
+		gradient.scale_mut(2.0);
 		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DMatrix<f64>,
+		point: &Mat64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut Mat64,
 	) -> Result<f64> {
-		let ax = &self.a * point;
-		let cost = (point.transpose() * &ax * &self.n_mat).trace();
-		*gradient = &ax * &self.n_mat * 2.0;
+		let ax = self.a.mat_mul(point);
+		let cost = MatrixOps::transpose(point)
+			.mat_mul(&ax)
+			.mat_mul(&self.n_mat)
+			.trace();
+		let g = ax.mat_mul(&self.n_mat);
+		gradient.copy_from(&g);
+		gradient.scale_mut(2.0);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DMatrix<f64>) -> Result<DMatrix<f64>> {
-		Ok(&self.a * point * &self.n_mat * 2.0)
+	fn gradient(&self, point: &Mat64) -> Result<Mat64> {
+		let mut g = self.a.mat_mul(point).mat_mul(&self.n_mat);
+		g.scale_mut(2.0);
+		Ok(g)
 	}
 
-	fn hessian_vector_product(
-		&self,
-		_point: &DMatrix<f64>,
-		vector: &DMatrix<f64>,
-	) -> Result<DMatrix<f64>> {
-		Ok(&self.a * vector * &self.n_mat * 2.0)
+	fn hessian_vector_product(&self, _point: &Mat64, vector: &Mat64) -> Result<Mat64> {
+		let mut hv = self.a.mat_mul(vector).mat_mul(&self.n_mat);
+		hv.scale_mut(2.0);
+		Ok(hv)
 	}
 
-	fn gradient_fd_alloc(&self, point: &DMatrix<f64>) -> Result<DMatrix<f64>> {
+	fn gradient_fd_alloc(&self, point: &Mat64) -> Result<Mat64> {
 		CostFunction::gradient(self, point)
 	}
 
 	fn gradient_fd(
 		&self,
-		point: &DMatrix<f64>,
+		point: &Mat64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut Mat64,
 	) -> Result<()> {
-		*gradient = &self.a * point * &self.n_mat * 2.0;
+		*gradient = CostFunction::gradient(self, point)?;
 		Ok(())
 	}
 }
@@ -385,13 +409,18 @@ impl PyLogDetDivergence {
 
 	#[pyo3(name = "cost")]
 	fn py_cost(&self, p: PyReadonlyArray2<'_, f64>) -> PyResult<f64> {
-		let pm = numpy_to_dmatrix(p)?;
-		let trace = pm.trace();
-		let chol = pm.clone().cholesky().ok_or_else(|| {
+		let pm = numpy_to_mat(p)?;
+		let trace_val = pm.trace();
+		let chol = pm.cholesky().ok_or_else(|| {
 			pyo3::exceptions::PyValueError::new_err("Matrix is not positive definite")
 		})?;
-		let log_det: f64 = chol.l().diagonal().iter().map(|d| d.ln()).sum::<f64>() * 2.0;
-		Ok(trace - log_det)
+		let l = chol.l();
+		let mut log_det = 0.0_f64;
+		for i in 0..l.nrows() {
+			log_det += l.get(i, i).ln();
+		}
+		log_det *= 2.0;
+		Ok(trace_val - log_det)
 	}
 
 	#[pyo3(name = "gradient")]
@@ -400,14 +429,13 @@ impl PyLogDetDivergence {
 		py: Python<'py>,
 		p: PyReadonlyArray2<'py, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let pm = numpy_to_dmatrix(p)?;
+		let pm = numpy_to_mat(p)?;
 		let n = pm.nrows();
-		let chol = pm.clone().cholesky().ok_or_else(|| {
-			pyo3::exceptions::PyValueError::new_err("Matrix is not positive definite")
-		})?;
-		let p_inv = chol.inverse();
-		let grad = DMatrix::identity(n, n) - p_inv;
-		dmatrix_to_numpy(py, &grad)
+		let p_inv = pm
+			.try_inverse()
+			.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Matrix is not invertible"))?;
+		let grad = <Mat64 as MatrixOps<f64>>::identity(n).sub(&p_inv);
+		mat_to_numpy(py, &grad)
 	}
 
 	fn __repr__(&self) -> String {
@@ -422,77 +450,77 @@ impl std::fmt::Debug for PyLogDetDivergence {
 }
 
 impl CostFunction<f64> for PyLogDetDivergence {
-	type Point = DMatrix<f64>;
-	type TangentVector = DMatrix<f64>;
+	type Point = Mat64;
+	type TangentVector = Mat64;
 
-	fn cost(&self, point: &DMatrix<f64>) -> Result<f64> {
-		let trace = point.trace();
-		let chol = point.clone().cholesky().ok_or_else(|| {
+	fn cost(&self, point: &Mat64) -> Result<f64> {
+		let trace_val = point.trace();
+		let chol = point.cholesky().ok_or_else(|| {
 			ManifoldError::numerical_error("Matrix is not positive definite in LogDetDivergence")
 		})?;
-		let log_det: f64 = chol.l().diagonal().iter().map(|d| d.ln()).sum::<f64>() * 2.0;
-		Ok(trace - log_det)
+		let l = chol.l();
+		let mut log_det = 0.0_f64;
+		for i in 0..l.nrows() {
+			log_det += l.get(i, i).ln();
+		}
+		log_det *= 2.0;
+		Ok(trace_val - log_det)
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DMatrix<f64>) -> Result<(f64, DMatrix<f64>)> {
+	fn cost_and_gradient_alloc(&self, point: &Mat64) -> Result<(f64, Mat64)> {
 		let n = point.nrows();
-		let trace = point.trace();
-		let chol = point.clone().cholesky().ok_or_else(|| {
+		let trace_val = point.trace();
+		let chol = point.cholesky().ok_or_else(|| {
 			ManifoldError::numerical_error("Matrix is not positive definite in LogDetDivergence")
 		})?;
-		let log_det: f64 = chol.l().diagonal().iter().map(|d| d.ln()).sum::<f64>() * 2.0;
-		let p_inv = chol.inverse();
-		let gradient = DMatrix::identity(n, n) - p_inv;
-		Ok((trace - log_det, gradient))
+		let l = chol.l();
+		let mut log_det = 0.0_f64;
+		for i in 0..l.nrows() {
+			log_det += l.get(i, i).ln();
+		}
+		log_det *= 2.0;
+		let p_inv = point.try_inverse().ok_or_else(|| {
+			ManifoldError::numerical_error("Matrix is not invertible in LogDetDivergence")
+		})?;
+		let gradient = <Mat64 as MatrixOps<f64>>::identity(n).sub(&p_inv);
+		Ok((trace_val - log_det, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DMatrix<f64>,
+		point: &Mat64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut Mat64,
 	) -> Result<f64> {
+		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
+		*gradient = grad;
+		Ok(cost)
+	}
+
+	fn gradient(&self, point: &Mat64) -> Result<Mat64> {
 		let n = point.nrows();
-		let trace = point.trace();
-		let chol = point.clone().cholesky().ok_or_else(|| {
-			ManifoldError::numerical_error("Matrix is not positive definite in LogDetDivergence")
+		let p_inv = point.try_inverse().ok_or_else(|| {
+			ManifoldError::numerical_error("Matrix is not invertible in LogDetDivergence")
 		})?;
-		let log_det: f64 = chol.l().diagonal().iter().map(|d| d.ln()).sum::<f64>() * 2.0;
-		let p_inv = chol.inverse();
-		*gradient = DMatrix::identity(n, n) - p_inv;
-		Ok(trace - log_det)
+		Ok(<Mat64 as MatrixOps<f64>>::identity(n).sub(&p_inv))
 	}
 
-	fn gradient(&self, point: &DMatrix<f64>) -> Result<DMatrix<f64>> {
-		let n = point.nrows();
-		let chol = point.clone().cholesky().ok_or_else(|| {
-			ManifoldError::numerical_error("Matrix is not positive definite in LogDetDivergence")
+	fn hessian_vector_product(&self, point: &Mat64, vector: &Mat64) -> Result<Mat64> {
+		let p_inv = point.try_inverse().ok_or_else(|| {
+			ManifoldError::numerical_error("Matrix is not invertible in LogDetDivergence")
 		})?;
-		let p_inv = chol.inverse();
-		Ok(DMatrix::identity(n, n) - p_inv)
+		Ok(p_inv.mat_mul(vector).mat_mul(&p_inv))
 	}
 
-	fn hessian_vector_product(
-		&self,
-		point: &DMatrix<f64>,
-		vector: &DMatrix<f64>,
-	) -> Result<DMatrix<f64>> {
-		let chol = point.clone().cholesky().ok_or_else(|| {
-			ManifoldError::numerical_error("Matrix is not positive definite in LogDetDivergence")
-		})?;
-		let p_inv = chol.inverse();
-		Ok(&p_inv * vector * &p_inv)
-	}
-
-	fn gradient_fd_alloc(&self, point: &DMatrix<f64>) -> Result<DMatrix<f64>> {
+	fn gradient_fd_alloc(&self, point: &Mat64) -> Result<Mat64> {
 		CostFunction::gradient(self, point)
 	}
 
 	fn gradient_fd(
 		&self,
-		point: &DMatrix<f64>,
+		point: &Mat64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DMatrix<f64>,
+		gradient: &mut Mat64,
 	) -> Result<()> {
 		*gradient = CostFunction::gradient(self, point)?;
 		Ok(())
@@ -510,8 +538,8 @@ impl CostFunction<f64> for PyLogDetDivergence {
 #[pyclass(name = "Quadratic", module = "riemannopt")]
 #[derive(Clone)]
 pub struct PyQuadratic {
-	a: DMatrix<f64>,
-	b: DVector<f64>,
+	a: Mat64,
+	b: Vec64,
 	dim: usize,
 }
 
@@ -519,8 +547,8 @@ pub struct PyQuadratic {
 impl PyQuadratic {
 	#[new]
 	fn new(a: PyReadonlyArray2<'_, f64>, b: PyReadonlyArray1<'_, f64>) -> PyResult<Self> {
-		let a_mat = numpy_to_dmatrix(a)?;
-		let b_vec = numpy_to_dvector(b)?;
+		let a_mat = numpy_to_mat(a)?;
+		let b_vec = numpy_to_vec(b)?;
 		let dim = a_mat.nrows();
 		if a_mat.ncols() != dim {
 			return Err(pyo3::exceptions::PyValueError::new_err("A must be square"));
@@ -539,8 +567,8 @@ impl PyQuadratic {
 
 	#[pyo3(name = "cost")]
 	fn py_cost(&self, x: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
-		let xv = numpy_to_dvector(x)?;
-		let ax = &self.a * &xv;
+		let xv = numpy_to_vec(x)?;
+		let ax = self.a.mat_vec(&xv);
 		Ok(0.5 * xv.dot(&ax) + self.b.dot(&xv))
 	}
 
@@ -550,9 +578,9 @@ impl PyQuadratic {
 		py: Python<'py>,
 		x: PyReadonlyArray1<'py, f64>,
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let xv = numpy_to_dvector(x)?;
-		let grad = &self.a * &xv + &self.b;
-		dvector_to_numpy(py, &grad)
+		let xv = numpy_to_vec(x)?;
+		let grad = VectorOps::add(&self.a.mat_vec(&xv), &self.b);
+		vec_to_numpy(py, &grad)
 	}
 
 	fn __repr__(&self) -> String {
@@ -567,56 +595,54 @@ impl std::fmt::Debug for PyQuadratic {
 }
 
 impl CostFunction<f64> for PyQuadratic {
-	type Point = DVector<f64>;
-	type TangentVector = DVector<f64>;
+	type Point = Vec64;
+	type TangentVector = Vec64;
 
-	fn cost(&self, point: &DVector<f64>) -> Result<f64> {
-		let ax = &self.a * point;
+	fn cost(&self, point: &Vec64) -> Result<f64> {
+		let ax = self.a.mat_vec(point);
 		Ok(0.5 * point.dot(&ax) + self.b.dot(point))
 	}
 
-	fn cost_and_gradient_alloc(&self, point: &DVector<f64>) -> Result<(f64, DVector<f64>)> {
-		let ax = &self.a * point;
+	fn cost_and_gradient_alloc(&self, point: &Vec64) -> Result<(f64, Vec64)> {
+		let ax = self.a.mat_vec(point);
 		let cost = 0.5 * point.dot(&ax) + self.b.dot(point);
-		let gradient = ax + &self.b;
+		let gradient = VectorOps::add(&ax, &self.b);
 		Ok((cost, gradient))
 	}
 
 	fn cost_and_gradient(
 		&self,
-		point: &DVector<f64>,
+		point: &Vec64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DVector<f64>,
+		gradient: &mut Vec64,
 	) -> Result<f64> {
-		let ax = &self.a * point;
+		let ax = self.a.mat_vec(point);
 		let cost = 0.5 * point.dot(&ax) + self.b.dot(point);
-		*gradient = ax + &self.b;
+		let g = VectorOps::add(&ax, &self.b);
+		gradient.copy_from(&g);
 		Ok(cost)
 	}
 
-	fn gradient(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
-		Ok(&self.a * point + &self.b)
+	fn gradient(&self, point: &Vec64) -> Result<Vec64> {
+		Ok(VectorOps::add(&self.a.mat_vec(point), &self.b))
 	}
 
-	fn hessian_vector_product(
-		&self,
-		_point: &DVector<f64>,
-		vector: &DVector<f64>,
-	) -> Result<DVector<f64>> {
-		Ok(&self.a * vector)
+	fn hessian_vector_product(&self, _point: &Vec64, vector: &Vec64) -> Result<Vec64> {
+		Ok(self.a.mat_vec(vector))
 	}
 
-	fn gradient_fd_alloc(&self, point: &DVector<f64>) -> Result<DVector<f64>> {
+	fn gradient_fd_alloc(&self, point: &Vec64) -> Result<Vec64> {
 		CostFunction::gradient(self, point)
 	}
 
 	fn gradient_fd(
 		&self,
-		point: &DVector<f64>,
+		point: &Vec64,
 		_workspace: &mut Workspace<f64>,
-		gradient: &mut DVector<f64>,
+		gradient: &mut Vec64,
 	) -> Result<()> {
-		*gradient = &self.a * point + &self.b;
+		let g = VectorOps::add(&self.a.mat_vec(point), &self.b);
+		gradient.copy_from(&g);
 		Ok(())
 	}
 }

@@ -19,7 +19,6 @@ riemannopt-manifolds = { path = "../riemannopt-manifolds", version = "0.1.0" }
 riemannopt-optim = { path = "../riemannopt-optim", version = "0.1.0" }
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 numpy = "0.24"
-nalgebra = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 parking_lot = "0.12"

@@ -13,7 +13,7 @@ use riemannopt_optim::{MomentumMethod, SGDConfig, SGD};
 use super::base::{PyOptimizationResult, PyOptimizerBase};
 use crate::py_optimizers::generic::PyOptimizerGeneric;
 use crate::{
-	array_utils::{dmatrix_to_numpy, dvector_to_numpy, numpy_to_dmatrix, numpy_to_dvector},
+	array_utils::{mat_to_numpy, numpy_to_mat, numpy_to_vec, vec_to_numpy},
 	error::to_py_err,
 	impl_optimizer_generic_default,
 	py_cost::PyCostFunction,

@@ -115,27 +115,27 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::SPD;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DMatrix;
+//! use riemannopt_core::linalg::{self, MatrixOps, DecompositionOps, VectorOps};
 //!
 //! // Create SPD manifold S⁺⁺(3)
 //! let spd = SPD::<f64>::new(3)?;
 //!
 //! // Random SPD matrix
-//! let mut p = DMatrix::<f64>::zeros(3, 3);
+//! let mut p = linalg::Mat::<f64>::zeros(3, 3);
 //! spd.random_point(&mut p)?;
 //!
 //! // Verify positive definiteness
-//! let eigen = p.clone().symmetric_eigen();
-//! assert!(eigen.eigenvalues.iter().all(|&l| l > 0.0));
+//! let eigen = DecompositionOps::symmetric_eigen(&p);
+//! assert!(VectorOps::iter(&eigen.eigenvalues).all(|l| l > 0.0));
 //!
 //! // Tangent vector (symmetric)
-//! let v = DMatrix::from_fn(3, 3, |i, j| {
+//! let v = MatrixOps::from_fn(3, 3, |i, j| {
 //!     (i + j) as f64
 //! });
-//! let v_sym = (&v + v.transpose()) * 0.5;
+//! let v_sym = MatrixOps::scale_by(&MatrixOps::add(&v, &MatrixOps::transpose(&v)), 0.5);
 //!
 //! // Retraction
-//! let mut q = DMatrix::<f64>::zeros(3, 3);
+//! let mut q = linalg::Mat::<f64>::zeros(3, 3);
 //! spd.retract(&p, &v_sym, &mut q)?;
 //!
 //! // Verify result is SPD
@@ -143,12 +143,11 @@
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::{DMatrix, DVector};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
-	core::matrix_manifold::MatrixManifold,
 	error::{ManifoldError, Result},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -305,7 +304,12 @@ impl<T: Scalar> SPD<T> {
 	pub fn metric_type(&self) -> SPDMetric {
 		self.metric
 	}
+}
 
+impl<T: Scalar> SPD<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Validates that a matrix is symmetric positive definite.
 	///
 	/// # Mathematical Checks
@@ -317,23 +321,25 @@ impl<T: Scalar> SPD<T> {
 	///
 	/// - `DimensionMismatch`: If matrix is not n×n
 	/// - `NotOnManifold`: If matrix is not symmetric or not positive definite
-	pub fn check_point(&self, p: &DMatrix<T>) -> Result<()> {
-		if p.nrows() != self.n || p.ncols() != self.n {
+	pub fn check_point(&self, p: &linalg::Mat<T>) -> Result<()> {
+		if MatrixOps::nrows(p) != self.n || MatrixOps::ncols(p) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.n,
-				p.nrows() * p.ncols(),
+				MatrixOps::nrows(p) * MatrixOps::ncols(p),
 			));
 		}
 
 		// Check for finite values
-		if p.iter().any(|x| !x.is_finite()) {
+		let has_non_finite =
+			(0..p.ncols()).any(|j| (0..p.nrows()).any(|i| !p.get(i, j).is_finite()));
+		if has_non_finite {
 			return Err(ManifoldError::invalid_point(
 				"Matrix contains non-finite values",
 			));
 		}
 
 		// Check symmetry
-		let symmetry_error = (p - &p.transpose()).norm();
+		let symmetry_error = MatrixOps::norm(&MatrixOps::sub(p, &MatrixOps::transpose(p)));
 		if symmetry_error > self.tolerance {
 			return Err(ManifoldError::invalid_point(format!(
 				"Matrix not symmetric: ‖P - P^T‖ = {} (tolerance: {})",
@@ -342,11 +348,9 @@ impl<T: Scalar> SPD<T> {
 		}
 
 		// Check positive definiteness via eigenvalues
-		let eigen = p.clone().symmetric_eigen();
-		let min_eval = eigen
-			.eigenvalues
-			.iter()
-			.fold(T::infinity(), |min, &val| <T as Float>::min(min, val));
+		let eigen = DecompositionOps::symmetric_eigen(p);
+		let min_eval = VectorOps::iter(&eigen.eigenvalues)
+			.fold(T::infinity(), |min, val| <T as Float>::min(min, val));
 
 		if min_eval <= self.min_eigenvalue {
 			return Err(ManifoldError::invalid_point(format!(
@@ -368,18 +372,18 @@ impl<T: Scalar> SPD<T> {
 	///
 	/// - `DimensionMismatch`: If dimensions don't match
 	/// - `NotInTangentSpace`: If matrix is not symmetric
-	pub fn check_tangent(&self, p: &DMatrix<T>, v: &DMatrix<T>) -> Result<()> {
+	pub fn check_tangent(&self, p: &linalg::Mat<T>, v: &linalg::Mat<T>) -> Result<()> {
 		self.check_point(p)?;
 
-		if v.nrows() != self.n || v.ncols() != self.n {
+		if MatrixOps::nrows(v) != self.n || MatrixOps::ncols(v) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.n,
-				v.nrows() * v.ncols(),
+				MatrixOps::nrows(v) * MatrixOps::ncols(v),
 			));
 		}
 
 		// Check symmetry
-		let symmetry_error = (v - &v.transpose()).norm();
+		let symmetry_error = MatrixOps::norm(&MatrixOps::sub(v, &MatrixOps::transpose(v)));
 		if symmetry_error > self.tolerance {
 			return Err(ManifoldError::invalid_tangent(format!(
 				"Tangent vector not symmetric: ‖V - V^T‖ = {} (tolerance: {})",
@@ -395,64 +399,75 @@ impl<T: Scalar> SPD<T> {
 	/// # Mathematical Formula
 	///
 	/// For P = V Λ V^T, returns P^{1/2} = V Λ^{1/2} V^T.
-	pub fn matrix_sqrt(&self, p: &DMatrix<T>) -> Result<DMatrix<T>> {
-		let eigen = p.clone().symmetric_eigen();
-		let mut sqrt_vals = DVector::zeros(self.n);
-		for (i, &x) in eigen.eigenvalues.iter().enumerate() {
+	pub fn matrix_sqrt(&self, p: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
+		let eigen = DecompositionOps::symmetric_eigen(p);
+		let mut sqrt_vals = <linalg::Vec<T> as VectorOps<T>>::zeros(self.n);
+		for i in 0..self.n {
+			let x = VectorOps::get(&eigen.eigenvalues, i);
 			if x <= T::zero() {
 				return Err(ManifoldError::numerical_error(
 					"Cannot compute square root of non-positive eigenvalue".to_string(),
 				));
 			}
-			sqrt_vals[i] = <T as Float>::sqrt(x);
+			*VectorOps::get_mut(&mut sqrt_vals, i) = <T as Float>::sqrt(x);
 		}
 
-		let sqrt_diag = DMatrix::from_diagonal(&sqrt_vals);
-		Ok(&eigen.eigenvectors * sqrt_diag * eigen.eigenvectors.transpose())
+		let sqrt_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&sqrt_vals);
+		let ev = &eigen.eigenvectors;
+		let temp = MatrixOps::mat_mul(ev, &sqrt_diag);
+		Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev)))
 	}
 
 	/// Computes the inverse square root P^{-1/2}.
-	pub fn matrix_sqrt_inv(&self, p: &DMatrix<T>) -> Result<DMatrix<T>> {
-		let eigen = p.clone().symmetric_eigen();
-		let mut sqrt_inv_vals = DVector::zeros(self.n);
+	pub fn matrix_sqrt_inv(&self, p: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
+		let eigen = DecompositionOps::symmetric_eigen(p);
+		let mut sqrt_inv_vals = <linalg::Vec<T> as VectorOps<T>>::zeros(self.n);
 
-		for (i, &eval) in eigen.eigenvalues.iter().enumerate() {
+		for i in 0..self.n {
+			let eval = VectorOps::get(&eigen.eigenvalues, i);
 			if eval <= self.min_eigenvalue {
 				return Err(ManifoldError::numerical_error(
 					"Matrix too close to singular for inverse square root".to_string(),
 				));
 			}
-			sqrt_inv_vals[i] = T::one() / <T as Float>::sqrt(eval);
+			*VectorOps::get_mut(&mut sqrt_inv_vals, i) = T::one() / <T as Float>::sqrt(eval);
 		}
 
-		let sqrt_inv_diag = DMatrix::from_diagonal(&sqrt_inv_vals);
-		Ok(&eigen.eigenvectors * sqrt_inv_diag * eigen.eigenvectors.transpose())
+		let sqrt_inv_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&sqrt_inv_vals);
+		let ev = &eigen.eigenvectors;
+		let temp = MatrixOps::mat_mul(ev, &sqrt_inv_diag);
+		Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev)))
 	}
 
 	/// Computes the matrix logarithm log(P).
-	pub fn matrix_log(&self, p: &DMatrix<T>) -> Result<DMatrix<T>> {
-		let eigen = p.clone().symmetric_eigen();
-		let mut log_vals = DVector::zeros(self.n);
+	pub fn matrix_log(&self, p: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
+		let eigen = DecompositionOps::symmetric_eigen(p);
+		let mut log_vals = <linalg::Vec<T> as VectorOps<T>>::zeros(self.n);
 
-		for (i, &eval) in eigen.eigenvalues.iter().enumerate() {
+		for i in 0..self.n {
+			let eval = VectorOps::get(&eigen.eigenvalues, i);
 			if eval <= T::zero() {
 				return Err(ManifoldError::numerical_error(
 					"Cannot compute logarithm of non-positive eigenvalue".to_string(),
 				));
 			}
-			log_vals[i] = <T as Float>::ln(eval);
+			*VectorOps::get_mut(&mut log_vals, i) = <T as Float>::ln(eval);
 		}
 
-		let log_diag = DMatrix::from_diagonal(&log_vals);
-		Ok(&eigen.eigenvectors * log_diag * eigen.eigenvectors.transpose())
+		let log_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&log_vals);
+		let ev = &eigen.eigenvectors;
+		let temp = MatrixOps::mat_mul(ev, &log_diag);
+		Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev)))
 	}
 
 	/// Computes the matrix exponential exp(X).
-	pub fn matrix_exp(&self, x: &DMatrix<T>) -> DMatrix<T> {
-		let eigen = x.clone().symmetric_eigen();
-		let exp_vals = eigen.eigenvalues.map(|x| <T as Float>::exp(x));
-		let exp_diag = DMatrix::from_diagonal(&exp_vals);
-		&eigen.eigenvectors * exp_diag * eigen.eigenvectors.transpose()
+	pub fn matrix_exp(&self, x: &linalg::Mat<T>) -> linalg::Mat<T> {
+		let eigen = DecompositionOps::symmetric_eigen(x);
+		let exp_vals = VectorOps::map(&eigen.eigenvalues, |v| <T as Float>::exp(v));
+		let exp_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&exp_vals);
+		let ev = &eigen.eigenvectors;
+		let temp = MatrixOps::mat_mul(ev, &exp_diag);
+		MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev))
 	}
 
 	/// Exponential map at P in direction V.
@@ -460,18 +475,20 @@ impl<T: Scalar> SPD<T> {
 	/// # Mathematical Formula
 	///
 	/// exp_P(V) = P^{1/2} exp(P^{-1/2} V P^{-1/2}) P^{1/2}
-	pub fn exp_map(&self, p: &DMatrix<T>, v: &DMatrix<T>) -> Result<DMatrix<T>> {
+	pub fn exp_map(&self, p: &linalg::Mat<T>, v: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
 		let p_sqrt = self.matrix_sqrt(p)?;
 		let p_sqrt_inv = self.matrix_sqrt_inv(p)?;
 
 		// Compute P^{-1/2} V P^{-1/2}
-		let middle = &p_sqrt_inv * v * &p_sqrt_inv;
+		let temp = MatrixOps::mat_mul(&p_sqrt_inv, v);
+		let middle = MatrixOps::mat_mul(&temp, &p_sqrt_inv);
 
 		// Compute exp(middle)
 		let exp_middle = self.matrix_exp(&middle);
 
 		// Return P^{1/2} exp(middle) P^{1/2}
-		Ok(&p_sqrt * exp_middle * &p_sqrt)
+		let temp2 = MatrixOps::mat_mul(&p_sqrt, &exp_middle);
+		Ok(MatrixOps::mat_mul(&temp2, &p_sqrt))
 	}
 
 	/// Logarithmic map from P to Q.
@@ -479,18 +496,20 @@ impl<T: Scalar> SPD<T> {
 	/// # Mathematical Formula
 	///
 	/// log_P(Q) = P^{1/2} log(P^{-1/2} Q P^{-1/2}) P^{1/2}
-	pub fn log_map(&self, p: &DMatrix<T>, q: &DMatrix<T>) -> Result<DMatrix<T>> {
+	pub fn log_map(&self, p: &linalg::Mat<T>, q: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
 		let p_sqrt = self.matrix_sqrt(p)?;
 		let p_sqrt_inv = self.matrix_sqrt_inv(p)?;
 
 		// Compute P^{-1/2} Q P^{-1/2}
-		let middle = &p_sqrt_inv * q * &p_sqrt_inv;
+		let temp = MatrixOps::mat_mul(&p_sqrt_inv, q);
+		let middle = MatrixOps::mat_mul(&temp, &p_sqrt_inv);
 
 		// Compute log(middle)
 		let log_middle = self.matrix_log(&middle)?;
 
 		// Return P^{1/2} log(middle) P^{1/2}
-		Ok(&p_sqrt * log_middle * &p_sqrt)
+		let temp2 = MatrixOps::mat_mul(&p_sqrt, &log_middle);
+		Ok(MatrixOps::mat_mul(&temp2, &p_sqrt))
 	}
 
 	/// Computes distance between SPD matrices using selected metric.
@@ -500,7 +519,7 @@ impl<T: Scalar> SPD<T> {
 	/// - Affine-invariant: d(P,Q) = ‖log(P^{-1/2} Q P^{-1/2})‖_F
 	/// - Log-Euclidean: d(P,Q) = ‖log(P) - log(Q)‖_F
 	/// - Bures-Wasserstein: d(P,Q) = [tr(P + Q - 2(P^{1/2} Q P^{1/2})^{1/2})]^{1/2}
-	pub fn distance(&self, p: &DMatrix<T>, q: &DMatrix<T>) -> Result<T> {
+	pub fn distance(&self, p: &linalg::Mat<T>, q: &linalg::Mat<T>) -> Result<T> {
 		self.check_point(p)?;
 		self.check_point(q)?;
 
@@ -508,23 +527,25 @@ impl<T: Scalar> SPD<T> {
 			SPDMetric::AffineInvariant => {
 				// d(P,Q) = ‖log(P^{-1/2} Q P^{-1/2})‖_F
 				let p_sqrt_inv = self.matrix_sqrt_inv(p)?;
-				let middle = &p_sqrt_inv * q * &p_sqrt_inv;
+				let temp = MatrixOps::mat_mul(&p_sqrt_inv, q);
+				let middle = MatrixOps::mat_mul(&temp, &p_sqrt_inv);
 				let log_middle = self.matrix_log(&middle)?;
-				Ok(log_middle.norm())
+				Ok(MatrixOps::norm(&log_middle))
 			}
 			SPDMetric::LogEuclidean => {
 				// d(P,Q) = ‖log(P) - log(Q)‖_F
 				let log_p = self.matrix_log(p)?;
 				let log_q = self.matrix_log(q)?;
-				Ok((&log_p - &log_q).norm())
+				Ok(MatrixOps::norm(&MatrixOps::sub(&log_p, &log_q)))
 			}
 			SPDMetric::BuresWasserstein => {
 				// d(P,Q) = [tr(P + Q - 2(P^{1/2} Q P^{1/2})^{1/2})]^{1/2}
 				let p_sqrt = self.matrix_sqrt(p)?;
-				let middle = &p_sqrt * q * &p_sqrt;
+				let temp = MatrixOps::mat_mul(&p_sqrt, q);
+				let middle = MatrixOps::mat_mul(&temp, &p_sqrt);
 				let middle_sqrt = self.matrix_sqrt(&middle)?;
-				let trace_term =
-					p.trace() + q.trace() - <T as Scalar>::from_f64(2.0) * middle_sqrt.trace();
+				let trace_term = MatrixOps::trace(p) + MatrixOps::trace(q)
+					- <T as Scalar>::from_f64(2.0) * MatrixOps::trace(&middle_sqrt);
 				Ok(<T as Float>::sqrt(trace_term))
 			}
 		}
@@ -537,20 +558,21 @@ impl<T: Scalar> SPD<T> {
 	/// Γ_{P→Q}(V) = E V E^T where E = (PQ)^{1/2} P^{-1/2}
 	pub fn parallel_transport(
 		&self,
-		p: &DMatrix<T>,
-		q: &DMatrix<T>,
-		v: &DMatrix<T>,
-	) -> Result<DMatrix<T>> {
+		p: &linalg::Mat<T>,
+		q: &linalg::Mat<T>,
+		v: &linalg::Mat<T>,
+	) -> Result<linalg::Mat<T>> {
 		match self.metric {
 			SPDMetric::AffineInvariant => {
 				// E = (PQ)^{1/2} P^{-1/2}
-				let pq = p * q;
+				let pq = MatrixOps::mat_mul(p, q);
 				let pq_sqrt = self.matrix_sqrt(&pq)?;
 				let p_sqrt_inv = self.matrix_sqrt_inv(p)?;
-				let e = &pq_sqrt * &p_sqrt_inv;
+				let e = MatrixOps::mat_mul(&pq_sqrt, &p_sqrt_inv);
 
 				// Transport: E V E^T
-				Ok(&e * v * &e.transpose())
+				let temp = MatrixOps::mat_mul(&e, v);
+				Ok(MatrixOps::mat_mul(&temp, &MatrixOps::transpose(&e)))
 			}
 			_ => {
 				// For other metrics, use identity transport (approximation)
@@ -560,9 +582,13 @@ impl<T: Scalar> SPD<T> {
 	}
 }
 
-impl<T: Scalar> Manifold<T> for SPD<T> {
-	type Point = DMatrix<T>;
-	type TangentVector = DMatrix<T>;
+impl<T> Manifold<T> for SPD<T>
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Point = linalg::Mat<T>;
+	type TangentVector = linalg::Mat<T>;
 
 	fn name(&self) -> &str {
 		"SPD"
@@ -573,22 +599,20 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-		if point.nrows() != self.n || point.ncols() != self.n {
+		if MatrixOps::nrows(point) != self.n || MatrixOps::ncols(point) != self.n {
 			return false;
 		}
 
 		// Check symmetry
-		let symmetry_error = (point - &point.transpose()).norm();
+		let symmetry_error = MatrixOps::norm(&MatrixOps::sub(point, &MatrixOps::transpose(point)));
 		if symmetry_error > tol {
 			return false;
 		}
 
 		// Check positive definiteness
-		let eigen = point.clone().symmetric_eigen();
-		let min_eval = eigen
-			.eigenvalues
-			.iter()
-			.fold(T::infinity(), |min, &val| <T as Float>::min(min, val));
+		let eigen = DecompositionOps::symmetric_eigen(point);
+		let min_eval = VectorOps::iter(&eigen.eigenvalues)
+			.fold(T::infinity(), |min, val| <T as Float>::min(min, val));
 
 		min_eval > self.min_eigenvalue && min_eval.is_finite()
 	}
@@ -602,42 +626,54 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		if !self.is_point_on_manifold(point, tol) {
 			return false;
 		}
-		if vector.nrows() != self.n || vector.ncols() != self.n {
+		if MatrixOps::nrows(vector) != self.n || MatrixOps::ncols(vector) != self.n {
 			return false;
 		}
 
 		// Tangent space consists of symmetric matrices
-		let symmetry_error = (vector - &vector.transpose()).norm();
+		let symmetry_error =
+			MatrixOps::norm(&MatrixOps::sub(vector, &MatrixOps::transpose(vector)));
 		symmetry_error < tol
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		if point.nrows() != self.n || point.ncols() != self.n {
-			*result = DMatrix::identity(self.n, self.n);
-			*result *= self.min_eigenvalue + <T as Scalar>::from_f64(1.0);
+		if MatrixOps::nrows(point) != self.n || MatrixOps::ncols(point) != self.n {
+			*result = <linalg::Mat<T> as MatrixOps<T>>::identity(self.n);
+			result.scale_mut(self.min_eigenvalue + <T as Scalar>::from_f64(1.0));
 			return;
 		}
 
 		// Ensure symmetry
-		let symmetric = (point + &point.transpose()) * <T as Scalar>::from_f64(0.5);
+		let symmetric = MatrixOps::scale_by(
+			&MatrixOps::add(point, &MatrixOps::transpose(point)),
+			<T as Scalar>::from_f64(0.5),
+		);
 
 		// Eigendecomposition
-		let eigen = symmetric.clone().symmetric_eigen();
+		let eigen = DecompositionOps::symmetric_eigen(&symmetric);
 		let mut eigenvalues = eigen.eigenvalues.clone();
 
 		// Clamp eigenvalues
-		for i in 0..eigenvalues.len() {
-			if eigenvalues[i] <= self.min_eigenvalue || !eigenvalues[i].is_finite() {
-				eigenvalues[i] = self.min_eigenvalue + <T as Scalar>::from_f64(1e-8);
+		for i in 0..VectorOps::len(&eigenvalues) {
+			let ev = VectorOps::get(&eigenvalues, i);
+			if ev <= self.min_eigenvalue || !ev.is_finite() {
+				*VectorOps::get_mut(&mut eigenvalues, i) =
+					self.min_eigenvalue + <T as Scalar>::from_f64(1e-8);
 			}
 		}
 
 		// Reconstruct: P = V Λ V^T
-		let lambda_diag = DMatrix::from_diagonal(&eigenvalues);
-		*result = &eigen.eigenvectors * lambda_diag * eigen.eigenvectors.transpose();
+		let lambda_diag = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&eigenvalues);
+		let ev = &eigen.eigenvectors;
+		let temp = MatrixOps::mat_mul(ev, &lambda_diag);
+		*result = MatrixOps::mat_mul(&temp, &MatrixOps::transpose(ev));
 
 		// Final symmetry enforcement
-		*result = (result.clone() + result.transpose()) * <T as Scalar>::from_f64(0.5);
+		let sym = MatrixOps::scale_by(
+			&MatrixOps::add(result, &MatrixOps::transpose(result)),
+			<T as Scalar>::from_f64(0.5),
+		);
+		result.copy_from(&sym);
 	}
 
 	fn project_tangent(
@@ -646,14 +682,14 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		if point.nrows() != self.n
-			|| point.ncols() != self.n
-			|| vector.nrows() != self.n
-			|| vector.ncols() != self.n
+		if MatrixOps::nrows(point) != self.n
+			|| MatrixOps::ncols(point) != self.n
+			|| MatrixOps::nrows(vector) != self.n
+			|| MatrixOps::ncols(vector) != self.n
 		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.n,
-				point.nrows() * point.ncols(),
+				MatrixOps::nrows(point) * MatrixOps::ncols(point),
 			));
 		}
 
@@ -661,7 +697,10 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		self.check_point(point)?;
 
 		// Project to symmetric matrices: (V + V^T)/2
-		*result = (vector + &vector.transpose()) * <T as Scalar>::from_f64(0.5);
+		*result = MatrixOps::scale_by(
+			&MatrixOps::add(vector, &MatrixOps::transpose(vector)),
+			<T as Scalar>::from_f64(0.5),
+		);
 		Ok(())
 	}
 
@@ -677,23 +716,30 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		match self.metric {
 			SPDMetric::AffineInvariant => {
 				// <U,V>_P = tr(P^{-1} U P^{-1} V)
-				let p_inv = point.clone().try_inverse().ok_or_else(|| {
+				let p_inv = DecompositionOps::try_inverse(point).ok_or_else(|| {
 					ManifoldError::numerical_error("Point matrix not invertible".to_string())
 				})?;
-				Ok((&p_inv * u * &p_inv * v).trace())
+				let p_inv_u = MatrixOps::mat_mul(&p_inv, u);
+				let p_inv_v = MatrixOps::mat_mul(&p_inv, v);
+				Ok(MatrixOps::trace(&MatrixOps::mat_mul(&p_inv_u, &p_inv_v)))
 			}
 			SPDMetric::LogEuclidean => {
 				// For Log-Euclidean, use Euclidean metric in log space
 				// This is approximated by Frobenius inner product
-				Ok((u.transpose() * v).trace())
+				Ok(MatrixOps::trace(&MatrixOps::mat_mul(
+					&MatrixOps::transpose(u),
+					v,
+				)))
 			}
 			SPDMetric::BuresWasserstein => {
 				// <U,V>_P = 1/4 tr(U P^{-1} V + V P^{-1} U)
-				let p_inv = point.clone().try_inverse().ok_or_else(|| {
+				let p_inv = DecompositionOps::try_inverse(point).ok_or_else(|| {
 					ManifoldError::numerical_error("Point matrix not invertible".to_string())
 				})?;
-				let term1 = (u * &p_inv * v).trace();
-				let term2 = (v * &p_inv * u).trace();
+				let u_pinv = MatrixOps::mat_mul(u, &p_inv);
+				let v_pinv = MatrixOps::mat_mul(v, &p_inv);
+				let term1 = MatrixOps::trace(&MatrixOps::mat_mul(&u_pinv, v));
+				let term2 = MatrixOps::trace(&MatrixOps::mat_mul(&v_pinv, u));
 				Ok(<T as Scalar>::from_f64(0.25) * (term1 + term2))
 			}
 		}
@@ -713,27 +759,25 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 				// This avoids the expensive eigendecomposition of exp_map
 				// and uses a single linear solve P\V instead.
 				let n = self.n;
-				let p_inv_v = point
-					.clone()
-					.cholesky()
-					.map(|chol| chol.solve(tangent))
-					.unwrap_or_else(|| {
+				let p_inv_v =
+					DecompositionOps::cholesky_solve(point, tangent).unwrap_or_else(|| {
 						// Fallback: use pseudoinverse if Cholesky fails
-						point
-							.clone()
-							.try_inverse()
-							.unwrap_or_else(|| DMatrix::identity(n, n))
-							* tangent
+						let fallback_inv = DecompositionOps::try_inverse(point)
+							.unwrap_or_else(|| <linalg::Mat<T> as MatrixOps<T>>::identity(n));
+						MatrixOps::mat_mul(&fallback_inv, tangent)
 					});
 				let half = <T as Scalar>::from_f64(0.5);
-				let raw = point + tangent + tangent * &p_inv_v * half;
+				let v_pinv_v = MatrixOps::scale_by(&MatrixOps::mat_mul(tangent, &p_inv_v), half);
+				let raw = MatrixOps::add(&MatrixOps::add(point, tangent), &v_pinv_v);
 				// Symmetrize for numerical stability
-				result.copy_from(&((&raw + raw.transpose()) * half));
+				let sym =
+					MatrixOps::scale_by(&MatrixOps::add(&raw, &MatrixOps::transpose(&raw)), half);
+				result.copy_from(&sym);
 				Ok(())
 			}
 			_ => {
 				// For other metrics, use projection-based retraction
-				let sum = point + tangent;
+				let sum = MatrixOps::add(point, tangent);
 				self.project_point(&sum, result);
 				Ok(())
 			}
@@ -758,7 +802,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 			}
 			_ => {
 				// For other metrics, use approximation
-				let diff = other - point;
+				let diff = MatrixOps::sub(other, point);
 				self.project_tangent(point, &diff, result)
 			}
 		}
@@ -775,11 +819,14 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		let grad_result = match self.metric {
 			SPDMetric::AffineInvariant => {
 				// grad^{AI} f(P) = P ∇f(P) P
-				point * euclidean_grad * point
+				let temp = MatrixOps::mat_mul(point, euclidean_grad);
+				MatrixOps::mat_mul(&temp, point)
 			}
 			SPDMetric::LogEuclidean => {
 				// grad^{LE} f(P) = P ∇f(P) + ∇f(P) P
-				point * euclidean_grad + euclidean_grad * point
+				let term1 = MatrixOps::mat_mul(point, euclidean_grad);
+				let term2 = MatrixOps::mat_mul(euclidean_grad, point);
+				MatrixOps::add(&term1, &term2)
 			}
 			SPDMetric::BuresWasserstein => {
 				// grad^{BW} f(P) = ∇f(P)
@@ -810,18 +857,19 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		let normal = StandardNormal;
 
 		// Generate random matrix
-		let mut a = DMatrix::zeros(self.n, self.n);
+		let mut a = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
 		for i in 0..self.n {
 			for j in 0..self.n {
-				a[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*MatrixOps::get_mut(&mut a, i, j) =
+					<T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
 		// Make SPD: P = A^T A + εI
-		let ata = a.transpose() * &a;
-		let identity = DMatrix::<T>::identity(self.n, self.n);
+		let ata = MatrixOps::mat_mul(&MatrixOps::transpose(&a), &a);
+		let identity = <linalg::Mat<T> as MatrixOps<T>>::identity(self.n);
 
-		*result = ata + identity * self.min_eigenvalue;
+		*result = MatrixOps::add(&ata, &MatrixOps::scale_by(&identity, self.min_eigenvalue));
 		Ok(())
 	}
 
@@ -835,17 +883,17 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		for i in 0..self.n {
 			for j in i..self.n {
 				let val = <T as Scalar>::from_f64(normal.sample(&mut rng));
-				result[(i, j)] = val;
+				*MatrixOps::get_mut(result, i, j) = val;
 				if i != j {
-					result[(j, i)] = val;
+					*MatrixOps::get_mut(result, j, i) = val;
 				}
 			}
 		}
 
 		// Normalize
-		let norm = result.norm();
+		let norm = MatrixOps::norm(result);
 		if norm > <T as Scalar>::from_f64(1e-16) {
-			*result /= norm;
+			result.scale_mut(T::one() / norm);
 		}
 
 		Ok(())
@@ -873,7 +921,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 		// For SPD manifold, tangent vectors are symmetric matrices
 		// Scaling preserves symmetry
 		result.copy_from(tangent);
-		*result *= scalar;
+		result.scale_mut(scalar);
 		Ok(())
 	}
 
@@ -888,7 +936,7 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 	) -> Result<()> {
 		// Add the tangent vectors
 		temp.copy_from(v1);
-		*temp += v2;
+		temp.add_assign(v2);
 
 		// The sum should already be symmetric if v1 and v2 are,
 		// but we project for numerical stability
@@ -898,8 +946,10 @@ impl<T: Scalar> Manifold<T> for SPD<T> {
 	}
 }
 
-impl<T: Scalar> MatrixManifold<T> for SPD<T> {
-	fn matrix_dims(&self) -> (usize, usize) {
-		(self.n, self.n)
-	}
-}
+// NOTE: MatrixManifold<T> impl is deferred until MatrixManifold
+// itself is migrated from DMatrix<T> to linalg::Mat<T>.
+// When linalg::Mat<T> == DMatrix<T> (nalgebra backend), the impl
+// would be:
+//   impl<T: Scalar + Float> MatrixManifold<T> for SPD<T>
+//   where linalg::DefaultBackend: LinAlgBackend<T>,
+//   { fn matrix_dims(&self) -> (usize, usize) { (self.n, self.n) } }

@@ -13,11 +13,11 @@
 //! - Using efficient data conversions
 //! - Releasing the GIL as soon as possible
 
-use nalgebra::{DMatrix, DVector};
 use numpy::PyArrayMethods;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+use riemannopt_core::linalg::{MatrixOps, VectorOps};
 use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
@@ -26,7 +26,7 @@ use riemannopt_core::{
 use std::sync::Arc;
 
 use crate::{
-	array_utils::{dmatrix_to_numpy, dvector_to_numpy, numpy_to_dmatrix, numpy_to_dvector},
+	array_utils::{mat_to_numpy, numpy_to_mat, numpy_to_vec, vec_to_numpy, Mat64, Vec64},
 	types::{PyPoint, PyTangentVector},
 };
 
@@ -225,11 +225,11 @@ impl PyCostFunction {
 		if self.dimension_info.is_matrix {
 			// Matrix case
 			let point_array = point.downcast_bound::<PyArray2<f64>>(py)?;
-			let point_mat = numpy_to_dmatrix(point_array.readonly())?;
+			let point_mat = numpy_to_mat(point_array.readonly())?;
 
 			// Compute finite difference gradient
-			let mut gradient =
-				DMatrix::zeros(self.dimension_info.shape.0, self.dimension_info.shape.1);
+			let mut gradient: Mat64 =
+				MatrixOps::zeros(self.dimension_info.shape.0, self.dimension_info.shape.1);
 			let h = f64::sqrt(f64::EPSILON);
 
 			for i in 0..gradient.nrows() {
@@ -237,12 +237,12 @@ impl PyCostFunction {
 					let mut point_plus = point_mat.clone();
 					let mut point_minus = point_mat.clone();
 
-					point_plus[(i, j)] += h;
-					point_minus[(i, j)] -= h;
+					*point_plus.get_mut(i, j) += h;
+					*point_minus.get_mut(i, j) -= h;
 
 					// Convert back to numpy and evaluate
-					let point_plus_py = dmatrix_to_numpy(py, &point_plus)?;
-					let point_minus_py = dmatrix_to_numpy(py, &point_minus)?;
+					let point_plus_py = mat_to_numpy(py, &point_plus)?;
+					let point_minus_py = mat_to_numpy(py, &point_minus)?;
 
 					let f_plus = self
 						.cost_fn
@@ -253,30 +253,30 @@ impl PyCostFunction {
 						.call1(py, (point_minus_py,))?
 						.extract::<f64>(py)?;
 
-					gradient[(i, j)] = (f_plus - f_minus) / (2.0 * h);
+					*gradient.get_mut(i, j) = (f_plus - f_minus) / (2.0 * h);
 				}
 			}
 
-			Ok(dmatrix_to_numpy(py, &gradient)?.into())
+			Ok(mat_to_numpy(py, &gradient)?.into())
 		} else {
 			// Vector case
 			let point_array = point.downcast_bound::<PyArray1<f64>>(py)?;
-			let point_vec = numpy_to_dvector(point_array.readonly())?;
+			let point_vec = numpy_to_vec(point_array.readonly())?;
 
 			// Compute finite difference gradient
-			let mut gradient = DVector::zeros(self.dimension_info.shape.0);
+			let mut gradient: Vec64 = VectorOps::zeros(self.dimension_info.shape.0);
 			let h = f64::sqrt(f64::EPSILON);
 
 			for i in 0..gradient.len() {
 				let mut point_plus = point_vec.clone();
 				let mut point_minus = point_vec.clone();
 
-				point_plus[i] += h;
-				point_minus[i] -= h;
+				*point_plus.get_mut(i) += h;
+				*point_minus.get_mut(i) -= h;
 
 				// Convert back to numpy and evaluate
-				let point_plus_py = dvector_to_numpy(py, &point_plus)?;
-				let point_minus_py = dvector_to_numpy(py, &point_minus)?;
+				let point_plus_py = vec_to_numpy(py, &point_plus)?;
+				let point_minus_py = vec_to_numpy(py, &point_minus)?;
 
 				let f_plus = self
 					.cost_fn
@@ -287,10 +287,10 @@ impl PyCostFunction {
 					.call1(py, (point_minus_py,))?
 					.extract::<f64>(py)?;
 
-				gradient[i] = (f_plus - f_minus) / (2.0 * h);
+				*gradient.get_mut(i) = (f_plus - f_minus) / (2.0 * h);
 			}
 
-			Ok(dvector_to_numpy(py, &gradient)?.into())
+			Ok(vec_to_numpy(py, &gradient)?.into())
 		}
 	}
 }
@@ -328,8 +328,8 @@ impl PyCostFunctionSphere {
 }
 
 impl<'a> CostFunction<f64> for PyCostFunctionSphere {
-	type Point = DVector<f64>;
-	type TangentVector = DVector<f64>;
+	type Point = Vec64;
+	type TangentVector = Vec64;
 
 	fn cost(&self, point: &Self::Point) -> Result<f64> {
 		let py_point = PyPoint::Vector(point.clone());
@@ -448,8 +448,8 @@ impl PyCostFunctionStiefel {
 }
 
 impl<'a> CostFunction<f64> for PyCostFunctionStiefel {
-	type Point = DMatrix<f64>;
-	type TangentVector = DMatrix<f64>;
+	type Point = Mat64;
+	type TangentVector = Mat64;
 
 	fn cost(&self, point: &Self::Point) -> Result<f64> {
 		let py_point = PyPoint::Matrix(point.clone());
@@ -561,12 +561,12 @@ impl CostFunction<f64> for PyCostFunction {
 
 			// Convert point to numpy array
 			let py_point: PyObject = match point {
-				PyPoint::Vector(vec) => dvector_to_numpy(py, vec)
+				PyPoint::Vector(vec) => vec_to_numpy(py, vec)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert vector: {}", e))
 					})?
 					.into(),
-				PyPoint::Matrix(mat) => dmatrix_to_numpy(py, mat)
+				PyPoint::Matrix(mat) => mat_to_numpy(py, mat)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert matrix: {}", e))
 					})?
@@ -592,12 +592,12 @@ impl CostFunction<f64> for PyCostFunction {
 
 			// Convert point to numpy
 			let py_point: PyObject = match point {
-				PyPoint::Vector(vec) => dvector_to_numpy(py, vec)
+				PyPoint::Vector(vec) => vec_to_numpy(py, vec)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert vector: {}", e))
 					})?
 					.into(),
-				PyPoint::Matrix(mat) => dmatrix_to_numpy(py, mat)
+				PyPoint::Matrix(mat) => mat_to_numpy(py, mat)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert matrix: {}", e))
 					})?
@@ -660,7 +660,7 @@ impl CostFunction<f64> for PyCostFunction {
 					let grad = self.gradient_fd_alloc(point)?;
 					// Convert back to PyObject for consistency with the rest of the code
 					match &grad {
-						PyTangentVector::Vector(vec) => dvector_to_numpy(py, vec)
+						PyTangentVector::Vector(vec) => vec_to_numpy(py, vec)
 							.map_err(|e| {
 								ManifoldError::numerical_error(format!(
 									"Failed to convert gradient: {}",
@@ -668,7 +668,7 @@ impl CostFunction<f64> for PyCostFunction {
 								))
 							})?
 							.into(),
-						PyTangentVector::Matrix(mat) => dmatrix_to_numpy(py, mat)
+						PyTangentVector::Matrix(mat) => mat_to_numpy(py, mat)
 							.map_err(|e| {
 								ManifoldError::numerical_error(format!(
 									"Failed to convert gradient: {}",
@@ -692,7 +692,7 @@ impl CostFunction<f64> for PyCostFunction {
 								"Gradient must be a 2D numpy array for matrix problems",
 							)
 						})?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					ManifoldError::numerical_error(format!("Failed to convert gradient: {}", e))
 				})?;
 				PyTangentVector::Matrix(grad_mat)
@@ -705,7 +705,7 @@ impl CostFunction<f64> for PyCostFunction {
 								"Gradient must be a 1D numpy array for vector problems",
 							)
 						})?;
-				let grad_vec = numpy_to_dvector(grad_array.readonly()).map_err(|e| {
+				let grad_vec = numpy_to_vec(grad_array.readonly()).map_err(|e| {
 					ManifoldError::numerical_error(format!("Failed to convert gradient: {}", e))
 				})?;
 				PyTangentVector::Vector(grad_vec)
@@ -745,8 +745,16 @@ impl CostFunction<f64> for PyCostFunction {
 
 		// Compute point + ε*v
 		let point_perturbed = match (point, vector) {
-			(PyPoint::Vector(p), PyTangentVector::Vector(v)) => PyPoint::Vector(p + v * epsilon),
-			(PyPoint::Matrix(p), PyTangentVector::Matrix(v)) => PyPoint::Matrix(p + v * epsilon),
+			(PyPoint::Vector(p), PyTangentVector::Vector(v)) => {
+				let mut scaled_v = v.clone();
+				scaled_v.scale_mut(epsilon);
+				PyPoint::Vector(VectorOps::add(p, &scaled_v))
+			}
+			(PyPoint::Matrix(p), PyTangentVector::Matrix(v)) => {
+				let mut scaled_v = v.clone();
+				scaled_v.scale_mut(epsilon);
+				PyPoint::Matrix(MatrixOps::add(p, &scaled_v))
+			}
 			_ => {
 				return Err(ManifoldError::numerical_error(
 					"Point and vector types must match for Hessian-vector product",
@@ -763,10 +771,14 @@ impl CostFunction<f64> for PyCostFunction {
 		// Compute (∇f(x + ε*v) - ∇f(x)) / ε
 		let hv_product = match (grad_perturbed, grad_original) {
 			(PyTangentVector::Vector(gp), PyTangentVector::Vector(go)) => {
-				PyTangentVector::Vector((gp - go) / epsilon)
+				let mut diff = VectorOps::sub(&gp, &go);
+				diff.scale_mut(epsilon.recip());
+				PyTangentVector::Vector(diff)
 			}
 			(PyTangentVector::Matrix(gp), PyTangentVector::Matrix(go)) => {
-				PyTangentVector::Matrix((gp - go) / epsilon)
+				let mut diff = MatrixOps::sub(&gp, &go);
+				diff.scale_mut(epsilon.recip());
+				PyTangentVector::Matrix(diff)
 			}
 			_ => {
 				return Err(ManifoldError::numerical_error(
@@ -783,12 +795,12 @@ impl CostFunction<f64> for PyCostFunction {
 		Python::with_gil(|py| {
 			// Convert point to numpy
 			let py_point: PyObject = match point {
-				PyPoint::Vector(vec) => dvector_to_numpy(py, vec)
+				PyPoint::Vector(vec) => vec_to_numpy(py, vec)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert vector: {}", e))
 					})?
 					.into(),
-				PyPoint::Matrix(mat) => dmatrix_to_numpy(py, mat)
+				PyPoint::Matrix(mat) => mat_to_numpy(py, mat)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert matrix: {}", e))
 					})?
@@ -805,7 +817,7 @@ impl CostFunction<f64> for PyCostFunction {
 				let grad_array = grad_py
 					.downcast_bound::<numpy::PyArray2<f64>>(py)
 					.map_err(|_| ManifoldError::numerical_error("Gradient must be a 2D array"))?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					ManifoldError::numerical_error(format!("Failed to convert gradient: {}", e))
 				})?;
 				Ok(PyTangentVector::Matrix(grad_mat))
@@ -813,7 +825,7 @@ impl CostFunction<f64> for PyCostFunction {
 				let grad_array = grad_py
 					.downcast_bound::<numpy::PyArray1<f64>>(py)
 					.map_err(|_| ManifoldError::numerical_error("Gradient must be a 1D array"))?;
-				let grad_vec = numpy_to_dvector(grad_array.readonly()).map_err(|e| {
+				let grad_vec = numpy_to_vec(grad_array.readonly()).map_err(|e| {
 					ManifoldError::numerical_error(format!("Failed to convert gradient: {}", e))
 				})?;
 				Ok(PyTangentVector::Vector(grad_vec))
@@ -892,10 +904,10 @@ pub fn create_cost_function(
 				Some(dim_obj) => {
 					if let Ok(dim) = dim_obj.extract::<usize>(py) {
 						// Vector case
-						dvector_to_numpy(py, &DVector::zeros(dim)).map(PyObject::from)?
+						vec_to_numpy(py, &VectorOps::zeros(dim)).map(PyObject::from)?
 					} else if let Ok((rows, cols)) = dim_obj.extract::<(usize, usize)>(py) {
 						// Matrix case
-						dmatrix_to_numpy(py, &DMatrix::zeros(rows, cols)).map(PyObject::from)?
+						mat_to_numpy(py, &MatrixOps::zeros(rows, cols)).map(PyObject::from)?
 					} else {
 						// Can't determine dimension, skip auto-detection
 						return Ok::<_, PyErr>((cost, gradient, cost_and_gradient, false));
@@ -1004,10 +1016,10 @@ fn validate_gradient_implementation(py: Python<'_>, cost_fn: &PyCostFunction) ->
 		// Generate a random test point
 		let test_point = if cost_fn.dimension_info.is_matrix {
 			let (rows, cols) = cost_fn.dimension_info.shape;
-			let mut mat = DMatrix::zeros(rows, cols);
+			let mut mat: Mat64 = MatrixOps::zeros(rows, cols);
 			for i in 0..rows {
 				for j in 0..cols {
-					mat[(i, j)] = StandardNormal.sample(&mut rng);
+					*mat.get_mut(i, j) = StandardNormal.sample(&mut rng);
 				}
 			}
 			// Normalize to avoid numerical issues
@@ -1015,7 +1027,7 @@ fn validate_gradient_implementation(py: Python<'_>, cost_fn: &PyCostFunction) ->
 			PyPoint::Matrix(mat)
 		} else {
 			let dim = cost_fn.dimension_info.shape.0;
-			let mut vec = DVector::zeros(dim);
+			let mut vec: Vec64 = VectorOps::zeros(dim);
 			for i in 0..dim {
 				vec[i] = StandardNormal.sample(&mut rng);
 			}
@@ -1147,13 +1159,13 @@ impl std::fmt::Debug for PyCostFunctionVector {
 }
 
 impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector {
-	type Point = DVector<f64>;
-	type TangentVector = DVector<f64>;
+	type Point = Vec64;
+	type TangentVector = Vec64;
 
 	fn cost(&self, x: &Self::Point) -> Result<f64> {
 		Python::with_gil(|py| {
 			let inner = &self.inner;
-			let x_py = dvector_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = vec_to_numpy(py, x).map(PyObject::from)?;
 
 			if let Some(ref cost_fn) = inner.cost_and_grad_fn {
 				let result = cost_fn.call1(py, (x_py,))?;
@@ -1170,14 +1182,14 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 	}
 
 	fn gradient(&self, x: &Self::Point) -> Result<Self::TangentVector> {
-		Python::with_gil(|py| -> PyResult<DVector<f64>> {
+		Python::with_gil(|py| -> PyResult<Vec64> {
 			let inner = &self.inner;
-			let x_py = dvector_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = vec_to_numpy(py, x).map(PyObject::from)?;
 
 			if let Some(ref grad_fn) = inner.grad_fn {
 				let result = grad_fn.call1(py, (x_py,))?;
 				let grad_array = result.downcast_bound::<numpy::PyArray1<f64>>(py)?;
-				let grad_vec = numpy_to_dvector(grad_array.readonly()).map_err(|e| {
+				let grad_vec = numpy_to_vec(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1189,7 +1201,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 				let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
 				let grad_obj = tuple.get_item(1)?;
 				let grad_array = grad_obj.downcast::<numpy::PyArray1<f64>>()?;
-				let grad_vec = numpy_to_dvector(grad_array.readonly()).map_err(|e| {
+				let grad_vec = numpy_to_vec(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1212,9 +1224,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 	}
 
 	fn cost_and_gradient_alloc(&self, x: &Self::Point) -> Result<(f64, Self::TangentVector)> {
-		Python::with_gil(|py| -> PyResult<(f64, DVector<f64>)> {
+		Python::with_gil(|py| -> PyResult<(f64, Vec64)> {
 			let inner = &self.inner;
-			let x_py = dvector_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = vec_to_numpy(py, x).map(PyObject::from)?;
 
 			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
 				let result = cost_and_grad_fn.call1(py, (x_py,))?;
@@ -1222,7 +1234,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 				let cost: f64 = tuple.get_item(0)?.extract()?;
 				let grad_obj = tuple.get_item(1)?;
 				let grad_array = grad_obj.downcast::<numpy::PyArray1<f64>>()?;
-				let grad_vec = numpy_to_dvector(grad_array.readonly()).map_err(|e| {
+				let grad_vec = numpy_to_vec(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1264,7 +1276,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		let n = point.len();
-		let mut gradient = DVector::zeros(n);
+		let mut gradient: Vec64 = VectorOps::zeros(n);
 		let h = f64::sqrt(f64::EPSILON);
 
 		for i in 0..n {
@@ -1339,13 +1351,13 @@ impl std::fmt::Debug for PyCostFunctionMatrix {
 }
 
 impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix {
-	type Point = DMatrix<f64>;
-	type TangentVector = DMatrix<f64>;
+	type Point = Mat64;
+	type TangentVector = Mat64;
 
 	fn cost(&self, x: &Self::Point) -> Result<f64> {
 		Python::with_gil(|py| {
 			let inner = &self.inner;
-			let x_py = dmatrix_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, x).map(PyObject::from)?;
 
 			if let Some(ref cost_fn) = inner.cost_and_grad_fn {
 				let result = cost_fn.call1(py, (x_py,))?;
@@ -1362,14 +1374,14 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 	}
 
 	fn gradient(&self, x: &Self::Point) -> Result<Self::TangentVector> {
-		Python::with_gil(|py| -> PyResult<DMatrix<f64>> {
+		Python::with_gil(|py| -> PyResult<Mat64> {
 			let inner = &self.inner;
-			let x_py = dmatrix_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, x).map(PyObject::from)?;
 
 			if let Some(ref grad_fn) = inner.grad_fn {
 				let result = grad_fn.call1(py, (x_py,))?;
 				let grad_array = result.downcast_bound::<numpy::PyArray2<f64>>(py)?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1381,7 +1393,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 				let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
 				let grad_obj = tuple.get_item(1)?;
 				let grad_array = grad_obj.downcast::<numpy::PyArray2<f64>>()?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1403,9 +1415,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 	}
 
 	fn cost_and_gradient_alloc(&self, x: &Self::Point) -> Result<(f64, Self::TangentVector)> {
-		Python::with_gil(|py| -> PyResult<(f64, DMatrix<f64>)> {
+		Python::with_gil(|py| -> PyResult<(f64, Mat64)> {
 			let inner = &self.inner;
-			let x_py = dmatrix_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, x).map(PyObject::from)?;
 
 			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
 				let result = cost_and_grad_fn.call1(py, (x_py,))?;
@@ -1413,7 +1425,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 				let cost: f64 = tuple.get_item(0)?.extract()?;
 				let grad_obj = tuple.get_item(1)?;
 				let grad_array = grad_obj.downcast::<numpy::PyArray2<f64>>()?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1454,7 +1466,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		let (m, n) = (point.nrows(), point.ncols());
-		let mut gradient = DMatrix::zeros(m, n);
+		let mut gradient: Mat64 = MatrixOps::zeros(m, n);
 		let h = f64::sqrt(f64::EPSILON);
 
 		for i in 0..m {
@@ -1530,19 +1542,19 @@ impl PyCostFunctionPSDCone {
 	}
 
 	/// Convert a vectorized symmetric matrix to a full matrix
-	fn vector_to_matrix(&self, vec: &DVector<f64>) -> DMatrix<f64> {
-		let mut mat = DMatrix::zeros(self.n, self.n);
+	fn vector_to_matrix(&self, vec: &Vec64) -> Mat64 {
+		let mut mat: Mat64 = MatrixOps::zeros(self.n, self.n);
 		let mut idx = 0;
 
 		// Fill upper triangular part
 		for i in 0..self.n {
 			for j in i..self.n {
 				if i == j {
-					mat[(i, j)] = vec[idx];
+					*mat.get_mut(i, j) = VectorOps::get(vec, idx);
 				} else {
-					let val = vec[idx] / f64::sqrt(2.0);
-					mat[(i, j)] = val;
-					mat[(j, i)] = val;
+					let val = VectorOps::get(vec, idx) / f64::sqrt(2.0);
+					*mat.get_mut(i, j) = val;
+					*mat.get_mut(j, i) = val;
 				}
 				idx += 1;
 			}
@@ -1552,18 +1564,18 @@ impl PyCostFunctionPSDCone {
 	}
 
 	/// Convert a full matrix to vectorized symmetric matrix representation
-	fn matrix_to_vector(&self, mat: &DMatrix<f64>) -> DVector<f64> {
+	fn matrix_to_vector(&self, mat: &Mat64) -> Vec64 {
 		let vec_dim = self.n * (self.n + 1) / 2;
-		let mut vec = DVector::zeros(vec_dim);
+		let mut vec: Vec64 = VectorOps::zeros(vec_dim);
 		let mut idx = 0;
 
 		// Extract upper triangular part
 		for i in 0..self.n {
 			for j in i..self.n {
 				if i == j {
-					vec[idx] = mat[(i, j)];
+					*vec.get_mut(idx) = MatrixOps::get(mat, i, j);
 				} else {
-					vec[idx] = mat[(i, j)] * f64::sqrt(2.0);
+					*vec.get_mut(idx) = MatrixOps::get(mat, i, j) * f64::sqrt(2.0);
 				}
 				idx += 1;
 			}
@@ -1580,8 +1592,8 @@ impl std::fmt::Debug for PyCostFunctionPSDCone {
 }
 
 impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone {
-	type Point = DVector<f64>;
-	type TangentVector = DVector<f64>;
+	type Point = Vec64;
+	type TangentVector = Vec64;
 
 	fn cost(&self, x: &Self::Point) -> Result<f64> {
 		// Convert vector to matrix for Python
@@ -1589,7 +1601,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 
 		Python::with_gil(|py| {
 			let inner = &self.inner;
-			let x_py = dmatrix_to_numpy(py, &x_mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &x_mat).map(PyObject::from)?;
 			inner.cost_fn.call1(py, (x_py,))?.extract(py)
 		})
 		.map_err(|e: PyErr| ManifoldError::numerical_error(format!("Python error in cost: {}", e)))
@@ -1599,14 +1611,14 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 		// Convert vector to matrix for Python
 		let x_mat = self.vector_to_matrix(x);
 
-		Python::with_gil(|py| -> PyResult<DVector<f64>> {
+		Python::with_gil(|py| -> PyResult<Vec64> {
 			let inner = &self.inner;
-			let x_py = dmatrix_to_numpy(py, &x_mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &x_mat).map(PyObject::from)?;
 
 			if let Some(ref grad_fn) = inner.grad_fn {
 				let grad_obj = grad_fn.call1(py, (x_py,))?;
 				let grad_array = grad_obj.downcast_bound::<numpy::PyArray2<f64>>(py)?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1618,7 +1630,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 				let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
 				let grad_obj = tuple.get_item(1)?;
 				let grad_array = grad_obj.downcast::<numpy::PyArray2<f64>>()?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1643,9 +1655,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 		// Convert vector to matrix for Python
 		let x_mat = self.vector_to_matrix(x);
 
-		Python::with_gil(|py| -> PyResult<(f64, DVector<f64>)> {
+		Python::with_gil(|py| -> PyResult<(f64, Vec64)> {
 			let inner = &self.inner;
-			let x_py = dmatrix_to_numpy(py, &x_mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &x_mat).map(PyObject::from)?;
 
 			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
 				let result = cost_and_grad_fn.call1(py, (x_py,))?;
@@ -1653,7 +1665,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 				let cost: f64 = tuple.get_item(0)?.extract()?;
 				let grad_obj = tuple.get_item(1)?;
 				let grad_array = grad_obj.downcast::<numpy::PyArray2<f64>>()?;
-				let grad_mat = numpy_to_dmatrix(grad_array.readonly()).map_err(|e| {
+				let grad_mat = numpy_to_mat(grad_array.readonly()).map_err(|e| {
 					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
 						"Failed to convert gradient: {}",
 						e
@@ -1694,7 +1706,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		let vec_dim = self.n * (self.n + 1) / 2;
-		let mut gradient = DVector::zeros(vec_dim);
+		let mut gradient: Vec64 = VectorOps::zeros(vec_dim);
 		let h = f64::sqrt(f64::EPSILON);
 
 		for i in 0..vec_dim {

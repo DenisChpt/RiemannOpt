@@ -3,14 +3,14 @@
 //! The oblique manifold is the product of unit spheres, where each column
 //! of a matrix is constrained to have unit norm.
 
-use nalgebra::DMatrix;
 use numpy::{PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
+use riemannopt_core::linalg::MatrixOps;
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::oblique::Oblique;
 
 use crate::{
-	array_utils::{dmatrix_to_numpy, numpy_to_dmatrix},
+	array_utils::{mat_to_numpy, numpy_to_mat, Mat64},
 	error::to_py_err,
 };
 
@@ -113,14 +113,18 @@ impl PyOblique {
 	///     True if the point is on the manifold (each column has unit norm)
 	#[pyo3(signature = (point, atol=1e-10))]
 	pub fn contains(&self, point: PyReadonlyArray2<'_, f64>, atol: f64) -> PyResult<bool> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
 		// Validate dimensions
 		if point_mat.nrows() != self.n || point_mat.ncols() != self.p {
 			return Ok(false);
 		}
 
-		Ok(self.inner.is_point_on_manifold(&point_mat, atol))
+		Ok(<Oblique as Manifold<f64>>::is_point_on_manifold(
+			&self.inner,
+			&point_mat,
+			atol,
+		))
 	}
 
 	/// Project a point onto the manifold.
@@ -137,7 +141,7 @@ impl PyOblique {
 		py: Python<'py>,
 		point: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
 		// Validate dimensions
 		if point_mat.nrows() != self.n || point_mat.ncols() != self.p {
@@ -147,11 +151,11 @@ impl PyOblique {
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner.project_point(&point_mat, &mut result);
+		Manifold::<f64>::project_point(&self.inner, &point_mat, &mut result);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Project a tangent vector at a point.
@@ -168,24 +172,25 @@ impl PyOblique {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate dimensions
-		if point_mat.shape() != (self.n, self.p) || tangent_mat.shape() != (self.n, self.p) {
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.p)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.p)
+		{
 			return Err(crate::error::dimension_mismatch(
 				&[self.n, self.p],
 				&[tangent_mat.nrows(), tangent_mat.ncols()],
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner
-			.project_tangent(&point_mat, &tangent_mat, &mut result)
+		Manifold::<f64>::project_tangent(&self.inner, &point_mat, &tangent_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian exponential map.
@@ -202,16 +207,15 @@ impl PyOblique {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner
-			.retract(&point_mat, &tangent_mat, &mut result)
+		<Oblique as Manifold<f64>>::retract(&self.inner, &point_mat, &tangent_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian logarithm map.
@@ -228,16 +232,15 @@ impl PyOblique {
 		x: PyReadonlyArray2<'_, f64>,
 		y: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let x_mat = numpy_to_dmatrix(x)?;
-		let y_mat = numpy_to_dmatrix(y)?;
+		let x_mat = numpy_to_mat(x)?;
+		let y_mat = numpy_to_mat(y)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner
-			.inverse_retract(&x_mat, &y_mat, &mut result)
+		<Oblique as Manifold<f64>>::inverse_retract(&self.inner, &x_mat, &y_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the retraction.
@@ -254,16 +257,15 @@ impl PyOblique {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner
-			.retract(&point_mat, &tangent_mat, &mut result)
+		<Oblique as Manifold<f64>>::retract(&self.inner, &point_mat, &tangent_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the inverse retraction.
@@ -280,16 +282,15 @@ impl PyOblique {
 		x: PyReadonlyArray2<'_, f64>,
 		y: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let x_mat = numpy_to_dmatrix(x)?;
-		let y_mat = numpy_to_dmatrix(y)?;
+		let x_mat = numpy_to_mat(x)?;
+		let y_mat = numpy_to_mat(y)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner
-			.inverse_retract(&x_mat, &y_mat, &mut result)
+		<Oblique as Manifold<f64>>::inverse_retract(&self.inner, &x_mat, &y_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Compute the Riemannian inner product.
@@ -307,9 +308,9 @@ impl PyOblique {
 		u: PyReadonlyArray2<'_, f64>,
 		v: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let u_mat = numpy_to_dmatrix(u)?;
-		let v_mat = numpy_to_dmatrix(v)?;
+		let point_mat = numpy_to_mat(point)?;
+		let u_mat = numpy_to_mat(u)?;
+		let v_mat = numpy_to_mat(v)?;
 
 		Ok(self
 			.inner
@@ -330,8 +331,8 @@ impl PyOblique {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		Ok(self
 			.inner
@@ -352,10 +353,10 @@ impl PyOblique {
 		x: PyReadonlyArray2<'_, f64>,
 		y: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let x_mat = numpy_to_dmatrix(x)?;
-		let y_mat = numpy_to_dmatrix(y)?;
+		let x_mat = numpy_to_mat(x)?;
+		let y_mat = numpy_to_mat(y)?;
 
-		Ok(self.inner.distance(&x_mat, &y_mat).map_err(to_py_err)?)
+		Ok(<Oblique as Manifold<f64>>::distance(&self.inner, &x_mat, &y_mat).map_err(to_py_err)?)
 	}
 
 	/// Generate a random point on the manifold.
@@ -363,11 +364,11 @@ impl PyOblique {
 	/// Returns:
 	///     Random matrix with normalized columns
 	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner.random_point(&mut result).map_err(to_py_err)?;
+		<Oblique as Manifold<f64>>::random_point(&self.inner, &mut result).map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Generate a random tangent vector at a point.
@@ -385,20 +386,19 @@ impl PyOblique {
 		point: PyReadonlyArray2<'_, f64>,
 		scale: f64,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		self.inner
-			.random_tangent(&point_mat, &mut result)
+		<Oblique as Manifold<f64>>::random_tangent(&self.inner, &point_mat, &mut result)
 			.map_err(to_py_err)?;
 
 		// Scale the result if needed
 		if scale != 1.0 {
-			result *= scale;
+			result.scale_mut(scale);
 		}
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Get the intrinsic dimension of the manifold.
@@ -429,14 +429,14 @@ impl PyOblique {
 		to_point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let from_mat = numpy_to_dmatrix(from_point)?;
-		let to_mat = numpy_to_dmatrix(to_point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let from_mat = numpy_to_mat(from_point)?;
+		let to_mat = numpy_to_mat(to_point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate dimensions
-		if from_mat.shape() != (self.n, self.p)
-			|| to_mat.shape() != (self.n, self.p)
-			|| tangent_mat.shape() != (self.n, self.p)
+		if (from_mat.nrows() != self.n || from_mat.ncols() != self.p)
+			|| (to_mat.nrows() != self.n || to_mat.ncols() != self.p)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.p)
 		{
 			return Err(crate::error::dimension_mismatch(
 				&[self.n, self.p, self.n, self.p, self.n, self.p],
@@ -451,11 +451,16 @@ impl PyOblique {
 			));
 		}
 
-		let result = self
-			.inner
-			.parallel_transport(&from_mat, &to_mat, &tangent_mat)
-			.map_err(to_py_err)?;
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
+		<Oblique as Manifold<f64>>::parallel_transport(
+			&self.inner,
+			&from_mat,
+			&to_mat,
+			&tangent_mat,
+			&mut result,
+		)
+		.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 }

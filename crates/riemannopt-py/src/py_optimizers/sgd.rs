@@ -5,7 +5,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use nalgebra::{DVector, DMatrix};
+use riemannopt_core::linalg::{MatrixOps, VectorOps};
 use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use riemannopt_optim::{SGD, SGDConfig, MomentumMethod};
 use riemannopt_core::{
@@ -22,7 +22,7 @@ use crate::{
         stiefel::PyStiefel,
     },
     py_cost::PyCostFunction,
-    array_utils::{numpy_to_dvector, numpy_to_dmatrix, dvector_to_numpy, dmatrix_to_numpy},
+    array_utils::{numpy_to_vec, numpy_to_mat, vec_to_numpy, mat_to_numpy},
     error::to_py_err,
 };
 use super::base::PyOptimizationResult;
@@ -305,7 +305,7 @@ impl PySGD {
     ) -> PyResult<PyOptimizationResult> {
         // Convert initial point
         let x0_array = initial_point.downcast_bound::<PyArray1<f64>>(py)?;
-        let x0 = numpy_to_dvector(x0_array.readonly())?;
+        let x0 = numpy_to_vec(x0_array.readonly())?;
         
         // Get the inner manifold
         let manifold = &sphere.inner;
@@ -320,7 +320,7 @@ impl PySGD {
         
         // Convert result
         PyOptimizationResult::from_rust_result(py, result, |point| {
-            Ok(dvector_to_numpy(py, point)?.into())
+            Ok(vec_to_numpy(py, point)?.into())
         })
     }
     
@@ -336,7 +336,7 @@ impl PySGD {
     ) -> PyResult<PyOptimizationResult> {
         // Convert initial point
         let x0_array = initial_point.downcast_bound::<PyArray2<f64>>(py)?;
-        let x0 = numpy_to_dmatrix(x0_array.readonly())?;
+        let x0 = numpy_to_mat(x0_array.readonly())?;
         
         // Get the inner manifold
         let manifold = &stiefel.inner;
@@ -351,7 +351,7 @@ impl PySGD {
         
         // Convert result
         PyOptimizationResult::from_rust_result(py, result, |point| {
-            Ok(dmatrix_to_numpy(py, point)?.into())
+            Ok(mat_to_numpy(py, point)?.into())
         })
     }
 }

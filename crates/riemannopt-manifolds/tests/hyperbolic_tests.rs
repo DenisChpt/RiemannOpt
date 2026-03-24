@@ -1,7 +1,7 @@
 //! Integration tests for the Hyperbolic manifold
 
 use approx::assert_relative_eq;
-use nalgebra::DVector;
+use riemannopt_core::linalg::{self, VectorOps};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Hyperbolic;
 
@@ -32,14 +32,14 @@ fn test_hyperbolic_projection() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
 	// A point already inside the ball
-	let x = DVector::from_vec(vec![0.1, 0.2, 0.3]);
-	let mut proj = DVector::zeros(3);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.3]);
+	let mut proj: linalg::Vec<f64> = VectorOps::zeros(3);
 	hyp.project_point(&x, &mut proj);
 	assert!(hyp.is_point_on_manifold(&proj, 1e-6));
 
 	// A point outside the ball should be projected inside
-	let outside = DVector::from_vec(vec![10.0, 0.0, 0.0]);
-	let mut proj_out = DVector::zeros(3);
+	let outside: linalg::Vec<f64> = VectorOps::from_slice(&[10.0, 0.0, 0.0]);
+	let mut proj_out: linalg::Vec<f64> = VectorOps::zeros(3);
 	hyp.project_point(&outside, &mut proj_out);
 	assert!(
 		proj_out.norm() < 1.0,
@@ -53,23 +53,24 @@ fn test_hyperbolic_tangent_projection() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
 	// In the Poincare ball, all vectors are valid tangent vectors
-	let x = DVector::from_vec(vec![0.1, 0.2, 0.3]);
-	let v = DVector::from_vec(vec![1.0, -2.0, 0.5]);
-	let mut v_tangent = DVector::zeros(3);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.3]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, -2.0, 0.5]);
+	let mut v_tangent: linalg::Vec<f64> = VectorOps::zeros(3);
 
 	hyp.project_tangent(&x, &v, &mut v_tangent).unwrap();
 
 	// Tangent projection is identity in the Poincare ball
-	assert_relative_eq!(v_tangent, v, epsilon = 1e-14);
+	let diff = VectorOps::sub(&v_tangent, &v);
+	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);
 }
 
 #[test]
 fn test_hyperbolic_retraction() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![0.1, 0.2, 0.0]);
-	let v = DVector::from_vec(vec![0.05, -0.03, 0.01]);
-	let mut y = DVector::zeros(3);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.0]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.05, -0.03, 0.01]);
+	let mut y: linalg::Vec<f64> = VectorOps::zeros(3);
 
 	hyp.retract(&x, &v, &mut y).unwrap();
 
@@ -78,19 +79,20 @@ fn test_hyperbolic_retraction() {
 	assert!(hyp.is_point_on_manifold(&y, 1e-6));
 
 	// Zero retraction returns same point
-	let zero = DVector::zeros(3);
-	let mut x_recovered = DVector::zeros(3);
+	let zero: linalg::Vec<f64> = VectorOps::zeros(3);
+	let mut x_recovered: linalg::Vec<f64> = VectorOps::zeros(3);
 	hyp.retract(&x, &zero, &mut x_recovered).unwrap();
-	assert_relative_eq!(x, x_recovered, epsilon = 1e-14);
+	let diff = VectorOps::sub(&x, &x_recovered);
+	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);
 }
 
 #[test]
 fn test_hyperbolic_inner_product() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![0.1, 0.2, 0.0]);
-	let u = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-	let v = DVector::from_vec(vec![0.0, 1.0, 0.0]);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.0]);
+	let u: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 1.0, 0.0]);
 
 	// Test symmetry
 	let inner_uv = hyp.inner_product(&x, &u, &v).unwrap();
@@ -113,7 +115,7 @@ fn test_hyperbolic_random_point() {
 	let hyp = Hyperbolic::<f64>::new(5).unwrap();
 
 	for _ in 0..10 {
-		let mut x = DVector::zeros(5);
+		let mut x: linalg::Vec<f64> = VectorOps::zeros(5);
 		hyp.random_point(&mut x).unwrap();
 
 		// Point should be inside the ball
@@ -126,11 +128,12 @@ fn test_hyperbolic_random_point() {
 fn test_hyperbolic_parallel_transport() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![0.1, 0.2, 0.0]);
-	let y = DVector::from_vec(vec![0.3, -0.1, 0.05]);
-	let v = DVector::from_vec(vec![0.5, 0.0, 0.1]);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.0]);
+	let y: linalg::Vec<f64> = VectorOps::from_slice(&[0.3, -0.1, 0.05]);
+	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.5, 0.0, 0.1]);
 
-	let transported = hyp.parallel_transport(&x, &y, &v).unwrap();
+	let mut transported: linalg::Vec<f64> = VectorOps::zeros(3);
+	Manifold::<f64>::parallel_transport(&hyp, &x, &y, &v, &mut transported).unwrap();
 
 	// Transported vector should have correct dimension
 	assert_eq!(transported.len(), 3);
@@ -143,9 +146,9 @@ fn test_hyperbolic_parallel_transport() {
 fn test_hyperbolic_euclidean_to_riemannian_gradient() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![0.1, 0.2, 0.0]);
-	let egrad = DVector::from_vec(vec![1.0, -0.5, 0.3]);
-	let mut rgrad = DVector::zeros(3);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.0]);
+	let egrad: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, -0.5, 0.3]);
+	let mut rgrad: linalg::Vec<f64> = VectorOps::zeros(3);
 
 	hyp.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad)
 		.unwrap();
@@ -154,8 +157,10 @@ fn test_hyperbolic_euclidean_to_riemannian_gradient() {
 	// grad_riem = (1 - K||x||^2)^2 / 4 * grad_euc, with K = -1
 	let norm_sq = x.norm_squared();
 	let factor = (1.0 + norm_sq) * (1.0 + norm_sq) / 4.0;
-	let expected = &egrad * factor;
-	assert_relative_eq!(rgrad, expected, epsilon = 1e-12);
+	let mut expected = egrad.clone();
+	expected.scale_mut(factor);
+	let diff = VectorOps::sub(&rgrad, &expected);
+	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-12);
 }
 
 #[test]
@@ -163,19 +168,19 @@ fn test_hyperbolic_is_point_on_manifold() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
 	// Point inside ball
-	let inside = DVector::from_vec(vec![0.1, 0.2, 0.3]);
+	let inside: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.3]);
 	assert!(hyp.is_point_on_manifold(&inside, 1e-6));
 
 	// Point on boundary (should fail)
-	let boundary = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+	let boundary: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
 	assert!(!hyp.is_point_on_manifold(&boundary, 1e-6));
 
 	// Point outside ball
-	let outside = DVector::from_vec(vec![2.0, 0.0, 0.0]);
+	let outside: linalg::Vec<f64> = VectorOps::from_slice(&[2.0, 0.0, 0.0]);
 	assert!(!hyp.is_point_on_manifold(&outside, 1e-6));
 
 	// Origin is in the ball
-	let origin = DVector::zeros(3);
+	let origin: linalg::Vec<f64> = VectorOps::zeros(3);
 	assert!(hyp.is_point_on_manifold(&origin, 1e-6));
 }
 
@@ -183,8 +188,8 @@ fn test_hyperbolic_is_point_on_manifold() {
 fn test_hyperbolic_distance() {
 	let hyp = Hyperbolic::<f64>::new(3).unwrap();
 
-	let x = DVector::from_vec(vec![0.1, 0.0, 0.0]);
-	let y = DVector::from_vec(vec![-0.1, 0.0, 0.0]);
+	let x: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.0, 0.0]);
+	let y: linalg::Vec<f64> = VectorOps::from_slice(&[-0.1, 0.0, 0.0]);
 
 	let dist = hyp.distance(&x, &y).unwrap();
 	assert!(dist > 0.0);

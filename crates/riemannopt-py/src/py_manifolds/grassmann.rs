@@ -4,15 +4,15 @@
 //! linear subspaces of R^n. Points are represented as n×p matrices
 //! with orthonormal columns.
 
-use nalgebra::{DMatrix, DVector};
 use numpy::{PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
+use riemannopt_core::linalg::MatrixOps;
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::grassmann::Grassmann;
 
 use super::base::{PointType, PyManifoldBase};
 use crate::{
-	array_utils::{dmatrix_to_numpy, numpy_to_dmatrix},
+	array_utils::{mat_to_numpy, numpy_to_mat, Mat64, Vec64},
 	error::{dimension_mismatch, to_py_err},
 	types::PyPoint,
 };
@@ -224,7 +224,7 @@ impl PyGrassmann {
 		py: Python<'py>,
 		point: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
 		// Validate shape
 		if point_mat.nrows() != self.n || point_mat.ncols() != self.p {
@@ -234,10 +234,10 @@ impl PyGrassmann {
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner.project_point(&point_mat, &mut result);
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Exponential map from a point in the direction of a tangent vector.
@@ -259,23 +259,25 @@ impl PyGrassmann {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate shapes
-		if point_mat.shape() != (self.n, self.p) || tangent_mat.shape() != (self.n, self.p) {
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.p)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.p)
+		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
 				&[point_mat.nrows(), point_mat.ncols()],
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner
 			.retract(&point_mat, &tangent_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Logarithmic map from one point to another.
@@ -297,23 +299,25 @@ impl PyGrassmann {
 		point: PyReadonlyArray2<'_, f64>,
 		other: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let other_mat = numpy_to_dmatrix(other)?;
+		let point_mat = numpy_to_mat(point)?;
+		let other_mat = numpy_to_mat(other)?;
 
 		// Validate shapes
-		if point_mat.shape() != (self.n, self.p) || other_mat.shape() != (self.n, self.p) {
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.p)
+			|| (other_mat.nrows() != self.n || other_mat.ncols() != self.p)
+		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
 				&[point_mat.nrows(), point_mat.ncols()],
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner
 			.inverse_retract(&point_mat, &other_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Retraction mapping.
@@ -338,23 +342,25 @@ impl PyGrassmann {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate shapes
-		if point_mat.shape() != (self.n, self.p) || tangent_mat.shape() != (self.n, self.p) {
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.p)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.p)
+		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
 				&[point_mat.nrows(), point_mat.ncols()],
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner
 			.retract(&point_mat, &tangent_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Project a vector onto the tangent space at a point.
@@ -376,23 +382,25 @@ impl PyGrassmann {
 		point: PyReadonlyArray2<'_, f64>,
 		vector: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let vector_mat = numpy_to_dmatrix(vector)?;
+		let point_mat = numpy_to_mat(point)?;
+		let vector_mat = numpy_to_mat(vector)?;
 
 		// Validate shapes
-		if point_mat.shape() != (self.n, self.p) || vector_mat.shape() != (self.n, self.p) {
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.p)
+			|| (vector_mat.nrows() != self.n || vector_mat.ncols() != self.p)
+		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
 				&[point_mat.nrows(), point_mat.ncols()],
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner
 			.project_tangent(&point_mat, &vector_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Riemannian inner product between two tangent vectors.
@@ -417,14 +425,14 @@ impl PyGrassmann {
 		u: PyReadonlyArray2<'_, f64>,
 		v: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let u_mat = numpy_to_dmatrix(u)?;
-		let v_mat = numpy_to_dmatrix(v)?;
+		let point_mat = numpy_to_mat(point)?;
+		let u_mat = numpy_to_mat(u)?;
+		let v_mat = numpy_to_mat(v)?;
 
 		// Validate shapes
-		if point_mat.shape() != (self.n, self.p)
-			|| u_mat.shape() != (self.n, self.p)
-			|| v_mat.shape() != (self.n, self.p)
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.p)
+			|| (u_mat.nrows() != self.n || u_mat.ncols() != self.p)
+			|| (v_mat.nrows() != self.n || v_mat.ncols() != self.p)
 		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
@@ -456,11 +464,13 @@ impl PyGrassmann {
 		point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let point_mat = numpy_to_dmatrix(point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let point_mat = numpy_to_mat(point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate shapes
-		if point_mat.shape() != (self.n, self.p) || tangent_mat.shape() != (self.n, self.p) {
+		if (point_mat.nrows() != self.n || point_mat.ncols() != self.p)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.p)
+		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
 				&[point_mat.nrows(), point_mat.ncols()],
@@ -489,11 +499,13 @@ impl PyGrassmann {
 		x: PyReadonlyArray2<'_, f64>,
 		y: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<f64> {
-		let x_mat = numpy_to_dmatrix(x)?;
-		let y_mat = numpy_to_dmatrix(y)?;
+		let x_mat = numpy_to_mat(x)?;
+		let y_mat = numpy_to_mat(y)?;
 
 		// Validate shapes
-		if x_mat.shape() != (self.n, self.p) || y_mat.shape() != (self.n, self.p) {
+		if (x_mat.nrows() != self.n || x_mat.ncols() != self.p)
+			|| (y_mat.nrows() != self.n || y_mat.ncols() != self.p)
+		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
 				&[x_mat.nrows(), x_mat.ncols()],
@@ -510,11 +522,11 @@ impl PyGrassmann {
 	/// array_like, shape (n, p)
 	///     Random point with orthonormal columns
 	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
 		self.inner.random_point(&mut result).map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Generate a random tangent vector at a point.
@@ -537,17 +549,17 @@ impl PyGrassmann {
 		point: PyReadonlyArray2<'_, f64>,
 		scale: f64,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let point_mat = numpy_to_dmatrix(point)?;
+		let point_mat = numpy_to_mat(point)?;
 
 		// Validate shape
-		if point_mat.shape() != (self.n, self.p) {
+		if point_mat.nrows() != self.n || point_mat.ncols() != self.p {
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
 				&[point_mat.nrows(), point_mat.ncols()],
 			));
 		}
 
-		let mut result = DMatrix::zeros(self.n, self.p);
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
 		self.inner
 			.random_tangent(&point_mat, &mut result)
@@ -555,10 +567,10 @@ impl PyGrassmann {
 
 		// Scale the result if needed
 		if scale != 1.0 {
-			result *= scale;
+			result.scale_mut(scale);
 		}
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 
 	/// Parallel transport a tangent vector along a geodesic.
@@ -583,14 +595,14 @@ impl PyGrassmann {
 		to_point: PyReadonlyArray2<'_, f64>,
 		tangent: PyReadonlyArray2<'_, f64>,
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
-		let from_mat = numpy_to_dmatrix(from_point)?;
-		let to_mat = numpy_to_dmatrix(to_point)?;
-		let tangent_mat = numpy_to_dmatrix(tangent)?;
+		let from_mat = numpy_to_mat(from_point)?;
+		let to_mat = numpy_to_mat(to_point)?;
+		let tangent_mat = numpy_to_mat(tangent)?;
 
 		// Validate shapes
-		if from_mat.shape() != (self.n, self.p)
-			|| to_mat.shape() != (self.n, self.p)
-			|| tangent_mat.shape() != (self.n, self.p)
+		if (from_mat.nrows() != self.n || from_mat.ncols() != self.p)
+			|| (to_mat.nrows() != self.n || to_mat.ncols() != self.p)
+			|| (tangent_mat.nrows() != self.n || tangent_mat.ncols() != self.p)
 		{
 			return Err(dimension_mismatch(
 				&[self.n, self.p],
@@ -598,12 +610,12 @@ impl PyGrassmann {
 			));
 		}
 
-		let result = self
-			.inner
-			.parallel_transport(&from_mat, &to_mat, &tangent_mat)
+		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
+		self.inner
+			.parallel_transport(&from_mat, &to_mat, &tangent_mat, &mut result)
 			.map_err(to_py_err)?;
 
-		dmatrix_to_numpy(py, &result)
+		mat_to_numpy(py, &result)
 	}
 }
 
@@ -613,29 +625,19 @@ impl PyGrassmann {
 		super::base::array_to_point(py, obj)
 	}
 
-	fn contains_matrix(&self, mat: &DMatrix<f64>, atol: f64) -> PyResult<bool> {
+	fn contains_matrix(&self, mat: &Mat64, atol: f64) -> PyResult<bool> {
 		Ok(self.inner.is_point_on_manifold(mat, atol))
 	}
 
-	fn is_tangent_matrix(
-		&self,
-		point: &DMatrix<f64>,
-		vector: &DMatrix<f64>,
-		atol: f64,
-	) -> PyResult<bool> {
+	fn is_tangent_matrix(&self, point: &Mat64, vector: &Mat64, atol: f64) -> PyResult<bool> {
 		Ok(self.inner.is_vector_in_tangent_space(point, vector, atol))
 	}
 
-	fn contains_vector(&self, _vec: &DVector<f64>, _atol: f64) -> PyResult<bool> {
+	fn contains_vector(&self, _vec: &Vec64, _atol: f64) -> PyResult<bool> {
 		Err(crate::error::type_error("matrix point", "vector point"))
 	}
 
-	fn is_tangent_vector(
-		&self,
-		_point: &DVector<f64>,
-		_vector: &DVector<f64>,
-		_atol: f64,
-	) -> PyResult<bool> {
+	fn is_tangent_vector(&self, _point: &Vec64, _vector: &Vec64, _atol: f64) -> PyResult<bool> {
 		Err(crate::error::type_error("matrix tangent", "vector tangent"))
 	}
 }

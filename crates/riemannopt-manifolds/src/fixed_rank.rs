@@ -85,7 +85,7 @@
 //! use riemannopt_manifolds::FixedRank;
 //! use riemannopt_manifolds::fixed_rank::FixedRankPoint;
 //! use riemannopt_core::manifold::Manifold;
-//! use nalgebra::DMatrix;
+//! use riemannopt_core::linalg::{self, MatrixOps};
 //!
 //! // Create M_2(4,3) - 4×3 matrices of rank 2
 //! let manifold = FixedRank::new(4, 3, 2)?;
@@ -99,12 +99,12 @@
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
-use nalgebra::{DMatrix, DVector, SVD};
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -138,53 +138,64 @@ pub struct FixedRank {
 
 /// Representation of a point on the fixed-rank manifold
 #[derive(Debug, Clone)]
-pub struct FixedRankPoint<T: Scalar> {
+pub struct FixedRankPoint<T: Scalar>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Left singular vectors (m × k)
-	pub u: DMatrix<T>,
+	pub u: linalg::Mat<T>,
 	/// Singular values (k × k diagonal)
-	pub s: DVector<T>,
+	pub s: linalg::Vec<T>,
 	/// Right singular vectors (n × k)
-	pub v: DMatrix<T>,
+	pub v: linalg::Mat<T>,
 }
 
-impl<T: Scalar> Default for FixedRankPoint<T> {
+impl<T: Scalar> Default for FixedRankPoint<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	fn default() -> Self {
 		Self {
-			u: DMatrix::default(),
-			s: DVector::default(),
-			v: DMatrix::default(),
+			u: MatrixOps::zeros(0, 0),
+			s: VectorOps::zeros(0),
+			v: MatrixOps::zeros(0, 0),
 		}
 	}
 }
 
-impl<T: Scalar> FixedRankPoint<T> {
+impl<T: Scalar> FixedRankPoint<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Create a new fixed-rank point from factors
-	pub fn new(u: DMatrix<T>, s: DVector<T>, v: DMatrix<T>) -> Self {
+	pub fn new(u: linalg::Mat<T>, s: linalg::Vec<T>, v: linalg::Mat<T>) -> Self {
 		Self { u, s, v }
 	}
 
 	/// Convert to full matrix representation
-	pub fn to_matrix(&self) -> DMatrix<T> {
-		let s_mat = DMatrix::from_diagonal(&self.s);
-		&self.u * s_mat * self.v.transpose()
+	pub fn to_matrix(&self) -> linalg::Mat<T> {
+		let s_mat = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&self.s);
+		let temp = MatrixOps::mat_mul(&self.u, &s_mat);
+		MatrixOps::mat_mul(&temp, &MatrixOps::transpose(&self.v))
 	}
 
 	/// Create from full matrix using SVD
-	pub fn from_matrix(mat: &DMatrix<T>, k: usize) -> Result<Self> {
-		let svd = SVD::new(mat.clone(), true, true);
+	pub fn from_matrix(mat: &linalg::Mat<T>, k: usize) -> Result<Self> {
+		let svd = DecompositionOps::svd(mat);
 
-		let u = svd
+		let u_full = svd
 			.u
 			.ok_or_else(|| ManifoldError::numerical_error("SVD failed to compute U"))?;
-		let v_t = svd
-			.v_t
+		let vt_full = svd
+			.vt
 			.ok_or_else(|| ManifoldError::numerical_error("SVD failed to compute V^T"))?;
-		let s = &svd.singular_values;
 
 		// Truncate to rank k
-		let u_k = u.columns(0, k).into();
-		let s_k = s.rows(0, k).into();
-		let v_k = v_t.transpose().columns(0, k).into();
+		let u_k = MatrixOps::columns(&u_full, 0, k);
+		let s_k = <linalg::Vec<T> as VectorOps<T>>::from_fn(k, |i| {
+			VectorOps::get(&svd.singular_values, i)
+		});
+		let v_k = MatrixOps::columns(&MatrixOps::transpose(&vt_full), 0, k);
 
 		Ok(Self::new(u_k, s_k, v_k))
 	}
@@ -192,18 +203,37 @@ impl<T: Scalar> FixedRankPoint<T> {
 
 /// Representation of a tangent vector on the fixed-rank manifold
 #[derive(Debug, Clone)]
-pub struct FixedRankTangent<T: Scalar> {
+pub struct FixedRankTangent<T: Scalar>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Component U_perp * M * V^T (m × k)
-	pub u_perp_m: DMatrix<T>,
+	pub u_perp_m: linalg::Mat<T>,
 	/// Component U * S_dot * V^T (k × k)
-	pub s_dot: DVector<T>,
-	/// Component U * N * V_perp^T (n × k)  
-	pub v_perp_n: DMatrix<T>,
+	pub s_dot: linalg::Vec<T>,
+	/// Component U * N * V_perp^T (n × k)
+	pub v_perp_n: linalg::Mat<T>,
 }
 
-impl<T: Scalar> FixedRankTangent<T> {
+impl<T: Scalar> Default for FixedRankTangent<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	fn default() -> Self {
+		Self {
+			u_perp_m: MatrixOps::zeros(0, 0),
+			s_dot: VectorOps::zeros(0),
+			v_perp_n: MatrixOps::zeros(0, 0),
+		}
+	}
+}
+
+impl<T: Scalar> FixedRankTangent<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	/// Create a new fixed-rank tangent vector from components
-	pub fn new(u_perp_m: DMatrix<T>, s_dot: DVector<T>, v_perp_n: DMatrix<T>) -> Self {
+	pub fn new(u_perp_m: linalg::Mat<T>, s_dot: linalg::Vec<T>, v_perp_n: linalg::Mat<T>) -> Self {
 		Self {
 			u_perp_m,
 			s_dot,
@@ -212,40 +242,50 @@ impl<T: Scalar> FixedRankTangent<T> {
 	}
 
 	/// Convert to full matrix representation given a base point
-	pub fn to_matrix(&self, point: &FixedRankPoint<T>) -> DMatrix<T> {
-		let s_dot_mat = DMatrix::from_diagonal(&self.s_dot);
+	pub fn to_matrix(&self, point: &FixedRankPoint<T>) -> linalg::Mat<T> {
+		let s_dot_mat = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&self.s_dot);
 
 		// Compute U_perp and V_perp using QR decomposition
 		let (u_perp, _) = Self::compute_orthogonal_complement(&point.u);
 		let (v_perp, _) = Self::compute_orthogonal_complement(&point.v);
 
 		// Combine the three components
-		&u_perp * &self.u_perp_m * point.v.transpose()
-			+ &point.u * s_dot_mat * point.v.transpose()
-			+ &point.u * &self.v_perp_n * v_perp.transpose()
+		let vt = MatrixOps::transpose(&point.v);
+		let term1 = MatrixOps::mat_mul(&MatrixOps::mat_mul(&u_perp, &self.u_perp_m), &vt);
+		let term2 = MatrixOps::mat_mul(&MatrixOps::mat_mul(&point.u, &s_dot_mat), &vt);
+		let term3 = MatrixOps::mat_mul(
+			&MatrixOps::mat_mul(&point.u, &self.v_perp_n),
+			&MatrixOps::transpose(&v_perp),
+		);
+
+		MatrixOps::add(&MatrixOps::add(&term1, &term2), &term3)
 	}
 
 	/// Compute orthogonal complement of a matrix with orthonormal columns
-	fn compute_orthogonal_complement(mat: &DMatrix<T>) -> (DMatrix<T>, DMatrix<T>) {
-		let m = mat.nrows();
-		let k = mat.ncols();
+	fn compute_orthogonal_complement(mat: &linalg::Mat<T>) -> (linalg::Mat<T>, linalg::Mat<T>) {
+		let m = MatrixOps::nrows(mat);
+		let k = MatrixOps::ncols(mat);
 
 		if k >= m {
 			// No orthogonal complement
-			return (DMatrix::zeros(m, 0), DMatrix::zeros(0, 0));
+			return (
+				<linalg::Mat<T> as MatrixOps<T>>::zeros(m, 0),
+				<linalg::Mat<T> as MatrixOps<T>>::zeros(0, 0),
+			);
 		}
 
 		// Create identity and project out the columns of mat
-		let mut q = DMatrix::identity(m, m);
-		q -= mat * mat.transpose();
+		let mut q = <linalg::Mat<T> as MatrixOps<T>>::identity(m);
+		let mat_matt = MatrixOps::mat_mul(mat, &MatrixOps::transpose(mat));
+		q.sub_assign(&mat_matt);
 
 		// Use QR to get orthonormal basis for the complement
-		let qr = q.qr();
+		let qr = DecompositionOps::qr(&q);
 		let q_full = qr.q();
 
 		// Extract the last m-k columns
-		let u_perp = q_full.columns(k, m - k).into();
-		let r_perp = DMatrix::zeros(m - k, m - k); // Placeholder
+		let u_perp = MatrixOps::columns(q_full, k, m - k);
+		let r_perp = <linalg::Mat<T> as MatrixOps<T>>::zeros(m - k, m - k); // Placeholder
 
 		(u_perp, r_perp)
 	}
@@ -346,14 +386,17 @@ impl FixedRank {
 	}
 
 	/// Project the U and V factors onto the Stiefel manifold
-	fn project_factors<T: Scalar>(&self, u: &mut DMatrix<T>, v: &mut DMatrix<T>) {
+	fn project_factors<T: Scalar>(&self, u: &mut linalg::Mat<T>, v: &mut linalg::Mat<T>)
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		// QR decomposition for U
-		let qr_u = u.clone().qr();
-		*u = qr_u.q();
+		let qr_u = DecompositionOps::qr(u);
+		*u = qr_u.q().clone();
 
 		// QR decomposition for V
-		let qr_v = v.clone().qr();
-		*v = qr_v.q();
+		let qr_v = DecompositionOps::qr(v);
+		*v = qr_v.q().clone();
 	}
 
 	/// Validates that a matrix has the correct fixed rank.
@@ -366,22 +409,25 @@ impl FixedRank {
 	///
 	/// - `DimensionMismatch`: If matrix dimensions don't match (m,n)
 	/// - `InvalidPoint`: If rank(X) ≠ k
-	pub fn check_matrix<T: Scalar>(&self, x: &DMatrix<T>) -> Result<()> {
-		if x.nrows() != self.m || x.ncols() != self.n {
+	pub fn check_matrix<T: Scalar>(&self, x: &linalg::Mat<T>) -> Result<()>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(x) != self.m || MatrixOps::ncols(x) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				x.nrows() * x.ncols(),
+				MatrixOps::nrows(x) * MatrixOps::ncols(x),
 			));
 		}
 
 		// Check rank using SVD
-		let svd = x.clone().svd(true, true);
+		let svd = DecompositionOps::svd(x);
 		let s = &svd.singular_values;
 
 		// Count non-zero singular values
 		let mut rank = 0;
-		for i in 0..s.len().min(self.m).min(self.n) {
-			if s[i] > <T as Scalar>::from_f64(self.tolerance) {
+		for i in 0..VectorOps::len(s).min(self.m).min(self.n) {
+			if VectorOps::get(s, i) > <T as Scalar>::from_f64(self.tolerance) {
 				rank += 1;
 			}
 		}
@@ -403,13 +449,16 @@ impl FixedRank {
 	/// # Errors
 	///
 	/// - `DimensionMismatch`: If dimensions don't match
-	pub fn check_tangent<T: Scalar>(&self, x: &DMatrix<T>, z: &DMatrix<T>) -> Result<()> {
+	pub fn check_tangent<T: Scalar>(&self, x: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<()>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		self.check_matrix(x)?;
 
-		if z.nrows() != self.m || z.ncols() != self.n {
+		if MatrixOps::nrows(z) != self.m || MatrixOps::ncols(z) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				z.nrows() * z.ncols(),
+				MatrixOps::nrows(z) * MatrixOps::ncols(z),
 			));
 		}
 
@@ -420,7 +469,11 @@ impl FixedRank {
 	}
 }
 
-impl<T: Scalar> Manifold<T> for FixedRank {
+impl<T> Manifold<T> for FixedRank
+where
+	T: Scalar + Float,
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	type Point = FixedRankPoint<T>;
 	type TangentVector = FixedRankTangent<T>;
 
@@ -434,21 +487,21 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
 		// Check that U and V are on Stiefel manifolds
-		let u_gram = point.u.transpose() * &point.u;
-		let v_gram = point.v.transpose() * &point.v;
+		let u_gram = MatrixOps::mat_mul(&MatrixOps::transpose(&point.u), &point.u);
+		let v_gram = MatrixOps::mat_mul(&MatrixOps::transpose(&point.v), &point.v);
 
 		// Check orthogonality
 		for i in 0..self.k {
 			for j in 0..self.k {
 				let u_val = if i == j {
-					u_gram[(i, j)] - T::one()
+					MatrixOps::get(&u_gram, i, j) - T::one()
 				} else {
-					u_gram[(i, j)]
+					MatrixOps::get(&u_gram, i, j)
 				};
 				let v_val = if i == j {
-					v_gram[(i, j)] - T::one()
+					MatrixOps::get(&v_gram, i, j) - T::one()
 				} else {
-					v_gram[(i, j)]
+					MatrixOps::get(&v_gram, i, j)
 				};
 
 				if <T as Float>::abs(u_val) > tol || <T as Float>::abs(v_val) > tol {
@@ -459,7 +512,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 
 		// Check that singular values are positive
 		for i in 0..self.k {
-			if point.s[i] <= T::zero() {
+			if VectorOps::get(&point.s, i) <= T::zero() {
 				return false;
 			}
 		}
@@ -478,8 +531,8 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 
 		// Ensure singular values are positive
 		for i in 0..self.k {
-			if result.s[i] < T::epsilon() {
-				result.s[i] = T::epsilon();
+			if VectorOps::get(&result.s, i) < T::epsilon() {
+				*VectorOps::get_mut(&mut result.s, i) = T::epsilon();
 			}
 		}
 	}
@@ -514,15 +567,23 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		let mut inner = T::zero();
 
 		// U_perp component
-		inner += (u.u_perp_m.transpose() * &v.u_perp_m).trace();
+		inner = inner
+			+ MatrixOps::trace(&MatrixOps::mat_mul(
+				&MatrixOps::transpose(&u.u_perp_m),
+				&v.u_perp_m,
+			));
 
 		// S component
 		for i in 0..self.k {
-			inner += u.s_dot[i] * v.s_dot[i];
+			inner = inner + VectorOps::get(&u.s_dot, i) * VectorOps::get(&v.s_dot, i);
 		}
 
 		// V_perp component
-		inner += (u.v_perp_n.transpose() * &v.v_perp_n).trace();
+		inner = inner
+			+ MatrixOps::trace(&MatrixOps::mat_mul(
+				&MatrixOps::transpose(&u.v_perp_n),
+				&v.v_perp_n,
+			));
 
 		Ok(inner)
 	}
@@ -541,24 +602,30 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		let (v_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.v);
 
 		// Compute S^{-1}
-		let s_inv = DMatrix::from_diagonal(&point.s.map(|x| T::one() / x));
+		let s_inv_vec = VectorOps::map(&point.s, |x| T::one() / x);
+		let s_inv = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&s_inv_vec);
 
 		// Update U: U_new = U + U_perp * M * S^{-1}
-		result.u = &point.u + &u_perp * &tangent.u_perp_m * &s_inv;
+		let u_perp_m_sinv = MatrixOps::mat_mul(&tangent.u_perp_m, &s_inv);
+		let u_update = MatrixOps::mat_mul(&u_perp, &u_perp_m_sinv);
+		result.u = MatrixOps::add(&point.u, &u_update);
 
 		// Update S: S_new = S + S_dot
-		result.s = &point.s + &tangent.s_dot;
+		result.s = VectorOps::add(&point.s, &tangent.s_dot);
 
 		// Update V: V_new = V + V_perp * N^T * S^{-1}
-		result.v = &point.v + &v_perp * tangent.v_perp_n.transpose() * &s_inv;
+		let vn_t = MatrixOps::transpose(&tangent.v_perp_n);
+		let vn_t_sinv = MatrixOps::mat_mul(&vn_t, &s_inv);
+		let v_update = MatrixOps::mat_mul(&v_perp, &vn_t_sinv);
+		result.v = MatrixOps::add(&point.v, &v_update);
 
 		// Project factors back to Stiefel
 		self.project_factors(&mut result.u, &mut result.v);
 
 		// Ensure singular values are positive
 		for i in 0..self.k {
-			if result.s[i] < T::epsilon() {
-				result.s[i] = T::epsilon();
+			if VectorOps::get(&result.s, i) < T::epsilon() {
+				*VectorOps::get_mut(&mut result.s, i) = T::epsilon();
 			}
 		}
 
@@ -580,30 +647,32 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		let normal = StandardNormal;
 
 		// Generate random orthogonal matrices
-		let mut u = DMatrix::zeros(self.m, self.k);
-		let mut v = DMatrix::zeros(self.n, self.k);
+		let mut u = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.m, self.k);
+		let mut v = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.k);
 
 		for j in 0..self.k {
 			for i in 0..self.m {
-				u[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*MatrixOps::get_mut(&mut u, i, j) =
+					<T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 			for i in 0..self.n {
-				v[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*MatrixOps::get_mut(&mut v, i, j) =
+					<T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
 		// Orthogonalize
-		let qr_u = u.qr();
-		let u_orth = qr_u.q();
+		let qr_u = DecompositionOps::qr(&u);
+		let u_orth = qr_u.q().clone();
 
-		let qr_v = v.qr();
-		let v_orth = qr_v.q();
+		let qr_v = DecompositionOps::qr(&v);
+		let v_orth = qr_v.q().clone();
 
 		// Random positive singular values
-		let mut s = DVector::zeros(self.k);
+		let mut s = <linalg::Vec<T> as VectorOps<T>>::zeros(self.k);
 		for i in 0..self.k {
 			let val: f64 = normal.sample(&mut rng);
-			s[i] = <T as Scalar>::from_f64(val.abs() + 1.0);
+			*VectorOps::get_mut(&mut s, i) = <T as Scalar>::from_f64(val.abs() + 1.0);
 		}
 
 		*result = FixedRankPoint::new(u_orth, s, v_orth);
@@ -615,18 +684,20 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		let normal = StandardNormal;
 
 		// Generate random matrices for the tangent components
-		let mut u_perp_m = DMatrix::zeros(self.m - self.k, self.k);
-		let mut s_dot = DVector::zeros(self.k);
-		let mut v_perp_n = DMatrix::zeros(self.k, self.n - self.k);
+		let mut u_perp_m = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.m - self.k, self.k);
+		let mut s_dot = <linalg::Vec<T> as VectorOps<T>>::zeros(self.k);
+		let mut v_perp_n = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.k, self.n - self.k);
 
 		// Fill with random values
 		for j in 0..self.k {
 			for i in 0..(self.m - self.k) {
-				u_perp_m[(i, j)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*MatrixOps::get_mut(&mut u_perp_m, i, j) =
+					<T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
-			s_dot[j] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+			*VectorOps::get_mut(&mut s_dot, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			for i in 0..(self.n - self.k) {
-				v_perp_n[(j, i)] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+				*MatrixOps::get_mut(&mut v_perp_n, j, i) =
+					<T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
 
@@ -647,13 +718,17 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		}
 
 		// Check dimensions of tangent components
-		if vector.u_perp_m.nrows() != self.m - self.k || vector.u_perp_m.ncols() != self.k {
+		if MatrixOps::nrows(&vector.u_perp_m) != self.m - self.k
+			|| MatrixOps::ncols(&vector.u_perp_m) != self.k
+		{
 			return false;
 		}
-		if vector.s_dot.len() != self.k {
+		if VectorOps::len(&vector.s_dot) != self.k {
 			return false;
 		}
-		if vector.v_perp_n.nrows() != self.k || vector.v_perp_n.ncols() != self.n - self.k {
+		if MatrixOps::nrows(&vector.v_perp_n) != self.k
+			|| MatrixOps::ncols(&vector.v_perp_n) != self.n - self.k
+		{
 			return false;
 		}
 
@@ -674,7 +749,7 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		// Compute the difference in matrix form
 		let point_mat = point.to_matrix();
 		let other_mat = other.to_matrix();
-		let diff = &other_mat - &point_mat;
+		let diff = MatrixOps::sub(&other_mat, &point_mat);
 
 		// Project onto the tangent space at point
 		// Compute U_perp and V_perp
@@ -683,14 +758,26 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 
 		// Decompose the difference into tangent components
 		// M = U_perp^T * diff * V
-		result.u_perp_m = u_perp.transpose() * &diff * &point.v;
+		result.u_perp_m = MatrixOps::mat_mul(
+			&MatrixOps::mat_mul(&MatrixOps::transpose(&u_perp), &diff),
+			&point.v,
+		);
 
-		// S_dot = U^T * diff * V (diagonal part)
-		let s_component = point.u.transpose() * &diff * &point.v;
-		result.s_dot = s_component.diagonal();
+		// S_dot = diag(U^T * diff * V)
+		let s_component = MatrixOps::mat_mul(
+			&MatrixOps::mat_mul(&MatrixOps::transpose(&point.u), &diff),
+			&point.v,
+		);
+		// Extract diagonal
+		result.s_dot = <linalg::Vec<T> as VectorOps<T>>::from_fn(self.k, |i| {
+			MatrixOps::get(&s_component, i, i)
+		});
 
 		// N = U^T * diff * V_perp
-		result.v_perp_n = point.u.transpose() * &diff * &v_perp;
+		result.v_perp_n = MatrixOps::mat_mul(
+			&MatrixOps::mat_mul(&MatrixOps::transpose(&point.u), &diff),
+			&v_perp,
+		);
 
 		Ok(())
 	}
@@ -714,20 +801,24 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		// This preserves the general direction but may not be exact parallel transport
 
 		// The transported tangent has the same structure but adapted to the new point
-		result.u_perp_m = DMatrix::zeros(self.m - self.k, self.k);
+		result.u_perp_m = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.m - self.k, self.k);
 		result.s_dot = vector.s_dot.clone();
-		result.v_perp_n = DMatrix::zeros(self.k, self.n - self.k);
+		result.v_perp_n = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.k, self.n - self.k);
 
 		// Fill with appropriate values (simplified transport)
 		for j in 0..self.k {
-			for i in 0..(self.m - self.k).min(vector.u_perp_m.nrows()) {
-				if i < result.u_perp_m.nrows() && j < vector.u_perp_m.ncols() {
-					result.u_perp_m[(i, j)] = vector.u_perp_m[(i, j)];
+			for i in 0..(self.m - self.k).min(MatrixOps::nrows(&vector.u_perp_m)) {
+				if i < MatrixOps::nrows(&result.u_perp_m) && j < MatrixOps::ncols(&vector.u_perp_m)
+				{
+					*MatrixOps::get_mut(&mut result.u_perp_m, i, j) =
+						MatrixOps::get(&vector.u_perp_m, i, j);
 				}
 			}
-			for i in 0..(self.n - self.k).min(vector.v_perp_n.ncols()) {
-				if j < vector.v_perp_n.nrows() && i < result.v_perp_n.ncols() {
-					result.v_perp_n[(j, i)] = vector.v_perp_n[(j, i)];
+			for i in 0..(self.n - self.k).min(MatrixOps::ncols(&vector.v_perp_n)) {
+				if j < MatrixOps::nrows(&vector.v_perp_n) && i < MatrixOps::ncols(&result.v_perp_n)
+				{
+					*MatrixOps::get_mut(&mut result.v_perp_n, j, i) =
+						MatrixOps::get(&vector.v_perp_n, j, i);
 				}
 			}
 		}
@@ -738,17 +829,10 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		// Use Frobenius distance in the embedded space
 		let x_mat = x.to_matrix();
 		let y_mat = y.to_matrix();
-		let diff = &y_mat - &x_mat;
+		let diff = MatrixOps::sub(&y_mat, &x_mat);
 
 		// Frobenius norm of the difference
-		let mut sum = T::zero();
-		for i in 0..diff.nrows() {
-			for j in 0..diff.ncols() {
-				sum = sum + diff[(i, j)] * diff[(i, j)];
-			}
-		}
-
-		Ok(<T as Float>::sqrt(sum))
+		Ok(MatrixOps::norm(&diff))
 	}
 
 	fn has_exact_exp_log(&self) -> bool {
@@ -767,9 +851,10 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Scale each component of the tangent vector
-		result.u_perp_m = &tangent.u_perp_m * scalar;
-		result.s_dot = &tangent.s_dot * scalar;
-		result.v_perp_n = &tangent.v_perp_n * scalar;
+		result.u_perp_m = MatrixOps::scale_by(&tangent.u_perp_m, scalar);
+		result.s_dot = tangent.s_dot.clone();
+		result.s_dot.scale_mut(scalar);
+		result.v_perp_n = MatrixOps::scale_by(&tangent.v_perp_n, scalar);
 		Ok(())
 	}
 
@@ -783,9 +868,9 @@ impl<T: Scalar> Manifold<T> for FixedRank {
 		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Add each component of the tangent vectors
-		result.u_perp_m = &v1.u_perp_m + &v2.u_perp_m;
-		result.s_dot = &v1.s_dot + &v2.s_dot;
-		result.v_perp_n = &v1.v_perp_n + &v2.v_perp_n;
+		result.u_perp_m = MatrixOps::add(&v1.u_perp_m, &v2.u_perp_m);
+		result.s_dot = VectorOps::add(&v1.s_dot, &v2.s_dot);
+		result.v_perp_n = MatrixOps::add(&v1.v_perp_n, &v2.v_perp_n);
 		Ok(())
 	}
 }
@@ -796,7 +881,10 @@ impl FixedRank {
 	/// # Returns
 	///
 	/// A random m×n matrix of rank k.
-	pub fn random_matrix<T: Scalar>(&self) -> DMatrix<T> {
+	pub fn random_matrix<T: Scalar + Float>(&self) -> linalg::Mat<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
 		let mut point = FixedRankPoint::<T>::default();
 		<Self as Manifold<T>>::random_point(self, &mut point).unwrap();
 		point.to_matrix()
@@ -813,11 +901,14 @@ impl FixedRank {
 	/// # Returns
 	///
 	/// The best rank-k approximation.
-	pub fn approximate<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<DMatrix<T>> {
-		if mat.nrows() != self.m || mat.ncols() != self.n {
+	pub fn approximate<T: Scalar + Float>(&self, mat: &linalg::Mat<T>) -> Result<linalg::Mat<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(mat) != self.m || MatrixOps::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				mat.nrows() * mat.ncols(),
+				MatrixOps::nrows(mat) * MatrixOps::ncols(mat),
 			));
 		}
 
@@ -841,21 +932,25 @@ impl FixedRank {
 	/// # Returns
 	///
 	/// The Frobenius norm of the approximation error.
-	pub fn approximation_error<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<T> {
-		if mat.nrows() != self.m || mat.ncols() != self.n {
+	pub fn approximation_error<T: Scalar + Float>(&self, mat: &linalg::Mat<T>) -> Result<T>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(mat) != self.m || MatrixOps::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				mat.nrows() * mat.ncols(),
+				MatrixOps::nrows(mat) * MatrixOps::ncols(mat),
 			));
 		}
 
-		let svd = mat.clone().svd(true, true);
+		let svd = DecompositionOps::svd(mat);
 		let s = &svd.singular_values;
 
 		// Sum of squared singular values beyond rank k
 		let mut error_sq = T::zero();
-		for i in self.k..s.len().min(self.m).min(self.n) {
-			error_sq = error_sq + s[i] * s[i];
+		for i in self.k..VectorOps::len(s).min(self.m).min(self.n) {
+			let sv = VectorOps::get(s, i);
+			error_sq = error_sq + sv * sv;
 		}
 
 		Ok(<T as Float>::sqrt(error_sq))
@@ -874,11 +969,17 @@ impl FixedRank {
 	/// # Returns
 	///
 	/// The projected fixed-rank matrix as a FixedRankPoint.
-	pub fn project_matrix<T: Scalar>(&self, mat: &DMatrix<T>) -> Result<FixedRankPoint<T>> {
-		if mat.nrows() != self.m || mat.ncols() != self.n {
+	pub fn project_matrix<T: Scalar + Float>(
+		&self,
+		mat: &linalg::Mat<T>,
+	) -> Result<FixedRankPoint<T>>
+	where
+		linalg::DefaultBackend: LinAlgBackend<T>,
+	{
+		if MatrixOps::nrows(mat) != self.m || MatrixOps::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				mat.nrows() * mat.ncols(),
+				MatrixOps::nrows(mat) * MatrixOps::ncols(mat),
 			));
 		}
 

@@ -569,9 +569,8 @@ macro_rules! impl_optimizer_generic_default {
 				gradient_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionSphere;
-				use riemannopt_core::core::CachedDynamicCostFunction;
 
-				let x0 = numpy_to_dvector(initial_point)?;
+				let x0 = numpy_to_vec(initial_point)?;
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
@@ -580,14 +579,13 @@ macro_rules! impl_optimizer_generic_default {
 				let config: $config_type = $create_config(self);
 				let mut optimizer = <$rust_optimizer>::new(config);
 				let cost_fn = PyCostFunctionSphere::new(cost_function);
-				let cost_fn = CachedDynamicCostFunction::new(cost_fn);
 
 				let result = py
 					.allow_threads(|| optimizer.optimize(&cost_fn, &sphere.inner, &x0, &criterion))
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
-					Ok(dvector_to_numpy(py, point)?.into())
+					Ok(vec_to_numpy(py, point)?.into())
 				})
 			}
 
@@ -602,7 +600,7 @@ macro_rules! impl_optimizer_generic_default {
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionStiefel;
 
-				let x0 = numpy_to_dmatrix(initial_point)?;
+				let x0 = numpy_to_mat(initial_point)?;
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
@@ -618,7 +616,7 @@ macro_rules! impl_optimizer_generic_default {
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
-					Ok(dmatrix_to_numpy(py, point)?.into())
+					Ok(mat_to_numpy(py, point)?.into())
 				})
 			}
 
@@ -633,7 +631,7 @@ macro_rules! impl_optimizer_generic_default {
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionMatrix;
 
-				let x0 = numpy_to_dmatrix(initial_point)?;
+				let x0 = numpy_to_mat(initial_point)?;
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
@@ -650,7 +648,7 @@ macro_rules! impl_optimizer_generic_default {
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
-					Ok(dmatrix_to_numpy(py, point)?.into())
+					Ok(mat_to_numpy(py, point)?.into())
 				})
 			}
 
@@ -665,7 +663,7 @@ macro_rules! impl_optimizer_generic_default {
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionMatrix;
 
-				let x0 = numpy_to_dmatrix(initial_point)?;
+				let x0 = numpy_to_mat(initial_point)?;
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
@@ -680,7 +678,7 @@ macro_rules! impl_optimizer_generic_default {
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
-					Ok(dmatrix_to_numpy(py, point)?.into())
+					Ok(mat_to_numpy(py, point)?.into())
 				})
 			}
 
@@ -694,9 +692,8 @@ macro_rules! impl_optimizer_generic_default {
 				gradient_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionVector;
-				use riemannopt_core::core::CachedDynamicCostFunction;
 
-				let x0 = numpy_to_dvector(initial_point)?;
+				let x0 = numpy_to_vec(initial_point)?;
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
@@ -705,7 +702,6 @@ macro_rules! impl_optimizer_generic_default {
 				let config: $config_type = $create_config(self);
 				let mut optimizer = <$rust_optimizer>::new(config);
 				let cost_fn = PyCostFunctionVector::new(cost_function);
-				let cost_fn = CachedDynamicCostFunction::new(cost_fn);
 
 				let result = py
 					.allow_threads(|| {
@@ -714,7 +710,7 @@ macro_rules! impl_optimizer_generic_default {
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
-					Ok(dvector_to_numpy(py, point)?.into())
+					Ok(vec_to_numpy(py, point)?.into())
 				})
 			}
 
@@ -729,7 +725,7 @@ macro_rules! impl_optimizer_generic_default {
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionMatrix;
 
-				let x0 = numpy_to_dmatrix(initial_point)?;
+				let x0 = numpy_to_mat(initial_point)?;
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
@@ -744,7 +740,7 @@ macro_rules! impl_optimizer_generic_default {
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
-					Ok(dmatrix_to_numpy(py, point)?.into())
+					Ok(mat_to_numpy(py, point)?.into())
 				})
 			}
 
@@ -759,7 +755,7 @@ macro_rules! impl_optimizer_generic_default {
 			// ) -> PyResult<PyOptimizationResult> {
 			//     use crate::py_cost::PyCostFunctionMatrix;
 			//
-			//     let x0 = numpy_to_dmatrix(initial_point)?;
+			//     let x0 = numpy_to_mat(initial_point)?;
 			//     let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 			//     if let Some(tol) = gradient_tolerance {
 			//         criterion = criterion.with_gradient_tolerance(tol);
@@ -774,7 +770,7 @@ macro_rules! impl_optimizer_generic_default {
 			//     }).map_err(to_py_err)?;
 			//
 			//     PyOptimizationResult::from_rust_result(py, result, |point| {
-			//         Ok(dmatrix_to_numpy(py, point)?.into())
+			//         Ok(mat_to_numpy(py, point)?.into())
 			//     })
 			// }
 
@@ -789,9 +785,9 @@ macro_rules! impl_optimizer_generic_default {
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionPSDCone;
 
-				let x0_mat = numpy_to_dmatrix(initial_point)?;
+				let x0_mat = numpy_to_mat(initial_point)?;
 				// Convert matrix to vector representation
-				let x0 = psd_cone.inner.matrix_to_vector(&x0_mat);
+				let x0 = psd_cone.inner.matrix_to_vector::<f64>(&x0_mat);
 
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
@@ -810,8 +806,8 @@ macro_rules! impl_optimizer_generic_default {
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
 					// Convert vector back to matrix
-					let point_mat = psd_cone.inner.vector_to_matrix(point);
-					Ok(dmatrix_to_numpy(py, &point_mat)?.into())
+					let point_mat = psd_cone.inner.vector_to_matrix::<f64>(point);
+					Ok(mat_to_numpy(py, &point_mat)?.into())
 				})
 			}
 
@@ -825,9 +821,8 @@ macro_rules! impl_optimizer_generic_default {
 				gradient_tolerance: Option<f64>,
 			) -> PyResult<PyOptimizationResult> {
 				use crate::py_cost::PyCostFunctionVector;
-				use riemannopt_core::core::CachedDynamicCostFunction;
 
-				let x0 = numpy_to_dvector(initial_point)?;
+				let x0 = numpy_to_vec(initial_point)?;
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
 					criterion = criterion.with_gradient_tolerance(tol);
@@ -836,7 +831,6 @@ macro_rules! impl_optimizer_generic_default {
 				let config: $config_type = $create_config(self);
 				let mut optimizer = <$rust_optimizer>::new(config);
 				let cost_fn = PyCostFunctionVector::new(cost_function);
-				let cost_fn = CachedDynamicCostFunction::new(cost_fn);
 
 				let result = py
 					.allow_threads(|| {
@@ -845,7 +839,7 @@ macro_rules! impl_optimizer_generic_default {
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
-					Ok(dvector_to_numpy(py, point)?.into())
+					Ok(vec_to_numpy(py, point)?.into())
 				})
 			}
 
@@ -876,10 +870,9 @@ macro_rules! impl_optimizer_generic_default {
 				// Helper macro to reduce repetition
 				macro_rules! run_native_vec {
 					($cost_fn:expr, $manifold_inner:expr, $x0:expr) => {{
-						use riemannopt_core::core::CachedDynamicCostFunction;
 						let config: $config_type = $create_config(self);
 						let mut optimizer = <$rust_optimizer>::new(config);
-						let cost_fn = CachedDynamicCostFunction::new($cost_fn);
+						let cost_fn = $cost_fn;
 						let x0 = $x0;
 						let manifold_ref = $manifold_inner;
 						let result = py
@@ -889,7 +882,7 @@ macro_rules! impl_optimizer_generic_default {
 							.map_err(to_py_err)?;
 						let py_result =
 							PyOptimizationResult::from_rust_result(py, result, |point| {
-								Ok(dvector_to_numpy(py, point)?.into())
+								Ok(vec_to_numpy(py, point)?.into())
 							})?;
 						return Ok(Some(py_result.into_py(py)));
 					}};
@@ -909,7 +902,7 @@ macro_rules! impl_optimizer_generic_default {
 							.map_err(to_py_err)?;
 						let py_result =
 							PyOptimizationResult::from_rust_result(py, result, |point| {
-								Ok(dmatrix_to_numpy(py, point)?.into())
+								Ok(mat_to_numpy(py, point)?.into())
 							})?;
 						return Ok(Some(py_result.into_py(py)));
 					}};
@@ -926,7 +919,7 @@ macro_rules! impl_optimizer_generic_default {
 										"initial_point must be a 1D array",
 									)
 								})?;
-						let x0 = numpy_to_dvector(arr.readonly())?;
+						let x0 = numpy_to_vec(arr.readonly())?;
 						run_native_vec!(cf.clone(), &sphere.inner, x0);
 					}
 				}
@@ -942,7 +935,7 @@ macro_rules! impl_optimizer_generic_default {
 										"initial_point must be a 1D array",
 									)
 								})?;
-						let x0 = numpy_to_dvector(arr.readonly())?;
+						let x0 = numpy_to_vec(arr.readonly())?;
 						run_native_vec!(cf.clone(), &euclidean.inner, x0);
 					}
 				}
@@ -956,7 +949,7 @@ macro_rules! impl_optimizer_generic_default {
 								"initial_point must be a 2D array",
 							)
 						})?;
-					let x0 = numpy_to_dmatrix(arr.readonly())?;
+					let x0 = numpy_to_mat(arr.readonly())?;
 					match kind {
 						ManifoldKind::Grassmann(gr) => {
 							run_native_mat!(cf.clone(), &gr.inner, x0);
@@ -979,7 +972,7 @@ macro_rules! impl_optimizer_generic_default {
 										"initial_point must be a 2D array",
 									)
 								})?;
-						let x0 = numpy_to_dmatrix(arr.readonly())?;
+						let x0 = numpy_to_mat(arr.readonly())?;
 						run_native_mat!(cf.clone(), &st.inner, x0);
 					}
 				}
@@ -995,7 +988,7 @@ macro_rules! impl_optimizer_generic_default {
 										"initial_point must be a 2D array",
 									)
 								})?;
-						let x0 = numpy_to_dmatrix(arr.readonly())?;
+						let x0 = numpy_to_mat(arr.readonly())?;
 						run_native_mat!(cf.clone(), &spd.inner, x0);
 					}
 				}

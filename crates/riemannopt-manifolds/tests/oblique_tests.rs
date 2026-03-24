@@ -1,14 +1,14 @@
 //! Integration tests for the Oblique manifold
 
 use approx::assert_relative_eq;
-use nalgebra::DMatrix;
+use riemannopt_core::linalg::{self, MatrixOps, VectorOps};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Oblique;
 
 /// Helper to call trait methods with f64 type parameter.
 fn as_manifold(
 	ob: &Oblique,
-) -> &dyn Manifold<f64, Point = DMatrix<f64>, TangentVector = DMatrix<f64>> {
+) -> &dyn Manifold<f64, Point = linalg::Mat<f64>, TangentVector = linalg::Mat<f64>> {
 	ob
 }
 
@@ -45,15 +45,16 @@ fn test_oblique_projection() {
 	let m = as_manifold(&oblique);
 
 	// Create a matrix with non-unit columns
-	let a: DMatrix<f64> =
-		DMatrix::from_fn(4, 3, |i, j| ((i + 1) as f64) * 0.5 + ((j + 1) as f64) * 0.3);
+	let a: linalg::Mat<f64> =
+		MatrixOps::from_fn(4, 3, |i, j| ((i + 1) as f64) * 0.5 + ((j + 1) as f64) * 0.3);
 
-	let mut proj: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut proj: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.project_point(&a, &mut proj);
 
 	// Check each column has unit norm
 	for j in 0..3 {
-		assert_relative_eq!(proj.column(j).norm(), 1.0, epsilon = 1e-14);
+		let col: linalg::Vec<f64> = MatrixOps::column(&proj, j);
+		assert_relative_eq!(col.norm(), 1.0, epsilon = 1e-14);
 	}
 }
 
@@ -63,20 +64,22 @@ fn test_oblique_tangent_projection() {
 	let m = as_manifold(&oblique);
 
 	// Create a point on the manifold
-	let mut x: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut x: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.random_point(&mut x).unwrap();
 
 	// Create an arbitrary matrix
-	let v: DMatrix<f64> = DMatrix::from_fn(4, 3, |i, j| {
+	let v: linalg::Mat<f64> = MatrixOps::from_fn(4, 3, |i, j| {
 		((i as f64) - 1.5) * 0.2 + ((j as f64) - 1.0) * 0.1
 	});
 
-	let mut v_tangent: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut v_tangent: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.project_tangent(&x, &v, &mut v_tangent).unwrap();
 
 	// Check orthogonality: x_j^T v_j = 0 for each column
 	for j in 0..3 {
-		let inner = x.column(j).dot(&v_tangent.column(j));
+		let x_col: linalg::Vec<f64> = MatrixOps::column(&x, j);
+		let vt_col: linalg::Vec<f64> = MatrixOps::column(&v_tangent, j);
+		let inner = x_col.dot(&vt_col);
 		assert_relative_eq!(inner, 0.0, epsilon = 1e-14);
 	}
 }
@@ -87,27 +90,29 @@ fn test_oblique_retraction() {
 	let m = as_manifold(&oblique);
 
 	// Create a point on manifold
-	let mut x: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut x: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.random_point(&mut x).unwrap();
 
 	// Create a tangent vector
-	let mut v: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut v: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.random_tangent(&x, &mut v).unwrap();
-	v *= 0.1;
+	v.scale_mut(0.1);
 
-	let mut y: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut y: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.retract(&x, &v, &mut y).unwrap();
 
 	// Result should have unit-norm columns
 	for j in 0..3 {
-		assert_relative_eq!(y.column(j).norm(), 1.0, epsilon = 1e-14);
+		let col: linalg::Vec<f64> = MatrixOps::column(&y, j);
+		assert_relative_eq!(col.norm(), 1.0, epsilon = 1e-14);
 	}
 
 	// Zero retraction returns same point
-	let zero: DMatrix<f64> = DMatrix::zeros(4, 3);
-	let mut x_recovered: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let zero: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
+	let mut x_recovered: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.retract(&x, &zero, &mut x_recovered).unwrap();
-	assert_relative_eq!(x, x_recovered, epsilon = 1e-14);
+	let diff = MatrixOps::sub(&x, &x_recovered);
+	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 }
 
 #[test]
@@ -115,13 +120,13 @@ fn test_oblique_inner_product() {
 	let oblique = Oblique::new(4, 3).unwrap();
 	let m = as_manifold(&oblique);
 
-	let mut x: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut x: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.random_point(&mut x).unwrap();
 
-	let mut u: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut u: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.random_tangent(&x, &mut u).unwrap();
 
-	let mut v: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut v: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.random_tangent(&x, &mut v).unwrap();
 
 	// Test symmetry
@@ -140,12 +145,13 @@ fn test_oblique_random_point() {
 	let m = as_manifold(&oblique);
 
 	for _ in 0..5 {
-		let mut x: DMatrix<f64> = DMatrix::zeros(5, 4);
+		let mut x: linalg::Mat<f64> = MatrixOps::zeros(5, 4);
 		m.random_point(&mut x).unwrap();
 
 		// Check each column has unit norm
 		for j in 0..4 {
-			assert_relative_eq!(x.column(j).norm(), 1.0, epsilon = 1e-14);
+			let col: linalg::Vec<f64> = MatrixOps::column(&x, j);
+			assert_relative_eq!(col.norm(), 1.0, epsilon = 1e-14);
 		}
 
 		assert!(m.is_point_on_manifold(&x, 1e-10));
@@ -156,26 +162,29 @@ fn test_oblique_random_point() {
 fn test_oblique_parallel_transport() {
 	let oblique = Oblique::new(4, 2).unwrap();
 
-	let mut x: DMatrix<f64> = DMatrix::zeros(4, 2);
-	let mut y: DMatrix<f64> = DMatrix::zeros(4, 2);
-	let mut v: DMatrix<f64> = DMatrix::zeros(4, 2);
+	let mut x: linalg::Mat<f64> = MatrixOps::zeros(4, 2);
+	let mut y: linalg::Mat<f64> = MatrixOps::zeros(4, 2);
+	let mut v: linalg::Mat<f64> = MatrixOps::zeros(4, 2);
 
 	let m = as_manifold(&oblique);
 	m.random_point(&mut x).unwrap();
 	m.random_point(&mut y).unwrap();
 	m.random_tangent(&x, &mut v).unwrap();
 
-	let transported = oblique.parallel_transport(&x, &y, &v).unwrap();
+	let mut transported: linalg::Mat<f64> = MatrixOps::zeros(4, 2);
+	m.parallel_transport(&x, &y, &v, &mut transported).unwrap();
 
 	// Transported vector should be in tangent space at y:
 	// y_j^T transported_j = 0 for each column
 	for j in 0..2 {
-		let inner = y.column(j).dot(&transported.column(j));
+		let y_col: linalg::Vec<f64> = MatrixOps::column(&y, j);
+		let t_col: linalg::Vec<f64> = MatrixOps::column(&transported, j);
+		let inner = y_col.dot(&t_col);
 		assert_relative_eq!(inner, 0.0, epsilon = 1e-10);
 	}
 
 	// Non-zero vector should transport to non-zero
-	assert!(transported.norm() > 0.0);
+	assert!(MatrixOps::norm(&transported) > 0.0);
 }
 
 #[test]
@@ -183,20 +192,22 @@ fn test_oblique_euclidean_to_riemannian_gradient() {
 	let oblique = Oblique::new(4, 3).unwrap();
 	let m = as_manifold(&oblique);
 
-	let mut x: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut x: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.random_point(&mut x).unwrap();
 
-	let egrad: DMatrix<f64> = DMatrix::from_fn(4, 3, |i, j| {
+	let egrad: linalg::Mat<f64> = MatrixOps::from_fn(4, 3, |i, j| {
 		((i + 1) as f64) * 0.1 - ((j + 1) as f64) * 0.05
 	});
 
-	let mut rgrad: DMatrix<f64> = DMatrix::zeros(4, 3);
+	let mut rgrad: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad)
 		.unwrap();
 
 	// Result should be in tangent space: x_j^T rgrad_j = 0
 	for j in 0..3 {
-		let inner = x.column(j).dot(&rgrad.column(j));
+		let x_col: linalg::Vec<f64> = MatrixOps::column(&x, j);
+		let r_col: linalg::Vec<f64> = MatrixOps::column(&rgrad, j);
+		let inner = x_col.dot(&r_col);
 		assert_relative_eq!(inner, 0.0, epsilon = 1e-14);
 	}
 }
@@ -207,12 +218,12 @@ fn test_oblique_is_point_on_manifold() {
 	let m = as_manifold(&oblique);
 
 	// Good point: columns have unit norm
-	let mut x: DMatrix<f64> = DMatrix::zeros(3, 2);
+	let mut x: linalg::Mat<f64> = MatrixOps::zeros(3, 2);
 	m.random_point(&mut x).unwrap();
 	assert!(m.is_point_on_manifold(&x, 1e-10));
 
 	// Bad point: columns do not have unit norm
-	let bad: DMatrix<f64> = DMatrix::from_fn(3, 2, |i, j| (i + j + 1) as f64);
+	let bad: linalg::Mat<f64> = MatrixOps::from_fn(3, 2, |i, j| (i + j + 1) as f64);
 	assert!(!m.is_point_on_manifold(&bad, 1e-10));
 }
 
@@ -221,10 +232,10 @@ fn test_oblique_distance() {
 	let oblique = Oblique::new(3, 2).unwrap();
 	let m = as_manifold(&oblique);
 
-	let mut x: DMatrix<f64> = DMatrix::zeros(3, 2);
+	let mut x: linalg::Mat<f64> = MatrixOps::zeros(3, 2);
 	m.random_point(&mut x).unwrap();
 
-	let mut y: DMatrix<f64> = DMatrix::zeros(3, 2);
+	let mut y: linalg::Mat<f64> = MatrixOps::zeros(3, 2);
 	m.random_point(&mut y).unwrap();
 
 	let dist: f64 = m.distance(&x, &y).unwrap();
