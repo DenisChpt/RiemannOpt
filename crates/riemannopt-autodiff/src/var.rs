@@ -121,6 +121,22 @@ where
 	}
 }
 
+/// Get a vector buffer — try donation from operand first, fall back to pool.
+/// `cursor` is the index of the node about to be created (= tape.entries.len()).
+#[inline]
+fn get_or_donate_vec<T: RealScalar>(
+	tape: &mut Tape<T>,
+	operand: NodeIdx,
+	n: usize,
+) -> linalg::Vec<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	let cursor = tape.entries.len();
+	tape.try_donate_vec(operand, cursor)
+		.unwrap_or_else(|| tape.pool.get_vec(n))
+}
+
 #[inline]
 fn entry_rg(entries: &[crate::tape::TapeEntry], idx: NodeIdx) -> bool {
 	entries[idx.0 as usize].requires_grad
@@ -195,10 +211,16 @@ where
 					))
 				}
 				ValueKind::Vector(n) => {
-					let av = tape.values[self.idx.0 as usize].as_vec();
+					let cursor = tape.entries.len();
+					let mut r = if let Some(donated) = tape.try_donate_vec(self.idx, cursor) {
+						donated
+					} else {
+						let av = tape.values[self.idx.0 as usize].as_vec();
+						let mut buf = tape.pool.get_vec(n);
+						buf.copy_from(av);
+						buf
+					};
 					let bv = tape.values[rhs.idx.0 as usize].as_vec();
-					let mut r = tape.pool.get_vec(n);
-					r.copy_from(av);
 					r.add_assign(bv); // SIMD
 					Var::new(tape.push(
 						OpCode::Add(self.idx, rhs.idx),
@@ -244,10 +266,14 @@ where
 					))
 				}
 				ValueKind::Vector(n) => {
-					let av = tape.values[self.idx.0 as usize].as_vec();
+					let mut r = get_or_donate_vec(tape, self.idx, n);
+					if tape.values[self.idx.0 as usize].is_vacant() {
+						// Donated — data already in r
+					} else {
+						let av = tape.values[self.idx.0 as usize].as_vec();
+						r.copy_from(av);
+					}
 					let bv = tape.values[rhs.idx.0 as usize].as_vec();
-					let mut r = tape.pool.get_vec(n);
-					r.copy_from(av);
 					r.sub_assign(bv); // SIMD
 					Var::new(tape.push(
 						OpCode::Sub(self.idx, rhs.idx),
@@ -326,10 +352,14 @@ where
 					))
 				}
 				ValueKind::Vector(n) => {
-					let av = tape.values[self.idx.0 as usize].as_vec();
+					let mut r = get_or_donate_vec(tape, self.idx, n);
+					if tape.values[self.idx.0 as usize].is_vacant() {
+						// Donated
+					} else {
+						let av = tape.values[self.idx.0 as usize].as_vec();
+						r.copy_from(av);
+					}
 					let bv = tape.values[rhs.idx.0 as usize].as_vec();
-					let mut r = tape.pool.get_vec(n);
-					r.copy_from(av);
 					r.component_mul_assign(bv); // SIMD via faer::zip!
 					Var::new(tape.push(
 						OpCode::Mul(self.idx, rhs.idx),
@@ -377,10 +407,14 @@ where
 					))
 				}
 				ValueKind::Vector(n) => {
-					let av = tape.values[self.idx.0 as usize].as_vec();
+					let mut r = get_or_donate_vec(tape, self.idx, n);
+					if tape.values[self.idx.0 as usize].is_vacant() {
+						// Donated
+					} else {
+						let av = tape.values[self.idx.0 as usize].as_vec();
+						r.copy_from(av);
+					}
 					let bv = tape.values[rhs.idx.0 as usize].as_vec();
-					let mut r = tape.pool.get_vec(n);
-					r.copy_from(av);
 					r.component_div_assign(bv); // SIMD via faer::zip!
 					Var::new(tape.push(
 						OpCode::Div(self.idx, rhs.idx),
@@ -561,9 +595,17 @@ where
 			Var::new(tape.push(op, NodeValue::Scalar(f(v)), ValueKind::Scalar, req_grad))
 		}
 		ValueKind::Vector(n) => {
-			let src = tape.values[self_idx.0 as usize].as_vec();
-			let mut r = tape.pool.get_vec(n);
-			r.copy_from(src);
+			// Try donation: if the operand's buffer is dead, take it directly.
+			// The donated buffer already contains the operand's data — no copy needed.
+			let cursor = tape.entries.len();
+			let mut r = if let Some(donated) = tape.try_donate_vec(self_idx, cursor) {
+				donated // zero-copy: buffer has the operand's data
+			} else {
+				let src = tape.values[self_idx.0 as usize].as_vec();
+				let mut buf = tape.pool.get_vec(n);
+				buf.copy_from(src);
+				buf
+			};
 			r.map_mut(f);
 			Var::new(tape.push(op, NodeValue::Vector(r), kind, req_grad))
 		}

@@ -57,21 +57,10 @@ where
 	/// Tries to recycle a buffer from the matching bucket. If none available,
 	/// allocates a new one.
 	pub fn get_vec(&mut self, n: usize) -> linalg::Vec<T> {
+		// faer::Col<T> has fixed size — only exact matches are reusable.
+		// Search the matching bucket first, then all buckets.
 		let bucket = vec_bucket(n);
-		// Search this bucket for a buffer with sufficient capacity
-		let bucket_vec = &mut self.vec_buckets[bucket];
-		if let Some(pos) = bucket_vec.iter().position(|v| VectorOps::len(v) >= n) {
-			let mut v = bucket_vec.swap_remove(pos);
-			// If the recycled buffer is larger, we need to handle the size mismatch.
-			// For faer::Col, len is fixed at creation. We need an exact-size buffer
-			// or create a new one from the pool capacity.
-			if VectorOps::len(&v) == n {
-				v.fill(T::zero());
-				return v;
-			}
-		}
-		// Also check larger buckets
-		for b in (bucket + 1)..NUM_VEC_BUCKETS {
+		for b in bucket..NUM_VEC_BUCKETS {
 			if let Some(pos) = self.vec_buckets[b]
 				.iter()
 				.position(|v| VectorOps::len(v) == n)
@@ -81,7 +70,18 @@ where
 				return v;
 			}
 		}
-		// No recyclable buffer found — allocate fresh
+		// Also check smaller buckets (a buffer might have been misclassified
+		// or the bucket boundary doesn't match exactly)
+		for b in 0..bucket {
+			if let Some(pos) = self.vec_buckets[b]
+				.iter()
+				.position(|v| VectorOps::len(v) == n)
+			{
+				let mut v = self.vec_buckets[b].swap_remove(pos);
+				v.fill(T::zero());
+				return v;
+			}
+		}
 		VectorOps::zeros(n)
 	}
 

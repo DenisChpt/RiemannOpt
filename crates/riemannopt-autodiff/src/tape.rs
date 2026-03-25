@@ -18,6 +18,75 @@ use crate::buffer_pool::BufferPool;
 use crate::value::{NodeValue, SavePolicy, ValueKind};
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  GraphPlan — cached graph structure that survives clear_for_reuse
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cached graph structure from a previous forward pass.
+///
+/// Survives `clear_for_reuse()`. On the next forward, each `push()` validates
+/// that the current op+kind match the plan. If so, `last_forward_use` and
+/// `must_survive` are available for buffer donation during tracing.
+/// If the graph diverges, the plan is invalidated.
+#[derive(Default)]
+pub(crate) struct GraphPlan {
+	/// OpCode discriminant for each node (for validation).
+	ops: Vec<std::mem::Discriminant<OpCode>>,
+	/// ValueKind for each node (for validation).
+	kinds: Vec<ValueKind>,
+	/// Liveness: last node that reads this node during forward.
+	last_forward_use: Vec<u32>,
+	/// Whether this node's value must survive for backward.
+	must_survive: Vec<bool>,
+}
+
+impl GraphPlan {
+	/// Number of nodes in the cached plan.
+	fn len(&self) -> usize {
+		self.ops.len()
+	}
+
+	/// Whether the plan has been populated.
+	fn is_populated(&self) -> bool {
+		!self.ops.is_empty()
+	}
+
+	/// Check if node at `cursor` matches the expected op and kind.
+	fn matches(&self, cursor: usize, op: &OpCode, kind: ValueKind) -> bool {
+		cursor < self.ops.len()
+			&& self.ops[cursor] == std::mem::discriminant(op)
+			&& self.kinds[cursor] == kind
+	}
+
+	/// Snapshot the current tape state into the plan.
+	fn capture(&mut self, entries: &[TapeEntry], must_survive: &[bool]) {
+		let n = entries.len();
+		self.ops.clear();
+		self.ops.reserve(n);
+		self.kinds.clear();
+		self.kinds.reserve(n);
+		self.last_forward_use.clear();
+		self.last_forward_use.reserve(n);
+		self.must_survive.clear();
+		self.must_survive.reserve(n);
+		for (i, entry) in entries.iter().enumerate() {
+			self.ops.push(std::mem::discriminant(&entry.op));
+			self.kinds.push(entry.kind);
+			self.last_forward_use.push(entry.last_forward_use);
+			self.must_survive
+				.push(must_survive.get(i).copied().unwrap_or(false));
+		}
+	}
+
+	/// Invalidate the plan (graph structure changed).
+	fn invalidate(&mut self) {
+		self.ops.clear();
+		self.kinds.clear();
+		self.last_forward_use.clear();
+		self.must_survive.clear();
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  NodeIdx
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -163,11 +232,19 @@ where
 	pub(crate) entries: Vec<TapeEntry>,
 	pub(crate) values: Vec<NodeValue<T>>,
 	pub(crate) pool: BufferPool<T>,
-	/// Save policy per node — property of the graph, computed post-trace.
-	pub(crate) save_policies: Vec<SavePolicy>,
-	/// Length of the last completed trace (for detecting graph reuse).
-	last_trace_len: usize,
-	/// Whether graph metadata (save_policies, last_forward_use) is computed.
+	/// Per-op save policy — structural property of each operation, never overwritten.
+	pub(crate) op_policies: Vec<SavePolicy>,
+	/// Per-node survival flag — derived from op_policies.
+	pub(crate) must_survive: Vec<bool>,
+	/// Cached plan from the previous trace — survives `clear_for_reuse()`.
+	plan: GraphPlan,
+	/// Cursor: how many nodes of the current trace match the cached plan.
+	/// While `plan_cursor < plan.len()` and ops match, donation is possible.
+	plan_cursor: usize,
+	/// Whether the current trace still matches the cached plan.
+	plan_valid: bool,
+	/// Whether graph metadata (must_survive, last_forward_use) is computed
+	/// for the *current* trace.
 	metadata_valid: bool,
 }
 
@@ -180,8 +257,11 @@ where
 			entries: Vec::with_capacity(64),
 			values: Vec::with_capacity(64),
 			pool: BufferPool::new(),
-			save_policies: Vec::with_capacity(64),
-			last_trace_len: 0,
+			op_policies: Vec::with_capacity(64),
+			must_survive: Vec::with_capacity(64),
+			plan: GraphPlan::default(),
+			plan_cursor: 0,
+			plan_valid: false,
 			metadata_valid: false,
 		}
 	}
@@ -202,8 +282,10 @@ where
 		}
 		self.entries.clear();
 		self.values.clear();
-		self.save_policies.clear();
-		self.last_trace_len = 0;
+		self.op_policies.clear();
+		self.must_survive.clear();
+		self.plan_cursor = 0;
+		self.plan_valid = self.plan.is_populated();
 		self.metadata_valid = false;
 	}
 
@@ -211,9 +293,11 @@ where
 	pub fn clear(&mut self) {
 		self.entries.clear();
 		self.values.clear();
-		self.save_policies.clear();
+		self.op_policies.clear();
+		self.must_survive.clear();
 		self.pool.clear();
-		self.last_trace_len = 0;
+		self.plan_cursor = 0;
+		self.plan_valid = self.plan.is_populated();
 		self.metadata_valid = false;
 	}
 
@@ -232,6 +316,10 @@ where
 	// ── Node construction ─────────────────────────────────────────────
 
 	/// Push a new node onto the tape.
+	///
+	/// Validates against the cached [`GraphPlan`] if one exists.
+	/// If the op+kind match the plan, donation remains possible for
+	/// subsequent nodes. If they diverge, the plan is invalidated.
 	pub(crate) fn push(
 		&mut self,
 		op: OpCode,
@@ -239,12 +327,25 @@ where
 		kind: ValueKind,
 		requires_grad: bool,
 	) -> NodeIdx {
-		let idx = NodeIdx(self.entries.len() as u32);
+		let cursor = self.entries.len();
+		let idx = NodeIdx(cursor as u32);
+
+		// Validate against cached plan
+		if self.plan_valid {
+			if self.plan.matches(cursor, &op, kind) {
+				self.plan_cursor = cursor + 1;
+			} else {
+				// Graph structure diverged — invalidate plan
+				self.plan_valid = false;
+				self.plan.invalidate();
+			}
+		}
+
 		self.entries.push(TapeEntry {
 			op,
 			kind,
 			requires_grad,
-			last_forward_use: idx.0, // self-referencing initially
+			last_forward_use: idx.0,
 		});
 		self.values.push(value);
 		self.metadata_valid = false;
@@ -290,22 +391,30 @@ where
 	/// Returns `Some(buffer)` if the operand's `last_forward_use` equals
 	/// `current_idx` and its save policy is `NotNeeded`.
 	/// Returns `None` if the buffer must be kept alive.
+	/// Try to donate a buffer from a dead operand.
+	///
+	/// Uses the **cached plan** (from the previous trace), not the current
+	/// tape's metadata. Only works if the plan is valid (graph structure
+	/// matches the previous evaluation).
+	///
+	/// Returns `Some(buffer)` if the operand's `last_forward_use` in the
+	/// plan equals `current_idx` and it doesn't need to survive.
 	pub(crate) fn try_donate_vec(
 		&mut self,
 		operand: NodeIdx,
 		current_idx: usize,
 	) -> Option<linalg::Vec<T>> {
-		if !self.metadata_valid {
+		if !self.plan_valid {
 			return None;
 		}
 		let a = operand.0 as usize;
-		if self.entries[a].last_forward_use == current_idx as u32
-			&& self.save_policies[a] == SavePolicy::NotNeeded
-		{
+		if a >= self.plan.last_forward_use.len() {
+			return None;
+		}
+		if self.plan.last_forward_use[a] == current_idx as u32 && !self.plan.must_survive[a] {
 			match self.values[a].take_buffer() {
 				NodeValue::Vector(v) => Some(v),
 				other => {
-					// Put it back — wrong type
 					self.values[a] = other;
 					None
 				}
@@ -317,55 +426,55 @@ where
 
 	// ── Post-trace graph analysis ─────────────────────────────────────
 
-	/// Compute save policies and liveness (last_forward_use) for all nodes.
+	/// Compute graph metadata after the forward pass completes.
 	///
-	/// Must be called after the forward pass completes. Single reverse pass.
+	/// Fills:
+	/// - `op_policies[i]` — structural save policy of op `i` (never overwritten)
+	/// - `must_survive[i]` — whether node `i`'s value is needed by a downstream backward
+	/// - `entries[i].last_forward_use` — latest node that reads node `i` as operand
 	pub(crate) fn compute_graph_metadata(&mut self) {
 		let n = self.entries.len();
 
-		// Save policies — derived from OpCode
-		self.save_policies.clear();
-		self.save_policies
-			.reserve(n.saturating_sub(self.save_policies.capacity()));
+		// 1. op_policies — one per node, derived from OpCode.
+		self.op_policies.clear();
+		self.op_policies.reserve(n);
 		for entry in &self.entries {
-			self.save_policies.push(entry.op.save_policy());
+			self.op_policies.push(entry.op.save_policy());
 		}
 
-		// Mark nodes whose values are needed for backward.
-		// If node i's op saves input(s), those input nodes are marked.
-		// If node i's op saves output, node i itself is marked.
+		// 2. must_survive — derived from op_policies of all nodes.
+		self.must_survive.clear();
+		self.must_survive.resize(n, false);
 		for i in 0..n {
 			let op = self.entries[i].op;
-			match op.save_policy() {
+			match self.op_policies[i] {
 				SavePolicy::SaveOutput => {
-					// Node i's own value is needed
-					self.save_policies[i] = SavePolicy::SaveOutput;
+					self.must_survive[i] = true;
 				}
 				SavePolicy::SaveInput(idx) => {
-					let operand = op.operands().nth(idx as usize).unwrap();
-					// Mark the operand as needing to survive
-					self.save_policies[operand.0 as usize] = SavePolicy::SaveOutput;
+					if let Some(operand) = op.operands().nth(idx as usize) {
+						self.must_survive[operand.0 as usize] = true;
+					}
 				}
 				SavePolicy::SaveBothInputs => {
 					for operand in op.operands() {
-						self.save_policies[operand.0 as usize] = SavePolicy::SaveOutput;
+						self.must_survive[operand.0 as usize] = true;
 					}
 				}
 				SavePolicy::SaveOutputAndInput(idx) => {
-					self.save_policies[i] = SavePolicy::SaveOutput;
-					let operand = op.operands().nth(idx as usize).unwrap();
-					self.save_policies[operand.0 as usize] = SavePolicy::SaveOutput;
+					self.must_survive[i] = true;
+					if let Some(operand) = op.operands().nth(idx as usize) {
+						self.must_survive[operand.0 as usize] = true;
+					}
 				}
 				SavePolicy::NotNeeded => {}
 			}
 		}
 
-		// Liveness: last_forward_use — reverse pass
-		// Initialize to self (each node's value is "used" at its own index)
+		// 3. last_forward_use
 		for entry in &mut self.entries {
-			entry.last_forward_use = 0; // will be updated
+			entry.last_forward_use = 0;
 		}
-		// For each node, update its operands' last_forward_use
 		for i in 0..n {
 			for operand in self.entries[i].op.operands() {
 				let a = operand.0 as usize;
@@ -375,7 +484,8 @@ where
 			}
 		}
 
-		self.last_trace_len = n;
+		// Capture the plan for the next evaluation cycle
+		self.plan.capture(&self.entries, &self.must_survive);
 		self.metadata_valid = true;
 	}
 }
