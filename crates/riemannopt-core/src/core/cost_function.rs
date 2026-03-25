@@ -180,11 +180,7 @@ pub trait CostFunction<T: Scalar>: Debug {
 	/// # Errors
 	///
 	/// Returns an error if the computation fails.
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		// For generic dimensions, we can't easily use workspace DVector buffers
 		// Default implementation: compute gradient using allocations
 		let grad = self.gradient_fd_alloc(point)?;
@@ -247,8 +243,9 @@ where
 
 	fn cost_and_gradient_alloc(&self, point: &Self::Point) -> Result<(T, Self::TangentVector)> {
 		let ax = self.a.mat_vec(point);
-		let cost =
-			VectorOps::dot(point, &ax) * Scalar::from_f64(0.5) + VectorOps::dot(&self.b, point) + self.c;
+		let cost = VectorOps::dot(point, &ax) * Scalar::from_f64(0.5)
+			+ VectorOps::dot(&self.b, point)
+			+ self.c;
 		let gradient = VectorOps::add(&ax, &self.b);
 		Ok((cost, gradient))
 	}
@@ -405,11 +402,7 @@ where
 		self.inner.gradient_fd_alloc(point)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		self.gradient_count.fetch_add(1, Ordering::Relaxed);
 		self.inner.gradient_fd(point, gradient)
 	}
@@ -489,9 +482,7 @@ mod tests {
 
 	#[test]
 	fn test_quadratic_cost_general() {
-		let a = linalg::Mat::<f64>::from_fn(2, 2, |i, j| {
-			[[2.0, 1.0], [1.0, 2.0]][i][j]
-		});
+		let a = linalg::Mat::<f64>::from_fn(2, 2, |i, j| [[2.0, 1.0], [1.0, 2.0]][i][j]);
 		let b = linalg::Vec::<f64>::from_slice(&[2.0, 3.0]);
 		let c = 5.0;
 
