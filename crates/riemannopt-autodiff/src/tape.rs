@@ -237,10 +237,21 @@ where
 	/// Cached plan from the previous trace — survives `clear_for_reuse()`.
 	plan: GraphPlan,
 	/// Cursor: how many nodes of the current trace match the cached plan.
-	/// While `plan_cursor < plan.len()` and ops match, donation is possible.
 	plan_cursor: usize,
-	/// Whether the current trace still matches the cached plan.
+	/// Whether the current trace still matches the cached plan so far.
+	/// Set at the start of each run based on whether a plan exists.
+	/// Invalidated at the first mismatch during push().
 	plan_valid: bool,
+	/// Whether the plan has been confirmed by a full matching run.
+	/// Donation is only allowed when `plan_confirmed == true`.
+	///
+	/// Lifecycle:
+	/// - Run 0: no plan → trace + capture plan. `plan_confirmed = false`.
+	/// - Run 1: plan exists → trace + validate against plan.
+	///   If full match at end → `plan_confirmed = true`.
+	///   If mismatch → plan invalidated, recapture.
+	/// - Run 2+: `plan_confirmed = true` → donation active during forward.
+	plan_confirmed: bool,
 	/// Whether graph metadata (must_survive, last_forward_use) is computed
 	/// for the *current* trace.
 	metadata_valid: bool,
@@ -260,6 +271,7 @@ where
 			plan: GraphPlan::default(),
 			plan_cursor: 0,
 			plan_valid: false,
+			plan_confirmed: false,
 			metadata_valid: false,
 		}
 	}
@@ -287,15 +299,17 @@ where
 		self.metadata_valid = false;
 	}
 
-	/// Full clear, also dropping pooled buffers.
+	/// Full clear, also dropping pooled buffers and plan.
 	pub fn clear(&mut self) {
 		self.entries.clear();
 		self.values.clear();
 		self.op_policies.clear();
 		self.must_survive.clear();
 		self.pool.clear();
+		self.plan.invalidate();
 		self.plan_cursor = 0;
-		self.plan_valid = self.plan.is_populated();
+		self.plan_valid = false;
+		self.plan_confirmed = false;
 		self.metadata_valid = false;
 	}
 
@@ -370,58 +384,6 @@ where
 		self.entries[idx.0 as usize].kind
 	}
 
-	// ── Buffer allocation (pool-backed) ──────────────────────────────
-
-	/// Get a zero-initialized vector from the pool.
-	#[inline]
-	pub(crate) fn alloc_vec(&mut self, n: usize) -> linalg::Vec<T> {
-		self.pool.get_vec(n)
-	}
-
-	/// Get a zero-initialized matrix from the pool.
-	#[inline]
-	pub(crate) fn alloc_mat(&mut self, rows: usize, cols: usize) -> linalg::Mat<T> {
-		self.pool.get_mat(rows, cols)
-	}
-
-	/// Try to donate a buffer from an operand whose value is dead.
-	///
-	/// Returns `Some(buffer)` if the operand's `last_forward_use` equals
-	/// `current_idx` and its save policy is `NotNeeded`.
-	/// Returns `None` if the buffer must be kept alive.
-	/// Try to donate a buffer from a dead operand.
-	///
-	/// Uses the **cached plan** (from the previous trace), not the current
-	/// tape's metadata. Only works if the plan is valid (graph structure
-	/// matches the previous evaluation).
-	///
-	/// Returns `Some(buffer)` if the operand's `last_forward_use` in the
-	/// plan equals `current_idx` and it doesn't need to survive.
-	pub(crate) fn try_donate_vec(
-		&mut self,
-		operand: NodeIdx,
-		current_idx: usize,
-	) -> Option<linalg::Vec<T>> {
-		if !self.plan_valid {
-			return None;
-		}
-		let a = operand.0 as usize;
-		if a >= self.plan.last_forward_use.len() {
-			return None;
-		}
-		if self.plan.last_forward_use[a] == current_idx as u32 && !self.plan.must_survive[a] {
-			match self.values[a].take_buffer() {
-				NodeValue::Vector(v) => Some(v),
-				other => {
-					self.values[a] = other;
-					None
-				}
-			}
-		} else {
-			None
-		}
-	}
-
 	// ── Post-trace graph analysis ─────────────────────────────────────
 
 	/// Compute graph metadata after the forward pass completes.
@@ -482,8 +444,18 @@ where
 			}
 		}
 
-		// Capture the plan for the next evaluation cycle
-		self.plan.capture(&self.entries, &self.must_survive);
+		// Plan lifecycle:
+		// - If plan_valid && plan matches full trace length → confirm the plan.
+		//   Next run with this plan will allow donation.
+		// - Otherwise → capture new plan, reset confirmation.
+		if self.plan_valid && self.plan_cursor == n && self.plan.len() == n {
+			// Full match — confirm the plan for donation on subsequent runs.
+			self.plan_confirmed = true;
+		} else {
+			// Graph changed or first trace — capture new plan, await confirmation.
+			self.plan.capture(&self.entries, &self.must_survive);
+			self.plan_confirmed = false;
+		}
 		self.metadata_valid = true;
 	}
 }

@@ -121,43 +121,33 @@ where
 	}
 }
 
-/// Get a vector buffer for a unary op — try donation from operand, fall back to pool.
-/// If donated, the buffer already contains the operand's data (zero-copy).
-/// If not donated, copies from the operand.
+/// Get a vector buffer for a unary op from the pool, copying the operand's data.
+///
+/// Donation (zero-copy reuse of the operand's buffer) is not safe during
+/// forward tracing because the graph may diverge after the donation point.
+/// A future replay mode (tape-driven, not closure-driven) will enable donation.
 #[inline]
 fn get_vec_unary<T: RealScalar>(tape: &mut Tape<T>, operand: NodeIdx, n: usize) -> linalg::Vec<T>
 where
 	linalg::DefaultBackend: LinAlgBackend<T>,
 {
-	let cursor = tape.entries.len();
-	if let Some(donated) = tape.try_donate_vec(operand, cursor) {
-		donated
-	} else {
-		let src = tape.values[operand.0 as usize].as_vec();
-		let mut buf = tape.pool.get_vec(n);
-		buf.copy_from(src);
-		buf
-	}
+	let src = tape.values[operand.0 as usize].as_vec();
+	let mut buf = tape.pool.get_vec(n);
+	buf.copy_from(src);
+	buf
 }
 
-/// Get a vector buffer for a binary op — try donation from `lhs`, fall back to pool.
-/// Never donates if `lhs == rhs` (both operands are the same node).
+/// Get a vector buffer for a binary op from the pool, copying `lhs` data.
 #[inline]
 fn get_vec_binary<T: RealScalar>(
 	tape: &mut Tape<T>,
 	lhs: NodeIdx,
-	rhs: NodeIdx,
+	_rhs: NodeIdx,
 	n: usize,
 ) -> linalg::Vec<T>
 where
 	linalg::DefaultBackend: LinAlgBackend<T>,
 {
-	let cursor = tape.entries.len();
-	if lhs != rhs {
-		if let Some(donated) = tape.try_donate_vec(lhs, cursor) {
-			return donated;
-		}
-	}
 	let src = tape.values[lhs.0 as usize].as_vec();
 	let mut buf = tape.pool.get_vec(n);
 	buf.copy_from(src);
