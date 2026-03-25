@@ -186,6 +186,34 @@ pub trait VectorOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 		self.axpy(T::zero() - T::one(), other, T::one());
 	}
 
+	// ── In-place element-wise ─────────────────────────────────────────
+
+	/// Element-wise multiply in-place (Hadamard): `self[i] *= other[i]`.
+	fn component_mul_assign(&mut self, other: &Self) {
+		let dst = self.as_mut_slice();
+		let src = other.as_slice();
+		for (d, &s) in dst.iter_mut().zip(src) {
+			*d = *d * s;
+		}
+	}
+
+	/// Element-wise divide in-place: `self[i] /= other[i]`.
+	fn component_div_assign(&mut self, other: &Self) {
+		let dst = self.as_mut_slice();
+		let src = other.as_slice();
+		for (d, &s) in dst.iter_mut().zip(src) {
+			*d = *d / s;
+		}
+	}
+
+	/// Apply a function to each element in-place: `self[i] = f(self[i])`.
+	fn map_mut(&mut self, mut f: impl FnMut(T) -> T) {
+		let s = self.as_mut_slice();
+		for v in s.iter_mut() {
+			*v = f(*v);
+		}
+	}
+
 	// ── Functional ────────────────────────────────────────────────────
 
 	/// Apply a function element-wise, returning a new vector.
@@ -302,6 +330,36 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 
 	/// alpha * self.
 	fn scale_by(&self, alpha: T) -> Self;
+
+	// ── In-place element-wise ─────────────────────────────────────────
+
+	/// self = alpha * x + beta * self  (element-wise AXPY for matrices).
+	fn mat_axpy(&mut self, alpha: T, x: &Self, beta: T) {
+		let dst = self.as_mut_slice();
+		let src = x.as_slice();
+		if beta == T::zero() {
+			for (d, &s) in dst.iter_mut().zip(src) {
+				*d = alpha * s;
+			}
+		} else if beta == T::one() {
+			for (d, &s) in dst.iter_mut().zip(src) {
+				*d = *d + alpha * s;
+			}
+		} else {
+			for (d, &s) in dst.iter_mut().zip(src) {
+				*d = beta * *d + alpha * s;
+			}
+		}
+	}
+
+	/// Element-wise multiply in-place (Hadamard): `self[i,j] *= other[i,j]`.
+	fn mat_component_mul_assign(&mut self, other: &Self) {
+		let dst = self.as_mut_slice();
+		let src = other.as_slice();
+		for (d, &s) in dst.iter_mut().zip(src) {
+			*d = *d * s;
+		}
+	}
 
 	// ── In-place BLAS-like ────────────────────────────────────────────
 

@@ -1,521 +1,747 @@
 //! [`Var`] — a lightweight handle to a tape entry with operator overloading.
+//!
+//! All forward-pass operations use backend-native types (SIMD/BLAS).
 
-use crate::tape::{with_tape, NodeIdx, OpCode, Tape};
+use num_traits::Float;
 
-/// A differentiable variable.
-///
-/// `Var` is `Copy` — it is just an index into the active [`Tape`](crate::Tape).
-/// Arithmetic operators (`+`, `-`, `*`, `/`, negation) are overloaded to
-/// record operations on the tape automatically.
+use riemannopt_core::linalg::{self, LinAlgBackend, MatrixOps, RealScalar, VectorOps};
+
+use crate::tape::{with_tape, NodeIdx, OpCode, Tape, TapeThreadLocal};
+use crate::value::{NodeValue, ValueKind};
+
+/// A differentiable variable — just an index into the active [`Tape`].
 #[derive(Debug, Clone, Copy)]
-pub struct Var {
+pub struct Var<T: RealScalar>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	pub(crate) idx: NodeIdx,
+	pub(crate) _marker: std::marker::PhantomData<T>,
 }
 
-// ── construction helpers (called via Tape, but need public Var) ────────────
-
-impl Var {
-	/// The underlying index.
+impl<T: RealScalar> Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
 	#[inline]
 	pub fn idx(self) -> NodeIdx {
 		self.idx
 	}
+
+	#[inline]
+	pub(crate) fn new(idx: NodeIdx) -> Self {
+		Self {
+			idx,
+			_marker: std::marker::PhantomData,
+		}
+	}
 }
 
-/// Extension methods on [`Tape`](crate::Tape) to create variables.
-impl crate::Tape {
-	/// Record a differentiable input variable.
-	pub fn var(&mut self, data: &[f64], shape: (usize, usize)) -> Var {
+// ═══════════════════════════════════════════════════════════════════════════
+//  Construction on Tape
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<T: RealScalar> Tape<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	/// Record a differentiable input variable from a slice.
+	pub fn var(&mut self, data: &[T], shape: (usize, usize)) -> Var<T> {
 		debug_assert_eq!(data.len(), shape.0 * shape.1);
-		let idx = self.push(OpCode::Input, data, shape, true);
-		Var { idx }
+		let (kind, value) = slice_to_node_value(data, shape);
+		let idx = self.push(OpCode::Input, value, kind, true);
+		Var::new(idx)
 	}
 
-	/// Record a non-differentiable constant.
-	pub fn constant(&mut self, data: &[f64], shape: (usize, usize)) -> Var {
+	/// Record a non-differentiable constant from a slice.
+	pub fn constant(&mut self, data: &[T], shape: (usize, usize)) -> Var<T> {
 		debug_assert_eq!(data.len(), shape.0 * shape.1);
-		let idx = self.push(OpCode::Input, data, shape, false);
-		Var { idx }
+		let (kind, value) = slice_to_node_value(data, shape);
+		let idx = self.push(OpCode::Input, value, kind, false);
+		Var::new(idx)
 	}
 
-	/// Scalar variable (1×1).
-	pub fn scalar_var(&mut self, v: f64) -> Var {
-		self.var(&[v], (1, 1))
+	/// Scalar variable (1x1).
+	pub fn scalar_var(&mut self, v: T) -> Var<T> {
+		let idx = self.push(OpCode::Input, NodeValue::Scalar(v), ValueKind::Scalar, true);
+		Var::new(idx)
 	}
 
-	/// Scalar constant (1×1, no grad).
-	pub fn scalar_const(&mut self, v: f64) -> Var {
-		self.constant(&[v], (1, 1))
+	/// Scalar constant (1x1, no grad).
+	pub fn scalar_const(&mut self, v: T) -> Var<T> {
+		let idx = self.push(
+			OpCode::Input,
+			NodeValue::Scalar(v),
+			ValueKind::Scalar,
+			false,
+		);
+		Var::new(idx)
 	}
 }
 
-// ── helpers: push unary / binary nodes on the tape ────────────────────────
-
-fn push_unary(
-	tape: &mut Tape,
-	op: OpCode,
-	parent: NodeIdx,
-	value: &[f64],
+fn slice_to_node_value<T: RealScalar>(
+	data: &[T],
 	shape: (usize, usize),
-) -> Var {
-	let rg = tape.entries[parent.0 as usize].requires_grad;
-	let idx = tape.push(op, value, shape, rg);
-	Var { idx }
+) -> (ValueKind, NodeValue<T>)
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	if shape == (1, 1) {
+		(ValueKind::Scalar, NodeValue::Scalar(data[0]))
+	} else if shape.1 == 1 {
+		(
+			ValueKind::Vector(shape.0),
+			NodeValue::Vector(VectorOps::from_slice(data)),
+		)
+	} else {
+		(
+			ValueKind::Matrix(shape.0, shape.1),
+			NodeValue::Matrix(<linalg::Mat<T> as MatrixOps<T>>::from_column_slice(
+				shape.0, shape.1, data,
+			)),
+		)
+	}
 }
 
-fn push_binary(
-	tape: &mut Tape,
-	op: OpCode,
-	a: NodeIdx,
-	b: NodeIdx,
-	value: &[f64],
-	shape: (usize, usize),
-) -> Var {
-	let rg = tape.entries[a.0 as usize].requires_grad || tape.entries[b.0 as usize].requires_grad;
-	let idx = tape.push(op, value, shape, rg);
-	Var { idx }
+// ═══════════════════════════════════════════════════════════════════════════
+//  Helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert a NodeValue to a matrix view (vectors become n×1 matrices).
+fn vec_to_mat<T: RealScalar>(nv: &NodeValue<T>, rows: usize, cols: usize) -> linalg::Mat<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	match nv {
+		NodeValue::Matrix(m) => m.clone(),
+		NodeValue::Vector(v) => {
+			<linalg::Mat<T> as MatrixOps<T>>::from_column_slice(rows, cols, v.as_slice())
+		}
+		_ => panic!("vec_to_mat: unsupported variant"),
+	}
 }
 
-// ── Var + Var (element-wise) ──────────────────────────────────────────────
+#[inline]
+fn entry_rg(entries: &[crate::tape::TapeEntry], idx: NodeIdx) -> bool {
+	entries[idx.0 as usize].requires_grad
+}
 
-impl std::ops::Add for Var {
-	type Output = Var;
-	fn add(self, rhs: Var) -> Var {
-		with_tape(|tape| {
-			let a_e = &tape.entries[self.idx.0 as usize];
-			let b_e = &tape.entries[rhs.idx.0 as usize];
-			let a_off = a_e.value_offset as usize;
-			let a_len = a_e.value_len as usize;
-			let b_off = b_e.value_offset as usize;
-			let b_len = b_e.value_len as usize;
-			let a_shape = a_e.shape;
-			let b_shape = b_e.shape;
-			let a_rg = a_e.requires_grad;
-			let b_rg = b_e.requires_grad;
+#[inline]
+fn entry_kind(entries: &[crate::tape::TapeEntry], idx: NodeIdx) -> ValueKind {
+	entries[idx.0 as usize].kind
+}
 
-			// scalar + tensor broadcast
-			if a_shape == (1, 1) && b_shape != (1, 1) {
-				let s = tape.arena[a_off];
-				let val: Vec<f64> = tape.arena[b_off..b_off + b_len]
-					.iter()
-					.map(|x| x + s)
-					.collect();
-				let idx = tape.push(
+// ═══════════════════════════════════════════════════════════════════════════
+//  Binary ops — uses split borrows on Tape fields
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<T: TapeThreadLocal> std::ops::Add for Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Output = Var<T>;
+	fn add(self, rhs: Var<T>) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let a_kind = entry_kind(&tape.entries, self.idx);
+			let b_kind = entry_kind(&tape.entries, rhs.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, rhs.idx);
+
+			// Scalar + tensor broadcast
+			if a_kind == ValueKind::Scalar && b_kind != ValueKind::Scalar {
+				let s = tape.values[self.idx.0 as usize].as_scalar();
+				let bv = tape.values[rhs.idx.0 as usize].as_vec();
+				let n = VectorOps::len(bv);
+				let mut r = tape.pool.get_vec(n);
+				r.copy_from(bv);
+				let sl = r.as_mut_slice();
+				for v in sl.iter_mut() {
+					*v = *v + s;
+				}
+				return Var::new(tape.push(
 					OpCode::ScalarAdd(self.idx, rhs.idx),
-					&val,
-					b_shape,
-					a_rg || b_rg,
-				);
-				return Var { idx };
+					NodeValue::Vector(r),
+					b_kind,
+					req_grad,
+				));
 			}
-			if b_shape == (1, 1) && a_shape != (1, 1) {
-				let s = tape.arena[b_off];
-				let val: Vec<f64> = tape.arena[a_off..a_off + a_len]
-					.iter()
-					.map(|x| x + s)
-					.collect();
-				let idx = tape.push(
+			if b_kind == ValueKind::Scalar && a_kind != ValueKind::Scalar {
+				let s = tape.values[rhs.idx.0 as usize].as_scalar();
+				let av = tape.values[self.idx.0 as usize].as_vec();
+				let n = VectorOps::len(av);
+				let mut r = tape.pool.get_vec(n);
+				r.copy_from(av);
+				let sl = r.as_mut_slice();
+				for v in sl.iter_mut() {
+					*v = *v + s;
+				}
+				return Var::new(tape.push(
 					OpCode::ScalarAdd(rhs.idx, self.idx),
-					&val,
-					a_shape,
-					a_rg || b_rg,
-				);
-				return Var { idx };
+					NodeValue::Vector(r),
+					a_kind,
+					req_grad,
+				));
 			}
-			assert_eq!(
-				a_shape, b_shape,
-				"Add: shape mismatch {:?} vs {:?}",
-				a_shape, b_shape
-			);
-			let val: Vec<f64> = tape.arena[a_off..a_off + a_len]
-				.iter()
-				.zip(&tape.arena[b_off..b_off + b_len])
-				.map(|(x, y)| x + y)
-				.collect();
-			let idx = tape.push(OpCode::Add(self.idx, rhs.idx), &val, a_shape, a_rg || b_rg);
-			Var { idx }
+
+			assert_eq!(a_kind, b_kind, "Add: shape mismatch");
+			match a_kind {
+				ValueKind::Scalar => {
+					let a = tape.values[self.idx.0 as usize].as_scalar();
+					let b = tape.values[rhs.idx.0 as usize].as_scalar();
+					Var::new(tape.push(
+						OpCode::Add(self.idx, rhs.idx),
+						NodeValue::Scalar(a + b),
+						ValueKind::Scalar,
+						req_grad,
+					))
+				}
+				ValueKind::Vector(n) => {
+					let av = tape.values[self.idx.0 as usize].as_vec();
+					let bv = tape.values[rhs.idx.0 as usize].as_vec();
+					let mut r = tape.pool.get_vec(n);
+					r.copy_from(av);
+					r.add_assign(bv); // SIMD
+					Var::new(tape.push(
+						OpCode::Add(self.idx, rhs.idx),
+						NodeValue::Vector(r),
+						ValueKind::Vector(n),
+						req_grad,
+					))
+				}
+				ValueKind::Matrix(rows, cols) => {
+					let am = tape.values[self.idx.0 as usize].as_mat();
+					let bm = tape.values[rhs.idx.0 as usize].as_mat();
+					let r = MatrixOps::add(am, bm);
+					Var::new(tape.push(
+						OpCode::Add(self.idx, rhs.idx),
+						NodeValue::Matrix(r),
+						ValueKind::Matrix(rows, cols),
+						req_grad,
+					))
+				}
+			}
 		})
 	}
 }
 
-impl std::ops::Sub for Var {
-	type Output = Var;
-	fn sub(self, rhs: Var) -> Var {
-		with_tape(|tape| {
-			let a_e = &tape.entries[self.idx.0 as usize];
-			let b_e = &tape.entries[rhs.idx.0 as usize];
-			let a_off = a_e.value_offset as usize;
-			let a_len = a_e.value_len as usize;
-			let b_off = b_e.value_offset as usize;
-			let a_shape = a_e.shape;
-			let b_shape = b_e.shape;
-			let a_rg = a_e.requires_grad;
-			let b_rg = b_e.requires_grad;
-
-			assert_eq!(a_shape, b_shape, "Sub: shape mismatch");
-			let val: Vec<f64> = tape.arena[a_off..a_off + a_len]
-				.iter()
-				.zip(&tape.arena[b_off..b_off + a_len])
-				.map(|(x, y)| x - y)
-				.collect();
-			let idx = tape.push(OpCode::Sub(self.idx, rhs.idx), &val, a_shape, a_rg || b_rg);
-			Var { idx }
+impl<T: TapeThreadLocal> std::ops::Sub for Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Output = Var<T>;
+	fn sub(self, rhs: Var<T>) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let a_kind = entry_kind(&tape.entries, self.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, rhs.idx);
+			match a_kind {
+				ValueKind::Scalar => {
+					let a = tape.values[self.idx.0 as usize].as_scalar();
+					let b = tape.values[rhs.idx.0 as usize].as_scalar();
+					Var::new(tape.push(
+						OpCode::Sub(self.idx, rhs.idx),
+						NodeValue::Scalar(a - b),
+						ValueKind::Scalar,
+						req_grad,
+					))
+				}
+				ValueKind::Vector(n) => {
+					let av = tape.values[self.idx.0 as usize].as_vec();
+					let bv = tape.values[rhs.idx.0 as usize].as_vec();
+					let mut r = tape.pool.get_vec(n);
+					r.copy_from(av);
+					r.sub_assign(bv); // SIMD
+					Var::new(tape.push(
+						OpCode::Sub(self.idx, rhs.idx),
+						NodeValue::Vector(r),
+						ValueKind::Vector(n),
+						req_grad,
+					))
+				}
+				ValueKind::Matrix(rows, cols) => {
+					let am = tape.values[self.idx.0 as usize].as_mat();
+					let bm = tape.values[rhs.idx.0 as usize].as_mat();
+					let r = MatrixOps::sub(am, bm);
+					Var::new(tape.push(
+						OpCode::Sub(self.idx, rhs.idx),
+						NodeValue::Matrix(r),
+						ValueKind::Matrix(rows, cols),
+						req_grad,
+					))
+				}
+			}
 		})
 	}
 }
 
-impl std::ops::Mul for Var {
-	type Output = Var;
-	fn mul(self, rhs: Var) -> Var {
-		with_tape(|tape| {
-			let a_e = &tape.entries[self.idx.0 as usize];
-			let b_e = &tape.entries[rhs.idx.0 as usize];
-			let a_off = a_e.value_offset as usize;
-			let a_len = a_e.value_len as usize;
-			let b_off = b_e.value_offset as usize;
-			let b_len = b_e.value_len as usize;
-			let a_shape = a_e.shape;
-			let b_shape = b_e.shape;
-			let a_rg = a_e.requires_grad;
-			let b_rg = b_e.requires_grad;
+impl<T: TapeThreadLocal> std::ops::Mul for Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Output = Var<T>;
+	fn mul(self, rhs: Var<T>) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let a_kind = entry_kind(&tape.entries, self.idx);
+			let b_kind = entry_kind(&tape.entries, rhs.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, rhs.idx);
 
-			// scalar * tensor broadcast
-			if a_shape == (1, 1) && b_shape != (1, 1) {
-				let s = tape.arena[a_off];
-				let val: Vec<f64> = tape.arena[b_off..b_off + b_len]
-					.iter()
-					.map(|x| x * s)
-					.collect();
-				let idx = tape.push(
+			// Scalar * tensor broadcast
+			if a_kind == ValueKind::Scalar && b_kind != ValueKind::Scalar {
+				let s = tape.values[self.idx.0 as usize].as_scalar();
+				let bv = tape.values[rhs.idx.0 as usize].as_vec();
+				let n = VectorOps::len(bv);
+				let mut r = tape.pool.get_vec(n);
+				r.copy_from(bv);
+				r.scale_mut(s);
+				return Var::new(tape.push(
 					OpCode::ScalarMul(self.idx, rhs.idx),
-					&val,
-					b_shape,
-					a_rg || b_rg,
-				);
-				return Var { idx };
+					NodeValue::Vector(r),
+					b_kind,
+					req_grad,
+				));
 			}
-			if b_shape == (1, 1) && a_shape != (1, 1) {
-				let s = tape.arena[b_off];
-				let val: Vec<f64> = tape.arena[a_off..a_off + a_len]
-					.iter()
-					.map(|x| x * s)
-					.collect();
-				let idx = tape.push(
+			if b_kind == ValueKind::Scalar && a_kind != ValueKind::Scalar {
+				let s = tape.values[rhs.idx.0 as usize].as_scalar();
+				let av = tape.values[self.idx.0 as usize].as_vec();
+				let n = VectorOps::len(av);
+				let mut r = tape.pool.get_vec(n);
+				r.copy_from(av);
+				r.scale_mut(s);
+				return Var::new(tape.push(
 					OpCode::ScalarMul(rhs.idx, self.idx),
-					&val,
-					a_shape,
-					a_rg || b_rg,
-				);
-				return Var { idx };
+					NodeValue::Vector(r),
+					a_kind,
+					req_grad,
+				));
 			}
-			assert_eq!(a_shape, b_shape, "Mul: shape mismatch");
-			let val: Vec<f64> = tape.arena[a_off..a_off + a_len]
-				.iter()
-				.zip(&tape.arena[b_off..b_off + b_len])
-				.map(|(x, y)| x * y)
-				.collect();
-			let idx = tape.push(OpCode::Mul(self.idx, rhs.idx), &val, a_shape, a_rg || b_rg);
-			Var { idx }
+
+			assert_eq!(a_kind, b_kind, "Mul: shape mismatch");
+			match a_kind {
+				ValueKind::Scalar => {
+					let a = tape.values[self.idx.0 as usize].as_scalar();
+					let b = tape.values[rhs.idx.0 as usize].as_scalar();
+					Var::new(tape.push(
+						OpCode::Mul(self.idx, rhs.idx),
+						NodeValue::Scalar(a * b),
+						ValueKind::Scalar,
+						req_grad,
+					))
+				}
+				ValueKind::Vector(n) => {
+					let av = tape.values[self.idx.0 as usize].as_vec();
+					let bv = tape.values[rhs.idx.0 as usize].as_vec();
+					let mut r = tape.pool.get_vec(n);
+					r.copy_from(av);
+					r.component_mul_assign(bv); // SIMD via faer::zip!
+					Var::new(tape.push(
+						OpCode::Mul(self.idx, rhs.idx),
+						NodeValue::Vector(r),
+						ValueKind::Vector(n),
+						req_grad,
+					))
+				}
+				ValueKind::Matrix(rows, cols) => {
+					let am = tape.values[self.idx.0 as usize].as_mat();
+					let bm = tape.values[rhs.idx.0 as usize].as_mat();
+					let mut r = tape.pool.get_mat(rows, cols);
+					r.copy_from(am);
+					r.mat_component_mul_assign(bm); // SIMD via faer::zip!
+					Var::new(tape.push(
+						OpCode::Mul(self.idx, rhs.idx),
+						NodeValue::Matrix(r),
+						ValueKind::Matrix(rows, cols),
+						req_grad,
+					))
+				}
+			}
 		})
 	}
 }
 
-impl std::ops::Div for Var {
-	type Output = Var;
-	fn div(self, rhs: Var) -> Var {
-		with_tape(|tape| {
-			let a_e = &tape.entries[self.idx.0 as usize];
-			let b_e = &tape.entries[rhs.idx.0 as usize];
-			let a_off = a_e.value_offset as usize;
-			let a_len = a_e.value_len as usize;
-			let b_off = b_e.value_offset as usize;
-			let a_shape = a_e.shape;
-			let b_shape = b_e.shape;
-			let a_rg = a_e.requires_grad;
-			let b_rg = b_e.requires_grad;
-
-			assert_eq!(a_shape, b_shape, "Div: shape mismatch");
-			let val: Vec<f64> = tape.arena[a_off..a_off + a_len]
-				.iter()
-				.zip(&tape.arena[b_off..b_off + a_len])
-				.map(|(x, y)| x / y)
-				.collect();
-			let idx = tape.push(OpCode::Div(self.idx, rhs.idx), &val, a_shape, a_rg || b_rg);
-			Var { idx }
+impl<T: TapeThreadLocal> std::ops::Div for Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Output = Var<T>;
+	fn div(self, rhs: Var<T>) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let a_kind = entry_kind(&tape.entries, self.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, rhs.idx);
+			match a_kind {
+				ValueKind::Scalar => {
+					let a = tape.values[self.idx.0 as usize].as_scalar();
+					let b = tape.values[rhs.idx.0 as usize].as_scalar();
+					Var::new(tape.push(
+						OpCode::Div(self.idx, rhs.idx),
+						NodeValue::Scalar(a / b),
+						ValueKind::Scalar,
+						req_grad,
+					))
+				}
+				ValueKind::Vector(n) => {
+					let av = tape.values[self.idx.0 as usize].as_vec();
+					let bv = tape.values[rhs.idx.0 as usize].as_vec();
+					let mut r = tape.pool.get_vec(n);
+					r.copy_from(av);
+					r.component_div_assign(bv); // SIMD via faer::zip!
+					Var::new(tape.push(
+						OpCode::Div(self.idx, rhs.idx),
+						NodeValue::Vector(r),
+						ValueKind::Vector(n),
+						req_grad,
+					))
+				}
+				_ => panic!("Div: unsupported for matrices"),
+			}
 		})
 	}
 }
 
-impl std::ops::Neg for Var {
-	type Output = Var;
-	fn neg(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| -x).collect();
-			push_unary(tape, OpCode::Neg(self.idx), self.idx, &val, shape)
+impl<T: TapeThreadLocal> std::ops::Neg for Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Output = Var<T>;
+	fn neg(self) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let kind = entry_kind(&tape.entries, self.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx);
+			match kind {
+				ValueKind::Scalar => {
+					let v = tape.values[self.idx.0 as usize].as_scalar();
+					Var::new(tape.push(
+						OpCode::Neg(self.idx),
+						NodeValue::Scalar(T::zero() - v),
+						ValueKind::Scalar,
+						req_grad,
+					))
+				}
+				ValueKind::Vector(n) => {
+					let v = tape.values[self.idx.0 as usize].as_vec();
+					let r = VectorOps::neg(v);
+					Var::new(tape.push(
+						OpCode::Neg(self.idx),
+						NodeValue::Vector(r),
+						ValueKind::Vector(n),
+						req_grad,
+					))
+				}
+				_ => panic!("Neg: unsupported for matrices"),
+			}
 		})
 	}
 }
 
-// ── Var op f64  /  f64 op Var ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//  Var op T  /  T op Var
+// ═══════════════════════════════════════════════════════════════════════════
 
-impl std::ops::Mul<f64> for Var {
-	type Output = Var;
-	fn mul(self, rhs: f64) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let rg = e.requires_grad;
-
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| x * rhs).collect();
-			// Create constant scalar node
-			let s_idx = tape.push(OpCode::Input, &[rhs], (1, 1), false);
-			let idx = tape.push(OpCode::ScalarMul(s_idx, self.idx), &val, shape, rg);
-			Var { idx }
+impl<T: TapeThreadLocal> std::ops::Mul<T> for Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Output = Var<T>;
+	fn mul(self, rhs: T) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let kind = entry_kind(&tape.entries, self.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx);
+			let s_idx = tape.push(
+				OpCode::Input,
+				NodeValue::Scalar(rhs),
+				ValueKind::Scalar,
+				false,
+			);
+			match kind {
+				ValueKind::Scalar => {
+					let v = tape.values[self.idx.0 as usize].as_scalar();
+					Var::new(tape.push(
+						OpCode::ScalarMul(s_idx, self.idx),
+						NodeValue::Scalar(v * rhs),
+						ValueKind::Scalar,
+						req_grad,
+					))
+				}
+				ValueKind::Vector(n) => {
+					let v = tape.values[self.idx.0 as usize].as_vec();
+					let mut r = tape.pool.get_vec(n);
+					r.copy_from(v);
+					r.scale_mut(rhs);
+					Var::new(tape.push(
+						OpCode::ScalarMul(s_idx, self.idx),
+						NodeValue::Vector(r),
+						kind,
+						req_grad,
+					))
+				}
+				_ => panic!("Mul<T>: unsupported for matrices"),
+			}
 		})
 	}
 }
 
-impl std::ops::Mul<Var> for f64 {
-	type Output = Var;
-	fn mul(self, rhs: Var) -> Var {
+impl std::ops::Mul<Var<f64>> for f64 {
+	type Output = Var<f64>;
+	#[inline]
+	fn mul(self, rhs: Var<f64>) -> Var<f64> {
 		rhs * self
 	}
 }
 
-impl std::ops::Add<f64> for Var {
-	type Output = Var;
-	fn add(self, rhs: f64) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let rg = e.requires_grad;
+impl std::ops::Mul<Var<f32>> for f32 {
+	type Output = Var<f32>;
+	#[inline]
+	fn mul(self, rhs: Var<f32>) -> Var<f32> {
+		rhs * self
+	}
+}
 
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| x + rhs).collect();
-			let s_idx = tape.push(OpCode::Input, &[rhs], (1, 1), false);
-			let idx = tape.push(OpCode::ScalarAdd(s_idx, self.idx), &val, shape, rg);
-			Var { idx }
+impl<T: TapeThreadLocal> std::ops::Add<T> for Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	type Output = Var<T>;
+	fn add(self, rhs: T) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let kind = entry_kind(&tape.entries, self.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx);
+			let s_idx = tape.push(
+				OpCode::Input,
+				NodeValue::Scalar(rhs),
+				ValueKind::Scalar,
+				false,
+			);
+			match kind {
+				ValueKind::Scalar => {
+					let v = tape.values[self.idx.0 as usize].as_scalar();
+					Var::new(tape.push(
+						OpCode::ScalarAdd(s_idx, self.idx),
+						NodeValue::Scalar(v + rhs),
+						ValueKind::Scalar,
+						req_grad,
+					))
+				}
+				ValueKind::Vector(n) => {
+					let v = tape.values[self.idx.0 as usize].as_vec();
+					let mut r = tape.pool.get_vec(n);
+					r.copy_from(v);
+					let sl = r.as_mut_slice();
+					for val in sl.iter_mut() {
+						*val = *val + rhs;
+					}
+					Var::new(tape.push(
+						OpCode::ScalarAdd(s_idx, self.idx),
+						NodeValue::Vector(r),
+						kind,
+						req_grad,
+					))
+				}
+				_ => panic!("Add<T>: unsupported for matrices"),
+			}
 		})
 	}
 }
 
-// ── math / linalg methods on Var ──────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//  Unary math — map_mut on backend vectors
+// ═══════════════════════════════════════════════════════════════════════════
 
-impl Var {
-	/// Element-wise exponential.
-	pub fn exp(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| x.exp()).collect();
-			push_unary(tape, OpCode::Exp(self.idx), self.idx, &val, shape)
+fn unary_op<T: TapeThreadLocal>(
+	tape: &mut Tape<T>,
+	self_idx: NodeIdx,
+	op: OpCode,
+	f: impl FnMut(T) -> T,
+) -> Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	let kind = entry_kind(&tape.entries, self_idx);
+	let req_grad = entry_rg(&tape.entries, self_idx);
+	match kind {
+		ValueKind::Scalar => {
+			let v = tape.values[self_idx.0 as usize].as_scalar();
+			let mut f = f;
+			Var::new(tape.push(op, NodeValue::Scalar(f(v)), ValueKind::Scalar, req_grad))
+		}
+		ValueKind::Vector(n) => {
+			let src = tape.values[self_idx.0 as usize].as_vec();
+			let mut r = tape.pool.get_vec(n);
+			r.copy_from(src);
+			r.map_mut(f);
+			Var::new(tape.push(op, NodeValue::Vector(r), kind, req_grad))
+		}
+		_ => panic!("unary op: unsupported for matrices"),
+	}
+}
+
+impl<T: TapeThreadLocal> Var<T>
+where
+	linalg::DefaultBackend: LinAlgBackend<T>,
+{
+	pub fn exp(self) -> Var<T> {
+		with_tape(|t| unary_op(t, self.idx, OpCode::Exp(self.idx), Float::exp))
+	}
+
+	pub fn log(self) -> Var<T> {
+		with_tape(|t| unary_op(t, self.idx, OpCode::Log(self.idx), Float::ln))
+	}
+
+	pub fn sqrt(self) -> Var<T> {
+		with_tape(|t| unary_op(t, self.idx, OpCode::Sqrt(self.idx), Float::sqrt))
+	}
+
+	pub fn sin(self) -> Var<T> {
+		with_tape(|t| unary_op(t, self.idx, OpCode::Sin(self.idx), Float::sin))
+	}
+
+	pub fn cos(self) -> Var<T> {
+		with_tape(|t| unary_op(t, self.idx, OpCode::Cos(self.idx), Float::cos))
+	}
+
+	pub fn abs(self) -> Var<T> {
+		with_tape(|t| unary_op(t, self.idx, OpCode::Abs(self.idx), Float::abs))
+	}
+
+	pub fn powi(self, n: u64) -> Var<T> {
+		with_tape(|t| {
+			unary_op(t, self.idx, OpCode::Pow(self.idx, n), |x| {
+				Float::powi(x, n as i32)
+			})
 		})
 	}
 
-	/// Element-wise natural logarithm.
-	pub fn log(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| x.ln()).collect();
-			push_unary(tape, OpCode::Log(self.idx), self.idx, &val, shape)
-		})
-	}
+	// ── Reductions ────────────────────────────────────────────────────
 
-	/// Element-wise square root.
-	pub fn sqrt(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let val: Vec<f64> = tape.arena[off..off + len]
-				.iter()
-				.map(|x| x.sqrt())
-				.collect();
-			push_unary(tape, OpCode::Sqrt(self.idx), self.idx, &val, shape)
-		})
-	}
-
-	/// Element-wise sine.
-	pub fn sin(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| x.sin()).collect();
-			push_unary(tape, OpCode::Sin(self.idx), self.idx, &val, shape)
-		})
-	}
-
-	/// Element-wise cosine.
-	pub fn cos(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| x.cos()).collect();
-			push_unary(tape, OpCode::Cos(self.idx), self.idx, &val, shape)
-		})
-	}
-
-	/// Element-wise absolute value.
-	pub fn abs(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let val: Vec<f64> = tape.arena[off..off + len].iter().map(|x| x.abs()).collect();
-			push_unary(tape, OpCode::Abs(self.idx), self.idx, &val, shape)
-		})
-	}
-
-	/// Element-wise integer power.
-	pub fn powi(self, n: u64) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let shape = e.shape;
-			let val: Vec<f64> = tape.arena[off..off + len]
-				.iter()
-				.map(|x| x.powi(n as i32))
-				.collect();
-			push_unary(tape, OpCode::Pow(self.idx, n), self.idx, &val, shape)
-		})
-	}
-
-	/// Sum all elements → scalar.
-	pub fn sum(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let s: f64 = tape.arena[off..off + len].iter().sum();
-			push_unary(tape, OpCode::Sum(self.idx), self.idx, &[s], (1, 1))
-		})
-	}
-
-	/// Mean of all elements → scalar.
-	pub fn mean(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let n = len as f64;
-			let s: f64 = tape.arena[off..off + len].iter().sum::<f64>() / n;
-			push_unary(tape, OpCode::Mean(self.idx), self.idx, &[s], (1, 1))
-		})
-	}
-
-	/// Dot product `a · b` → scalar.
-	pub fn dot(self, other: Var) -> Var {
-		with_tape(|tape| {
-			let a_e = &tape.entries[self.idx.0 as usize];
-			let b_e = &tape.entries[other.idx.0 as usize];
-			let a_off = a_e.value_offset as usize;
-			let a_len = a_e.value_len as usize;
-			let b_off = b_e.value_offset as usize;
-			let b_len = b_e.value_len as usize;
-			assert_eq!(a_len, b_len, "dot: length mismatch");
-
-			let d: f64 = tape.arena[a_off..a_off + a_len]
-				.iter()
-				.zip(&tape.arena[b_off..b_off + b_len])
-				.map(|(x, y)| x * y)
-				.sum();
-			push_binary(
-				tape,
-				OpCode::Dot(self.idx, other.idx),
-				self.idx,
-				other.idx,
-				&[d],
-				(1, 1),
-			)
-		})
-	}
-
-	/// L2 norm `‖a‖₂` → scalar.
-	pub fn norm(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let len = e.value_len as usize;
-			let n: f64 = tape.arena[off..off + len]
-				.iter()
-				.map(|x| x * x)
-				.sum::<f64>()
-				.sqrt();
-			push_unary(tape, OpCode::Norm(self.idx), self.idx, &[n], (1, 1))
-		})
-	}
-
-	/// Trace of a square matrix → scalar.
-	pub fn trace(self) -> Var {
-		with_tape(|tape| {
-			let e = &tape.entries[self.idx.0 as usize];
-			let off = e.value_offset as usize;
-			let (r, c) = e.shape;
-			assert_eq!(r, c, "trace: not square");
-			let mut t = 0.0;
-			for i in 0..r {
-				t += tape.arena[off + i + i * r]; // column-major
-			}
-			push_unary(tape, OpCode::Trace(self.idx), self.idx, &[t], (1, 1))
-		})
-	}
-
-	/// Matrix multiply `A(m,k) × B(k,n)`.
-	pub fn matmul(self, other: Var) -> Var {
-		with_tape(|tape| {
-			let a_e = &tape.entries[self.idx.0 as usize];
-			let b_e = &tape.entries[other.idx.0 as usize];
-			let a_off = a_e.value_offset as usize;
-			let a_len = a_e.value_len as usize;
-			let b_off = b_e.value_offset as usize;
-			let b_len = b_e.value_len as usize;
-			let (m, k1) = a_e.shape;
-			let (k2, n) = b_e.shape;
-			assert_eq!(k1, k2, "matmul: inner dimension mismatch {k1} vs {k2}");
-			let k = k1;
-
-			// Copy operand data to avoid aliasing with arena during push
-			let a_data: Vec<f64> = tape.arena[a_off..a_off + a_len].to_vec();
-			let b_data: Vec<f64> = tape.arena[b_off..b_off + b_len].to_vec();
-
-			// column-major matmul
-			let mut val = vec![0.0; m * n];
-			for j in 0..n {
-				for p in 0..k {
-					let b_pk = b_data[p + j * k];
-					for i in 0..m {
-						val[i + j * m] += a_data[i + p * m] * b_pk;
+	pub fn sum(self) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let kind = entry_kind(&tape.entries, self.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx);
+			let s = match kind {
+				ValueKind::Scalar => tape.values[self.idx.0 as usize].as_scalar(),
+				ValueKind::Vector(_) => tape.values[self.idx.0 as usize]
+					.as_vec()
+					.iter()
+					.fold(T::zero(), |a, x| a + x),
+				ValueKind::Matrix(r, c) => {
+					let m = tape.values[self.idx.0 as usize].as_mat();
+					let mut s = T::zero();
+					for j in 0..c {
+						for i in 0..r {
+							s = s + MatrixOps::get(m, i, j);
+						}
 					}
+					s
 				}
-			}
-			push_binary(
-				tape,
-				OpCode::MatMul(self.idx, other.idx, m as u32, k as u32, n as u32),
-				self.idx,
-				other.idx,
-				&val,
-				(m, n),
-			)
+			};
+			Var::new(tape.push(
+				OpCode::Sum(self.idx),
+				NodeValue::Scalar(s),
+				ValueKind::Scalar,
+				req_grad,
+			))
+		})
+	}
+
+	pub fn mean(self) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let kind = entry_kind(&tape.entries, self.idx);
+			let req_grad = entry_rg(&tape.entries, self.idx);
+			let n = kind.len();
+			let s = match kind {
+				ValueKind::Scalar => tape.values[self.idx.0 as usize].as_scalar(),
+				ValueKind::Vector(_) => {
+					let v = tape.values[self.idx.0 as usize].as_vec();
+					v.iter().fold(T::zero(), |a, x| a + x) / <T as RealScalar>::from_usize(n)
+				}
+				_ => panic!("mean: unsupported for matrices"),
+			};
+			Var::new(tape.push(
+				OpCode::Mean(self.idx),
+				NodeValue::Scalar(s),
+				ValueKind::Scalar,
+				req_grad,
+			))
+		})
+	}
+
+	/// Dot product — SIMD via `VectorOps::dot`.
+	pub fn dot(self, other: Var<T>) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let av = tape.values[self.idx.0 as usize].as_vec();
+			let bv = tape.values[other.idx.0 as usize].as_vec();
+			let d = VectorOps::dot(av, bv); // SIMD
+			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, other.idx);
+			Var::new(tape.push(
+				OpCode::Dot(self.idx, other.idx),
+				NodeValue::Scalar(d),
+				ValueKind::Scalar,
+				req_grad,
+			))
+		})
+	}
+
+	/// L2 norm — SIMD via `VectorOps::norm`.
+	pub fn norm(self) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let v = tape.values[self.idx.0 as usize].as_vec();
+			let n = VectorOps::norm(v); // SIMD
+			let req_grad = entry_rg(&tape.entries, self.idx);
+			Var::new(tape.push(
+				OpCode::Norm(self.idx),
+				NodeValue::Scalar(n),
+				ValueKind::Scalar,
+				req_grad,
+			))
+		})
+	}
+
+	/// Trace of a square matrix.
+	pub fn trace(self) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let kind = entry_kind(&tape.entries, self.idx);
+			let (r, c) = match kind {
+				ValueKind::Matrix(r, c) => (r, c),
+				_ => panic!("trace: not a matrix"),
+			};
+			assert_eq!(r, c, "trace: not square");
+			let m = tape.values[self.idx.0 as usize].as_mat();
+			let t = MatrixOps::trace(m);
+			let req_grad = entry_rg(&tape.entries, self.idx);
+			Var::new(tape.push(
+				OpCode::Trace(self.idx),
+				NodeValue::Scalar(t),
+				ValueKind::Scalar,
+				req_grad,
+			))
+		})
+	}
+
+	/// Matrix multiply — BLAS via `MatrixOps::gemm`.
+	pub fn matmul(self, other: Var<T>) -> Var<T> {
+		with_tape(|tape: &mut Tape<T>| {
+			let a_kind = entry_kind(&tape.entries, self.idx);
+			let b_kind = entry_kind(&tape.entries, other.idx);
+			let (m, k1) = match a_kind {
+				ValueKind::Matrix(r, c) => (r, c),
+				ValueKind::Vector(len) => (len, 1),
+				_ => panic!("matmul: left must be matrix or vector"),
+			};
+			let (k2, n) = match b_kind {
+				ValueKind::Matrix(r, c) => (r, c),
+				ValueKind::Vector(len) => (len, 1),
+				_ => panic!("matmul: right must be matrix or vector"),
+			};
+			assert_eq!(k1, k2, "matmul: inner dim mismatch {k1} vs {k2}");
+
+			// Convert vectors to 1-column matrices for gemm
+			let am = vec_to_mat(&tape.values[self.idx.0 as usize], m, k1);
+			let bm = vec_to_mat(&tape.values[other.idx.0 as usize], k2, n);
+			let mut r = tape.pool.get_mat(m, n);
+			r.gemm(T::one(), &am, &bm, T::zero()); // BLAS
+			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, other.idx);
+			Var::new(tape.push(
+				OpCode::MatMul(self.idx, other.idx, m as u32, k1 as u32, n as u32),
+				NodeValue::Matrix(r),
+				ValueKind::Matrix(m, n),
+				req_grad,
+			))
 		})
 	}
 }

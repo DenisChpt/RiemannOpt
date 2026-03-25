@@ -15,16 +15,7 @@ use crate::linalg::RealScalar;
 /// (the backend-agnostic scalar trait) with additional constants and
 /// conversion methods.
 pub trait Scalar:
-	RealScalar
-	+ Float
-	+ FromPrimitive
-	+ Display
-	+ Debug
-	+ Default
-	+ Copy
-	+ Send
-	+ Sync
-	+ 'static
+	RealScalar + Float + FromPrimitive + Display + Debug + Default + Copy + Send + Sync + 'static
 {
 	/// Machine epsilon for this scalar type.
 	const EPSILON: Self;

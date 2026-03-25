@@ -8,9 +8,7 @@ use riemannopt_autodiff::{backward, check_gradient, Tape, TapeGuard, Var};
 const EPS: f64 = 1e-6;
 const GRAD_TOL: f64 = 1e-4;
 
-// ── helper ────────────────────────────────────────────────────────────────
-
-fn assert_grad_ok<F: Fn(Var) -> Var>(f: F, x: &[f64], shape: (usize, usize)) {
+fn assert_grad_ok<F: Fn(Var<f64>) -> Var<f64>>(f: F, x: &[f64], shape: (usize, usize)) {
 	let err = check_gradient(f, x, shape, EPS);
 	assert!(
 		err < GRAD_TOL,
@@ -29,15 +27,15 @@ fn test_add() {
 
 #[test]
 fn test_sub() {
-	let mut tape = Tape::new();
+	let mut tape = Tape::<f64>::new();
 	let _g = TapeGuard::new(&mut tape);
 	let a = tape.var(&[5.0], (1, 1));
 	let b = tape.var(&[3.0], (1, 1));
 	let c = a - b;
 	assert!((tape.scalar(c.idx()) - 2.0).abs() < 1e-14);
 	let grads = backward(&tape, c);
-	assert!((grads.wrt(a)[0] - 1.0).abs() < 1e-14); // dc/da = 1
-	assert!((grads.wrt(b)[0] - (-1.0)).abs() < 1e-14); // dc/db = -1
+	assert!((grads.wrt(a)[0] - 1.0).abs() < 1e-14);
+	assert!((grads.wrt(b)[0] - (-1.0)).abs() < 1e-14);
 }
 
 #[test]
@@ -47,8 +45,7 @@ fn test_mul_elementwise() {
 
 #[test]
 fn test_div() {
-	// Manual div test
-	let mut tape = Tape::new();
+	let mut tape = Tape::<f64>::new();
 	let _g = TapeGuard::new(&mut tape);
 	let a = tape.var(&[6.0], (1, 1));
 	let b = tape.var(&[3.0], (1, 1));
@@ -119,7 +116,7 @@ fn test_pow() {
 
 #[test]
 fn test_sum() {
-	let mut tape = Tape::new();
+	let mut tape = Tape::<f64>::new();
 	let _g = TapeGuard::new(&mut tape);
 	let x = tape.var(&[1.0, 2.0, 3.0], (3, 1));
 	let s = x.sum();
@@ -138,8 +135,7 @@ fn test_mean() {
 #[test]
 fn test_dot() {
 	assert_grad_ok(|x| x.dot(x), &[1.0, 2.0, 3.0], (3, 1));
-	// Manual check: d/dx (x·x) = 2x
-	let mut tape = Tape::new();
+	let mut tape = Tape::<f64>::new();
 	let _g = TapeGuard::new(&mut tape);
 	let x = tape.var(&[1.0, 2.0, 3.0], (3, 1));
 	let d = x.dot(x);
@@ -154,8 +150,7 @@ fn test_dot() {
 #[test]
 fn test_norm() {
 	assert_grad_ok(|x| x.norm(), &[3.0, 4.0], (2, 1));
-	// ||[3,4]|| = 5, grad = [3/5, 4/5]
-	let mut tape = Tape::new();
+	let mut tape = Tape::<f64>::new();
 	let _g = TapeGuard::new(&mut tape);
 	let x = tape.var(&[3.0, 4.0], (2, 1));
 	let n = x.norm();
@@ -171,39 +166,23 @@ fn test_norm() {
 
 #[test]
 fn test_trace() {
-	// tr([[1,2],[3,4]]) = 5, grad = I
-	assert_grad_ok(|x| x.trace(), &[1.0, 3.0, 2.0, 4.0], (2, 2)); // col-major
+	assert_grad_ok(|x| x.trace(), &[1.0, 3.0, 2.0, 4.0], (2, 2));
 }
 
 #[test]
 fn test_matmul_gradient() {
-	// f(X) = sum(X @ Y) where Y is constant
-	// Use a 2×3 × 3×1 matmul
-	let y_data = [1.0, 2.0, 3.0]; // 3×1
+	let y_data = [1.0, 2.0, 3.0];
 	assert_grad_ok(
 		move |x| {
-			// Create a constant Y on the active tape
-			crate::with_tape_for_test(|tape| {
+			riemannopt_autodiff::tape::with_tape::<f64, _, _>(|tape| {
 				let y = tape.constant(&y_data, (3, 1));
 				x.matmul(y).sum()
 			})
 		},
-		&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], // 2×3 col-major
+		&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0],
 		(2, 3),
 	);
 }
-
-// helper for creating constants in tests
-mod crate_helper {
-	use super::*;
-	pub fn with_tape_for_test<F, R>(f: F) -> R
-	where
-		F: FnOnce(&mut Tape) -> R,
-	{
-		riemannopt_autodiff::tape::with_tape(f)
-	}
-}
-use crate_helper::with_tape_for_test;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Composite expressions
@@ -211,15 +190,12 @@ use crate_helper::with_tape_for_test;
 
 #[test]
 fn test_rayleigh_quotient() {
-	// f(x) = x^T A x  where A = diag(1,2,3)
-	// grad = 2*A*x = [2, 8, 18]
 	let a = [1.0, 2.0, 3.0];
 	assert_grad_ok(
 		move |x| {
-			// x * a * x summed (element-wise multiply then dot)
-			with_tape_for_test(|tape| {
+			riemannopt_autodiff::tape::with_tape::<f64, _, _>(|tape| {
 				let diag = tape.constant(&a, (3, 1));
-				(x * diag * x).sum() // sum of x_i * a_i * x_i
+				(x * diag * x).sum()
 			})
 		},
 		&[1.0, 2.0, 3.0],
@@ -229,13 +205,11 @@ fn test_rayleigh_quotient() {
 
 #[test]
 fn test_chain_rule() {
-	// f(x) = exp(sum(x^2))
 	assert_grad_ok(|x| (x * x).sum().exp(), &[1.0, 2.0], (2, 1));
 }
 
 #[test]
 fn test_complex_expression() {
-	// f(x) = log(1 + exp(x·x))  (softplus of squared norm)
 	assert_grad_ok(|x| (x.dot(x).exp() + 1.0).log(), &[0.5, 0.3, -0.2], (3, 1));
 }
 
@@ -249,9 +223,8 @@ fn test_autodiff_cost_function() {
 	use riemannopt_core::cost_function::CostFunction;
 	use riemannopt_core::linalg::VectorOps;
 
-	// f(x) = ||x||^2
-	let cf = AutoDiffCostFunction::new(3, |x| x.dot(x));
-	let point = VectorOps::from_slice(&[1.0, 2.0, 3.0]);
+	let cf = AutoDiffCostFunction::new(3, |x: Var<f64>| x.dot(x));
+	let point = VectorOps::from_slice(&[1.0_f64, 2.0, 3.0]);
 
 	let cost = cf.cost(&point).unwrap();
 	assert!((cost - 14.0).abs() < 1e-12);
@@ -274,10 +247,9 @@ fn test_autodiff_with_optimizer() {
 	use riemannopt_manifolds::Euclidean;
 	use riemannopt_optim::ConjugateGradient;
 
-	// min ||x||^2 on R^5 — solution is x=0
-	let cf = AutoDiffCostFunction::new(5, |x| x.dot(x));
+	let cf = AutoDiffCostFunction::new(5, |x: Var<f64>| x.dot(x));
 	let eucl = Euclidean::<f64>::new(5).unwrap();
-	let x0 = VectorOps::from_fn(5, |_| 1.0);
+	let x0 = VectorOps::from_fn(5, |_| 1.0_f64);
 
 	let mut opt = ConjugateGradient::with_default_config();
 	let crit = StoppingCriterion::new()
@@ -299,24 +271,18 @@ fn test_autodiff_mat_cost_function() {
 	use riemannopt_core::cost_function::CostFunction;
 	use riemannopt_core::linalg::{self, MatrixOps};
 
-	// f(X) = tr(X^T X) = ||X||_F^2
-	let _cf = AutoDiffMatCostFunction::new(3, 2, |x| x.matmul(x).trace());
-
-	// Actually need X^T X but matmul(x,x) requires compatible dims.
-	// Use sum of squares instead: f(X) = sum(X*X)
-	let cf2 = AutoDiffMatCostFunction::new(3, 2, |x| (x * x).sum());
+	let cf = AutoDiffMatCostFunction::new(3, 2, |x: Var<f64>| (x * x).sum());
 
 	let point = <linalg::Mat<f64> as MatrixOps<f64>>::from_column_slice(
 		3,
 		2,
 		&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
 	);
-	let cost = cf2.cost(&point).unwrap();
-	assert!((cost - 91.0).abs() < 1e-12); // 1+4+9+16+25+36
+	let cost = cf.cost(&point).unwrap();
+	assert!((cost - 91.0).abs() < 1e-12);
 
-	let (c, g) = cf2.cost_and_gradient_alloc(&point).unwrap();
+	let (c, g) = cf.cost_and_gradient_alloc(&point).unwrap();
 	assert!((c - 91.0).abs() < 1e-12);
-	// grad of sum(X*X) = 2X
 	assert!((MatrixOps::get(&g, 0, 0) - 2.0).abs() < 1e-12);
 	assert!((MatrixOps::get(&g, 2, 1) - 12.0).abs() < 1e-12);
 }

@@ -94,13 +94,42 @@ macro_rules! impl_faer_vector_ops {
 
 			fn axpy(&mut self, alpha: $t, x: &Self, beta: $t) {
 				// self = beta * self + alpha * x
-				faer::zip!(self.as_mut(), x.as_ref()).for_each(|faer::unzip!(s, x)| {
-					*s = beta * *s + alpha * *x;
-				});
+				if beta == 0.0 {
+					faer::zip!(self.as_mut(), x.as_ref()).for_each(|faer::unzip!(s, x)| {
+						*s = alpha * *x;
+					});
+				} else if beta == 1.0 {
+					faer::zip!(self.as_mut(), x.as_ref()).for_each(|faer::unzip!(s, x)| {
+						*s += alpha * *x;
+					});
+				} else {
+					faer::zip!(self.as_mut(), x.as_ref()).for_each(|faer::unzip!(s, x)| {
+						*s = beta * *s + alpha * *x;
+					});
+				}
 			}
 
 			fn scale_mut(&mut self, alpha: $t) {
 				*self *= faer::Scale(alpha);
+			}
+
+			fn component_mul_assign(&mut self, other: &Self) {
+				faer::zip!(self.as_mut(), other.as_ref()).for_each(|faer::unzip!(s, o)| {
+					*s *= *o;
+				});
+			}
+
+			fn component_div_assign(&mut self, other: &Self) {
+				faer::zip!(self.as_mut(), other.as_ref()).for_each(|faer::unzip!(s, o)| {
+					*s /= *o;
+				});
+			}
+
+			fn map_mut(&mut self, mut f: impl FnMut($t) -> $t) {
+				let s = self.as_mut_slice();
+				for v in s.iter_mut() {
+					*v = f(*v);
+				}
 			}
 
 			fn map(&self, mut f: impl FnMut($t) -> $t) -> Self {
@@ -267,6 +296,32 @@ macro_rules! impl_faer_matrix_ops {
 				self * faer::Scale(alpha)
 			}
 
+			fn mat_axpy(&mut self, alpha: $t, x: &Self, beta: $t) {
+				if beta == 0.0 {
+					faer::zip!(self.as_mut(), x.as_ref())
+						.for_each(|faer::unzip!(s, x)| {
+							*s = alpha * *x;
+						});
+				} else if beta == 1.0 {
+					faer::zip!(self.as_mut(), x.as_ref())
+						.for_each(|faer::unzip!(s, x)| {
+							*s += alpha * *x;
+						});
+				} else {
+					faer::zip!(self.as_mut(), x.as_ref())
+						.for_each(|faer::unzip!(s, x)| {
+							*s = beta * *s + alpha * *x;
+						});
+				}
+			}
+
+			fn mat_component_mul_assign(&mut self, other: &Self) {
+				faer::zip!(self.as_mut(), other.as_ref())
+					.for_each(|faer::unzip!(s, o)| {
+						*s *= *o;
+					});
+			}
+
 			fn add_assign(&mut self, other: &Self) {
 				*self += other;
 			}
@@ -281,7 +336,7 @@ macro_rules! impl_faer_matrix_ops {
 
 			fn gemm(&mut self, alpha: $t, a: &Self, b: &Self, beta: $t) {
 				let par = faer::get_global_parallelism();
-				
+
 				if beta == 0.0 {
 					faer::linalg::matmul::matmul(
 						self.as_mut(),
