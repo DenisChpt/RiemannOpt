@@ -29,8 +29,8 @@ use crate::value::{NodeValue, SavePolicy, ValueKind};
 /// If the graph diverges, the plan is invalidated.
 #[derive(Default)]
 pub(crate) struct GraphPlan {
-	/// OpCode discriminant for each node (for validation).
-	ops: Vec<std::mem::Discriminant<OpCode>>,
+	/// Full OpCode for each node (includes operand indices for exact match).
+	ops: Vec<OpCode>,
 	/// ValueKind for each node (for validation).
 	kinds: Vec<ValueKind>,
 	/// Liveness: last node that reads this node during forward.
@@ -52,9 +52,7 @@ impl GraphPlan {
 
 	/// Check if node at `cursor` matches the expected op and kind.
 	fn matches(&self, cursor: usize, op: &OpCode, kind: ValueKind) -> bool {
-		cursor < self.ops.len()
-			&& self.ops[cursor] == std::mem::discriminant(op)
-			&& self.kinds[cursor] == kind
+		cursor < self.ops.len() && self.ops[cursor] == *op && self.kinds[cursor] == kind
 	}
 
 	/// Snapshot the current tape state into the plan.
@@ -69,7 +67,7 @@ impl GraphPlan {
 		self.must_survive.clear();
 		self.must_survive.reserve(n);
 		for (i, entry) in entries.iter().enumerate() {
-			self.ops.push(std::mem::discriminant(&entry.op));
+			self.ops.push(entry.op);
 			self.kinds.push(entry.kind);
 			self.last_forward_use.push(entry.last_forward_use);
 			self.must_survive
@@ -99,7 +97,7 @@ pub struct NodeIdx(pub(crate) u32);
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Describes how a tape entry was produced.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpCode {
 	/// Leaf: user-provided input or constant.
 	Input,
