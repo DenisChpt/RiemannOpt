@@ -7,7 +7,7 @@ use numpy::{
 	PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
 };
 use pyo3::prelude::*;
-use riemannopt_core::linalg::{MatrixOps, VectorOps};
+use riemannopt_core::linalg::{MatrixOps, MatrixView, VectorOps};
 
 /// The vector type for the active backend (e.g. `faer::Col<f64>` or `DVector<f64>`).
 pub type Vec64 = riemannopt_core::linalg::Vec<f64>;
@@ -96,7 +96,7 @@ pub fn numpy_to_mat(array: PyReadonlyArray2<'_, f64>) -> PyResult<Mat64> {
 
 /// Convert a `linalg::Mat<f64>` to a 2D NumPy array.
 ///
-/// Iterates element-by-element using `MatrixOps::get(i, j)` to handle
+/// Iterates element-by-element using `MatrixView::get(i, j)` to handle
 /// backends where column stride may not equal nrows (e.g. faer).
 ///
 /// The returned array is C-contiguous (row-major).
@@ -110,7 +110,7 @@ pub fn mat_to_numpy<'py>(py: Python<'py>, matrix: &Mat64) -> PyResult<Bound<'py,
 		let ptr: *mut f64 = array.as_array_mut().as_mut_ptr();
 		for i in 0..nrows {
 			for j in 0..ncols {
-				*ptr.add(i * ncols + j) = MatrixOps::get(matrix, i, j);
+				*ptr.add(i * ncols + j) = MatrixView::get(matrix, i, j);
 			}
 		}
 	}

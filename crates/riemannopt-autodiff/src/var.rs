@@ -4,7 +4,9 @@
 
 use num_traits::Float;
 
-use riemannopt_core::linalg::{self, LinAlgBackend, MatrixOps, RealScalar, VectorOps};
+use riemannopt_core::linalg::{
+	self, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
+};
 
 use crate::tape::{with_tape, NodeIdx, OpCode, Tape, TapeThreadLocal};
 use crate::value::{NodeValue, ValueKind};
@@ -183,7 +185,7 @@ where
 			if a_kind == ValueKind::Scalar && b_kind != ValueKind::Scalar {
 				let s = tape.values[self.idx.0 as usize].as_scalar();
 				let bv = tape.values[rhs.idx.0 as usize].as_vec();
-				let n = VectorOps::len(bv);
+				let n = VectorView::len(bv);
 				let mut r = tape.pool.get_vec(n);
 				r.copy_from(bv);
 				let sl = r.as_mut_slice();
@@ -200,7 +202,7 @@ where
 			if b_kind == ValueKind::Scalar && a_kind != ValueKind::Scalar {
 				let s = tape.values[rhs.idx.0 as usize].as_scalar();
 				let av = tape.values[self.idx.0 as usize].as_vec();
-				let n = VectorOps::len(av);
+				let n = VectorView::len(av);
 				let mut r = tape.pool.get_vec(n);
 				r.copy_from(av);
 				let sl = r.as_mut_slice();
@@ -316,7 +318,7 @@ where
 			if a_kind == ValueKind::Scalar && b_kind != ValueKind::Scalar {
 				let s = tape.values[self.idx.0 as usize].as_scalar();
 				let bv = tape.values[rhs.idx.0 as usize].as_vec();
-				let n = VectorOps::len(bv);
+				let n = VectorView::len(bv);
 				let mut r = tape.pool.get_vec(n);
 				r.copy_from(bv);
 				r.scale_mut(s);
@@ -330,7 +332,7 @@ where
 			if b_kind == ValueKind::Scalar && a_kind != ValueKind::Scalar {
 				let s = tape.values[rhs.idx.0 as usize].as_scalar();
 				let av = tape.values[self.idx.0 as usize].as_vec();
-				let n = VectorOps::len(av);
+				let n = VectorView::len(av);
 				let mut r = tape.pool.get_vec(n);
 				r.copy_from(av);
 				r.scale_mut(s);
@@ -647,7 +649,7 @@ where
 					let mut s = T::zero();
 					for j in 0..c {
 						for i in 0..r {
-							s = s + MatrixOps::get(m, i, j);
+							s = s + MatrixView::get(m, i, j);
 						}
 					}
 					s
@@ -689,7 +691,7 @@ where
 		with_tape(|tape: &mut Tape<T>| {
 			let av = tape.values[self.idx.0 as usize].as_vec();
 			let bv = tape.values[other.idx.0 as usize].as_vec();
-			let d = VectorOps::dot(av, bv); // SIMD
+			let d = VectorView::dot(av, bv); // SIMD
 			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, other.idx);
 			Var::new(tape.push(
 				OpCode::Dot(self.idx, other.idx),
@@ -704,7 +706,7 @@ where
 	pub fn norm(self) -> Var<T> {
 		with_tape(|tape: &mut Tape<T>| {
 			let v = tape.values[self.idx.0 as usize].as_vec();
-			let n = VectorOps::norm(v); // SIMD
+			let n = VectorView::norm(v); // SIMD
 			let req_grad = entry_rg(&tape.entries, self.idx);
 			Var::new(tape.push(
 				OpCode::Norm(self.idx),
@@ -725,7 +727,7 @@ where
 			};
 			assert_eq!(r, c, "trace: not square");
 			let m = tape.values[self.idx.0 as usize].as_mat();
-			let t = MatrixOps::trace(m);
+			let t = MatrixView::trace(m);
 			let req_grad = entry_rg(&tape.entries, self.idx);
 			Var::new(tape.push(
 				OpCode::Trace(self.idx),
@@ -757,7 +759,7 @@ where
 			let am = vec_to_mat(&tape.values[self.idx.0 as usize], m, k1);
 			let bm = vec_to_mat(&tape.values[other.idx.0 as usize], k2, n);
 			let mut r = tape.pool.get_mat(m, n);
-			r.gemm(T::one(), &am, &bm, T::zero());
+			r.gemm(T::one(), am.as_view(), bm.as_view(), T::zero());
 			let req_grad = entry_rg(&tape.entries, self.idx) || entry_rg(&tape.entries, other.idx);
 			Var::new(tape.push(
 				OpCode::MatMul(self.idx, other.idx, m as u32, k1 as u32, n as u32),

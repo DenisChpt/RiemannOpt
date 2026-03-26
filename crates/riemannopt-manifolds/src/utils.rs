@@ -52,7 +52,7 @@
 //! ```
 
 use riemannopt_core::{
-	linalg::{self, DefaultBackend, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, DefaultBackend, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
 	types::Scalar,
 };
 
@@ -89,15 +89,15 @@ use riemannopt_core::{
 ///
 /// ```rust
 /// use riemannopt_manifolds::utils::vector_to_matrix;
-/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps};
+/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps, MatrixView};
 ///
 /// let vec = linalg::Vec::<f64>::from_slice(&[1.0, 2.0, 3.0, 4.0]);
 /// let mat = vector_to_matrix::<f64>(&vec, 2, 2);
 ///
-/// assert_eq!(MatrixOps::get(&mat, 0, 0), 1.0);
-/// assert_eq!(MatrixOps::get(&mat, 1, 0), 2.0);
-/// assert_eq!(MatrixOps::get(&mat, 0, 1), 3.0);
-/// assert_eq!(MatrixOps::get(&mat, 1, 1), 4.0);
+/// assert_eq!(MatrixView::get(&mat, 0, 0), 1.0);
+/// assert_eq!(MatrixView::get(&mat, 1, 0), 2.0);
+/// assert_eq!(MatrixView::get(&mat, 0, 1), 3.0);
+/// assert_eq!(MatrixView::get(&mat, 1, 1), 4.0);
 /// ```
 #[inline]
 pub fn vector_to_matrix<T: Scalar>(
@@ -143,14 +143,14 @@ where
 ///
 /// ```rust
 /// use riemannopt_manifolds::utils::matrix_to_vector;
-/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps};
+/// use riemannopt_core::linalg::{self, VectorOps, VectorView, MatrixOps};
 ///
 /// let mat = linalg::Mat::<f64>::from_column_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
 /// let vec = matrix_to_vector::<f64>(&mat);
 ///
 /// assert_eq!(vec.len(), 4);
-/// assert_eq!(VectorOps::get(&vec, 0), 1.0);
-/// assert_eq!(VectorOps::get(&vec, 3), 4.0);
+/// assert_eq!(VectorView::get(&vec, 0), 1.0);
+/// assert_eq!(VectorView::get(&vec, 3), 4.0);
 /// ```
 #[inline]
 pub fn matrix_to_vector<T: Scalar>(matrix: &linalg::Mat<T>) -> linalg::Vec<T>
@@ -185,13 +185,13 @@ where
 ///
 /// ```rust
 /// use riemannopt_manifolds::utils::vector_to_matrix_inplace;
-/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps};
+/// use riemannopt_core::linalg::{self, VectorOps, MatrixOps, MatrixView};
 ///
 /// let vec = linalg::Vec::<f64>::from_slice(&[1.0, 2.0, 3.0, 4.0]);
 /// let mut mat = linalg::Mat::<f64>::zeros(2, 2);
 /// vector_to_matrix_inplace::<f64>(&vec, &mut mat);
-/// assert_eq!(MatrixOps::get(&mat, 0, 0), 1.0);
-/// assert_eq!(MatrixOps::get(&mat, 1, 1), 4.0);
+/// assert_eq!(MatrixView::get(&mat, 0, 0), 1.0);
+/// assert_eq!(MatrixView::get(&mat, 1, 1), 4.0);
 /// ```
 #[inline]
 pub fn vector_to_matrix_inplace<T: Scalar>(vector: &linalg::Vec<T>, result: &mut linalg::Mat<T>)
@@ -263,7 +263,7 @@ pub fn gemm_inplace<T: Scalar>(
 ) where
 	DefaultBackend: LinAlgBackend<T>,
 {
-	c.gemm(alpha, a, b, beta);
+	c.gemm(alpha, a.as_view(), b.as_view(), beta);
 }
 
 /// In-place general matrix-vector multiplication (GEMV): y = alpha * A * x + beta * y.

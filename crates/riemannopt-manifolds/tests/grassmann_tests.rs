@@ -1,7 +1,7 @@
 //! Integration tests for the Grassmann manifold
 
 use approx::assert_relative_eq;
-use riemannopt_core::linalg::{self, MatrixOps};
+use riemannopt_core::linalg::{self, MatrixOps, MatrixView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Grassmann;
 
@@ -44,10 +44,10 @@ fn test_grassmann_projection() {
 	gr.project_point(&a, &mut proj);
 
 	// Check Y^T Y = I
-	let yty = MatrixOps::mat_mul(&MatrixOps::transpose(&proj), &proj);
+	let yty = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&proj), &proj);
 	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
 	let diff = MatrixOps::sub(&yty, &eye);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-12);
 }
 
 #[test]
@@ -67,8 +67,8 @@ fn test_grassmann_tangent_projection() {
 	gr.project_tangent(&y, &z, &mut z_tangent, &mut ()).unwrap();
 
 	// Check horizontality: Y^T Z = 0
-	let ytz = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &z_tangent);
-	assert_relative_eq!(MatrixOps::norm(&ytz), 0.0, epsilon = 1e-12);
+	let ytz = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&y), &z_tangent);
+	assert_relative_eq!(MatrixView::norm(&ytz), 0.0, epsilon = 1e-12);
 }
 
 #[test]
@@ -88,17 +88,17 @@ fn test_grassmann_retraction() {
 	gr.retract(&y, &v, &mut result, &mut ()).unwrap();
 
 	// Result should be on manifold: Y^T Y = I
-	let rtr = MatrixOps::mat_mul(&MatrixOps::transpose(&result), &result);
+	let rtr = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&result), &result);
 	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
 	let diff = MatrixOps::sub(&rtr, &eye);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-12);
 
 	// Zero retraction returns same point
 	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	let mut y_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	gr.retract(&y, &zero, &mut y_recovered, &mut ()).unwrap();
 	let diff = MatrixOps::sub(&y, &y_recovered);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-12);
 }
 
 #[test]
@@ -133,10 +133,10 @@ fn test_grassmann_random_point() {
 		gr.random_point(&mut y).unwrap();
 
 		// Check Y^T Y = I
-		let yty = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &y);
+		let yty = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&y), &y);
 		let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
 		let diff = MatrixOps::sub(&yty, &eye);
-		assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
+		assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-12);
 	}
 }
 
@@ -158,11 +158,11 @@ fn test_grassmann_parallel_transport() {
 		.unwrap();
 
 	// Check transported vector is in tangent space at y2: Y2^T transported = 0
-	let y2t_transported = MatrixOps::mat_mul(&MatrixOps::transpose(&y2), &transported);
-	assert_relative_eq!(MatrixOps::norm(&y2t_transported), 0.0, epsilon = 1e-10);
+	let y2t_transported = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&y2), &transported);
+	assert_relative_eq!(MatrixView::norm(&y2t_transported), 0.0, epsilon = 1e-10);
 
 	// Check norm is reasonable (should be preserved or close)
-	assert!(MatrixOps::norm(&transported) > 0.0);
+	assert!(MatrixView::norm(&transported) > 0.0);
 }
 
 #[test]
@@ -182,8 +182,8 @@ fn test_grassmann_euclidean_to_riemannian_gradient() {
 		.unwrap();
 
 	// Result should be in tangent space: Y^T rgrad = 0
-	let ytr = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &rgrad);
-	assert_relative_eq!(MatrixOps::norm(&ytr), 0.0, epsilon = 1e-12);
+	let ytr = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&y), &rgrad);
+	assert_relative_eq!(MatrixView::norm(&ytr), 0.0, epsilon = 1e-12);
 }
 
 #[test]

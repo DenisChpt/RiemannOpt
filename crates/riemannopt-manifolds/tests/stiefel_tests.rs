@@ -1,7 +1,7 @@
 //! Integration tests for the Stiefel manifold
 
 use approx::assert_relative_eq;
-use riemannopt_core::linalg::{self, MatrixOps};
+use riemannopt_core::linalg::{self, MatrixOps, MatrixView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Stiefel;
 
@@ -43,10 +43,10 @@ fn test_stiefel_projection() {
 	stiefel.project_point(&a, &mut proj);
 
 	// Check that X^T X = I
-	let xtx = MatrixOps::mat_mul(&MatrixOps::transpose(&proj), &proj);
+	let xtx = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&proj), &proj);
 	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
 	let diff = MatrixOps::sub(&xtx, &eye);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-14);
 }
 
 #[test]
@@ -68,9 +68,9 @@ fn test_stiefel_tangent_projection() {
 		.unwrap();
 
 	// Check tangent space constraint: X^T Z + Z^T X = 0
-	let xtz = MatrixOps::mat_mul(&MatrixOps::transpose(&x), &z_tangent);
-	let skew_check = MatrixOps::add(&xtz, &MatrixOps::transpose(&xtz));
-	assert_relative_eq!(MatrixOps::norm(&skew_check), 0.0, epsilon = 1e-14);
+	let xtz = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&x), &z_tangent);
+	let skew_check = MatrixOps::add(&xtz, &MatrixOps::transpose_to_owned(&xtz));
+	assert_relative_eq!(MatrixView::norm(&skew_check), 0.0, epsilon = 1e-14);
 }
 
 #[test]
@@ -92,10 +92,10 @@ fn test_stiefel_retraction() {
 	stiefel.retract(&x, &v, &mut y, &mut ()).unwrap();
 
 	// Check that result is on manifold: Y^T Y = I
-	let yty = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &y);
+	let yty = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&y), &y);
 	let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
 	let diff = MatrixOps::sub(&yty, &eye);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-14);
 
 	// Test zero retraction
 	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
@@ -104,7 +104,7 @@ fn test_stiefel_retraction() {
 		.retract(&x, &zero, &mut x_recovered, &mut ())
 		.unwrap();
 	let diff = MatrixOps::sub(&x, &x_recovered);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-14);
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn test_stiefel_inner_product() {
 
 	// Test inner product (should be Frobenius inner product)
 	let inner_uv = stiefel.inner_product(&x, &u, &v, &mut ()).unwrap();
-	let expected = MatrixOps::trace(&MatrixOps::mat_mul(&MatrixOps::transpose(&u), &v));
+	let expected = MatrixView::trace(&MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&u), &v));
 	assert_relative_eq!(inner_uv, expected, epsilon = 1e-14);
 
 	// Test symmetry
@@ -153,13 +153,13 @@ fn test_stiefel_parallel_transport() {
 		.unwrap();
 
 	// Check transported vector is in tangent space at y
-	let ytt = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &transported);
-	let skew_check = MatrixOps::add(&ytt, &MatrixOps::transpose(&ytt));
-	assert_relative_eq!(MatrixOps::norm(&skew_check), 0.0, epsilon = 1e-12);
+	let ytt = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&y), &transported);
+	let skew_check = MatrixOps::add(&ytt, &MatrixOps::transpose_to_owned(&ytt));
+	assert_relative_eq!(MatrixView::norm(&skew_check), 0.0, epsilon = 1e-12);
 
 	// Norm preservation depends on the transport implementation
 	// For this manifold, we just check the result is reasonable
-	assert!(MatrixOps::norm(&transported) > 0.0);
+	assert!(MatrixView::norm(&transported) > 0.0);
 }
 
 #[test]
@@ -171,10 +171,10 @@ fn test_stiefel_random_point() {
 		stiefel.random_point(&mut x).unwrap();
 
 		// Check point is on manifold: X^T X = I
-		let xtx = MatrixOps::mat_mul(&MatrixOps::transpose(&x), &x);
+		let xtx = MatrixOps::mat_mul(&MatrixOps::transpose_to_owned(&x), &x);
 		let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
 		let diff = MatrixOps::sub(&xtx, &eye);
-		assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
+		assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-14);
 	}
 }
 

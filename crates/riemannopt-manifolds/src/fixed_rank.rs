@@ -104,7 +104,7 @@ use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -178,12 +178,12 @@ where
 	/// allocating a full diagonal matrix.
 	pub fn to_matrix(&self) -> linalg::Mat<T> {
 		let m = self.u.nrows();
-		let k = VectorOps::len(&self.s);
+		let k = VectorView::len(&self.s);
 		// temp = U * diag(S) via backend-optimized column-scaling
 		let mut temp = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, k);
 		temp.scale_columns(&self.u, &self.s);
 		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, self.v.nrows());
-		out.gemm_bt(T::one(), &temp, &self.v, T::zero());
+		out.gemm_bt(T::one(), temp.as_view(), self.v.as_view(), T::zero());
 		out
 	}
 
@@ -199,22 +199,22 @@ where
 			.ok_or_else(|| ManifoldError::numerical_error("SVD failed to compute V^T"))?;
 
 		// Truncate to rank k — copy element-by-element to avoid allocating via columns()
-		let m = MatrixOps::nrows(&u_full);
+		let m = MatrixView::nrows(&u_full);
 		let mut u_k = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, k);
 		for j in 0..k {
 			for i in 0..m {
-				*MatrixOps::get_mut(&mut u_k, i, j) = MatrixOps::get(&u_full, i, j);
+				*MatrixOps::get_mut(&mut u_k, i, j) = MatrixView::get(&u_full, i, j);
 			}
 		}
 		let s_k = <linalg::Vec<T> as VectorOps<T>>::from_fn(k, |i| {
-			VectorOps::get(&svd.singular_values, i)
+			VectorView::get(&svd.singular_values, i)
 		});
 		// V = Vt^T[:, 0..k] — transpose element-by-element to avoid full transpose allocation
-		let n = MatrixOps::ncols(&vt_full);
+		let n = MatrixView::ncols(&vt_full);
 		let mut v_k = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, k);
 		for j in 0..k {
 			for i in 0..n {
-				*MatrixOps::get_mut(&mut v_k, i, j) = MatrixOps::get(&vt_full, j, i);
+				*MatrixOps::get_mut(&mut v_k, i, j) = MatrixView::get(&vt_full, j, i);
 			}
 		}
 
@@ -269,7 +269,7 @@ where
 	pub fn to_matrix(&self, point: &FixedRankPoint<T>) -> linalg::Mat<T> {
 		let m = point.u.nrows();
 		let n = point.v.nrows();
-		let k = VectorOps::len(&point.s);
+		let k = VectorView::len(&point.s);
 
 		// Compute U_perp and V_perp using QR decomposition
 		let (u_perp, _) = Self::compute_orthogonal_complement(&point.u);
@@ -277,28 +277,28 @@ where
 
 		// term1: U_perp * M * V^T — use buffer for U_perp * M, then GEMM_BT into result
 		let mut buf = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, k);
-		buf.gemm(T::one(), &u_perp, &self.u_perp_m, T::zero()); // buf = U_perp * M  (m × k)
+		buf.gemm(T::one(), u_perp.as_view(), self.u_perp_m.as_view(), T::zero()); // buf = U_perp * M  (m × k)
 		let mut result = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, n);
-		result.gemm_bt(T::one(), &buf, &point.v, T::zero()); // result = buf * V^T
+		result.gemm_bt(T::one(), buf.as_view(), point.v.as_view(), T::zero()); // result = buf * V^T
 
 		// term2: U * diag(Ṡ) * V^T — scale columns of U by s_dot, accumulate into result
 		// Reuse buf for U * diag(Ṡ)
 		buf.scale_columns(&point.u, &self.s_dot);
-		result.gemm_bt(T::one(), &buf, &point.v, T::one()); // result += buf * V^T
+		result.gemm_bt(T::one(), buf.as_view(), point.v.as_view(), T::one()); // result += buf * V^T
 
 		// term3: U * N * V_perp^T — reuse buf for U * N
-		let nk = MatrixOps::ncols(&self.v_perp_n); // n-k
+		let nk = MatrixView::ncols(&self.v_perp_n); // n-k
 		let mut buf2 = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, nk);
-		buf2.gemm(T::one(), &point.u, &self.v_perp_n, T::zero()); // buf2 = U * N  (m × (n-k))
-		result.gemm_bt(T::one(), &buf2, &v_perp, T::one()); // result += buf2 * V_perp^T
+		buf2.gemm(T::one(), point.u.as_view(), self.v_perp_n.as_view(), T::zero()); // buf2 = U * N  (m × (n-k))
+		result.gemm_bt(T::one(), buf2.as_view(), v_perp.as_view(), T::one()); // result += buf2 * V_perp^T
 
 		result
 	}
 
 	/// Compute orthogonal complement of a matrix with orthonormal columns
 	fn compute_orthogonal_complement(mat: &linalg::Mat<T>) -> (linalg::Mat<T>, linalg::Mat<T>) {
-		let m = MatrixOps::nrows(mat);
-		let k = MatrixOps::ncols(mat);
+		let m = MatrixView::nrows(mat);
+		let k = MatrixView::ncols(mat);
 
 		if k >= m {
 			// No orthogonal complement
@@ -310,7 +310,7 @@ where
 
 		// Create identity and project out the columns of mat: I - M·Mᵀ
 		let mut q = <linalg::Mat<T> as MatrixOps<T>>::identity(m);
-		q.gemm_bt(-T::one(), mat, mat, T::one());
+		q.gemm_bt(-T::one(), mat.as_view(), mat.as_view(), T::one());
 
 		// Use QR to get orthonormal basis for the complement
 		let qr = DecompositionOps::qr(&q);
@@ -320,7 +320,7 @@ where
 		let mut u_perp = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, m - k);
 		for j in 0..m - k {
 			for i in 0..m {
-				*MatrixOps::get_mut(&mut u_perp, i, j) = MatrixOps::get(q_full, i, j + k);
+				*MatrixOps::get_mut(&mut u_perp, i, j) = MatrixView::get(q_full, i, j + k);
 			}
 		}
 		let r_perp = <linalg::Mat<T> as MatrixOps<T>>::zeros(m - k, m - k); // Placeholder
@@ -336,32 +336,32 @@ where
 	/// - M = U_perp^T Z V  ((m-k) × k, orthogonal complement direction)
 	/// - N = U^T Z V_perp  (k × (n-k), orthogonal complement direction)
 	pub fn from_ambient(point: &FixedRankPoint<T>, ambient: &linalg::Mat<T>) -> Self {
-		let k = VectorOps::len(&point.s);
-		let n = MatrixOps::ncols(ambient);
+		let k = VectorView::len(&point.s);
+		let n = MatrixView::ncols(ambient);
 
 		// ut_z = U^T * Z  (k × n) — use gemm_at to avoid transposing U
 		let mut ut_z = <linalg::Mat<T> as MatrixOps<T>>::zeros(k, n);
-		ut_z.gemm_at(T::one(), &point.u, ambient, T::zero());
+		ut_z.gemm_at(T::one(), point.u.as_view(), ambient.as_view(), T::zero());
 
 		// S_dot = diag(U^T Z V) = diag(ut_z * V)
 		let mut ut_z_v = <linalg::Mat<T> as MatrixOps<T>>::zeros(k, k);
-		ut_z_v.gemm(T::one(), &ut_z, &point.v, T::zero());
-		let s_dot = VectorOps::from_fn(k, |i| MatrixOps::get(&ut_z_v, i, i));
+		ut_z_v.gemm(T::one(), ut_z.as_view(), point.v.as_view(), T::zero());
+		let s_dot = VectorOps::from_fn(k, |i| MatrixView::get(&ut_z_v, i, i));
 
 		// M = U_perp^T Z V — use gemm_at to avoid transposing U_perp
 		let (u_perp, _) = Self::compute_orthogonal_complement(&point.u);
 		let (v_perp, _) = Self::compute_orthogonal_complement(&point.v);
 
-		let mk = MatrixOps::ncols(&u_perp); // m-k
+		let mk = MatrixView::ncols(&u_perp); // m-k
 		let mut upt_z = <linalg::Mat<T> as MatrixOps<T>>::zeros(mk, n);
-		upt_z.gemm_at(T::one(), &u_perp, ambient, T::zero()); // (m-k) × n
+		upt_z.gemm_at(T::one(), u_perp.as_view(), ambient.as_view(), T::zero()); // (m-k) × n
 		let mut u_perp_m = <linalg::Mat<T> as MatrixOps<T>>::zeros(mk, k);
-		u_perp_m.gemm(T::one(), &upt_z, &point.v, T::zero()); // (m-k) × k
+		u_perp_m.gemm(T::one(), upt_z.as_view(), point.v.as_view(), T::zero()); // (m-k) × k
 
 		// N = U^T Z V_perp — reuse ut_z
-		let nk = MatrixOps::ncols(&v_perp); // n-k
+		let nk = MatrixView::ncols(&v_perp); // n-k
 		let mut v_perp_n = <linalg::Mat<T> as MatrixOps<T>>::zeros(k, nk);
-		v_perp_n.gemm(T::one(), &ut_z, &v_perp, T::zero()); // k × (n-k)
+		v_perp_n.gemm(T::one(), ut_z.as_view(), v_perp.as_view(), T::zero()); // k × (n-k)
 
 		Self::new(u_perp_m, s_dot, v_perp_n)
 	}
@@ -475,27 +475,27 @@ impl FixedRank {
 		// QR decomposition with sign correction to ensure continuity.
 		// Without sign correction, QR can flip column signs arbitrarily
 		// (QR is only unique up to sign of diagonal of R).
-		let m = MatrixOps::nrows(u);
-		let k = MatrixOps::ncols(u);
-		let n = MatrixOps::nrows(v);
+		let m = MatrixView::nrows(u);
+		let k = MatrixView::ncols(u);
+		let n = MatrixView::nrows(v);
 
 		let qr_u = DecompositionOps::qr(u);
 		u.copy_from(qr_u.q());
 		// Read diagonal of R directly — no clone needed since qr.r() returns a reference
-		for j in 0..k.min(MatrixOps::ncols(qr_u.r())) {
-			if MatrixOps::get(qr_u.r(), j, j) < T::zero() {
+		for j in 0..k.min(MatrixView::ncols(qr_u.r())) {
+			if MatrixView::get(qr_u.r(), j, j) < T::zero() {
 				for i in 0..m {
-					*MatrixOps::get_mut(u, i, j) = T::zero() - MatrixOps::get(u, i, j);
+					*MatrixOps::get_mut(u, i, j) = T::zero() - MatrixView::get(u, i, j);
 				}
 			}
 		}
 
 		let qr_v = DecompositionOps::qr(v);
 		v.copy_from(qr_v.q());
-		for j in 0..k.min(MatrixOps::ncols(qr_v.r())) {
-			if MatrixOps::get(qr_v.r(), j, j) < T::zero() {
+		for j in 0..k.min(MatrixView::ncols(qr_v.r())) {
+			if MatrixView::get(qr_v.r(), j, j) < T::zero() {
 				for i in 0..n {
-					*MatrixOps::get_mut(v, i, j) = T::zero() - MatrixOps::get(v, i, j);
+					*MatrixOps::get_mut(v, i, j) = T::zero() - MatrixView::get(v, i, j);
 				}
 			}
 		}
@@ -515,10 +515,10 @@ impl FixedRank {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(x) != self.m || MatrixOps::ncols(x) != self.n {
+		if MatrixView::nrows(x) != self.m || MatrixView::ncols(x) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				MatrixOps::nrows(x) * MatrixOps::ncols(x),
+				MatrixView::nrows(x) * MatrixView::ncols(x),
 			));
 		}
 
@@ -528,8 +528,8 @@ impl FixedRank {
 
 		// Count non-zero singular values
 		let mut rank = 0;
-		for i in 0..VectorOps::len(s).min(self.m).min(self.n) {
-			if VectorOps::get(s, i) > <T as Scalar>::from_f64(self.tolerance) {
+		for i in 0..VectorView::len(s).min(self.m).min(self.n) {
+			if VectorView::get(s, i) > <T as Scalar>::from_f64(self.tolerance) {
 				rank += 1;
 			}
 		}
@@ -557,10 +557,10 @@ impl FixedRank {
 	{
 		self.check_matrix(x)?;
 
-		if MatrixOps::nrows(z) != self.m || MatrixOps::ncols(z) != self.n {
+		if MatrixView::nrows(z) != self.m || MatrixView::ncols(z) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				MatrixOps::nrows(z) * MatrixOps::ncols(z),
+				MatrixView::nrows(z) * MatrixView::ncols(z),
 			));
 		}
 
@@ -591,22 +591,22 @@ where
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
 		// Check that U and V are on Stiefel manifolds
 		let mut u_gram = linalg::Mat::<T>::zeros(self.k, self.k);
-		u_gram.gemm_at(T::one(), &point.u, &point.u, T::zero());
+		u_gram.gemm_at(T::one(), point.u.as_view(), point.u.as_view(), T::zero());
 		let mut v_gram = linalg::Mat::<T>::zeros(self.k, self.k);
-		v_gram.gemm_at(T::one(), &point.v, &point.v, T::zero());
+		v_gram.gemm_at(T::one(), point.v.as_view(), point.v.as_view(), T::zero());
 
 		// Check orthogonality
 		for i in 0..self.k {
 			for j in 0..self.k {
 				let u_val = if i == j {
-					MatrixOps::get(&u_gram, i, j) - T::one()
+					MatrixView::get(&u_gram, i, j) - T::one()
 				} else {
-					MatrixOps::get(&u_gram, i, j)
+					MatrixView::get(&u_gram, i, j)
 				};
 				let v_val = if i == j {
-					MatrixOps::get(&v_gram, i, j) - T::one()
+					MatrixView::get(&v_gram, i, j) - T::one()
 				} else {
-					MatrixOps::get(&v_gram, i, j)
+					MatrixView::get(&v_gram, i, j)
 				};
 
 				if <T as Float>::abs(u_val) > tol || <T as Float>::abs(v_val) > tol {
@@ -617,7 +617,7 @@ where
 
 		// Check that singular values are positive
 		for i in 0..self.k {
-			if VectorOps::get(&point.s, i) <= T::zero() {
+			if VectorView::get(&point.s, i) <= T::zero() {
 				return false;
 			}
 		}
@@ -628,23 +628,23 @@ where
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		// Copy the input point — use in-place copy to avoid allocation
 		// Ensure result has correct dimensions before copying
-		if MatrixOps::nrows(&result.u) != MatrixOps::nrows(&point.u)
-			|| MatrixOps::ncols(&result.u) != MatrixOps::ncols(&point.u)
+		if MatrixView::nrows(&result.u) != MatrixView::nrows(&point.u)
+			|| MatrixView::ncols(&result.u) != MatrixView::ncols(&point.u)
 		{
 			result.u = <linalg::Mat<T> as MatrixOps<T>>::zeros(
-				MatrixOps::nrows(&point.u),
-				MatrixOps::ncols(&point.u),
+				MatrixView::nrows(&point.u),
+				MatrixView::ncols(&point.u),
 			);
 		}
-		if VectorOps::len(&result.s) != VectorOps::len(&point.s) {
-			result.s = <linalg::Vec<T> as VectorOps<T>>::zeros(VectorOps::len(&point.s));
+		if VectorView::len(&result.s) != VectorView::len(&point.s) {
+			result.s = <linalg::Vec<T> as VectorOps<T>>::zeros(VectorView::len(&point.s));
 		}
-		if MatrixOps::nrows(&result.v) != MatrixOps::nrows(&point.v)
-			|| MatrixOps::ncols(&result.v) != MatrixOps::ncols(&point.v)
+		if MatrixView::nrows(&result.v) != MatrixView::nrows(&point.v)
+			|| MatrixView::ncols(&result.v) != MatrixView::ncols(&point.v)
 		{
 			result.v = <linalg::Mat<T> as MatrixOps<T>>::zeros(
-				MatrixOps::nrows(&point.v),
-				MatrixOps::ncols(&point.v),
+				MatrixView::nrows(&point.v),
+				MatrixView::ncols(&point.v),
 			);
 		}
 		result.u.copy_from(&point.u);
@@ -656,7 +656,7 @@ where
 
 		// Ensure singular values are positive
 		for i in 0..self.k {
-			if VectorOps::get(&result.s, i) < T::epsilon() {
+			if VectorView::get(&result.s, i) < T::epsilon() {
 				*VectorOps::get_mut(&mut result.s, i) = T::epsilon();
 			}
 		}
@@ -688,25 +688,25 @@ where
 		let mut inner = T::zero();
 
 		// U_perp component: tr(M_u^T M_v) = Σ_ij M_u[i,j] * M_v[i,j]
-		let rows_m = MatrixOps::nrows(&u.u_perp_m);
-		let cols_m = MatrixOps::ncols(&u.u_perp_m);
+		let rows_m = MatrixView::nrows(&u.u_perp_m);
+		let cols_m = MatrixView::ncols(&u.u_perp_m);
 		for i in 0..rows_m {
 			for j in 0..cols_m {
 				inner =
-					inner + MatrixOps::get(&u.u_perp_m, i, j) * MatrixOps::get(&v.u_perp_m, i, j);
+					inner + MatrixView::get(&u.u_perp_m, i, j) * MatrixView::get(&v.u_perp_m, i, j);
 			}
 		}
 
 		// S component: ⟨s_dot_u, s_dot_v⟩
-		inner = inner + VectorOps::dot(&u.s_dot, &v.s_dot);
+		inner = inner + VectorView::dot(&u.s_dot, &v.s_dot);
 
 		// V_perp component: tr(N_u^T N_v) = Σ_ij N_u[i,j] * N_v[i,j]
-		let rows_n = MatrixOps::nrows(&u.v_perp_n);
-		let cols_n = MatrixOps::ncols(&u.v_perp_n);
+		let rows_n = MatrixView::nrows(&u.v_perp_n);
+		let cols_n = MatrixView::ncols(&u.v_perp_n);
 		for i in 0..rows_n {
 			for j in 0..cols_n {
 				inner =
-					inner + MatrixOps::get(&u.v_perp_n, i, j) * MatrixOps::get(&v.v_perp_n, i, j);
+					inner + MatrixView::get(&u.v_perp_n, i, j) * MatrixView::get(&v.v_perp_n, i, j);
 			}
 		}
 
@@ -729,7 +729,7 @@ where
 		// S⁻¹ diagonal — small k×k alloc
 		let s_inv = <linalg::Mat<T> as MatrixOps<T>>::from_fn(self.k, self.k, |i, j| {
 			if i == j {
-				T::one() / VectorOps::get(&point.s, i)
+				T::one() / VectorView::get(&point.s, i)
 			} else {
 				T::zero()
 			}
@@ -739,10 +739,10 @@ where
 		result.u.copy_from(&point.u);
 		// temp = M · S⁻¹  (reuse u_perp_m_sinv would alloc; use GEMM into a small buffer)
 		let mut m_sinv =
-			<linalg::Mat<T> as MatrixOps<T>>::zeros(MatrixOps::nrows(&tangent.u_perp_m), self.k);
-		m_sinv.gemm(T::one(), &tangent.u_perp_m, &s_inv, T::zero());
+			<linalg::Mat<T> as MatrixOps<T>>::zeros(MatrixView::nrows(&tangent.u_perp_m), self.k);
+		m_sinv.gemm(T::one(), tangent.u_perp_m.as_view(), s_inv.as_view(), T::zero());
 		// result.u += U_perp · m_sinv
-		result.u.gemm(T::one(), &u_perp, &m_sinv, T::one());
+		result.u.gemm(T::one(), u_perp.as_view(), m_sinv.as_view(), T::one());
 
 		// S_new = S + S_dot (in-place)
 		result.s.copy_from(&point.s);
@@ -752,17 +752,17 @@ where
 		result.v.copy_from(&point.v);
 		// temp = Nᵀ · S⁻¹
 		let mut nt_sinv =
-			<linalg::Mat<T> as MatrixOps<T>>::zeros(MatrixOps::ncols(&tangent.v_perp_n), self.k);
-		nt_sinv.gemm_at(T::one(), &tangent.v_perp_n, &s_inv, T::zero());
+			<linalg::Mat<T> as MatrixOps<T>>::zeros(MatrixView::ncols(&tangent.v_perp_n), self.k);
+		nt_sinv.gemm_at(T::one(), tangent.v_perp_n.as_view(), s_inv.as_view(), T::zero());
 		// result.v += V_perp · nt_sinv
-		result.v.gemm(T::one(), &v_perp, &nt_sinv, T::one());
+		result.v.gemm(T::one(), v_perp.as_view(), nt_sinv.as_view(), T::one());
 
 		// Project factors back to Stiefel
 		self.project_factors(&mut result.u, &mut result.v);
 
 		// Ensure singular values are positive
 		for i in 0..self.k {
-			if VectorOps::get(&result.s, i) < T::epsilon() {
+			if VectorView::get(&result.s, i) < T::epsilon() {
 				*VectorOps::get_mut(&mut result.s, i) = T::epsilon();
 			}
 		}
@@ -857,16 +857,16 @@ where
 		}
 
 		// Check dimensions of tangent components
-		if MatrixOps::nrows(&vector.u_perp_m) != self.m - self.k
-			|| MatrixOps::ncols(&vector.u_perp_m) != self.k
+		if MatrixView::nrows(&vector.u_perp_m) != self.m - self.k
+			|| MatrixView::ncols(&vector.u_perp_m) != self.k
 		{
 			return false;
 		}
-		if VectorOps::len(&vector.s_dot) != self.k {
+		if VectorView::len(&vector.s_dot) != self.k {
 			return false;
 		}
-		if MatrixOps::nrows(&vector.v_perp_n) != self.k
-			|| MatrixOps::ncols(&vector.v_perp_n) != self.n - self.k
+		if MatrixView::nrows(&vector.v_perp_n) != self.k
+			|| MatrixView::ncols(&vector.v_perp_n) != self.n - self.k
 		{
 			return false;
 		}
@@ -891,10 +891,10 @@ where
 		let other_mat = other.to_matrix();
 		// Compute diff in-place: reuse other_mat by subtracting point_mat element-wise
 		let mut diff = other_mat;
-		for i in 0..MatrixOps::nrows(&diff) {
-			for j in 0..MatrixOps::ncols(&diff) {
+		for i in 0..MatrixView::nrows(&diff) {
+			for j in 0..MatrixView::ncols(&diff) {
 				*MatrixOps::get_mut(&mut diff, i, j) =
-					MatrixOps::get(&diff, i, j) - MatrixOps::get(&point_mat, i, j);
+					MatrixView::get(&diff, i, j) - MatrixView::get(&point_mat, i, j);
 			}
 		}
 
@@ -903,28 +903,28 @@ where
 		let (v_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.v);
 
 		// M = U_perp^T * diff * V — use gemm_at, then gemm into result
-		let mk = MatrixOps::ncols(&u_perp);
-		let n = MatrixOps::ncols(&diff);
+		let mk = MatrixView::ncols(&u_perp);
+		let n = MatrixView::ncols(&diff);
 		let mut upt_diff = linalg::Mat::<T>::zeros(mk, n);
-		upt_diff.gemm_at(T::one(), &u_perp, &diff, T::zero());
+		upt_diff.gemm_at(T::one(), u_perp.as_view(), diff.as_view(), T::zero());
 		result.u_perp_m = <linalg::Mat<T> as MatrixOps<T>>::zeros(mk, self.k);
 		result
 			.u_perp_m
-			.gemm(T::one(), &upt_diff, &point.v, T::zero());
+			.gemm(T::one(), upt_diff.as_view(), point.v.as_view(), T::zero());
 
 		// S_dot = diag(U^T * diff * V) — use gemm_at, then gemm into buffer
 		let mut ut_diff = linalg::Mat::<T>::zeros(self.k, n);
-		ut_diff.gemm_at(T::one(), &point.u, &diff, T::zero());
+		ut_diff.gemm_at(T::one(), point.u.as_view(), diff.as_view(), T::zero());
 		let mut s_component = linalg::Mat::<T>::zeros(self.k, self.k);
-		s_component.gemm(T::one(), &ut_diff, &point.v, T::zero());
+		s_component.gemm(T::one(), ut_diff.as_view(), point.v.as_view(), T::zero());
 		result.s_dot = <linalg::Vec<T> as VectorOps<T>>::from_fn(self.k, |i| {
-			MatrixOps::get(&s_component, i, i)
+			MatrixView::get(&s_component, i, i)
 		});
 
 		// N = U^T * diff * V_perp — reuse ut_diff
-		let nk = MatrixOps::ncols(&v_perp);
+		let nk = MatrixView::ncols(&v_perp);
 		result.v_perp_n = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.k, nk);
-		result.v_perp_n.gemm(T::one(), &ut_diff, &v_perp, T::zero());
+		result.v_perp_n.gemm(T::one(), ut_diff.as_view(), v_perp.as_view(), T::zero());
 
 		Ok(())
 	}
@@ -949,9 +949,9 @@ where
 		let x_mat = x.to_matrix();
 		let y_mat = y.to_matrix();
 		let mut norm_sq = T::zero();
-		for i in 0..MatrixOps::nrows(&y_mat) {
-			for j in 0..MatrixOps::ncols(&y_mat) {
-				let d = MatrixOps::get(&y_mat, i, j) - MatrixOps::get(&x_mat, i, j);
+		for i in 0..MatrixView::nrows(&y_mat) {
+			for j in 0..MatrixView::ncols(&y_mat) {
+				let d = MatrixView::get(&y_mat, i, j) - MatrixView::get(&x_mat, i, j);
 				norm_sq = norm_sq + d * d;
 			}
 		}
@@ -1031,10 +1031,10 @@ impl FixedRank {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(mat) != self.m || MatrixOps::ncols(mat) != self.n {
+		if MatrixView::nrows(mat) != self.m || MatrixView::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				MatrixOps::nrows(mat) * MatrixOps::ncols(mat),
+				MatrixView::nrows(mat) * MatrixView::ncols(mat),
 			));
 		}
 
@@ -1062,10 +1062,10 @@ impl FixedRank {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(mat) != self.m || MatrixOps::ncols(mat) != self.n {
+		if MatrixView::nrows(mat) != self.m || MatrixView::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				MatrixOps::nrows(mat) * MatrixOps::ncols(mat),
+				MatrixView::nrows(mat) * MatrixView::ncols(mat),
 			));
 		}
 
@@ -1074,8 +1074,8 @@ impl FixedRank {
 
 		// Sum of squared singular values beyond rank k
 		let mut error_sq = T::zero();
-		for i in self.k..VectorOps::len(s).min(self.m).min(self.n) {
-			let sv = VectorOps::get(s, i);
+		for i in self.k..VectorView::len(s).min(self.m).min(self.n) {
+			let sv = VectorView::get(s, i);
 			error_sq = error_sq + sv * sv;
 		}
 
@@ -1102,10 +1102,10 @@ impl FixedRank {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(mat) != self.m || MatrixOps::ncols(mat) != self.n {
+		if MatrixView::nrows(mat) != self.m || MatrixView::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.m * self.n,
-				MatrixOps::nrows(mat) * MatrixOps::ncols(mat),
+				MatrixView::nrows(mat) * MatrixView::ncols(mat),
 			));
 		}
 

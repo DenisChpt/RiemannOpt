@@ -1,7 +1,7 @@
 //! Integration tests for the Oblique manifold
 
 use approx::assert_relative_eq;
-use riemannopt_core::linalg::{self, MatrixOps, VectorOps};
+use riemannopt_core::linalg::{self, MatrixOps, MatrixView, VectorOps, VectorView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Oblique;
 
@@ -54,7 +54,7 @@ fn test_oblique_projection() {
 
 	// Check each column has unit norm
 	for j in 0..3 {
-		let col: linalg::Vec<f64> = MatrixOps::column(&proj, j);
+		let col: linalg::Vec<f64> = MatrixOps::column_to_owned(&proj, j);
 		assert_relative_eq!(col.norm(), 1.0, epsilon = 1e-14);
 	}
 }
@@ -78,8 +78,8 @@ fn test_oblique_tangent_projection() {
 
 	// Check orthogonality: x_j^T v_j = 0 for each column
 	for j in 0..3 {
-		let x_col: linalg::Vec<f64> = MatrixOps::column(&x, j);
-		let vt_col: linalg::Vec<f64> = MatrixOps::column(&v_tangent, j);
+		let x_col: linalg::Vec<f64> = MatrixOps::column_to_owned(&x, j);
+		let vt_col: linalg::Vec<f64> = MatrixOps::column_to_owned(&v_tangent, j);
 		let inner = x_col.dot(&vt_col);
 		assert_relative_eq!(inner, 0.0, epsilon = 1e-14);
 	}
@@ -104,7 +104,7 @@ fn test_oblique_retraction() {
 
 	// Result should have unit-norm columns
 	for j in 0..3 {
-		let col: linalg::Vec<f64> = MatrixOps::column(&y, j);
+		let col: linalg::Vec<f64> = MatrixOps::column_to_owned(&y, j);
 		assert_relative_eq!(col.norm(), 1.0, epsilon = 1e-14);
 	}
 
@@ -113,7 +113,7 @@ fn test_oblique_retraction() {
 	let mut x_recovered: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	m.retract(&x, &zero, &mut x_recovered, &mut ()).unwrap();
 	let diff = MatrixOps::sub(&x, &x_recovered);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-14);
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn test_oblique_random_point() {
 
 		// Check each column has unit norm
 		for j in 0..4 {
-			let col: linalg::Vec<f64> = MatrixOps::column(&x, j);
+			let col: linalg::Vec<f64> = MatrixOps::column_to_owned(&x, j);
 			assert_relative_eq!(col.norm(), 1.0, epsilon = 1e-14);
 		}
 
@@ -179,14 +179,14 @@ fn test_oblique_parallel_transport() {
 	// Transported vector should be in tangent space at y:
 	// y_j^T transported_j = 0 for each column
 	for j in 0..2 {
-		let y_col: linalg::Vec<f64> = MatrixOps::column(&y, j);
-		let t_col: linalg::Vec<f64> = MatrixOps::column(&transported, j);
+		let y_col: linalg::Vec<f64> = MatrixOps::column_to_owned(&y, j);
+		let t_col: linalg::Vec<f64> = MatrixOps::column_to_owned(&transported, j);
 		let inner = y_col.dot(&t_col);
 		assert_relative_eq!(inner, 0.0, epsilon = 1e-10);
 	}
 
 	// Non-zero vector should transport to non-zero
-	assert!(MatrixOps::norm(&transported) > 0.0);
+	assert!(MatrixView::norm(&transported) > 0.0);
 }
 
 #[test]
@@ -207,8 +207,8 @@ fn test_oblique_euclidean_to_riemannian_gradient() {
 
 	// Result should be in tangent space: x_j^T rgrad_j = 0
 	for j in 0..3 {
-		let x_col: linalg::Vec<f64> = MatrixOps::column(&x, j);
-		let r_col: linalg::Vec<f64> = MatrixOps::column(&rgrad, j);
+		let x_col: linalg::Vec<f64> = MatrixOps::column_to_owned(&x, j);
+		let r_col: linalg::Vec<f64> = MatrixOps::column_to_owned(&rgrad, j);
 		let inner = x_col.dot(&r_col);
 		assert_relative_eq!(inner, 0.0, epsilon = 1e-14);
 	}

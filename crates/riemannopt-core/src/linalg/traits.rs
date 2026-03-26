@@ -3,11 +3,25 @@
 //! These traits define the operations that any linear algebra backend must support.
 //! Implementations exist for faer (default) and nalgebra.
 //!
+//! # Trait hierarchy
+//!
+//! ```text
+//! VectorView  (read-only: len, get, dot, norm, iter)
+//!   └─ VectorOps  (+ construction, mutation, allocation)
+//!
+//! MatrixView  (read-only: nrows, ncols, get, column, norm, trace)
+//!   └─ MatrixOps  (+ construction, mutation, GEMM, views)
+//!       └─ DecompositionOps  (SVD, QR, Cholesky, Eigen)
+//! ```
+//!
 //! # Zero-Cost Abstraction
 //!
 //! All traits are monomorphized at compile time — there is no dynamic dispatch
 //! overhead. `Sphere<f64, FaerBackend>` compiles to the same code as if
 //! faer types were used directly.
+//!
+//! View types (`ColView`, `View`) are backend-specific borrowed references
+//! (e.g. `faer::ColRef`, `faer::MatRef`) that avoid heap allocation.
 
 use num_traits::Float;
 use std::fmt::Debug;
@@ -69,27 +83,15 @@ impl RealScalar for f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Vector operations
+//  Read-only vector operations
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Dense column vector operations.
+/// Read-only vector operations.
 ///
-/// Every method has a default `#[inline]` hint — backends should override
-/// with optimised implementations where possible.
-pub trait VectorOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
-	// ── Construction ──────────────────────────────────────────────────
-
-	/// Create a zero vector of length `len`.
-	fn zeros(len: usize) -> Self;
-
-	/// Create a vector from a closure `f(index) -> value`.
-	fn from_fn(len: usize, f: impl FnMut(usize) -> T) -> Self;
-
-	/// Create a vector from a slice.
-	fn from_slice(data: &[T]) -> Self;
-
-	// ── Queries ───────────────────────────────────────────────────────
-
+/// Implemented by both owned vectors (`Col<T>`, `DVector<T>`) and borrowed
+/// views (`ColRef<'_, T>`, `DVectorView<'_, T>`).  All methods are
+/// non-mutating and zero-allocation.
+pub trait VectorView<T: RealScalar>: Sized + Clone + Debug {
 	/// Number of elements.
 	fn len(&self) -> usize;
 
@@ -97,6 +99,9 @@ pub trait VectorOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 	fn is_empty(&self) -> bool {
 		self.len() == 0
 	}
+
+	/// Get element at index `i`.
+	fn get(&self, i: usize) -> T;
 
 	/// Inner product ⟨self, other⟩.
 	fn dot(&self, other: &Self) -> T;
@@ -111,10 +116,30 @@ pub trait VectorOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 		self.dot(self)
 	}
 
-	// ── Element access ────────────────────────────────────────────────
+	/// Iterate over elements (by value).
+	fn iter(&self) -> impl Iterator<Item = T> + '_;
+}
 
-	/// Get element at index `i`.
-	fn get(&self, i: usize) -> T;
+// ═══════════════════════════════════════════════════════════════════════════
+//  Full vector operations (owned)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Dense column vector operations (construction + mutation).
+///
+/// Extends [`VectorView`] with methods that require ownership or mutation.
+pub trait VectorOps<T: RealScalar>: VectorView<T> + Send + Sync {
+	// ── Construction ──────────────────────────────────────────────────
+
+	/// Create a zero vector of length `len`.
+	fn zeros(len: usize) -> Self;
+
+	/// Create a vector from a closure `f(index) -> value`.
+	fn from_fn(len: usize, f: impl FnMut(usize) -> T) -> Self;
+
+	/// Create a vector from a slice.
+	fn from_slice(data: &[T]) -> Self;
+
+	// ── Element access (mutable) ─────────────────────────────────────
 
 	/// Get mutable reference to element at index `i`.
 	fn get_mut(&mut self, i: usize) -> &mut T;
@@ -218,19 +243,68 @@ pub trait VectorOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 
 	/// Apply a function element-wise, returning a new vector.
 	fn map(&self, f: impl FnMut(T) -> T) -> Self;
-
-	/// Iterate over elements (by value).
-	fn iter(&self) -> impl Iterator<Item = T> + '_;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Matrix operations
+//  Read-only matrix operations
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Dense matrix operations (column-major).
-pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
-	/// The associated vector type (e.g. DVector for DMatrix).
+/// Read-only matrix operations.
+///
+/// Implemented by both owned matrices (`Mat<T>`, `DMatrix<T>`) and borrowed
+/// views (`MatRef<'_, T>`, `DMatrixView<'_, T>`).  All methods are
+/// non-mutating and zero-allocation.
+pub trait MatrixView<T: RealScalar>: Sized + Clone + Debug {
+	/// The column view type returned by [`column`](Self::column).
+	type ColView<'a>: VectorView<T>
+	where
+		Self: 'a;
+
+	fn nrows(&self) -> usize;
+	fn ncols(&self) -> usize;
+
+	fn get(&self, i: usize, j: usize) -> T;
+
+	/// Extract column `j` as a borrowed view (zero-allocation).
+	fn column(&self, j: usize) -> Self::ColView<'_>;
+
+	/// Frobenius norm ‖self‖_F.
+	fn norm(&self) -> T;
+
+	/// Trace tr(self).
+	fn trace(&self) -> T;
+
+	/// Dot product between column `j` of self and column `k` of other.
+	fn column_dot(&self, j: usize, other: &Self, k: usize) -> T {
+		let n = self.nrows();
+		let mut sum = T::zero();
+		for i in 0..n {
+			sum = sum + self.get(i, j) * other.get(i, k);
+		}
+		sum
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Full matrix operations (owned)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Dense matrix operations (column-major, construction + mutation).
+///
+/// Extends [`MatrixView`] with methods that require ownership or mutation.
+/// Introduces a `View<'a>` GAT for zero-allocation sub-matrix and column
+/// access that can be passed directly to GEMM operations.
+pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
+	/// The associated owned vector type.
 	type Col: VectorOps<T>;
+
+	/// The associated matrix view type (e.g. `faer::MatRef<'a, T>`).
+	///
+	/// Must implement [`MatrixView`] so it can be passed to GEMM and other
+	/// read-only operations without allocation.
+	type View<'a>: MatrixView<T>
+	where
+		Self: 'a;
 
 	// ── Construction ──────────────────────────────────────────────────
 
@@ -251,30 +325,51 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 		Self::from_fn(nrows, ncols, |i, j| data[j * nrows + i])
 	}
 
-	// ── Queries ───────────────────────────────────────────────────────
+	// ── View accessors (zero-allocation) ─────────────────────────────
 
-	fn nrows(&self) -> usize;
-	fn ncols(&self) -> usize;
+	/// Borrow the entire matrix as a view.
+	fn as_view(&self) -> Self::View<'_>;
 
-	/// Frobenius norm ‖self‖_F.
-	fn norm(&self) -> T;
+	/// Extract a contiguous block of columns [start..start+count) as a view.
+	fn columns(&self, start: usize, count: usize) -> Self::View<'_>;
 
-	/// Trace tr(self).
-	fn trace(&self) -> T;
+	/// Extract a contiguous block of rows [start..start+count) as a view.
+	fn rows(&self, start: usize, count: usize) -> Self::View<'_>;
+
+	// ── Owned conversions (explicit allocation) ──────────────────────
+
+	/// Extract column `j` as an owned vector (allocates).
+	fn column_to_owned(&self, j: usize) -> Self::Col {
+		let v = self.column(j);
+		Self::Col::from_fn(VectorView::len(&v), |i| VectorView::get(&v, i))
+	}
+
+	/// Transpose into a new owned matrix (allocates).
+	fn transpose_to_owned(&self) -> Self;
+
+	/// Extract columns [start..start+count) as an owned matrix (allocates).
+	fn columns_to_owned(&self, start: usize, count: usize) -> Self {
+		let view = self.columns(start, count);
+		Self::from_fn(
+			MatrixView::nrows(&view),
+			MatrixView::ncols(&view),
+			|i, j| MatrixView::get(&view, i, j),
+		)
+	}
+
+	/// Extract rows [start..start+count) as an owned matrix (allocates).
+	fn rows_to_owned(&self, start: usize, count: usize) -> Self {
+		let view = self.rows(start, count);
+		Self::from_fn(
+			MatrixView::nrows(&view),
+			MatrixView::ncols(&view),
+			|i, j| MatrixView::get(&view, i, j),
+		)
+	}
 
 	// ── Element access ────────────────────────────────────────────────
 
-	fn get(&self, i: usize, j: usize) -> T;
 	fn get_mut(&mut self, i: usize, j: usize) -> &mut T;
-
-	/// Extract column `j` as an owned vector.
-	fn column(&self, j: usize) -> Self::Col;
-
-	/// Extract a contiguous block of columns [start..start+count).
-	fn columns(&self, start: usize, count: usize) -> Self;
-
-	/// Extract a contiguous block of rows [start..start+count).
-	fn rows(&self, start: usize, count: usize) -> Self;
 
 	/// Set column `j` from a vector.
 	fn set_column(&mut self, j: usize, col: &Self::Col);
@@ -295,26 +390,28 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 		&mut data[j * nrows..(j + 1) * nrows]
 	}
 
-	/// Dot product between column `j` of self and column `k` of other.
-	fn column_dot(&self, j: usize, other: &Self, k: usize) -> T {
-		let n = self.nrows();
-		let mut sum = T::zero();
-		for i in 0..n {
-			sum = sum + self.get(i, j) * other.get(i, k);
-		}
-		sum
-	}
-
 	// ── In-place mutations ────────────────────────────────────────────
 
 	fn copy_from(&mut self, other: &Self);
 	fn fill(&mut self, value: T);
 	fn scale_mut(&mut self, alpha: T);
 
-	// ── Arithmetic (new allocation) ───────────────────────────────────
+	/// Column-scaling: self[i,j] = source[i,j] * diag[j].
+	///
+	/// Computes `self = source * diag(diag)` without allocating a diagonal matrix.
+	/// Each column j of the result is column j of source scaled by diag[j].
+	fn scale_columns(&mut self, source: &Self, diag: &Self::Col) {
+		let n = source.nrows();
+		let p = source.ncols();
+		for j in 0..p {
+			let s = diag.get(j);
+			for i in 0..n {
+				*self.get_mut(i, j) = source.get(i, j) * s;
+			}
+		}
+	}
 
-	/// self^T (transpose, allocates).
-	fn transpose(&self) -> Self;
+	// ── Arithmetic (new allocation) ───────────────────────────────────
 
 	/// Matrix-matrix product self * other.
 	fn mat_mul(&self, other: &Self) -> Self;
@@ -361,21 +458,6 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 		}
 	}
 
-	/// Column-scaling: self[i,j] = source[i,j] * diag[j].
-	///
-	/// Computes `self = source * diag(diag)` without allocating a diagonal matrix.
-	/// Each column j of the result is column j of source scaled by diag[j].
-	fn scale_columns(&mut self, source: &Self, diag: &Self::Col) {
-		let n = source.nrows();
-		let p = source.ncols();
-		for j in 0..p {
-			let s = diag.get(j);
-			for i in 0..n {
-				*self.get_mut(i, j) = source.get(i, j) * s;
-			}
-		}
-	}
-
 	// ── In-place BLAS-like ────────────────────────────────────────────
 
 	/// self += other.
@@ -385,24 +467,20 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 	fn sub_assign(&mut self, other: &Self);
 
 	/// C = alpha * A * B + beta * C  (GEMM).
-	fn gemm(&mut self, alpha: T, a: &Self, b: &Self, beta: T);
-
-	/// C = alpha * A^T * B + beta * C  (GEMM with left operand transposed).
 	///
-	/// Avoids allocating a transposed copy of A. Backends with native transpose
-	/// views (faer, nalgebra) override this for zero-alloc performance.
-	fn gemm_at(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
-		let at = a.transpose();
-		self.gemm(alpha, &at, b, beta);
-	}
+	/// Operands `a` and `b` are views — pass `m.as_view()` for full matrices,
+	/// or `m.columns(start, count)` / `m.rows(start, count)` for sub-matrices.
+	fn gemm(&mut self, alpha: T, a: Self::View<'_>, b: Self::View<'_>, beta: T);
 
-	/// C = alpha * A * B^T + beta * C  (GEMM with right operand transposed).
+	/// C = alpha * Aᵀ * B + beta * C  (GEMM with left operand transposed).
 	///
-	/// Avoids allocating a transposed copy of B.
-	fn gemm_bt(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
-		let bt = b.transpose();
-		self.gemm(alpha, a, &bt, beta);
-	}
+	/// Zero-allocation: the backend transposes the view in-place (stride swap).
+	fn gemm_at(&mut self, alpha: T, a: Self::View<'_>, b: Self::View<'_>, beta: T);
+
+	/// C = alpha * A * Bᵀ + beta * C  (GEMM with right operand transposed).
+	///
+	/// Zero-allocation: the backend transposes the view in-place (stride swap).
+	fn gemm_bt(&mut self, alpha: T, a: Self::View<'_>, b: Self::View<'_>, beta: T);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -447,19 +525,6 @@ pub trait DecompositionOps<T: RealScalar>: MatrixOps<T> {
 /// The backend is parameterized by the scalar type `T` to allow backends
 /// that require additional trait bounds on `T` (e.g. nalgebra requires
 /// `NalgebraScalar + RealField`).
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use riemannopt_core::linalg::{LinAlgBackend, NalgebraBackend, VectorOps};
-///
-/// fn create_zero_vec<B: LinAlgBackend<f64>>() -> B::Vector {
-///     B::Vector::zeros(10)
-/// }
-///
-/// let v = create_zero_vec::<NalgebraBackend>();
-/// assert_eq!(VectorOps::len(&v), 10);
-/// ```
 pub trait LinAlgBackend<T: RealScalar>: Debug + Clone + Send + Sync + 'static {
 	type Vector: VectorOps<T>;
 	type Matrix: MatrixOps<T, Col = Self::Vector> + DecompositionOps<T>;

@@ -4,7 +4,9 @@
 //! In steady state (same computation graph), the pool covers all allocations
 //! and no heap allocation occurs.
 
-use riemannopt_core::linalg::{self, LinAlgBackend, MatrixOps, RealScalar, VectorOps};
+use riemannopt_core::linalg::{
+	self, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Size class helpers
@@ -63,7 +65,7 @@ where
 		for b in bucket..NUM_VEC_BUCKETS {
 			if let Some(pos) = self.vec_buckets[b]
 				.iter()
-				.position(|v| VectorOps::len(v) == n)
+				.position(|v| VectorView::len(v) == n)
 			{
 				let mut v = self.vec_buckets[b].swap_remove(pos);
 				v.fill(T::zero());
@@ -75,7 +77,7 @@ where
 		for b in 0..bucket {
 			if let Some(pos) = self.vec_buckets[b]
 				.iter()
-				.position(|v| VectorOps::len(v) == n)
+				.position(|v| VectorView::len(v) == n)
 			{
 				let mut v = self.vec_buckets[b].swap_remove(pos);
 				v.fill(T::zero());
@@ -87,7 +89,7 @@ where
 
 	/// Return a vector buffer to the pool for future reuse.
 	pub fn return_vec(&mut self, v: linalg::Vec<T>) {
-		let n = VectorOps::len(&v);
+		let n = VectorView::len(&v);
 		if n == 0 {
 			return;
 		}
@@ -113,8 +115,8 @@ where
 
 	/// Return a matrix buffer to the pool.
 	pub fn return_mat(&mut self, m: linalg::Mat<T>) {
-		let rows = MatrixOps::nrows(&m);
-		let cols = MatrixOps::ncols(&m);
+		let rows = MatrixView::nrows(&m);
+		let cols = MatrixView::ncols(&m);
 		if rows == 0 || cols == 0 {
 			return;
 		}

@@ -101,7 +101,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Sphere;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::linalg::{self, VectorOps};
+//! use riemannopt_core::linalg::{self, VectorOps, VectorView};
 //!
 //! // Create unit sphere in R^3
 //! let sphere = Sphere::<f64>::new(3)?;
@@ -125,7 +125,7 @@ use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, LinAlgBackend, VectorOps},
+	linalg::{self, LinAlgBackend, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -332,10 +332,10 @@ where
 	/// - `DimensionMismatch`: If x.len() ≠ ambient_dim
 	/// - `NotOnManifold`: If |‖x‖ - 1| > adaptive_tolerance
 	pub fn check_point(&self, x: &linalg::Vec<T>) -> Result<()> {
-		if VectorOps::len(x) != self.ambient_dim {
+		if VectorView::len(x) != self.ambient_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.ambient_dim,
-				VectorOps::len(x),
+				VectorView::len(x),
 			));
 		}
 
@@ -372,10 +372,10 @@ where
 	pub fn check_tangent(&self, x: &linalg::Vec<T>, v: &linalg::Vec<T>) -> Result<()> {
 		self.check_point(x)?;
 
-		if VectorOps::len(v) != self.ambient_dim {
+		if VectorView::len(v) != self.ambient_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.ambient_dim,
-				VectorOps::len(v),
+				VectorView::len(v),
 			));
 		}
 
@@ -709,7 +709,7 @@ where
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tolerance: T) -> bool {
-		if VectorOps::len(point) != self.ambient_dim {
+		if VectorView::len(point) != self.ambient_dim {
 			return false;
 		}
 		let norm_sq = point.norm_squared();
@@ -725,7 +725,7 @@ where
 		if !self.is_point_on_manifold(point, tolerance) {
 			return false;
 		}
-		if VectorOps::len(vector) != self.ambient_dim {
+		if VectorView::len(vector) != self.ambient_dim {
 			return false;
 		}
 		<T as Float>::abs(point.dot(vector)) <= tolerance
@@ -751,10 +751,10 @@ where
 		result: &mut Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<()> {
-		if VectorOps::len(point) != self.ambient_dim || VectorOps::len(vector) != self.ambient_dim {
+		if VectorView::len(point) != self.ambient_dim || VectorView::len(vector) != self.ambient_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.ambient_dim,
-				VectorOps::len(point).max(VectorOps::len(vector)),
+				VectorView::len(point).max(VectorView::len(vector)),
 			));
 		}
 
@@ -897,7 +897,7 @@ where
 		let normal = StandardNormal;
 
 		// Generate random Gaussian vector
-		if VectorOps::len(result) != self.ambient_dim {
+		if VectorView::len(result) != self.ambient_dim {
 			*result = VectorOps::zeros(self.ambient_dim);
 		}
 		for i in 0..self.ambient_dim {

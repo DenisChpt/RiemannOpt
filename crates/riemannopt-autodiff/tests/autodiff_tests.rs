@@ -221,7 +221,7 @@ fn test_complex_expression() {
 fn test_autodiff_cost_function() {
 	use riemannopt_autodiff::AutoDiffCostFunction;
 	use riemannopt_core::cost_function::CostFunction;
-	use riemannopt_core::linalg::VectorOps;
+	use riemannopt_core::linalg::{VectorOps, VectorView};
 
 	let cf = AutoDiffCostFunction::new(3, |x: Var<f64>| x.dot(x));
 	let point = VectorOps::from_slice(&[1.0_f64, 2.0, 3.0]);
@@ -231,9 +231,9 @@ fn test_autodiff_cost_function() {
 
 	let (c, g) = cf.cost_and_gradient_alloc(&point).unwrap();
 	assert!((c - 14.0).abs() < 1e-12);
-	assert!((VectorOps::get(&g, 0) - 2.0).abs() < 1e-12);
-	assert!((VectorOps::get(&g, 1) - 4.0).abs() < 1e-12);
-	assert!((VectorOps::get(&g, 2) - 6.0).abs() < 1e-12);
+	assert!((VectorView::get(&g, 0) - 2.0).abs() < 1e-12);
+	assert!((VectorView::get(&g, 1) - 4.0).abs() < 1e-12);
+	assert!((VectorView::get(&g, 2) - 6.0).abs() < 1e-12);
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn test_autodiff_with_optimizer() {
 fn test_autodiff_mat_cost_function() {
 	use riemannopt_autodiff::AutoDiffMatCostFunction;
 	use riemannopt_core::cost_function::CostFunction;
-	use riemannopt_core::linalg::{self, MatrixOps};
+	use riemannopt_core::linalg::{self, MatrixOps, MatrixView};
 
 	let cf = AutoDiffMatCostFunction::new(3, 2, |x: Var<f64>| (x * x).sum());
 
@@ -283,6 +283,6 @@ fn test_autodiff_mat_cost_function() {
 
 	let (c, g) = cf.cost_and_gradient_alloc(&point).unwrap();
 	assert!((c - 91.0).abs() < 1e-12);
-	assert!((MatrixOps::get(&g, 0, 0) - 2.0).abs() < 1e-12);
-	assert!((MatrixOps::get(&g, 2, 1) - 12.0).abs() < 1e-12);
+	assert!((MatrixView::get(&g, 0, 0) - 2.0).abs() < 1e-12);
+	assert!((MatrixView::get(&g, 2, 1) - 12.0).abs() < 1e-12);
 }

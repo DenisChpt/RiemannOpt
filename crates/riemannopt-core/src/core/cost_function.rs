@@ -14,7 +14,7 @@
 
 use crate::{
 	error::{ManifoldError, Result},
-	linalg::{self, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, LinAlgBackend, MatrixOps, VectorOps, VectorView},
 	types::Scalar,
 };
 use num_traits::Float;
@@ -236,15 +236,15 @@ where
 
 	fn cost(&self, point: &Self::Point) -> Result<T> {
 		let ax = self.a.mat_vec(point);
-		let quad_term = VectorOps::dot(point, &ax) * Scalar::from_f64(0.5);
-		let linear_term = VectorOps::dot(&self.b, point);
+		let quad_term = VectorView::dot(point, &ax) * Scalar::from_f64(0.5);
+		let linear_term = VectorView::dot(&self.b, point);
 		Ok(quad_term + linear_term + self.c)
 	}
 
 	fn cost_and_gradient_alloc(&self, point: &Self::Point) -> Result<(T, Self::TangentVector)> {
 		let ax = self.a.mat_vec(point);
-		let cost = VectorOps::dot(point, &ax) * Scalar::from_f64(0.5)
-			+ VectorOps::dot(&self.b, point)
+		let cost = VectorView::dot(point, &ax) * Scalar::from_f64(0.5)
+			+ VectorView::dot(&self.b, point)
 			+ self.c;
 		let gradient = VectorOps::add(&ax, &self.b);
 		Ok((cost, gradient))
@@ -259,7 +259,7 @@ where
 		let ax = self.a.mat_vec(point);
 		VectorOps::copy_from(gradient, &ax);
 		VectorOps::add_assign(gradient, &self.b);
-		let cost = VectorOps::dot(point, gradient) * Scalar::from_f64(0.5) + self.c;
+		let cost = VectorView::dot(point, gradient) * Scalar::from_f64(0.5) + self.c;
 		Ok(cost)
 	}
 
@@ -284,13 +284,13 @@ where
 	}
 
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
-		let n = VectorOps::len(point);
+		let n = VectorView::len(point);
 		let mut gradient = linalg::Vec::<T>::zeros(n);
 		let h = T::fd_epsilon();
 		let mut perturbed = point.clone();
 
 		for i in 0..n {
-			let orig = VectorOps::get(&perturbed, i);
+			let orig = VectorView::get(&perturbed, i);
 
 			*VectorOps::get_mut(&mut perturbed, i) = orig + h;
 			let f_plus = self.cost(&perturbed)?;
@@ -445,7 +445,7 @@ impl DerivativeChecker {
 		let fd_grad = cost_fn.gradient_fd_alloc(point)?;
 
 		let diff = VectorOps::sub(&analytical_grad, &fd_grad);
-		let max_error = VectorOps::iter(&diff)
+		let max_error = VectorView::iter(&diff)
 			.map(|x| <T as Float>::abs(x))
 			.fold(T::zero(), |a, b| <T as Float>::max(a, b));
 
@@ -456,7 +456,7 @@ impl DerivativeChecker {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::linalg::{self, VectorOps};
+	use crate::linalg::{self, MatrixView, VectorView};
 
 	#[test]
 	fn test_quadratic_cost() {
@@ -468,7 +468,7 @@ mod tests {
 
 		let gradient = cost.gradient(&point).unwrap();
 		for i in 0..3 {
-			assert!((VectorOps::get(&gradient, i) - VectorOps::get(&point, i)).abs() < 1e-14);
+			assert!((VectorView::get(&gradient, i) - VectorView::get(&point, i)).abs() < 1e-14);
 		}
 
 		let hessian = cost.hessian(&point).unwrap();
@@ -493,8 +493,8 @@ mod tests {
 		assert!((value - 5.0).abs() < 1e-14);
 
 		let gradient = cost.gradient(&point).unwrap();
-		let g0: f64 = VectorOps::get(&gradient, 0);
-		let g1: f64 = VectorOps::get(&gradient, 1);
+		let g0: f64 = VectorView::get(&gradient, 0);
+		let g1: f64 = VectorView::get(&gradient, 1);
 		assert!((g0 - 3.0).abs() < 1e-14);
 		assert!((g1 - 2.0).abs() < 1e-14);
 	}
@@ -507,7 +507,7 @@ mod tests {
 		let (value, gradient) = cost.cost_and_gradient_alloc(&point).unwrap();
 		assert!((value - 7.0).abs() < 1e-14);
 		for i in 0..3 {
-			assert!((VectorOps::get(&gradient, i) - VectorOps::get(&point, i)).abs() < 1e-14);
+			assert!((VectorView::get(&gradient, i) - VectorView::get(&point, i)).abs() < 1e-14);
 		}
 	}
 
@@ -519,7 +519,7 @@ mod tests {
 
 		let hv = cost.hessian_vector_product(&point, &vector).unwrap();
 		for i in 0..3 {
-			assert!((VectorOps::get(&hv, i) - VectorOps::get(&vector, i)).abs() < 1e-14);
+			assert!((VectorView::get(&hv, i) - VectorView::get(&vector, i)).abs() < 1e-14);
 		}
 	}
 
@@ -529,8 +529,8 @@ mod tests {
 		let point = linalg::Vec::<f64>::from_slice(&[1.0, 2.0]);
 
 		let fd_grad = cost.gradient_fd_alloc(&point).unwrap();
-		assert!((VectorOps::get(&fd_grad, 0) - 1.0).abs() < 1e-6);
-		assert!((VectorOps::get(&fd_grad, 1) - 2.0).abs() < 1e-6);
+		assert!((VectorView::get(&fd_grad, 0) - 1.0).abs() < 1e-6);
+		assert!((VectorView::get(&fd_grad, 1) - 2.0).abs() < 1e-6);
 	}
 
 	#[test]

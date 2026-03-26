@@ -1,7 +1,7 @@
 //! Integration tests for the SPD manifold
 
 use approx::assert_relative_eq;
-use riemannopt_core::linalg::{self, DecompositionOps, MatrixOps, VectorOps};
+use riemannopt_core::linalg::{self, DecompositionOps, MatrixOps, MatrixView, VectorOps, VectorView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::SPD;
 
@@ -44,12 +44,12 @@ fn test_spd_projection() {
 	assert!(spd.is_point_on_manifold(&proj, 1e-8));
 
 	// Result should be symmetric
-	let diff = MatrixOps::sub(&proj, &MatrixOps::transpose(&proj));
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
+	let diff = MatrixOps::sub(&proj, &MatrixOps::transpose_to_owned(&proj));
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-14);
 
 	// Result should be positive definite
 	let eigen = DecompositionOps::symmetric_eigen(&proj);
-	for val in VectorOps::iter(&eigen.eigenvalues) {
+	for val in VectorView::iter(&eigen.eigenvalues) {
 		assert!(val > 0.0);
 	}
 }
@@ -73,9 +73,9 @@ fn test_spd_tangent_projection() {
 		.unwrap();
 
 	// Tangent vector should be symmetric
-	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(
+	let symmetry_error = MatrixView::norm(&MatrixOps::sub(
 		&v_tangent,
-		&MatrixOps::transpose(&v_tangent),
+		&MatrixOps::transpose_to_owned(&v_tangent),
 	));
 	assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-14);
 }
@@ -105,7 +105,7 @@ fn test_spd_retraction() {
 	let mut p_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	spd.retract(&p, &zero, &mut p_recovered, &mut ws).unwrap();
 	let diff = MatrixOps::sub(&p, &p_recovered);
-	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-10);
+	assert_relative_eq!(MatrixView::norm(&diff), 0.0, epsilon = 1e-10);
 }
 
 #[test]
@@ -144,12 +144,12 @@ fn test_spd_random_point() {
 		assert!(spd.is_point_on_manifold(&p, 1e-8));
 
 		// Check symmetry
-		let symmetry_error = MatrixOps::norm(&MatrixOps::sub(&p, &MatrixOps::transpose(&p)));
+		let symmetry_error = MatrixView::norm(&MatrixOps::sub(&p, &MatrixOps::transpose_to_owned(&p)));
 		assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-14);
 
 		// Check positive definiteness
 		let eigen = DecompositionOps::symmetric_eigen(&p);
-		for val in VectorOps::iter(&eigen.eigenvalues) {
+		for val in VectorView::iter(&eigen.eigenvalues) {
 			assert!(val > 0.0);
 		}
 	}
@@ -167,7 +167,7 @@ fn test_spd_euclidean_to_riemannian_gradient() {
 		((i + 1) as f64) * 0.1 + ((j + 1) as f64) * 0.05
 	});
 	let egrad = MatrixOps::scale_by(
-		&MatrixOps::add(&egrad_raw, &MatrixOps::transpose(&egrad_raw)),
+		&MatrixOps::add(&egrad_raw, &MatrixOps::transpose_to_owned(&egrad_raw)),
 		0.5,
 	);
 
@@ -177,7 +177,7 @@ fn test_spd_euclidean_to_riemannian_gradient() {
 		.unwrap();
 
 	// Result should be symmetric (in tangent space)
-	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(&rgrad, &MatrixOps::transpose(&rgrad)));
+	let symmetry_error = MatrixView::norm(&MatrixOps::sub(&rgrad, &MatrixOps::transpose_to_owned(&rgrad)));
 	assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-10);
 }
 
@@ -215,13 +215,13 @@ fn test_spd_parallel_transport() {
 	Manifold::<f64>::parallel_transport(&spd, &p, &p, &v, &mut transported, &mut ws).unwrap();
 
 	// Transported vector should be symmetric (tangent space constraint)
-	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(
+	let symmetry_error = MatrixView::norm(&MatrixOps::sub(
 		&transported,
-		&MatrixOps::transpose(&transported),
+		&MatrixOps::transpose_to_owned(&transported),
 	));
 	assert_relative_eq!(symmetry_error, 0.0, epsilon = 1e-8);
 
 	// For identity matrix self-transport, E = I, so transport preserves vector
-	let error = MatrixOps::norm(&MatrixOps::sub(&transported, &v));
+	let error = MatrixView::norm(&MatrixOps::sub(&transported, &v));
 	assert_relative_eq!(error, 0.0, epsilon = 1e-8);
 }

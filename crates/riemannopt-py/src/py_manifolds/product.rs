@@ -6,7 +6,7 @@
 use numpy::PyArrayMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
-use riemannopt_core::linalg::{MatrixOps, VectorOps};
+use riemannopt_core::linalg::{MatrixOps, MatrixView, VectorOps, VectorView};
 
 use super::base::{PointType, PyManifoldBase};
 use crate::{
@@ -553,15 +553,15 @@ impl PyProductManifold {
 			let data: std::vec::Vec<f64> =
 				if let Ok(arr) = component.downcast::<numpy::PyArray1<f64>>() {
 					let v = numpy_to_vec(arr.readonly())?;
-					(0..VectorOps::len(&v))
-						.map(|i| VectorOps::get(&v, i))
+					(0..VectorView::len(&v))
+						.map(|i| VectorView::get(&v, i))
 						.collect()
 				} else if let Ok(arr) = component.downcast::<numpy::PyArray2<f64>>() {
 					let mat = numpy_to_mat(arr.readonly())?;
 					let mut d = std::vec::Vec::with_capacity(mat.nrows() * mat.ncols());
 					for j in 0..mat.ncols() {
 						for i in 0..mat.nrows() {
-							d.push(MatrixOps::get(&mat, i, j));
+							d.push(MatrixView::get(&mat, i, j));
 						}
 					}
 					d
@@ -599,7 +599,7 @@ impl PyProductManifold {
 
 			// Extract the component vector
 			let component_vec: Vec64 =
-				VectorOps::from_fn(ambient_dim, |i| VectorOps::get(vector, offset + i));
+				VectorOps::from_fn(ambient_dim, |i| VectorView::get(vector, offset + i));
 
 			// Check if this manifold uses matrix representation
 			let point_type: String = manifold
@@ -620,13 +620,13 @@ impl PyProductManifold {
 							// Stiefel, Grassmann
 							let p: usize = p.extract(py)?;
 							let mat: Mat64 = MatrixOps::from_fn(n, p, |i, j| {
-								VectorOps::get(&component_vec, j * n + i)
+								VectorView::get(&component_vec, j * n + i)
 							});
 							mat_to_numpy(py, &mat)?.into()
 						} else {
 							// SPD, PSDCone - square matrices
 							let mat: Mat64 = MatrixOps::from_fn(n, n, |i, j| {
-								VectorOps::get(&component_vec, j * n + i)
+								VectorView::get(&component_vec, j * n + i)
 							});
 							mat_to_numpy(py, &mat)?.into()
 						}
@@ -634,7 +634,7 @@ impl PyProductManifold {
 						// Oblique manifold
 						let shape: (usize, usize) = shape.extract(py)?;
 						let mat: Mat64 = MatrixOps::from_fn(shape.0, shape.1, |i, j| {
-							VectorOps::get(&component_vec, j * shape.0 + i)
+							VectorView::get(&component_vec, j * shape.0 + i)
 						});
 						crate::array_utils::mat_to_numpy(py, &mat)?.into()
 					} else {

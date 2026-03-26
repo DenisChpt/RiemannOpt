@@ -79,7 +79,7 @@ use std::marker::PhantomData;
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, LinAlgBackend, VectorOps},
+	linalg::{self, LinAlgBackend, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -222,8 +222,8 @@ where
 		let mut test2 = VectorOps::zeros(0);
 		manifold1.random_point(&mut test1).unwrap();
 		manifold2.random_point(&mut test2).unwrap();
-		let dim1 = VectorOps::len(&test1);
-		let dim2 = VectorOps::len(&test2);
+		let dim1 = VectorView::len(&test1);
+		let dim2 = VectorView::len(&test2);
 		let total_dim = dim1 + dim2;
 
 		Self {
@@ -271,17 +271,17 @@ where
 		&self,
 		vector: &linalg::Vec<T>,
 	) -> Result<(linalg::Vec<T>, linalg::Vec<T>)> {
-		if VectorOps::len(vector) != self.total_dim {
+		if VectorView::len(vector) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				VectorOps::len(vector),
+				VectorView::len(vector),
 			));
 		}
 
 		let comp1 =
-			<linalg::Vec<T> as VectorOps<T>>::from_fn(self.dim1, |i| VectorOps::get(vector, i));
+			<linalg::Vec<T> as VectorOps<T>>::from_fn(self.dim1, |i| VectorView::get(vector, i));
 		let comp2 = <linalg::Vec<T> as VectorOps<T>>::from_fn(self.dim2, |i| {
-			VectorOps::get(vector, self.dim1 + i)
+			VectorView::get(vector, self.dim1 + i)
 		});
 
 		Ok((comp1, comp2))
@@ -306,25 +306,25 @@ where
 		comp1: &linalg::Vec<T>,
 		comp2: &linalg::Vec<T>,
 	) -> Result<linalg::Vec<T>> {
-		if VectorOps::len(comp1) != self.dim1 {
+		if VectorView::len(comp1) != self.dim1 {
 			return Err(ManifoldError::dimension_mismatch(
 				self.dim1,
-				VectorOps::len(comp1),
+				VectorView::len(comp1),
 			));
 		}
-		if VectorOps::len(comp2) != self.dim2 {
+		if VectorView::len(comp2) != self.dim2 {
 			return Err(ManifoldError::dimension_mismatch(
 				self.dim2,
-				VectorOps::len(comp2),
+				VectorView::len(comp2),
 			));
 		}
 
 		let mut combined = <linalg::Vec<T> as VectorOps<T>>::zeros(self.total_dim);
 		for i in 0..self.dim1 {
-			*VectorOps::get_mut(&mut combined, i) = VectorOps::get(comp1, i);
+			*VectorOps::get_mut(&mut combined, i) = VectorView::get(comp1, i);
 		}
 		for i in 0..self.dim2 {
-			*VectorOps::get_mut(&mut combined, self.dim1 + i) = VectorOps::get(comp2, i);
+			*VectorOps::get_mut(&mut combined, self.dim1 + i) = VectorView::get(comp2, i);
 		}
 
 		Ok(combined)
@@ -339,26 +339,26 @@ where
 		comp1: &mut linalg::Vec<T>,
 		comp2: &mut linalg::Vec<T>,
 	) -> Result<()> {
-		if VectorOps::len(vector) != self.total_dim {
+		if VectorView::len(vector) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				VectorOps::len(vector),
+				VectorView::len(vector),
 			));
 		}
 
 		// Ensure output vectors have correct size
-		if VectorOps::len(comp1) != self.dim1 {
+		if VectorView::len(comp1) != self.dim1 {
 			*comp1 = VectorOps::zeros(self.dim1);
 		}
-		if VectorOps::len(comp2) != self.dim2 {
+		if VectorView::len(comp2) != self.dim2 {
 			*comp2 = VectorOps::zeros(self.dim2);
 		}
 
 		for i in 0..self.dim1 {
-			*VectorOps::get_mut(comp1, i) = VectorOps::get(vector, i);
+			*VectorOps::get_mut(comp1, i) = VectorView::get(vector, i);
 		}
 		for i in 0..self.dim2 {
-			*VectorOps::get_mut(comp2, i) = VectorOps::get(vector, self.dim1 + i);
+			*VectorOps::get_mut(comp2, i) = VectorView::get(vector, self.dim1 + i);
 		}
 
 		Ok(())
@@ -373,29 +373,29 @@ where
 		comp2: &linalg::Vec<T>,
 		result: &mut linalg::Vec<T>,
 	) -> Result<()> {
-		if VectorOps::len(comp1) != self.dim1 {
+		if VectorView::len(comp1) != self.dim1 {
 			return Err(ManifoldError::dimension_mismatch(
 				self.dim1,
-				VectorOps::len(comp1),
+				VectorView::len(comp1),
 			));
 		}
-		if VectorOps::len(comp2) != self.dim2 {
+		if VectorView::len(comp2) != self.dim2 {
 			return Err(ManifoldError::dimension_mismatch(
 				self.dim2,
-				VectorOps::len(comp2),
+				VectorView::len(comp2),
 			));
 		}
 
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.total_dim {
+		if VectorView::len(result) != self.total_dim {
 			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		for i in 0..self.dim1 {
-			*VectorOps::get_mut(result, i) = VectorOps::get(comp1, i);
+			*VectorOps::get_mut(result, i) = VectorView::get(comp1, i);
 		}
 		for i in 0..self.dim2 {
-			*VectorOps::get_mut(result, self.dim1 + i) = VectorOps::get(comp2, i);
+			*VectorOps::get_mut(result, self.dim1 + i) = VectorView::get(comp2, i);
 		}
 
 		Ok(())
@@ -462,7 +462,7 @@ where
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-		if VectorOps::len(point) != self.total_dim {
+		if VectorView::len(point) != self.total_dim {
 			return false;
 		}
 
@@ -481,7 +481,7 @@ where
 		vector: &Self::TangentVector,
 		tol: T,
 	) -> bool {
-		if VectorOps::len(point) != self.total_dim || VectorOps::len(vector) != self.total_dim {
+		if VectorView::len(point) != self.total_dim || VectorView::len(vector) != self.total_dim {
 			return false;
 		}
 
@@ -496,16 +496,16 @@ where
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.total_dim {
+		if VectorView::len(result) != self.total_dim {
 			*result = VectorOps::zeros(self.total_dim);
 		}
 
 		// Handle dimension mismatch by padding or truncating
-		let padded_point = if VectorOps::len(point) != self.total_dim {
+		let padded_point = if VectorView::len(point) != self.total_dim {
 			let mut p = <linalg::Vec<T> as VectorOps<T>>::zeros(self.total_dim);
-			let copy_len = VectorOps::len(point).min(self.total_dim);
+			let copy_len = VectorView::len(point).min(self.total_dim);
 			for i in 0..copy_len {
-				*VectorOps::get_mut(&mut p, i) = VectorOps::get(point, i);
+				*VectorOps::get_mut(&mut p, i) = VectorView::get(point, i);
 			}
 			p
 		} else {
@@ -655,15 +655,15 @@ where
 	}
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
-		if VectorOps::len(point) != self.total_dim {
+		if VectorView::len(point) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				VectorOps::len(point),
+				VectorView::len(point),
 			));
 		}
 
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.total_dim {
+		if VectorView::len(result) != self.total_dim {
 			*result = VectorOps::zeros(self.total_dim);
 		}
 
@@ -680,10 +680,10 @@ where
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		if VectorOps::len(x) != self.total_dim || VectorOps::len(y) != self.total_dim {
+		if VectorView::len(x) != self.total_dim || VectorView::len(y) != self.total_dim {
 			return Err(ManifoldError::dimension_mismatch(
 				self.total_dim,
-				VectorOps::len(x).max(VectorOps::len(y)),
+				VectorView::len(x).max(VectorView::len(y)),
 			));
 		}
 
