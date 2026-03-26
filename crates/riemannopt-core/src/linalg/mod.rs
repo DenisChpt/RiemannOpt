@@ -40,7 +40,10 @@ pub mod faer_backend;
 // ── Re-exports ───────────────────────────────────────────────────────────
 
 pub use nalgebra_backend::NalgebraBackend;
-pub use traits::{DecompositionOps, LinAlgBackend, MatOf, MatrixOps, RealScalar, VecOf, VectorOps};
+pub use traits::{
+	DecompositionOps, LinAlgBackend, MatOf, MatrixOps, MatrixView, RealScalar, VecOf, VectorOps,
+	VectorView,
+};
 pub use types::{CholeskyResult, EigenResult, QrResult, SvdResult};
 
 #[cfg(feature = "faer-backend")]

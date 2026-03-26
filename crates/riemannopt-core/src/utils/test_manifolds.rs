@@ -7,7 +7,7 @@
 
 use crate::{
 	error::Result,
-	linalg::{self, LinAlgBackend, VectorOps},
+	linalg::{self, LinAlgBackend, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -78,7 +78,7 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<T> {
-		Ok(VectorOps::dot(u, v))
+		Ok(VectorView::dot(u, v))
 	}
 
 	fn retract(
@@ -132,7 +132,7 @@ where
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
 		let diff = VectorOps::sub(y, x);
-		Ok(VectorOps::norm(&diff))
+		Ok(VectorView::norm(&diff))
 	}
 
 	fn scale_tangent(
@@ -190,7 +190,7 @@ where
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tolerance: T) -> bool {
-		<T as Float>::abs(VectorOps::norm_squared(point) - T::one()) < tolerance
+		<T as Float>::abs(VectorView::norm_squared(point) - T::one()) < tolerance
 	}
 
 	fn is_vector_in_tangent_space(
@@ -199,11 +199,11 @@ where
 		vector: &Self::TangentVector,
 		tolerance: T,
 	) -> bool {
-		<T as Float>::abs(VectorOps::dot(point, vector)) < tolerance
+		<T as Float>::abs(VectorView::dot(point, vector)) < tolerance
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		let norm = VectorOps::norm(point);
+		let norm = VectorView::norm(point);
 		if norm > T::epsilon() {
 			VectorOps::copy_from(result, point);
 			VectorOps::scale_mut(result, T::one() / norm);
@@ -222,7 +222,7 @@ where
 		_ws: &mut (),
 	) -> Result<()> {
 		// Project to tangent space: v - <v, p>p
-		let inner = VectorOps::dot(point, vector);
+		let inner = VectorView::dot(point, vector);
 		VectorOps::copy_from(result, vector);
 		result.axpy(T::zero() - inner, point, T::one());
 		Ok(())
@@ -235,7 +235,7 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<T> {
-		Ok(VectorOps::dot(u, v))
+		Ok(VectorView::dot(u, v))
 	}
 
 	fn retract(
@@ -280,7 +280,7 @@ where
 		*result = linalg::Vec::<T>::from_fn(self.dim, |_| {
 			<T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
 		});
-		let norm = VectorOps::norm(result);
+		let norm = VectorView::norm(result);
 		if norm > T::epsilon() {
 			VectorOps::scale_mut(result, T::one() / norm);
 		} else {
@@ -298,7 +298,7 @@ where
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
 		// Geodesic distance on sphere: arccos(<x, y>)
-		let inner = VectorOps::dot(x, y);
+		let inner = VectorView::dot(x, y);
 		let inner = <T as Float>::max(inner, -T::one());
 		let inner = <T as Float>::min(inner, T::one());
 		Ok(<T as Float>::acos(inner))
@@ -395,7 +395,7 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<T> {
-		Ok(VectorOps::dot(u, v))
+		Ok(VectorView::dot(u, v))
 	}
 
 	fn retract(
@@ -445,7 +445,7 @@ where
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
 		let diff = VectorOps::sub(y, x);
-		Ok(VectorOps::norm(&diff))
+		Ok(VectorView::norm(&diff))
 	}
 
 	fn scale_tangent(

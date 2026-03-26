@@ -101,7 +101,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::PSDCone;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::linalg::{self, VectorOps, MatrixOps, DecompositionOps};
+//! use riemannopt_core::linalg::{self, VectorView, MatrixOps, DecompositionOps};
 //!
 //! // Create S⁺(3) - 3×3 PSD matrices
 //! let psd_cone = PSDCone::new(3)?;
@@ -115,7 +115,7 @@
 //! psd_cone.vector_to_matrix::<f64>(&x, &mut x_mat);
 //! let eigenvalues: linalg::Vec<f64> = DecompositionOps::symmetric_eigen(&x_mat).eigenvalues;
 //! for i in 0..eigenvalues.len() {
-//!     assert!(VectorOps::get(&eigenvalues, i) >= -1e-10);
+//!     assert!(VectorView::get(&eigenvalues, i) >= -1e-10);
 //! }
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
@@ -125,7 +125,7 @@ use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -278,17 +278,17 @@ impl PSDCone {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(x) != self.n || MatrixOps::ncols(x) != self.n {
+		if MatrixView::nrows(x) != self.n || MatrixView::ncols(x) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", MatrixOps::nrows(x), MatrixOps::ncols(x)),
+				format!("{}×{}", MatrixView::nrows(x), MatrixView::ncols(x)),
 			));
 		}
 
 		// Check symmetry
 		for i in 0..self.n {
 			for j in i + 1..self.n {
-				if <T as Float>::abs(MatrixOps::get(x, i, j) - MatrixOps::get(x, j, i))
+				if <T as Float>::abs(MatrixView::get(x, i, j) - MatrixView::get(x, j, i))
 					> <T as Scalar>::from_f64(self.tolerance)
 				{
 					return Err(ManifoldError::invalid_point(format!(
@@ -297,7 +297,7 @@ impl PSDCone {
 						j,
 						j,
 						i,
-						<T as Float>::abs(MatrixOps::get(x, i, j) - MatrixOps::get(x, j, i)),
+						<T as Float>::abs(MatrixView::get(x, i, j) - MatrixView::get(x, j, i)),
 						self.tolerance
 					)));
 				}
@@ -307,7 +307,7 @@ impl PSDCone {
 		// Check eigenvalues
 		let eigen = DecompositionOps::symmetric_eigen(x);
 		let min_eigenvalue =
-			VectorOps::iter(&eigen.eigenvalues).fold(<T as Float>::max_value(), |min, val| {
+			VectorView::iter(&eigen.eigenvalues).fold(<T as Float>::max_value(), |min, val| {
 				if val < min {
 					val
 				} else {
@@ -366,9 +366,9 @@ impl PSDCone {
 		for i in 0..n {
 			for j in i..n {
 				if i == j {
-					*MatrixOps::get_mut(mat, i, j) = VectorOps::get(vec, idx);
+					*MatrixOps::get_mut(mat, i, j) = VectorView::get(vec, idx);
 				} else {
-					let val = VectorOps::get(vec, idx)
+					let val = VectorView::get(vec, idx)
 						/ <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
 					*MatrixOps::get_mut(mat, i, j) = val;
 					*MatrixOps::get_mut(mat, j, i) = val;
@@ -388,9 +388,9 @@ impl PSDCone {
 		for i in 0..n {
 			for j in i..n {
 				if i == j {
-					*VectorOps::get_mut(vec, idx) = MatrixOps::get(mat, i, j);
+					*VectorOps::get_mut(vec, idx) = MatrixView::get(mat, i, j);
 				} else {
-					*VectorOps::get_mut(vec, idx) = MatrixOps::get(mat, i, j)
+					*VectorOps::get_mut(vec, idx) = MatrixView::get(mat, i, j)
 						* <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
 				}
 				idx += 1;
@@ -408,7 +408,7 @@ impl PSDCone {
 		let half = <T as Scalar>::from_f64(0.5);
 		for i in 0..self.n {
 			for j in i..self.n {
-				let avg = half * (MatrixOps::get(mat, i, j) + MatrixOps::get(mat, j, i));
+				let avg = half * (MatrixView::get(mat, i, j) + MatrixView::get(mat, j, i));
 				*MatrixOps::get_mut(&mut sym, i, j) = avg;
 				*MatrixOps::get_mut(&mut sym, j, i) = avg;
 			}
@@ -418,8 +418,8 @@ impl PSDCone {
 		let mut eigen = DecompositionOps::symmetric_eigen(&sym);
 
 		// Project eigenvalues to non-negative (in-place, no clone)
-		for i in 0..VectorOps::len(&eigen.eigenvalues) {
-			if VectorOps::get(&eigen.eigenvalues, i) < T::zero() {
+		for i in 0..VectorView::len(&eigen.eigenvalues) {
+			if VectorView::get(&eigen.eigenvalues, i) < T::zero() {
 				*VectorOps::get_mut(&mut eigen.eigenvalues, i) = T::zero();
 			}
 		}
@@ -431,7 +431,7 @@ impl PSDCone {
 		let mut temp = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 		temp.scale_columns(q, &eigen.eigenvalues);
 		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		out.gemm_bt(T::one(), &temp, q, T::zero());
+		out.gemm_bt(T::one(), temp.as_view(), q.as_view(), T::zero());
 		out
 	}
 
@@ -443,7 +443,7 @@ impl PSDCone {
 		// Check symmetry
 		for i in 0..self.n {
 			for j in i + 1..self.n {
-				if <T as Float>::abs(MatrixOps::get(mat, i, j) - MatrixOps::get(mat, j, i)) > tol {
+				if <T as Float>::abs(MatrixView::get(mat, i, j) - MatrixView::get(mat, j, i)) > tol {
 					return false;
 				}
 			}
@@ -452,7 +452,7 @@ impl PSDCone {
 		// Check positive semi-definiteness
 		let eigen = DecompositionOps::symmetric_eigen(mat);
 		let threshold = if self.strict { tol } else { -tol };
-		let result = VectorOps::iter(&eigen.eigenvalues).all(|lambda| lambda >= threshold);
+		let result = VectorView::iter(&eigen.eigenvalues).all(|lambda| lambda >= threshold);
 		result
 	}
 
@@ -476,10 +476,10 @@ impl PSDCone {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(mat) != self.n || MatrixOps::ncols(mat) != self.n {
+		if MatrixView::nrows(mat) != self.n || MatrixView::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", MatrixOps::nrows(mat), MatrixOps::ncols(mat)),
+				format!("{}×{}", MatrixView::nrows(mat), MatrixView::ncols(mat)),
 			));
 		}
 
@@ -506,10 +506,10 @@ impl PSDCone {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(mat) != self.n || MatrixOps::ncols(mat) != self.n {
+		if MatrixView::nrows(mat) != self.n || MatrixView::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", MatrixOps::nrows(mat), MatrixOps::ncols(mat)),
+				format!("{}×{}", MatrixView::nrows(mat), MatrixView::ncols(mat)),
 			));
 		}
 
@@ -518,7 +518,7 @@ impl PSDCone {
 		let mut norm_sq = T::zero();
 		for i in 0..self.n {
 			for j in 0..self.n {
-				let d = MatrixOps::get(mat, i, j) - MatrixOps::get(&projected, i, j);
+				let d = MatrixView::get(mat, i, j) - MatrixView::get(&projected, i, j);
 				norm_sq = norm_sq + d * d;
 			}
 		}
@@ -532,10 +532,10 @@ impl PSDCone {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		if MatrixOps::nrows(mat) != self.n || MatrixOps::ncols(mat) != self.n {
+		if MatrixView::nrows(mat) != self.n || MatrixView::ncols(mat) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}×{}", self.n, self.n),
-				format!("{}×{}", MatrixOps::nrows(mat), MatrixOps::ncols(mat)),
+				format!("{}×{}", MatrixView::nrows(mat), MatrixView::ncols(mat)),
 			));
 		}
 
@@ -544,7 +544,7 @@ impl PSDCone {
 		let half = <T as Scalar>::from_f64(0.5);
 		for i in 0..self.n {
 			for j in i..self.n {
-				let avg = half * (MatrixOps::get(mat, i, j) + MatrixOps::get(mat, j, i));
+				let avg = half * (MatrixView::get(mat, i, j) + MatrixView::get(mat, j, i));
 				*MatrixOps::get_mut(&mut sym, i, j) = avg;
 				*MatrixOps::get_mut(&mut sym, j, i) = avg;
 			}
@@ -552,7 +552,7 @@ impl PSDCone {
 		let eigen = DecompositionOps::symmetric_eigen(&sym);
 
 		Ok(
-			VectorOps::iter(&eigen.eigenvalues).fold(<T as Float>::max_value(), |min, val| {
+			VectorView::iter(&eigen.eigenvalues).fold(<T as Float>::max_value(), |min, val| {
 				if val < min {
 					val
 				} else {
@@ -588,7 +588,7 @@ where
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-		if VectorOps::len(point) != self.n * (self.n + 1) / 2 {
+		if VectorView::len(point) != self.n * (self.n + 1) / 2 {
 			return false;
 		}
 
@@ -607,7 +607,7 @@ where
 			return false;
 		}
 
-		if VectorOps::len(vector) != self.n * (self.n + 1) / 2 {
+		if VectorView::len(vector) != self.n * (self.n + 1) / 2 {
 			return false;
 		}
 
@@ -619,7 +619,7 @@ where
 		// Check symmetry
 		for i in 0..self.n {
 			for j in i + 1..self.n {
-				if <T as Float>::abs(MatrixOps::get(&mat, i, j) - MatrixOps::get(&mat, j, i)) > tol
+				if <T as Float>::abs(MatrixView::get(&mat, i, j) - MatrixView::get(&mat, j, i)) > tol
 				{
 					return false;
 				}
@@ -637,22 +637,22 @@ where
 		let eigen = DecompositionOps::symmetric_eigen(&x_mat);
 
 		// Find near-zero eigenvalues (boundary)
-		for i in 0..VectorOps::len(&eigen.eigenvalues) {
-			let lambda = VectorOps::get(&eigen.eigenvalues, i);
+		for i in 0..VectorView::len(&eigen.eigenvalues) {
+			let lambda = VectorView::get(&eigen.eigenvalues, i);
 			if <T as Float>::abs(lambda) < <T as Scalar>::from_f64(self.tolerance) {
 				// For zero eigenvalue, check v^T * mat * v >= 0
 				// Compute directly without extracting column or allocating mat*v
-				let n = MatrixOps::nrows(&eigen.eigenvectors);
+				let n = MatrixView::nrows(&eigen.eigenvectors);
 				let mut vt_mat_v = T::zero();
 				for r in 0..n {
 					let mut row_sum = T::zero();
 					for c in 0..n {
 						row_sum = row_sum
-							+ MatrixOps::get(&mat, r, c)
-								* MatrixOps::get(&eigen.eigenvectors, c, i);
+							+ MatrixView::get(&mat, r, c)
+								* MatrixView::get(&eigen.eigenvectors, c, i);
 					}
 					vt_mat_v =
-						vt_mat_v + MatrixOps::get(&eigen.eigenvectors, r, i) * row_sum;
+						vt_mat_v + MatrixView::get(&eigen.eigenvectors, r, i) * row_sum;
 				}
 				if vt_mat_v < -tol {
 					return false;
@@ -666,19 +666,19 @@ where
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		let dim = self.n * (self.n + 1) / 2;
 		// Ensure result has correct size
-		if VectorOps::len(result) != dim {
+		if VectorView::len(result) != dim {
 			*result = VectorOps::zeros(dim);
 		}
 
 		let mut mat = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
-		if VectorOps::len(point) == self.n * self.n {
+		if VectorView::len(point) == self.n * self.n {
 			// If given as full matrix, reshape
 			mat = <linalg::Mat<T> as MatrixOps<T>>::from_column_slice(
 				self.n,
 				self.n,
 				VectorOps::as_slice(point),
 			);
-		} else if VectorOps::len(point) == dim {
+		} else if VectorView::len(point) == dim {
 			self.vec_to_mat(point, &mut mat);
 		}
 		// else: wrong size, mat stays as zero matrix
@@ -696,10 +696,10 @@ where
 	) -> Result<()> {
 		let dim = self.n * (self.n + 1) / 2;
 
-		if VectorOps::len(point) != dim || VectorOps::len(vector) != dim {
+		if VectorView::len(point) != dim || VectorView::len(vector) != dim {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}", dim),
-				format!("{}", VectorOps::len(point).max(VectorOps::len(vector))),
+				format!("{}", VectorView::len(point).max(VectorView::len(vector))),
 			));
 		}
 
@@ -717,7 +717,7 @@ where
 			for i in 0..self.n {
 				for j in i..self.n {
 					let avg =
-						half * (MatrixOps::get(&ws.mat_b, i, j) + MatrixOps::get(&ws.mat_b, j, i));
+						half * (MatrixView::get(&ws.mat_b, i, j) + MatrixView::get(&ws.mat_b, j, i));
 					*MatrixOps::get_mut(&mut ws.mat_b, i, j) = avg;
 					*MatrixOps::get_mut(&mut ws.mat_b, j, i) = avg;
 				}
@@ -726,8 +726,8 @@ where
 			self.vec_to_mat(point, &mut ws.mat_a);
 			let eigen = DecompositionOps::symmetric_eigen(&ws.mat_a);
 
-			for i in 0..VectorOps::len(&eigen.eigenvalues) {
-				let lambda = VectorOps::get(&eigen.eigenvalues, i);
+			for i in 0..VectorView::len(&eigen.eigenvalues) {
+				let lambda = VectorView::get(&eigen.eigenvalues, i);
 				if <T as Float>::abs(lambda) < <T as Scalar>::from_f64(self.tolerance) {
 					// Compute v^T mat_b v via element access (avoid column() alloc)
 					let mut vt_sym_v = T::zero();
@@ -735,20 +735,20 @@ where
 						let mut row_sum = T::zero();
 						for c in 0..self.n {
 							row_sum = row_sum
-								+ MatrixOps::get(&ws.mat_b, r, c)
-									* MatrixOps::get(&eigen.eigenvectors, c, i);
+								+ MatrixView::get(&ws.mat_b, r, c)
+									* MatrixView::get(&eigen.eigenvectors, c, i);
 						}
-						vt_sym_v = vt_sym_v + MatrixOps::get(&eigen.eigenvectors, r, i) * row_sum;
+						vt_sym_v = vt_sym_v + MatrixView::get(&eigen.eigenvectors, r, i) * row_sum;
 					}
 					if vt_sym_v < T::zero() {
 						// mat_b -= vt_sym_v * v * v^T
 						for r in 0..self.n {
 							for c in 0..self.n {
 								let correction = vt_sym_v
-									* MatrixOps::get(&eigen.eigenvectors, r, i)
-									* MatrixOps::get(&eigen.eigenvectors, c, i);
+									* MatrixView::get(&eigen.eigenvectors, r, i)
+									* MatrixView::get(&eigen.eigenvectors, c, i);
 								*MatrixOps::get_mut(&mut ws.mat_b, r, c) =
-									MatrixOps::get(&ws.mat_b, r, c) - correction;
+									MatrixView::get(&ws.mat_b, r, c) - correction;
 							}
 						}
 					}
@@ -769,15 +769,15 @@ where
 		_ws: &mut Self::Workspace,
 	) -> Result<T> {
 		let dim = self.n * (self.n + 1) / 2;
-		if VectorOps::len(u) != dim || VectorOps::len(v) != dim {
+		if VectorView::len(u) != dim || VectorView::len(v) != dim {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}", dim),
-				format!("{}", VectorOps::len(u).max(VectorOps::len(v))),
+				format!("{}", VectorView::len(u).max(VectorView::len(v))),
 			));
 		}
 
 		// Standard Frobenius inner product (with √2 scaling already in vectors)
-		Ok(VectorOps::dot(u, v))
+		Ok(VectorView::dot(u, v))
 	}
 
 	fn retract(
@@ -788,15 +788,15 @@ where
 		ws: &mut Self::Workspace,
 	) -> Result<()> {
 		let dim = self.n * (self.n + 1) / 2;
-		if VectorOps::len(point) != dim || VectorOps::len(tangent) != dim {
+		if VectorView::len(point) != dim || VectorView::len(tangent) != dim {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}", dim),
-				format!("{}", VectorOps::len(point).max(VectorOps::len(tangent))),
+				format!("{}", VectorView::len(point).max(VectorView::len(tangent))),
 			));
 		}
 
 		// Ensure result has correct size
-		if VectorOps::len(result) != dim {
+		if VectorView::len(result) != dim {
 			*result = VectorOps::zeros(dim);
 		}
 
@@ -820,15 +820,15 @@ where
 		ws: &mut Self::Workspace,
 	) -> Result<()> {
 		let dim = self.n * (self.n + 1) / 2;
-		if VectorOps::len(point) != dim || VectorOps::len(other) != dim {
+		if VectorView::len(point) != dim || VectorView::len(other) != dim {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}", dim),
-				format!("{}", VectorOps::len(point).max(VectorOps::len(other))),
+				format!("{}", VectorView::len(point).max(VectorView::len(other))),
 			));
 		}
 
 		// Ensure result has correct size
-		if VectorOps::len(result) != dim {
+		if VectorView::len(result) != dim {
 			*result = VectorOps::zeros(dim);
 		}
 
@@ -870,13 +870,13 @@ where
 
 		// Make it PSD by X = A^T A
 		let mut psd = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.n, self.n);
-		psd.gemm_at(T::one(), &mat, &mat, T::zero());
+		psd.gemm_at(T::one(), mat.as_view(), mat.as_view(), T::zero());
 
 		// Scale to reasonable size (in-place)
 		psd.scale_mut(T::one() / <T as Scalar>::from_f64(self.n as f64));
 
 		let dim = self.n * (self.n + 1) / 2;
-		if VectorOps::len(result) != dim {
+		if VectorView::len(result) != dim {
 			*result = VectorOps::zeros(dim);
 		}
 		self.mat_to_vec(&psd, result);
@@ -885,15 +885,15 @@ where
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
 		let dim = self.n * (self.n + 1) / 2;
-		if VectorOps::len(point) != dim {
+		if VectorView::len(point) != dim {
 			return Err(ManifoldError::dimension_mismatch(
 				format!("{}", dim),
-				format!("{}", VectorOps::len(point)),
+				format!("{}", VectorView::len(point)),
 			));
 		}
 
 		// Ensure result has correct size
-		if VectorOps::len(result) != dim {
+		if VectorView::len(result) != dim {
 			*result = VectorOps::zeros(dim);
 		}
 
@@ -920,9 +920,9 @@ where
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
 		// Frobenius distance: ‖y - x‖² = ‖y‖² + ‖x‖² - 2⟨x,y⟩  (zero alloc)
-		let xx = VectorOps::dot(x, x);
-		let yy = VectorOps::dot(y, y);
-		let xy = VectorOps::dot(x, y);
+		let xx = VectorView::dot(x, x);
+		let yy = VectorView::dot(y, y);
+		let xy = VectorView::dot(x, y);
 		let dist_sq = xx + yy - (T::one() + T::one()) * xy;
 		Ok(<T as Float>::sqrt(<T as Float>::max(dist_sq, T::zero())))
 	}

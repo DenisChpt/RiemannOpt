@@ -115,7 +115,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Grassmann;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::linalg::{MatrixOps, DecompositionOps};
+//! use riemannopt_core::linalg::{MatrixOps, MatrixView, DecompositionOps};
 //!
 //! // Create Grassmann manifold Gr(5,2)
 //! let grassmann = Grassmann::<f64>::new(5, 2)?;
@@ -125,7 +125,7 @@
 //! grassmann.random_point(&mut y)?;
 //!
 //! // Verify orthonormality
-//! let yt = MatrixOps::transpose(&y);
+//! let yt = MatrixOps::transpose_to_owned(&y);
 //! let yty = yt.mat_mul(&y);
 //! let identity = <riemannopt_core::linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
 //! assert!(yty.sub(&identity).norm() < 1e-14);
@@ -145,7 +145,7 @@ use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -298,7 +298,7 @@ where
 
 		// Check orthonormality: Y^T Y = I
 		let mut yty = linalg::Mat::<T>::zeros(self.p, self.p);
-		yty.gemm_at(T::one(), y, y, T::zero());
+		yty.gemm_at(T::one(), y.as_view(), y.as_view(), T::zero());
 		// Element-wise ‖Y^T Y - I‖_F without allocation
 		let mut constraint_sq = T::zero();
 		for i in 0..self.p {
@@ -342,7 +342,7 @@ where
 
 		// Check horizontality: Y^T Z = 0
 		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
-		ytz.gemm_at(T::one(), y, z, T::zero());
+		ytz.gemm_at(T::one(), y.as_view(), z.as_view(), T::zero());
 		let horizontal_error = ytz.norm();
 
 		if horizontal_error > self.tolerance {
@@ -379,7 +379,7 @@ where
 		let qr = y_plus_z.qr();
 		let q = qr.q();
 		let mut result = if q.ncols() > self.p {
-			q.columns(0, self.p)
+			q.columns_to_owned(0, self.p)
 		} else {
 			q.clone()
 		};
@@ -422,19 +422,19 @@ where
 		if let (Some(u), Some(vt)) = (svd.u, svd.vt) {
 			// Take first p columns of U and rows of V^T
 			let u_truncated = if u.ncols() > self.p {
-				u.columns(0, self.p)
+				u.columns_to_owned(0, self.p)
 			} else {
 				u
 			};
 
 			let vt_truncated = if vt.nrows() > self.p {
-				vt.rows(0, self.p)
+				vt.rows_to_owned(0, self.p)
 			} else {
 				vt
 			};
 
 			let mut result: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
-			result.gemm(T::one(), &u_truncated, &vt_truncated, T::zero());
+			result.gemm(T::one(), u_truncated.as_view(), vt_truncated.as_view(), T::zero());
 			Ok(result)
 		} else {
 			Err(ManifoldError::numerical_error(
@@ -463,7 +463,7 @@ where
 
 		// Compute Y₁^T Y₂
 		let mut y1ty2 = linalg::Mat::<T>::zeros(self.p, self.p);
-		y1ty2.gemm_at(T::one(), y1, y2, T::zero());
+		y1ty2.gemm_at(T::one(), y1.as_view(), y2.as_view(), T::zero());
 
 		// SVD to get principal angles
 		let svd = y1ty2.svd();
@@ -499,17 +499,17 @@ where
 
 		// Compute Y₂^T Y₁ and its SVD
 		let mut y2ty1 = linalg::Mat::<T>::zeros(self.p, self.p);
-		y2ty1.gemm_at(T::one(), y2, y1, T::zero());
+		y2ty1.gemm_at(T::one(), y2.as_view(), y1.as_view(), T::zero());
 		let svd = y2ty1.svd();
 
 		if let Some(u) = svd.u {
 			// Transport: (I - Y₂Y₂^T)ZU using buffers + gemm
 			let mut zu: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
-			zu.gemm(T::one(), z, &u, T::zero());
+			zu.gemm(T::one(), z.as_view(), u.as_view(), T::zero());
 			let mut y2t_zu = linalg::Mat::<T>::zeros(self.p, self.p);
-			y2t_zu.gemm_at(T::one(), y2, &zu, T::zero());
+			y2t_zu.gemm_at(T::one(), y2.as_view(), zu.as_view(), T::zero());
 			// zu -= Y₂ * (Y₂^T * ZU)
-			zu.gemm(-T::one(), y2, &y2t_zu, T::one());
+			zu.gemm(-T::one(), y2.as_view(), y2t_zu.as_view(), T::one());
 			Ok(zu)
 		} else {
 			// Fallback to simple projection
@@ -544,7 +544,7 @@ where
 
 		// Check Y^T Y = I_p (element-wise, no allocation)
 		let mut yty = linalg::Mat::<T>::zeros(self.p, self.p);
-		yty.gemm_at(T::one(), point, point, T::zero());
+		yty.gemm_at(T::one(), point.as_view(), point.as_view(), T::zero());
 		let mut err_sq = T::zero();
 		for i in 0..self.p {
 			for j in 0..self.p {
@@ -570,7 +570,7 @@ where
 
 		// Horizontal space: Y^T Z = 0
 		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
-		ytz.gemm_at(T::one(), point, vector, T::zero());
+		ytz.gemm_at(T::one(), point.as_view(), vector.as_view(), T::zero());
 		ytz.norm() < tol
 	}
 
@@ -586,7 +586,7 @@ where
 
 		// Copy first p columns into result (or all if ncols <= p)
 		if q.ncols() > self.p {
-			let q_trunc = q.columns(0, self.p);
+			let q_trunc = q.columns_to_owned(0, self.p);
 			result.copy_from(&q_trunc);
 		} else {
 			result.copy_from(&q);
@@ -614,9 +614,9 @@ where
 		// Uses in-place GEMM to avoid allocating n×p temporaries.
 		// Only allocates one small p×p buffer for Y^T Z.
 		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
-		ytz.gemm_at(T::one(), point, vector, T::zero()); // ytz = Y^T Z
+		ytz.gemm_at(T::one(), point.as_view(), vector.as_view(), T::zero()); // ytz = Y^T Z
 		result.copy_from(vector);
-		result.gemm(-T::one(), point, &ytz, T::one()); // result = Z - Y(Y^T Z)
+		result.gemm(-T::one(), point.as_view(), ytz.as_view(), T::one()); // result = Z - Y(Y^T Z)
 		Ok(())
 	}
 
@@ -655,7 +655,7 @@ where
 		match (svd.u, svd.vt) {
 			(Some(u), Some(vt)) => {
 				// U * V^T via in-place GEMM (avoids n×p allocation)
-				result.gemm(T::one(), &u, &vt, T::zero());
+				result.gemm(T::one(), u.as_view(), vt.as_view(), T::zero());
 				Ok(())
 			}
 			_ => {
@@ -713,10 +713,10 @@ where
 		// Step 2: curvature correction via in-place GEMM
 		// Reuse a small p×p buffer for Y^T egrad
 		let mut ytg = linalg::Mat::<T>::zeros(self.p, self.p);
-		ytg.gemm_at(T::one(), point, euclidean_grad, T::zero()); // ytg = Y^T egrad
+		ytg.gemm_at(T::one(), point.as_view(), euclidean_grad.as_view(), T::zero()); // ytg = Y^T egrad
 
 		// result -= ξ (Y^T egrad)  (in-place, no n×p allocation)
-		result.gemm(-T::one(), tangent_vector, &ytg, T::one());
+		result.gemm(-T::one(), tangent_vector.as_view(), ytg.as_view(), T::one());
 		Ok(())
 	}
 
@@ -752,7 +752,7 @@ where
 
 		// Extract first p columns
 		if q.ncols() > self.p {
-			*result = q.columns(0, self.p);
+			*result = q.columns_to_owned(0, self.p);
 		} else {
 			result.copy_from(q);
 		}
@@ -823,8 +823,8 @@ where
 		result.add_assign(v2);
 		// In-place projection: result = result - Y · (Y^T result)
 		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
-		ytz.gemm_at(T::one(), point, result, T::zero());
-		result.gemm(-T::one(), point, &ytz, T::one());
+		ytz.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
+		result.gemm(-T::one(), point.as_view(), ytz.as_view(), T::one());
 		Ok(())
 	}
 }

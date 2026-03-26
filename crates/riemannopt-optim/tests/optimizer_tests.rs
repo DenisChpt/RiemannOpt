@@ -10,7 +10,7 @@
 use riemannopt_core::{
 	core::cost_function::CostFunction,
 	error::Result as ManifoldResult,
-	linalg::{self, MatrixOps, VectorOps},
+	linalg::{self, MatrixOps, MatrixView, VectorOps, VectorView},
 	optimization::optimizer::{Optimizer, StoppingCriterion},
 };
 use riemannopt_manifolds::{Euclidean, Sphere};
@@ -83,7 +83,7 @@ impl CostFunction<f64> for RayleighQuotient {
 		let n = self.a.nrows();
 		let scaled = self.a.scale_by(2.0);
 		Ok(linalg::Mat::<f64>::from_fn(n, n, |i, j| {
-			MatrixOps::get(&scaled, i, j)
+			MatrixView::get(&scaled, i, j)
 		}))
 	}
 

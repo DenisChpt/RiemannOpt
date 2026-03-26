@@ -17,7 +17,7 @@ use numpy::PyArrayMethods;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
-use riemannopt_core::linalg::{MatrixOps, VectorOps};
+use riemannopt_core::linalg::{MatrixOps, MatrixView, VectorOps, VectorView};
 use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
@@ -1515,9 +1515,9 @@ impl PyCostFunctionPSDCone {
 		for i in 0..self.n {
 			for j in i..self.n {
 				if i == j {
-					*mat.get_mut(i, j) = VectorOps::get(vec, idx);
+					*mat.get_mut(i, j) = VectorView::get(vec, idx);
 				} else {
-					let val = VectorOps::get(vec, idx) / f64::sqrt(2.0);
+					let val = VectorView::get(vec, idx) / f64::sqrt(2.0);
 					*mat.get_mut(i, j) = val;
 					*mat.get_mut(j, i) = val;
 				}
@@ -1538,9 +1538,9 @@ impl PyCostFunctionPSDCone {
 		for i in 0..self.n {
 			for j in i..self.n {
 				if i == j {
-					*vec.get_mut(idx) = MatrixOps::get(mat, i, j);
+					*vec.get_mut(idx) = MatrixView::get(mat, i, j);
 				} else {
-					*vec.get_mut(idx) = MatrixOps::get(mat, i, j) * f64::sqrt(2.0);
+					*vec.get_mut(idx) = MatrixView::get(mat, i, j) * f64::sqrt(2.0);
 				}
 				idx += 1;
 			}
@@ -1877,7 +1877,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRa
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		// Finite differences in ambient space, projected back to tangent space
 		let mat = Self::point_to_matrix(point);
-		let (m, n) = (MatrixOps::nrows(&mat), MatrixOps::ncols(&mat));
+		let (m, n) = (MatrixView::nrows(&mat), MatrixView::ncols(&mat));
 		let h = f64::sqrt(f64::EPSILON);
 		let mut grad_mat: Mat64 = MatrixOps::zeros(m, n);
 
@@ -1889,7 +1889,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRa
 				*MatrixOps::get_mut(&mut minus, i, j) -= h;
 
 				// Project perturbed matrices back to rank-k and evaluate cost
-				let k = VectorOps::len(&point.s);
+				let k = VectorView::len(&point.s);
 				let p_plus =
 					riemannopt_manifolds::fixed_rank::FixedRankPoint::from_matrix(&plus, k)?;
 				let p_minus =
@@ -1919,7 +1919,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRa
 		let perturbed = MatrixOps::add(&mat, &(tangent_mat * epsilon));
 
 		// Truncate perturbed matrix back to rank k via SVD
-		let k = VectorOps::len(&point.s);
+		let k = VectorView::len(&point.s);
 		let perturbed_point =
 			riemannopt_manifolds::fixed_rank::FixedRankPoint::from_matrix(&perturbed, k)?;
 
@@ -1928,8 +1928,8 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRa
 
 		// Compute (grad_perturbed - grad_original) / epsilon in tangent components
 		let u_perp_m = (grad_perturbed.u_perp_m - &grad_original.u_perp_m) / epsilon;
-		let s_dot = <Vec64 as VectorOps<f64>>::from_fn(VectorOps::len(&grad_original.s_dot), |i| {
-			(VectorOps::get(&grad_perturbed.s_dot, i) - VectorOps::get(&grad_original.s_dot, i))
+		let s_dot = <Vec64 as VectorOps<f64>>::from_fn(VectorView::len(&grad_original.s_dot), |i| {
+			(VectorView::get(&grad_perturbed.s_dot, i) - VectorView::get(&grad_original.s_dot, i))
 				/ epsilon
 		});
 		let v_perp_n = (grad_perturbed.v_perp_n - &grad_original.v_perp_n) / epsilon;

@@ -99,7 +99,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Hyperbolic;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::linalg::{self, VectorOps};
+//! use riemannopt_core::linalg::{self, VectorOps, VectorView};
 //!
 //! // Create ℍ² (Poincaré disk)
 //! let hyperbolic = Hyperbolic::<f64>::new(2)?;
@@ -125,7 +125,7 @@ use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, LinAlgBackend, VectorOps},
+	linalg::{self, LinAlgBackend, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -271,8 +271,8 @@ where
 	/// - `DimensionMismatch`: If x.len() ≠ n
 	/// - `NotOnManifold`: If ‖x‖ ≥ 1 - boundary_tolerance
 	pub fn check_point(&self, x: &linalg::Vec<T>) -> Result<()> {
-		if VectorOps::len(x) != self.n {
-			return Err(ManifoldError::dimension_mismatch(self.n, VectorOps::len(x)));
+		if VectorView::len(x) != self.n {
+			return Err(ManifoldError::dimension_mismatch(self.n, VectorView::len(x)));
 		}
 
 		let norm_squared = x.norm_squared();
@@ -303,8 +303,8 @@ where
 	pub fn check_tangent(&self, x: &linalg::Vec<T>, v: &linalg::Vec<T>) -> Result<()> {
 		self.check_point(x)?;
 
-		if VectorOps::len(v) != self.n {
-			return Err(ManifoldError::dimension_mismatch(self.n, VectorOps::len(v)));
+		if VectorView::len(v) != self.n {
+			return Err(ManifoldError::dimension_mismatch(self.n, VectorView::len(v)));
 		}
 
 		Ok(())
@@ -400,7 +400,7 @@ where
 
 	/// Checks if a point is in the Poincare ball (||x|| < √(-1/K)).
 	fn is_in_poincare_ball(&self, point: &linalg::Vec<T>, tolerance: T) -> bool {
-		if VectorOps::len(point) != self.n {
+		if VectorView::len(point) != self.n {
 			return false;
 		}
 
@@ -477,7 +477,7 @@ where
 	fn exponential_map(&self, point: &linalg::Vec<T>, tangent: &linalg::Vec<T>) -> linalg::Vec<T> {
 		let tangent_norm = tangent.norm();
 
-		let mut result: linalg::Vec<T> = VectorOps::zeros(VectorOps::len(point));
+		let mut result: linalg::Vec<T> = VectorOps::zeros(VectorView::len(point));
 
 		if tangent_norm < <T as Scalar>::from_f64(1e-16) {
 			result.copy_from(point);
@@ -546,7 +546,7 @@ where
 		let mut rng = rand::rng();
 
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
+		if VectorView::len(result) != self.n {
 			*result = VectorOps::zeros(self.n);
 		}
 
@@ -588,7 +588,7 @@ where
 		to: &linalg::Vec<T>,
 		vector: &linalg::Vec<T>,
 	) -> linalg::Vec<T> {
-		let n = VectorOps::len(vector);
+		let n = VectorView::len(vector);
 		let mut result: linalg::Vec<T> = VectorOps::zeros(n);
 
 		// Check if from == to without allocating: ‖to-from‖² = ‖to‖²+‖from‖²-2⟨to,from⟩
@@ -667,19 +667,19 @@ where
 		_tolerance: T,
 	) -> bool {
 		// In Poincare ball model, all vectors of correct dimension are tangent vectors
-		VectorOps::len(vector) == self.n
+		VectorView::len(vector) == self.n
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
+		if VectorView::len(result) != self.n {
 			*result = VectorOps::zeros(self.n);
 		}
 
-		if VectorOps::len(point) != self.n {
+		if VectorView::len(point) != self.n {
 			// Handle wrong dimension by padding/truncating
 			let mut temp: linalg::Vec<T> = VectorOps::zeros(self.n);
-			let copy_len = VectorOps::len(point).min(self.n);
+			let copy_len = VectorView::len(point).min(self.n);
 			for i in 0..copy_len {
 				*temp.get_mut(i) = point.get(i);
 			}
@@ -708,15 +708,15 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<T> {
-		if VectorOps::len(point) != self.n
-			|| VectorOps::len(u) != self.n
-			|| VectorOps::len(v) != self.n
+		if VectorView::len(point) != self.n
+			|| VectorView::len(u) != self.n
+			|| VectorView::len(v) != self.n
 		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				VectorOps::len(point)
-					.max(VectorOps::len(u))
-					.max(VectorOps::len(v)),
+				VectorView::len(point)
+					.max(VectorView::len(u))
+					.max(VectorView::len(v)),
 			));
 		}
 
@@ -775,14 +775,14 @@ where
 		_ws: &mut (),
 	) -> Result<()> {
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
+		if VectorView::len(result) != self.n {
 			*result = VectorOps::zeros(self.n);
 		}
 
-		if VectorOps::len(point) != self.n || VectorOps::len(other) != self.n {
+		if VectorView::len(point) != self.n || VectorView::len(other) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				VectorOps::len(point).max(VectorOps::len(other)),
+				VectorView::len(point).max(VectorView::len(other)),
 			));
 		}
 
@@ -799,14 +799,14 @@ where
 		_ws: &mut (),
 	) -> Result<()> {
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
+		if VectorView::len(result) != self.n {
 			*result = VectorOps::zeros(self.n);
 		}
 
-		if VectorOps::len(point) != self.n || VectorOps::len(euclidean_grad) != self.n {
+		if VectorView::len(point) != self.n || VectorView::len(euclidean_grad) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				VectorOps::len(point).max(VectorOps::len(euclidean_grad)),
+				VectorView::len(point).max(VectorView::len(euclidean_grad)),
 			));
 		}
 
@@ -828,14 +828,14 @@ where
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
+		if VectorView::len(result) != self.n {
 			*result = VectorOps::zeros(self.n);
 		}
 
-		if VectorOps::len(point) != self.n {
+		if VectorView::len(point) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n,
-				VectorOps::len(point),
+				VectorView::len(point),
 			));
 		}
 

@@ -106,7 +106,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Stiefel;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::linalg::{MatrixOps, DecompositionOps};
+//! use riemannopt_core::linalg::{MatrixOps, MatrixView, DecompositionOps};
 //!
 //! // Create Stiefel manifold St(5,2)
 //! let stiefel = Stiefel::<f64>::new(5, 2)?;
@@ -116,7 +116,7 @@
 //! stiefel.random_point(&mut x)?;
 //!
 //! // Verify orthonormality: X^T X = I
-//! let xt = MatrixOps::transpose(&x);
+//! let xt = MatrixOps::transpose_to_owned(&x);
 //! let xtx = xt.mat_mul(&x);
 //! let identity = <riemannopt_core::linalg::Mat<f64> as MatrixOps<f64>>::identity(2);
 //! assert!(xtx.sub(&identity).norm() < 1e-14);
@@ -128,7 +128,7 @@
 //!
 //! // Verify tangent space constraint
 //! let constraint = xt.mat_mul(&rgrad);
-//! let constraint_t = MatrixOps::transpose(&constraint);
+//! let constraint_t = MatrixOps::transpose_to_owned(&constraint);
 //! assert!(constraint.add(&constraint_t).norm() < 1e-14);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
@@ -137,7 +137,7 @@ use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -289,7 +289,7 @@ where
 
 		// Check orthonormality: X^T X = I
 		let mut xtx = linalg::Mat::<T>::zeros(self.p, self.p);
-		xtx.gemm_at(T::one(), x, x, T::zero());
+		xtx.gemm_at(T::one(), x.as_view(), x.as_view(), T::zero());
 		// Element-wise ‖X^T X - I‖_F without allocation
 		let mut constraint_sq = T::zero();
 		for i in 0..self.p {
@@ -333,7 +333,7 @@ where
 
 		// Check skew-symmetry: X^T Z + Z^T X = 0
 		let mut xtz = linalg::Mat::<T>::zeros(self.p, self.p);
-		xtz.gemm_at(T::one(), x, z, T::zero());
+		xtz.gemm_at(T::one(), x.as_view(), z.as_view(), T::zero());
 		// Element-wise ‖xtz + xtz^T‖_F without allocation
 		let mut skew_sq = T::zero();
 		for i in 0..self.p {
@@ -378,7 +378,7 @@ where
 		let qr = x_plus_z.qr();
 		let q = qr.q();
 		let mut result = if q.ncols() > self.p {
-			q.columns(0, self.p)
+			q.columns_to_owned(0, self.p)
 		} else {
 			q.clone()
 		};
@@ -421,7 +421,7 @@ where
 
 		// Compute (X+Z)^T(X+Z)
 		let mut gram = linalg::Mat::<T>::zeros(self.p, self.p);
-		gram.gemm_at(T::one(), &x_plus_z, &x_plus_z, T::zero());
+		gram.gemm_at(T::one(), x_plus_z.as_view(), x_plus_z.as_view(), T::zero());
 
 		// Eigendecomposition for matrix square root
 		let eigen = gram.symmetric_eigen();
@@ -444,11 +444,11 @@ where
 		let mut temp = linalg::Mat::<T>::zeros(self.p, self.p);
 		temp.scale_columns(v, &d_sqrt_inv);
 		let mut gram_sqrt_inv = linalg::Mat::<T>::zeros(self.p, self.p);
-		gram_sqrt_inv.gemm_bt(T::one(), &temp, v, T::zero());
+		gram_sqrt_inv.gemm_bt(T::one(), temp.as_view(), v.as_view(), T::zero());
 
 		// result = (X + Z) * gram_sqrt_inv via gemm
 		let mut result: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
-		result.gemm(T::one(), &x_plus_z, &gram_sqrt_inv, T::zero());
+		result.gemm(T::one(), x_plus_z.as_view(), gram_sqrt_inv.as_view(), T::zero());
 		Ok(result)
 	}
 
@@ -469,7 +469,7 @@ where
 
 		// Compute X^T Y
 		let mut xty = linalg::Mat::<T>::zeros(self.p, self.p);
-		xty.gemm_at(T::one(), x, y, T::zero());
+		xty.gemm_at(T::one(), x.as_view(), y.as_view(), T::zero());
 
 		// SVD to get principal angles
 		let svd = xty.svd();
@@ -505,7 +505,7 @@ where
 
 		// Compute Y^T V
 		let mut ytv = linalg::Mat::<T>::zeros(self.p, self.p);
-		ytv.gemm_at(T::one(), y, v, T::zero());
+		ytv.gemm_at(T::one(), y.as_view(), v.as_view(), T::zero());
 
 		// Symmetrize ytv in-place: ytv = (ytv + ytv^T) / 2
 		let half = <T as Scalar>::from_f64(0.5);
@@ -520,7 +520,7 @@ where
 		// result = V - Y * sym(Y^T V) via buffer + gemm
 		let mut result: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
 		result.copy_from(v);
-		result.gemm(-T::one(), y, &ytv, T::one());
+		result.gemm(-T::one(), y.as_view(), ytv.as_view(), T::one());
 		Ok(result)
 	}
 }
@@ -549,7 +549,7 @@ where
 
 		// Check X^T X = I (element-wise, no allocation)
 		let mut xtx = linalg::Mat::<T>::zeros(self.p, self.p);
-		xtx.gemm_at(T::one(), point, point, T::zero());
+		xtx.gemm_at(T::one(), point.as_view(), point.as_view(), T::zero());
 		let mut err_sq = T::zero();
 		for i in 0..self.p {
 			for j in 0..self.p {
@@ -575,7 +575,7 @@ where
 
 		// Check X^T Z + Z^T X = 0 (element-wise, no allocation)
 		let mut xtz = linalg::Mat::<T>::zeros(self.p, self.p);
-		xtz.gemm_at(T::one(), point, vector, T::zero());
+		xtz.gemm_at(T::one(), point.as_view(), vector.as_view(), T::zero());
 		let mut skew_sq = T::zero();
 		for i in 0..self.p {
 			for j in 0..self.p {
@@ -597,18 +597,18 @@ where
 		if let (Some(u), Some(vt)) = (svd.u, svd.vt) {
 			// Take first p columns of U if needed
 			let u_truncated = if u.ncols() > self.p {
-				u.columns(0, self.p)
+				u.columns_to_owned(0, self.p)
 			} else {
 				u
 			};
 
-			result.gemm(T::one(), &u_truncated, &vt, T::zero());
+			result.gemm(T::one(), u_truncated.as_view(), vt.as_view(), T::zero());
 		} else {
 			// Fallback to QR — copy directly into result
 			let qr = point.qr();
 			let q = qr.q();
 			if q.ncols() > self.p {
-				let q_trunc = q.columns(0, self.p);
+				let q_trunc = q.columns_to_owned(0, self.p);
 				result.copy_from(&q_trunc);
 			} else {
 				result.copy_from(&q);
@@ -628,7 +628,7 @@ where
 
 		// Step 1: xtz = X^T Z (small p×p buffer)
 		let mut xtz = linalg::Mat::<T>::zeros(self.p, self.p);
-		xtz.gemm_at(T::one(), point, vector, T::zero());
+		xtz.gemm_at(T::one(), point.as_view(), vector.as_view(), T::zero());
 
 		// Step 2: symmetrize in-place: xtz = (xtz + xtz^T) / 2
 		let half = <T as Scalar>::from_f64(0.5);
@@ -642,7 +642,7 @@ where
 
 		// Step 3: result = Z - X · sym(X^T Z)
 		result.copy_from(vector);
-		result.gemm(-T::one(), point, &xtz, T::one());
+		result.gemm(-T::one(), point.as_view(), xtz.as_view(), T::one());
 
 		Ok(())
 	}
@@ -684,7 +684,7 @@ where
 
 		// Extract first p columns if needed
 		if q.ncols() > self.p {
-			*result = q.columns(0, self.p);
+			*result = q.columns_to_owned(0, self.p);
 		} else {
 			result.copy_from(q);
 		}
@@ -744,7 +744,7 @@ where
 		// Projection-based transport: τ_{X→Y}(V) = V - Y · sym(Y^T V)
 		// Zero-alloc: reuse ytv buffer for the p×p symmetric product.
 		let mut ytv = linalg::Mat::<T>::zeros(self.p, self.p);
-		ytv.gemm_at(T::one(), to, vector, T::zero());
+		ytv.gemm_at(T::one(), to.as_view(), vector.as_view(), T::zero());
 
 		// Symmetrize ytv in-place: ytv = (ytv + ytv^T) / 2
 		let half = <T as Scalar>::from_f64(0.5);
@@ -758,7 +758,7 @@ where
 
 		// result = vector - to · sym(Y^T V)
 		result.copy_from(vector);
-		result.gemm(-T::one(), to, &ytv, T::one());
+		result.gemm(-T::one(), to.as_view(), ytv.as_view(), T::one());
 		Ok(())
 	}
 
@@ -780,7 +780,7 @@ where
 
 		// Extract first p columns if needed
 		if q.ncols() > self.p {
-			*result = q.columns(0, self.p);
+			*result = q.columns_to_owned(0, self.p);
 		} else {
 			result.copy_from(q);
 		}
@@ -851,7 +851,7 @@ where
 		result.add_assign(v2);
 		// In-place projection: result = result - X · sym(X^T result)
 		let mut xtz = linalg::Mat::<T>::zeros(self.p, self.p);
-		xtz.gemm_at(T::one(), point, result, T::zero());
+		xtz.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
 		let half = <T as Scalar>::from_f64(0.5);
 		for i in 0..self.p {
 			for j in i + 1..self.p {
@@ -860,7 +860,7 @@ where
 				*xtz.get_mut(j, i) = avg;
 			}
 		}
-		result.gemm(-T::one(), point, &xtz, T::one());
+		result.gemm(-T::one(), point.as_view(), xtz.as_view(), T::one());
 		Ok(())
 	}
 }

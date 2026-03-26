@@ -574,7 +574,7 @@ impl<T: Scalar> Optimizer<T> for Newton<T> {
 mod tests {
 	use super::*;
 	use riemannopt_core::core::cost_function::QuadraticCost;
-	use riemannopt_core::linalg::{self, VectorOps};
+	use riemannopt_core::linalg::{self, VectorOps, VectorView};
 	use riemannopt_core::utils::test_manifolds::TestEuclideanManifold;
 
 	#[test]

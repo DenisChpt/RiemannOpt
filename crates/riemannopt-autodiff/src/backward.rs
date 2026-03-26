@@ -18,7 +18,9 @@
 
 use num_traits::Float;
 
-use riemannopt_core::linalg::{self, LinAlgBackend, MatrixOps, RealScalar, VectorOps};
+use riemannopt_core::linalg::{
+	self, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
+};
 
 use crate::tape::{OpCode, Tape, TapeThreadLocal};
 use crate::value::{NodeValue, ValueKind};
@@ -158,10 +160,10 @@ where
 	/// allocated (the old one is dropped, but in steady state this
 	/// never triggers).
 	pub(crate) fn ensure_vec_size(&mut self, n: usize) {
-		if VectorOps::len(&self.vec_a) < n {
+		if VectorView::len(&self.vec_a) < n {
 			self.vec_a = VectorOps::zeros(n);
 		}
-		if VectorOps::len(&self.vec_b) < n {
+		if VectorView::len(&self.vec_b) < n {
 			self.vec_b = VectorOps::zeros(n);
 		}
 	}
@@ -182,8 +184,8 @@ where
 	linalg::DefaultBackend: LinAlgBackend<T>,
 {
 	match slot {
-		NodeValue::Matrix(m) if MatrixOps::nrows(m) == rows && MatrixOps::ncols(m) == cols => {}
-		NodeValue::Vector(v) if VectorOps::len(v) == rows && cols == 1 => {
+		NodeValue::Matrix(m) if MatrixView::nrows(m) == rows && MatrixView::ncols(m) == cols => {}
+		NodeValue::Vector(v) if VectorView::len(v) == rows && cols == 1 => {
 			let data = v.as_slice().to_vec();
 			*slot = NodeValue::Matrix(<linalg::Mat<T> as MatrixOps<T>>::from_column_slice(
 				rows, cols, &data,
@@ -644,22 +646,22 @@ pub(crate) fn backward_into<T: RealScalar>(
 				// grad_A += grad_out * B^T — ensure grad slot is a matrix
 				ensure_mat_grad(
 					&mut grads.data[a_idx],
-					MatrixOps::nrows(&a_mat),
-					MatrixOps::ncols(&a_mat),
+					MatrixView::nrows(&a_mat),
+					MatrixView::ncols(&a_mat),
 				);
 				grads.data[a_idx]
 					.as_mat_mut()
-					.gemm_bt(T::one(), &grad_out_m, &b_mat, T::one());
+					.gemm_bt(T::one(), grad_out_m.as_view(), b_mat.as_view(), T::one());
 
 				// grad_B += A^T * grad_out — ensure grad slot is a matrix
 				ensure_mat_grad(
 					&mut grads.data[b_idx],
-					MatrixOps::nrows(&b_mat),
-					MatrixOps::ncols(&b_mat),
+					MatrixView::nrows(&b_mat),
+					MatrixView::ncols(&b_mat),
 				);
 				grads.data[b_idx]
 					.as_mat_mut()
-					.gemm_at(T::one(), &a_mat, &grad_out_m, T::one());
+					.gemm_at(T::one(), a_mat.as_view(), grad_out_m.as_view(), T::one());
 
 				grads.has_grad[a_idx] = true;
 				grads.has_grad[b_idx] = true;
@@ -700,7 +702,7 @@ pub(crate) fn backward_into<T: RealScalar>(
 						let (prefix, suffix) = grads.data.split_at_mut(i);
 						let gi_vec = suffix[0].as_vec();
 						let t_val = tape.values[t_idx].as_vec();
-						let gs_val = VectorOps::dot(gi_vec, t_val);
+						let gs_val = VectorView::dot(gi_vec, t_val);
 						// grad_s += dot(gi, t_val)
 						*prefix[s_idx].as_scalar_mut() += gs_val;
 						// grad_t += s_val * gi
@@ -715,8 +717,8 @@ pub(crate) fn backward_into<T: RealScalar>(
 						for jj in 0..c {
 							for ii in 0..r {
 								gs_val = gs_val
-									+ MatrixOps::get(gi_mat, ii, jj)
-										* MatrixOps::get(t_mat, ii, jj);
+									+ MatrixView::get(gi_mat, ii, jj)
+										* MatrixView::get(t_mat, ii, jj);
 							}
 						}
 						*prefix[s_idx].as_scalar_mut() += gs_val;
@@ -758,7 +760,7 @@ pub(crate) fn backward_into<T: RealScalar>(
 						let mut gs_val = T::zero();
 						for jj in 0..c {
 							for ii in 0..r {
-								gs_val = gs_val + MatrixOps::get(gi_mat, ii, jj);
+								gs_val = gs_val + MatrixView::get(gi_mat, ii, jj);
 							}
 						}
 						*grads.data[s_idx].as_scalar_mut() += gs_val;
@@ -812,11 +814,11 @@ where
 		NodeValue::Scalar(s) => vec![*s],
 		NodeValue::Vector(vec) => vec.as_slice().to_vec(),
 		NodeValue::Matrix(m) => {
-			let (r, c) = (MatrixOps::nrows(m), MatrixOps::ncols(m));
+			let (r, c) = (MatrixView::nrows(m), MatrixView::ncols(m));
 			let mut buf = Vec::with_capacity(r * c);
 			for j in 0..c {
 				for i in 0..r {
-					buf.push(MatrixOps::get(m, i, j));
+					buf.push(MatrixView::get(m, i, j));
 				}
 			}
 			buf

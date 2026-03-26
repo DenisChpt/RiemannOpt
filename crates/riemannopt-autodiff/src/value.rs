@@ -4,7 +4,9 @@
 //! types (`linalg::Vec<T>`, `linalg::Mat<T>`), enabling SIMD operations
 //! without intermediate copies.
 
-use riemannopt_core::linalg::{self, LinAlgBackend, MatrixOps, RealScalar, VectorOps};
+use riemannopt_core::linalg::{
+	self, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ValueKind — semantic typing of tape nodes
@@ -110,8 +112,8 @@ where
 		match self {
 			Self::Vacant => panic!("NodeValue::kind() called on Vacant"),
 			Self::Scalar(_) => ValueKind::Scalar,
-			Self::Vector(v) => ValueKind::Vector(VectorOps::len(v)),
-			Self::Matrix(m) => ValueKind::Matrix(MatrixOps::nrows(m), MatrixOps::ncols(m)),
+			Self::Vector(v) => ValueKind::Vector(VectorView::len(v)),
+			Self::Matrix(m) => ValueKind::Matrix(MatrixView::nrows(m), MatrixView::ncols(m)),
 		}
 	}
 
@@ -180,7 +182,7 @@ where
 		match self {
 			Self::Matrix(m) => m.clone(),
 			Self::Vector(v) => {
-				let n = VectorOps::len(v);
+				let n = VectorView::len(v);
 				<linalg::Mat<T> as MatrixOps<T>>::from_column_slice(n, 1, v.as_slice())
 			}
 			_ => panic!("to_mat: unsupported variant"),
@@ -235,12 +237,12 @@ where
 	pub fn overwrite(&mut self, new_val: Self) {
 		match (self, &new_val) {
 			(Self::Scalar(s), Self::Scalar(o)) => *s = *o,
-			(Self::Vector(v), Self::Vector(o)) if VectorOps::len(v) == VectorOps::len(o) => {
+			(Self::Vector(v), Self::Vector(o)) if VectorView::len(v) == VectorView::len(o) => {
 				v.copy_from(o);
 			}
 			(Self::Matrix(m), Self::Matrix(o))
-				if MatrixOps::nrows(m) == MatrixOps::nrows(o)
-					&& MatrixOps::ncols(m) == MatrixOps::ncols(o) =>
+				if MatrixView::nrows(m) == MatrixView::nrows(o)
+					&& MatrixView::ncols(m) == MatrixView::ncols(o) =>
 			{
 				m.copy_from(o);
 			}
@@ -260,9 +262,9 @@ where
 		match self {
 			Self::Vacant => write!(f, "Vacant"),
 			Self::Scalar(v) => write!(f, "Scalar({v})"),
-			Self::Vector(v) => write!(f, "Vector(len={})", VectorOps::len(v)),
+			Self::Vector(v) => write!(f, "Vector(len={})", VectorView::len(v)),
 			Self::Matrix(m) => {
-				write!(f, "Matrix({}x{})", MatrixOps::nrows(m), MatrixOps::ncols(m))
+				write!(f, "Matrix({}x{})", MatrixView::nrows(m), MatrixView::ncols(m))
 			}
 		}
 	}

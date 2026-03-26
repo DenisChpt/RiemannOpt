@@ -92,11 +92,11 @@ pub mod test_helpers {
 	where
 		crate::linalg::DefaultBackend: crate::linalg::LinAlgBackend<T>,
 	{
-		use crate::linalg::VectorOps;
+		use crate::linalg::{VectorOps, VectorView};
 		let mut v = crate::linalg::Vec::<T>::from_fn(n, |i| {
 			<T as Scalar>::from_f64(((i + 1) as f64).sin())
 		});
-		let norm = VectorOps::norm(&v);
+		let norm = VectorView::norm(&v);
 		if norm > T::epsilon() {
 			VectorOps::scale_mut(&mut v, T::one() / norm);
 		}

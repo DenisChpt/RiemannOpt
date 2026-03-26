@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
-	linalg::{self, LinAlgBackend, MatrixOps, RealScalar, VectorOps},
+	linalg::{self, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView},
 	types::Scalar,
 };
 
@@ -160,7 +160,7 @@ where
 		vector: &linalg::Vec<T>,
 	) -> Result<linalg::Vec<T>> {
 		let eps = T::from_f64_const(1e-5);
-		let n = VectorOps::len(point);
+		let n = VectorView::len(point);
 		let p_plus = VectorOps::from_fn(n, |i| point.get(i) + vector.get(i) * eps);
 		let p_minus = VectorOps::from_fn(n, |i| point.get(i) - vector.get(i) * eps);
 		let gp = self.gradient(&p_plus)?;
@@ -230,12 +230,12 @@ fn mat_to_buf<T: RealScalar>(m: &linalg::Mat<T>, buf: &mut Vec<T>)
 where
 	linalg::DefaultBackend: LinAlgBackend<T>,
 {
-	let (r, c) = (MatrixOps::nrows(m), MatrixOps::ncols(m));
+	let (r, c) = (MatrixView::nrows(m), MatrixView::ncols(m));
 	let total = r * c;
 	buf.resize(total, T::zero());
 	for j in 0..c {
 		for i in 0..r {
-			buf[i + j * r] = MatrixOps::get(m, i, j);
+			buf[i + j * r] = MatrixView::get(m, i, j);
 		}
 	}
 }
@@ -304,18 +304,18 @@ where
 		vector: &linalg::Mat<T>,
 	) -> Result<linalg::Mat<T>> {
 		let eps = T::from_f64_const(1e-5);
-		let (r, c) = (MatrixOps::nrows(point), MatrixOps::ncols(point));
+		let (r, c) = (MatrixView::nrows(point), MatrixView::ncols(point));
 		let p_plus = <linalg::Mat<T> as MatrixOps<T>>::from_fn(r, c, |i, j| {
-			MatrixOps::get(point, i, j) + MatrixOps::get(vector, i, j) * eps
+			MatrixView::get(point, i, j) + MatrixView::get(vector, i, j) * eps
 		});
 		let p_minus = <linalg::Mat<T> as MatrixOps<T>>::from_fn(r, c, |i, j| {
-			MatrixOps::get(point, i, j) - MatrixOps::get(vector, i, j) * eps
+			MatrixView::get(point, i, j) - MatrixView::get(vector, i, j) * eps
 		});
 		let gp = self.gradient(&p_plus)?;
 		let gm = self.gradient(&p_minus)?;
 		let inv_2eps = T::one() / (T::from_f64_const(2.0) * eps);
 		Ok(<linalg::Mat<T> as MatrixOps<T>>::from_fn(r, c, |i, j| {
-			(MatrixOps::get(&gp, i, j) - MatrixOps::get(&gm, i, j)) * inv_2eps
+			(MatrixView::get(&gp, i, j) - MatrixView::get(&gm, i, j)) * inv_2eps
 		}))
 	}
 

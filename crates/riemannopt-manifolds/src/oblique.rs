@@ -93,7 +93,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::Oblique;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::linalg::{MatrixOps, VectorOps};
+//! use riemannopt_core::linalg::{MatrixOps, MatrixView, VectorView};
 //!
 //! // Create OB(3,2) - two unit vectors in ℝ³
 //! let oblique = Oblique::new(3, 2)?;
@@ -122,7 +122,7 @@ use std::fmt::Debug;
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, LinAlgBackend, MatrixOps, MatrixView, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };

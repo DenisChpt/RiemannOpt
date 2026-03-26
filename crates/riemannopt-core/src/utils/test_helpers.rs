@@ -5,7 +5,7 @@
 use crate::{
 	cost_function::CostFunction,
 	error::Result,
-	linalg::{self, MatrixOps, VectorOps},
+	linalg::{self, MatrixOps, VectorOps, VectorView},
 	manifold::Manifold,
 };
 use rand::prelude::*;
@@ -35,7 +35,7 @@ impl Manifold<f64> for TestSphere {
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: f64) -> bool {
-		(VectorOps::norm(point) - 1.0).abs() < tol
+		(VectorView::norm(point) - 1.0).abs() < tol
 	}
 
 	fn is_vector_in_tangent_space(
@@ -44,11 +44,11 @@ impl Manifold<f64> for TestSphere {
 		vector: &Self::TangentVector,
 		tol: f64,
 	) -> bool {
-		VectorOps::dot(point, vector).abs() < tol
+		VectorView::dot(point, vector).abs() < tol
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		let norm = VectorOps::norm(point);
+		let norm = VectorView::norm(point);
 		if norm > f64::EPSILON {
 			VectorOps::copy_from(result, point);
 			VectorOps::scale_mut(result, 1.0 / norm);
@@ -65,7 +65,7 @@ impl Manifold<f64> for TestSphere {
 		result: &mut Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<()> {
-		let inner = VectorOps::dot(point, vector);
+		let inner = VectorView::dot(point, vector);
 		VectorOps::copy_from(result, vector);
 		result.axpy(-inner, point, 1.0);
 		Ok(())
@@ -78,7 +78,7 @@ impl Manifold<f64> for TestSphere {
 		v: &Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<f64> {
-		Ok(VectorOps::dot(u, v))
+		Ok(VectorView::dot(u, v))
 	}
 
 	fn retract(
@@ -89,7 +89,7 @@ impl Manifold<f64> for TestSphere {
 		_ws: &mut (),
 	) -> Result<()> {
 		// Exponential map on sphere
-		let norm_v = VectorOps::norm(tangent);
+		let norm_v = VectorView::norm(tangent);
 		if norm_v < f64::EPSILON {
 			VectorOps::copy_from(result, point);
 		} else {
@@ -110,7 +110,7 @@ impl Manifold<f64> for TestSphere {
 		result: &mut Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<()> {
-		let inner = VectorOps::dot(point, other).min(1.0).max(-1.0);
+		let inner = VectorView::dot(point, other).min(1.0).max(-1.0);
 		let theta = inner.acos();
 
 		if theta.abs() < f64::EPSILON {
@@ -119,7 +119,7 @@ impl Manifold<f64> for TestSphere {
 			// v = other - point * inner
 			VectorOps::copy_from(result, other);
 			result.axpy(-inner, point, 1.0);
-			let v_norm = VectorOps::norm(result);
+			let v_norm = VectorView::norm(result);
 			if v_norm > f64::EPSILON {
 				VectorOps::scale_mut(result, theta / v_norm);
 			} else {
@@ -169,7 +169,7 @@ impl Manifold<f64> for TestSphere {
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<f64> {
-		let mut tangent = linalg::Vec::<f64>::zeros(VectorOps::len(x));
+		let mut tangent = linalg::Vec::<f64>::zeros(VectorView::len(x));
 		self.inverse_retract(x, y, &mut tangent, &mut ())?;
 		self.inner_product(x, &tangent, &tangent, &mut ())
 			.map(|v| v.sqrt())
@@ -219,7 +219,7 @@ impl Manifold<f64> for TestSphere {
 		vector: &Self::TangentVector,
 		_ws: &mut (),
 	) -> Result<f64> {
-		Ok(VectorOps::norm(vector))
+		Ok(VectorView::norm(vector))
 	}
 }
 
@@ -234,7 +234,7 @@ impl RayleighQuotient {
 		let mut rng = rand::rng();
 		let m = linalg::Mat::<f64>::from_fn(dim, dim, |_, _| rng.random::<f64>());
 		// Make symmetric: matrix = m + m^T
-		let mt = MatrixOps::transpose(&m);
+		let mt = MatrixOps::transpose_to_owned(&m);
 		let matrix = MatrixOps::add(&m, &mt);
 		Self { matrix }
 	}
@@ -245,7 +245,7 @@ impl CostFunction<f64> for RayleighQuotient {
 	type TangentVector = linalg::Vec<f64>;
 	fn cost(&self, x: &Self::Point) -> Result<f64> {
 		let ax = self.matrix.mat_vec(x);
-		Ok(VectorOps::dot(x, &ax))
+		Ok(VectorView::dot(x, &ax))
 	}
 
 	fn cost_and_gradient(
@@ -254,7 +254,7 @@ impl CostFunction<f64> for RayleighQuotient {
 		gradient: &mut Self::TangentVector,
 	) -> Result<f64> {
 		let ax = self.matrix.mat_vec(x);
-		let cost = VectorOps::dot(x, &ax);
+		let cost = VectorView::dot(x, &ax);
 		// gradient = 2 * A * x
 		VectorOps::copy_from(gradient, &ax);
 		VectorOps::scale_mut(gradient, 2.0);
@@ -263,7 +263,7 @@ impl CostFunction<f64> for RayleighQuotient {
 
 	fn cost_and_gradient_alloc(&self, x: &Self::Point) -> Result<(f64, Self::TangentVector)> {
 		let ax = self.matrix.mat_vec(x);
-		let cost = VectorOps::dot(x, &ax);
+		let cost = VectorView::dot(x, &ax);
 		let mut gradient = ax;
 		VectorOps::scale_mut(&mut gradient, 2.0);
 		Ok((cost, gradient))
@@ -282,7 +282,7 @@ impl CostFunction<f64> for RayleighQuotient {
 
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		let eps = 1e-8;
-		let n = VectorOps::len(point);
+		let n = VectorView::len(point);
 		let mut gradient = linalg::Vec::<f64>::zeros(n);
 
 		for i in 0..n {
@@ -318,8 +318,8 @@ impl CostFunction<f64> for SphericalRosenbrock {
 	fn cost(&self, x: &Self::Point) -> Result<f64> {
 		let mut cost = 0.0;
 		for i in 0..self.dim - 1 {
-			let xi = VectorOps::get(x, i);
-			let xi1 = VectorOps::get(x, i + 1);
+			let xi = VectorView::get(x, i);
+			let xi1 = VectorView::get(x, i + 1);
 			let a = 1.0 - xi;
 			let b = xi1 - xi * xi;
 			cost += a * a + 100.0 * b * b;
@@ -336,21 +336,21 @@ impl CostFunction<f64> for SphericalRosenbrock {
 		VectorOps::fill(gradient, 0.0);
 
 		for i in 0..self.dim - 1 {
-			let xi = VectorOps::get(x, i);
-			let xi1 = VectorOps::get(x, i + 1);
+			let xi = VectorView::get(x, i);
+			let xi1 = VectorView::get(x, i + 1);
 			let a = 1.0 - xi;
 			let b = xi1 - xi * xi;
 			cost += a * a + 100.0 * b * b;
 
 			*VectorOps::get_mut(gradient, i) += -2.0 * a - 400.0 * xi * b;
 			if i > 0 {
-				let xi_prev = VectorOps::get(x, i - 1);
+				let xi_prev = VectorView::get(x, i - 1);
 				*VectorOps::get_mut(gradient, i) += 200.0 * (xi - xi_prev * xi_prev);
 			}
 		}
 		if self.dim > 1 {
-			let x_last = VectorOps::get(x, self.dim - 1);
-			let x_prev = VectorOps::get(x, self.dim - 2);
+			let x_last = VectorView::get(x, self.dim - 1);
+			let x_prev = VectorView::get(x, self.dim - 2);
 			*VectorOps::get_mut(gradient, self.dim - 1) += 200.0 * (x_last - x_prev * x_prev);
 		}
 
@@ -382,7 +382,7 @@ impl CostFunction<f64> for SphericalRosenbrock {
 
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		let eps = 1e-8;
-		let n = VectorOps::len(point);
+		let n = VectorView::len(point);
 		let mut gradient = linalg::Vec::<f64>::zeros(n);
 
 		for i in 0..n {

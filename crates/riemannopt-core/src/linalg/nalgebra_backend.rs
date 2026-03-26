@@ -1,12 +1,16 @@
 //! Nalgebra backend implementation.
 //!
-//! Implements `VectorOps`, `MatrixOps`, and `DecompositionOps` for
-//! `nalgebra::DVector<T>` and `nalgebra::DMatrix<T>`.
+//! Implements `VectorView`, `VectorOps`, `MatrixView`, `MatrixOps`, and
+//! `DecompositionOps` for `nalgebra::DVector<T>` and `nalgebra::DMatrix<T>`.
+//!
+//! View types use nalgebra's native `DVectorView` and `DMatrixView`.
 
-use nalgebra::{DMatrix, DVector, RealField, Scalar as NalgebraScalar};
+use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView, RealField, Scalar as NalgebraScalar};
 use num_traits::Float;
 
-use super::traits::{DecompositionOps, LinAlgBackend, MatrixOps, RealScalar, VectorOps};
+use super::traits::{
+	DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
+};
 use super::types::{CholeskyResult, EigenResult, QrResult, SvdResult};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -25,6 +29,82 @@ impl LinAlgBackend<f32> for NalgebraBackend {
 impl LinAlgBackend<f64> for NalgebraBackend {
 	type Vector = DVector<f64>;
 	type Matrix = DMatrix<f64>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  VectorView for DVectorView<'_, T>  (borrowed view)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<'v, T> VectorView<T> for DVectorView<'v, T>
+where
+	T: RealScalar + NalgebraScalar + RealField,
+{
+	#[inline]
+	fn len(&self) -> usize {
+		self.nrows()
+	}
+
+	#[inline]
+	fn get(&self, i: usize) -> T {
+		self[i]
+	}
+
+	#[inline]
+	fn dot(&self, other: &Self) -> T {
+		nalgebra::Matrix::dot(self, other)
+	}
+
+	#[inline]
+	fn norm(&self) -> T {
+		nalgebra::Matrix::norm(self)
+	}
+
+	#[inline]
+	fn norm_squared(&self) -> T {
+		nalgebra::Matrix::norm_squared(self)
+	}
+
+	fn iter(&self) -> impl Iterator<Item = T> + '_ {
+		nalgebra::Matrix::iter(self).copied()
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  VectorView for DVector<T>  (owned)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<T> VectorView<T> for DVector<T>
+where
+	T: RealScalar + NalgebraScalar + RealField,
+{
+	#[inline]
+	fn len(&self) -> usize {
+		self.nrows()
+	}
+
+	#[inline]
+	fn get(&self, i: usize) -> T {
+		self[i]
+	}
+
+	#[inline]
+	fn dot(&self, other: &Self) -> T {
+		nalgebra::DVector::dot(self, other)
+	}
+
+	#[inline]
+	fn norm(&self) -> T {
+		nalgebra::Matrix::norm(self)
+	}
+
+	#[inline]
+	fn norm_squared(&self) -> T {
+		nalgebra::Matrix::norm_squared(self)
+	}
+
+	fn iter(&self) -> impl Iterator<Item = T> + '_ {
+		nalgebra::Matrix::iter(self).copied()
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -48,31 +128,6 @@ where
 	#[inline]
 	fn from_slice(data: &[T]) -> Self {
 		DVector::from_column_slice(data)
-	}
-
-	#[inline]
-	fn len(&self) -> usize {
-		self.nrows()
-	}
-
-	#[inline]
-	fn dot(&self, other: &Self) -> T {
-		nalgebra::DVector::dot(self, other)
-	}
-
-	#[inline]
-	fn norm(&self) -> T {
-		nalgebra::Matrix::norm(self)
-	}
-
-	#[inline]
-	fn norm_squared(&self) -> T {
-		nalgebra::Matrix::norm_squared(self)
-	}
-
-	#[inline]
-	fn get(&self, i: usize) -> T {
-		self[i]
 	}
 
 	#[inline]
@@ -102,7 +157,6 @@ where
 
 	#[inline]
 	fn axpy(&mut self, alpha: T, x: &Self, beta: T) {
-		// self = beta * self + alpha * x
 		*self *= beta;
 		nalgebra::Matrix::axpy(self, alpha, x, T::one());
 	}
@@ -115,9 +169,107 @@ where
 	fn map(&self, mut f: impl FnMut(T) -> T) -> Self {
 		nalgebra::Matrix::map(self, |x| f(x))
 	}
+}
 
-	fn iter(&self) -> impl Iterator<Item = T> + '_ {
-		nalgebra::Matrix::iter(self).copied()
+// ═══════════════════════════════════════════════════════════════════════════
+//  MatrixView for DMatrixView<'_, T>  (borrowed view)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<'v, T> MatrixView<T> for DMatrixView<'v, T>
+where
+	T: RealScalar + NalgebraScalar + RealField,
+{
+	type ColView<'a>
+		= DVectorView<'a, T>
+	where
+		Self: 'a;
+
+	#[inline]
+	fn nrows(&self) -> usize {
+		nalgebra::Matrix::nrows(self)
+	}
+
+	#[inline]
+	fn ncols(&self) -> usize {
+		nalgebra::Matrix::ncols(self)
+	}
+
+	#[inline]
+	fn get(&self, i: usize, j: usize) -> T {
+		self[(i, j)]
+	}
+
+	#[inline]
+	fn column(&self, j: usize) -> Self::ColView<'_> {
+		nalgebra::Matrix::column(self, j)
+	}
+
+	fn norm(&self) -> T {
+		let mut sum = T::zero();
+		for v in nalgebra::Matrix::iter(self) {
+			sum = sum + *v * *v;
+		}
+		Float::sqrt(sum)
+	}
+
+	fn trace(&self) -> T {
+		let n = nalgebra::Matrix::nrows(self).min(nalgebra::Matrix::ncols(self));
+		let mut t = T::zero();
+		for i in 0..n {
+			t = t + self[(i, i)];
+		}
+		t
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MatrixView for DMatrix<T>  (owned)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<T> MatrixView<T> for DMatrix<T>
+where
+	T: RealScalar + NalgebraScalar + RealField,
+{
+	type ColView<'a>
+		= DVectorView<'a, T>
+	where
+		Self: 'a;
+
+	#[inline]
+	fn nrows(&self) -> usize {
+		nalgebra::Matrix::nrows(self)
+	}
+
+	#[inline]
+	fn ncols(&self) -> usize {
+		nalgebra::Matrix::ncols(self)
+	}
+
+	#[inline]
+	fn get(&self, i: usize, j: usize) -> T {
+		self[(i, j)]
+	}
+
+	#[inline]
+	fn column(&self, j: usize) -> Self::ColView<'_> {
+		nalgebra::Matrix::column(self, j)
+	}
+
+	fn norm(&self) -> T {
+		let mut sum = T::zero();
+		for v in nalgebra::Matrix::iter(self) {
+			sum = sum + *v * *v;
+		}
+		Float::sqrt(sum)
+	}
+
+	fn trace(&self) -> T {
+		let n = nalgebra::Matrix::nrows(self).min(nalgebra::Matrix::ncols(self));
+		let mut t = T::zero();
+		for i in 0..n {
+			t = t + self[(i, i)];
+		}
+		t
 	}
 }
 
@@ -130,6 +282,7 @@ where
 	T: RealScalar + NalgebraScalar + RealField,
 {
 	type Col = DVector<T>;
+	type View<'a> = DMatrixView<'a, T>;
 
 	#[inline]
 	fn zeros(nrows: usize, ncols: usize) -> Self {
@@ -151,54 +304,51 @@ where
 		DMatrix::from_diagonal(diag)
 	}
 
-	#[inline]
-	fn nrows(&self) -> usize {
-		nalgebra::Matrix::nrows(self)
+	fn from_column_slice(nrows: usize, ncols: usize, data: &[T]) -> Self {
+		DMatrix::from_column_slice(nrows, ncols, data)
 	}
+
+	// ── View accessors ───────────────────────────────────────────────
 
 	#[inline]
-	fn ncols(&self) -> usize {
-		nalgebra::Matrix::ncols(self)
-	}
-
-	fn norm(&self) -> T {
-		// Frobenius norm
-		let mut sum = T::zero();
-		for v in nalgebra::Matrix::iter(self) {
-			sum = sum + *v * *v;
-		}
-		Float::sqrt(sum)
-	}
-
-	fn trace(&self) -> T {
-		let n = self.nrows().min(self.ncols());
-		let mut t = T::zero();
-		for i in 0..n {
-			t = t + self[(i, i)];
-		}
-		t
+	fn as_view(&self) -> Self::View<'_> {
+		self.as_view()
 	}
 
 	#[inline]
-	fn get(&self, i: usize, j: usize) -> T {
-		self[(i, j)]
+	fn columns(&self, start: usize, count: usize) -> Self::View<'_> {
+		nalgebra::Matrix::columns(self, start, count)
 	}
+
+	#[inline]
+	fn rows(&self, start: usize, count: usize) -> Self::View<'_> {
+		nalgebra::Matrix::rows(self, start, count)
+	}
+
+	// ── Owned conversions ────────────────────────────────────────────
+
+	#[inline]
+	fn column_to_owned(&self, j: usize) -> Self::Col {
+		nalgebra::Matrix::column(self, j).clone_owned()
+	}
+
+	fn transpose_to_owned(&self) -> Self {
+		nalgebra::Matrix::transpose(self)
+	}
+
+	fn columns_to_owned(&self, start: usize, count: usize) -> Self {
+		nalgebra::Matrix::columns(self, start, count).clone_owned()
+	}
+
+	fn rows_to_owned(&self, start: usize, count: usize) -> Self {
+		nalgebra::Matrix::rows(self, start, count).clone_owned()
+	}
+
+	// ── Element access ───────────────────────────────────────────────
 
 	#[inline]
 	fn get_mut(&mut self, i: usize, j: usize) -> &mut T {
 		&mut self[(i, j)]
-	}
-
-	fn column(&self, j: usize) -> Self::Col {
-		nalgebra::Matrix::column(self, j).clone_owned()
-	}
-
-	fn columns(&self, start: usize, count: usize) -> Self {
-		nalgebra::Matrix::columns(self, start, count).clone_owned()
-	}
-
-	fn rows(&self, start: usize, count: usize) -> Self {
-		nalgebra::Matrix::rows(self, start, count).clone_owned()
 	}
 
 	fn set_column(&mut self, j: usize, col: &Self::Col) {
@@ -221,9 +371,7 @@ where
 		nalgebra::Matrix::as_mut_slice(self)
 	}
 
-	fn from_column_slice(nrows: usize, ncols: usize, data: &[T]) -> Self {
-		DMatrix::from_column_slice(nrows, ncols, data)
-	}
+	// ── In-place mutations ───────────────────────────────────────────
 
 	#[inline]
 	fn copy_from(&mut self, other: &Self) {
@@ -240,9 +388,7 @@ where
 		*self *= alpha;
 	}
 
-	fn transpose(&self) -> Self {
-		nalgebra::Matrix::transpose(self)
-	}
+	// ── Allocating arithmetic ────────────────────────────────────────
 
 	fn mat_mul(&self, other: &Self) -> Self {
 		self * other
@@ -272,12 +418,21 @@ where
 		*self -= other;
 	}
 
-	fn gemm(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
-		nalgebra::Matrix::gemm(self, alpha, a, b, beta);
+	// ── GEMM (view operands) ─────────────────────────────────────────
+
+	fn gemm(&mut self, alpha: T, a: Self::View<'_>, b: Self::View<'_>, beta: T) {
+		nalgebra::Matrix::gemm(self, alpha, &a, &b, beta);
 	}
 
-	fn gemm_at(&mut self, alpha: T, a: &Self, b: &Self, beta: T) {
-		nalgebra::Matrix::gemm_tr(self, alpha, a, b, beta);
+	fn gemm_at(&mut self, alpha: T, a: Self::View<'_>, b: Self::View<'_>, beta: T) {
+		nalgebra::Matrix::gemm_tr(self, alpha, &a, &b, beta);
+	}
+
+	fn gemm_bt(&mut self, alpha: T, a: Self::View<'_>, b: Self::View<'_>, beta: T) {
+		// nalgebra doesn't have a native gemm with B transposed,
+		// so we transpose B and use regular gemm.
+		let bt = b.transpose();
+		nalgebra::Matrix::gemm(self, alpha, &a, &bt, beta);
 	}
 }
 
@@ -347,34 +502,34 @@ mod tests {
 	#[test]
 	fn test_vector_basic_ops() {
 		let v = <DVector<f64> as VectorOps<f64>>::zeros(5);
-		assert_eq!(VectorOps::len(&v), 5);
+		assert_eq!(VectorView::len(&v), 5);
 		assert_relative_eq!(v.dot(&v), 0.0);
 
 		let v = <DVector<f64> as VectorOps<f64>>::from_fn(3, |i| (i + 1) as f64);
-		assert_relative_eq!(VectorOps::get(&v, 0), 1.0);
-		assert_relative_eq!(VectorOps::get(&v, 1), 2.0);
-		assert_relative_eq!(VectorOps::get(&v, 2), 3.0);
-		assert_relative_eq!(VectorOps::norm_squared(&v), 14.0);
+		assert_relative_eq!(VectorView::get(&v, 0), 1.0);
+		assert_relative_eq!(VectorView::get(&v, 1), 2.0);
+		assert_relative_eq!(VectorView::get(&v, 2), 3.0);
+		assert_relative_eq!(VectorView::norm_squared(&v), 14.0);
 	}
 
 	#[test]
 	fn test_vector_axpy() {
 		let x = <DVector<f64> as VectorOps<f64>>::from_slice(&[1.0, 2.0, 3.0]);
 		let mut y = <DVector<f64> as VectorOps<f64>>::from_slice(&[10.0, 20.0, 30.0]);
-		VectorOps::axpy(&mut y, 2.0, &x, 1.0); // y = 2*x + y
-		assert_relative_eq!(VectorOps::get(&y, 0), 12.0);
-		assert_relative_eq!(VectorOps::get(&y, 1), 24.0);
-		assert_relative_eq!(VectorOps::get(&y, 2), 36.0);
+		VectorOps::axpy(&mut y, 2.0, &x, 1.0);
+		assert_relative_eq!(VectorView::get(&y, 0), 12.0);
+		assert_relative_eq!(VectorView::get(&y, 1), 24.0);
+		assert_relative_eq!(VectorView::get(&y, 2), 36.0);
 	}
 
 	#[test]
 	fn test_matrix_basic_ops() {
 		let m = <DMatrix<f64> as MatrixOps<f64>>::identity(3);
-		assert_eq!(MatrixOps::nrows(&m), 3);
-		assert_eq!(MatrixOps::ncols(&m), 3);
-		assert_relative_eq!(MatrixOps::trace(&m), 3.0);
-		assert_relative_eq!(MatrixOps::get(&m, 0, 0), 1.0);
-		assert_relative_eq!(MatrixOps::get(&m, 0, 1), 0.0);
+		assert_eq!(MatrixView::nrows(&m), 3);
+		assert_eq!(MatrixView::ncols(&m), 3);
+		assert_relative_eq!(MatrixView::trace(&m), 3.0);
+		assert_relative_eq!(MatrixView::get(&m, 0, 0), 1.0);
+		assert_relative_eq!(MatrixView::get(&m, 0, 1), 0.0);
 	}
 
 	#[test]
@@ -382,9 +537,28 @@ mod tests {
 		let a = <DMatrix<f64> as MatrixOps<f64>>::identity(3);
 		let v = <DVector<f64> as VectorOps<f64>>::from_slice(&[1.0, 2.0, 3.0]);
 		let result = MatrixOps::mat_vec(&a, &v);
-		assert_relative_eq!(VectorOps::get(&result, 0), 1.0);
-		assert_relative_eq!(VectorOps::get(&result, 1), 2.0);
-		assert_relative_eq!(VectorOps::get(&result, 2), 3.0);
+		assert_relative_eq!(VectorView::get(&result, 0), 1.0);
+		assert_relative_eq!(VectorView::get(&result, 1), 2.0);
+		assert_relative_eq!(VectorView::get(&result, 2), 3.0);
+	}
+
+	#[test]
+	fn test_column_view() {
+		let m = <DMatrix<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| (i + j * 3 + 1) as f64);
+		let col0 = m.column(0);
+		assert_relative_eq!(VectorView::get(&col0, 0), 1.0);
+		assert_relative_eq!(VectorView::get(&col0, 2), 3.0);
+	}
+
+	#[test]
+	fn test_gemm_with_views() {
+		let a = <DMatrix<f64> as MatrixOps<f64>>::identity(3);
+		let b =
+			<DMatrix<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| (i + j * 3 + 1) as f64);
+		let mut c = <DMatrix<f64> as MatrixOps<f64>>::zeros(3, 2);
+		MatrixOps::gemm(&mut c, 1.0, a.as_view(), b.as_view(), 0.0);
+		assert_relative_eq!(MatrixView::get(&c, 0, 0), 1.0);
+		assert_relative_eq!(MatrixView::get(&c, 2, 1), 6.0);
 	}
 
 	#[test]
@@ -393,10 +567,9 @@ mod tests {
 		let svd = DecompositionOps::svd(&m);
 		assert!(svd.u.is_some());
 		assert!(svd.vt.is_some());
-		// Singular values of identity are all 1
 		for i in 0..3 {
 			assert_relative_eq!(
-				VectorOps::get(&svd.singular_values, i),
+				VectorView::get(&svd.singular_values, i),
 				1.0,
 				epsilon = 1e-10
 			);
@@ -408,13 +581,12 @@ mod tests {
 		let m =
 			<DMatrix<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| if i == j { 1.0 } else { 0.0 });
 		let qr = DecompositionOps::qr(&m);
-		// Q * R should reconstruct m
 		let reconstructed = MatrixOps::mat_mul(qr.q(), qr.r());
 		for i in 0..3 {
 			for j in 0..2 {
 				assert_relative_eq!(
-					MatrixOps::get(&reconstructed, i, j),
-					MatrixOps::get(&m, i, j),
+					MatrixView::get(&reconstructed, i, j),
+					MatrixView::get(&m, i, j),
 					epsilon = 1e-10
 				);
 			}
@@ -423,11 +595,10 @@ mod tests {
 
 	#[test]
 	fn test_symmetric_eigen() {
-		// Diagonal matrix — eigenvalues are the diagonal
 		let diag = <DVector<f64> as VectorOps<f64>>::from_slice(&[3.0, 1.0, 2.0]);
 		let m = <DMatrix<f64> as MatrixOps<f64>>::from_diagonal(&diag);
 		let eigen = DecompositionOps::symmetric_eigen(&m);
-		let mut eigs: Vec<f64> = VectorOps::iter(&eigen.eigenvalues).collect();
+		let mut eigs: Vec<f64> = VectorView::iter(&eigen.eigenvalues).collect();
 		eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 		assert_relative_eq!(eigs[0], 1.0, epsilon = 1e-10);
 		assert_relative_eq!(eigs[1], 2.0, epsilon = 1e-10);
@@ -436,19 +607,17 @@ mod tests {
 
 	#[test]
 	fn test_cholesky() {
-		// SPD matrix [[4, 2], [2, 3]]
 		let m =
 			<DMatrix<f64> as MatrixOps<f64>>::from_fn(2, 2, |i, j| [[4.0, 2.0], [2.0, 3.0]][i][j]);
 		let result = DecompositionOps::cholesky(&m);
 		assert!(result.is_some());
 		let l = result.unwrap().l().clone();
-		// L * L^T should reconstruct m
-		let reconstructed = MatrixOps::mat_mul(&l, &MatrixOps::transpose(&l));
+		let reconstructed = MatrixOps::mat_mul(&l, &MatrixOps::transpose_to_owned(&l));
 		for i in 0..2 {
 			for j in 0..2 {
 				assert_relative_eq!(
-					MatrixOps::get(&reconstructed, i, j),
-					MatrixOps::get(&m, i, j),
+					MatrixView::get(&reconstructed, i, j),
+					MatrixView::get(&m, i, j),
 					epsilon = 1e-10
 				);
 			}
@@ -460,12 +629,12 @@ mod tests {
 		let a = <DVector<f64> as VectorOps<f64>>::from_slice(&[1.0, 2.0, 3.0]);
 		let b = <DVector<f64> as VectorOps<f64>>::from_slice(&[4.0, 5.0, 6.0]);
 		let sum = VectorOps::add(&a, &b);
-		assert_relative_eq!(VectorOps::get(&sum, 0), 5.0);
-		assert_relative_eq!(VectorOps::get(&sum, 2), 9.0);
+		assert_relative_eq!(VectorView::get(&sum, 0), 5.0);
+		assert_relative_eq!(VectorView::get(&sum, 2), 9.0);
 		let diff = VectorOps::sub(&a, &b);
-		assert_relative_eq!(VectorOps::get(&diff, 0), -3.0);
+		assert_relative_eq!(VectorView::get(&diff, 0), -3.0);
 		let neg = VectorOps::neg(&a);
-		assert_relative_eq!(VectorOps::get(&neg, 1), -2.0);
+		assert_relative_eq!(VectorView::get(&neg, 1), -2.0);
 	}
 
 	#[test]
@@ -473,9 +642,9 @@ mod tests {
 		let a = <DVector<f64> as VectorOps<f64>>::from_slice(&[2.0, 3.0, 4.0]);
 		let b = <DVector<f64> as VectorOps<f64>>::from_slice(&[5.0, 6.0, 7.0]);
 		let c = VectorOps::component_mul(&a, &b);
-		assert_relative_eq!(VectorOps::get(&c, 0), 10.0);
-		assert_relative_eq!(VectorOps::get(&c, 1), 18.0);
-		assert_relative_eq!(VectorOps::get(&c, 2), 28.0);
+		assert_relative_eq!(VectorView::get(&c, 0), 10.0);
+		assert_relative_eq!(VectorView::get(&c, 1), 18.0);
+		assert_relative_eq!(VectorView::get(&c, 2), 28.0);
 	}
 
 	#[test]
@@ -483,9 +652,9 @@ mod tests {
 		let mut a = <DVector<f64> as VectorOps<f64>>::from_slice(&[1.0, 2.0, 3.0]);
 		let b = <DVector<f64> as VectorOps<f64>>::from_slice(&[4.0, 5.0, 6.0]);
 		VectorOps::add_assign(&mut a, &b);
-		assert_relative_eq!(VectorOps::get(&a, 0), 5.0);
+		assert_relative_eq!(VectorView::get(&a, 0), 5.0);
 		VectorOps::sub_assign(&mut a, &b);
-		assert_relative_eq!(VectorOps::get(&a, 0), 1.0);
+		assert_relative_eq!(VectorView::get(&a, 0), 1.0);
 	}
 
 	#[test]
@@ -494,53 +663,48 @@ mod tests {
 		let col = MatrixOps::column_as_mut_slice(&mut m, 1);
 		assert_relative_eq!(col[0], 3.0);
 		col[0] = 99.0;
-		assert_relative_eq!(MatrixOps::get(&m, 0, 1), 99.0);
+		assert_relative_eq!(MatrixView::get(&m, 0, 1), 99.0);
 	}
 
 	#[test]
 	fn test_matrix_from_column_slice() {
-		// Column-major: col0=[1,2,3], col1=[4,5,6]
 		let data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
 		let m = <DMatrix<f64> as MatrixOps<f64>>::from_column_slice(3, 2, &data);
-		assert_relative_eq!(MatrixOps::get(&m, 0, 0), 1.0);
-		assert_relative_eq!(MatrixOps::get(&m, 2, 0), 3.0);
-		assert_relative_eq!(MatrixOps::get(&m, 0, 1), 4.0);
+		assert_relative_eq!(MatrixView::get(&m, 0, 0), 1.0);
+		assert_relative_eq!(MatrixView::get(&m, 2, 0), 3.0);
+		assert_relative_eq!(MatrixView::get(&m, 0, 1), 4.0);
 	}
 
 	#[test]
 	fn test_matrix_column_dot() {
 		let m = <DMatrix<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| (i + j + 1) as f64);
-		// col0 = [1,2,3], col1 = [2,3,4]
-		let d = MatrixOps::column_dot(&m, 0, &m, 1);
-		assert_relative_eq!(d, 1.0 * 2.0 + 2.0 * 3.0 + 3.0 * 4.0); // 20
+		let d = MatrixView::column_dot(&m, 0, &m, 1);
+		assert_relative_eq!(d, 1.0 * 2.0 + 2.0 * 3.0 + 3.0 * 4.0);
 	}
 
 	#[test]
 	fn test_cholesky_solve() {
-		// A = [[4, 2], [2, 3]], b = [[1, 0], [0, 1]]
 		let a =
 			<DMatrix<f64> as MatrixOps<f64>>::from_fn(2, 2, |i, j| [[4.0, 2.0], [2.0, 3.0]][i][j]);
 		let b = <DMatrix<f64> as MatrixOps<f64>>::identity(2);
 		let mut x = <DMatrix<f64> as MatrixOps<f64>>::zeros(2, 2);
 		assert!(DecompositionOps::cholesky_solve(&a, &b, &mut x));
-		// A * x should be identity
 		let ax = MatrixOps::mat_mul(&a, &x);
 		for i in 0..2 {
 			for j in 0..2 {
 				let expected = if i == j { 1.0 } else { 0.0 };
-				assert_relative_eq!(MatrixOps::get(&ax, i, j), expected, epsilon = 1e-10);
+				assert_relative_eq!(MatrixView::get(&ax, i, j), expected, epsilon = 1e-10);
 			}
 		}
 	}
 
 	#[test]
 	fn test_backend_type() {
-		// Verify NalgebraBackend produces the right types
 		type V = <NalgebraBackend as LinAlgBackend<f64>>::Vector;
 		type M = <NalgebraBackend as LinAlgBackend<f64>>::Matrix;
 		let v = V::zeros(5);
 		let m = <M as MatrixOps<f64>>::identity(3);
-		assert_eq!(VectorOps::len(&v), 5);
-		assert_eq!(MatrixOps::nrows(&m), 3);
+		assert_eq!(VectorView::len(&v), 5);
+		assert_eq!(MatrixView::nrows(&m), 3);
 	}
 }

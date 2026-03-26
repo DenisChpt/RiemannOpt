@@ -6,7 +6,7 @@
 use riemannopt_core::{
 	core::cost_function::CostFunction,
 	error::Result as ManifoldResult,
-	linalg::{self, DecompositionOps, MatrixOps, VectorOps},
+	linalg::{self, DecompositionOps, MatrixOps, MatrixView, VectorOps, VectorView},
 	manifold::Manifold,
 	optimization::optimizer::{Optimizer, StoppingCriterion},
 };
@@ -102,7 +102,7 @@ impl CostFunction<f64> for RayleighQuotient {
 		let n = self.a.nrows();
 		let scaled = self.a.scale_by(2.0);
 		Ok(linalg::Mat::<f64>::from_fn(n, n, |i, j| {
-			MatrixOps::get(&scaled, i, j)
+			MatrixView::get(&scaled, i, j)
 		}))
 	}
 
@@ -148,7 +148,7 @@ impl CostFunction<f64> for TraceMinimization {
 
 	fn cost(&self, point: &linalg::Mat<f64>) -> ManifoldResult<f64> {
 		let ay = self.a.mat_mul(point);
-		let yt_ay = MatrixOps::transpose(point).mat_mul(&ay);
+		let yt_ay = MatrixOps::transpose_to_owned(point).mat_mul(&ay);
 		Ok(yt_ay.trace())
 	}
 
@@ -157,7 +157,7 @@ impl CostFunction<f64> for TraceMinimization {
 		point: &linalg::Mat<f64>,
 	) -> ManifoldResult<(f64, linalg::Mat<f64>)> {
 		let ay = self.a.mat_mul(point);
-		let yt_ay = MatrixOps::transpose(point).mat_mul(&ay);
+		let yt_ay = MatrixOps::transpose_to_owned(point).mat_mul(&ay);
 		let cost = yt_ay.trace();
 		let gradient = ay.scale_by(2.0);
 		Ok((cost, gradient))
@@ -169,7 +169,7 @@ impl CostFunction<f64> for TraceMinimization {
 		gradient: &mut linalg::Mat<f64>,
 	) -> ManifoldResult<f64> {
 		let ay = self.a.mat_mul(point);
-		let yt_ay = MatrixOps::transpose(point).mat_mul(&ay);
+		let yt_ay = MatrixOps::transpose_to_owned(point).mat_mul(&ay);
 		let cost = yt_ay.trace();
 		gradient.copy_from(&ay);
 		gradient.scale_mut(2.0);
@@ -237,7 +237,7 @@ impl CostFunction<f64> for Procrustes {
 		let n = diff.norm();
 		let cost = n * n;
 		// gradient = 2 * A^T * (A*X - B)
-		let at = MatrixOps::transpose(&self.a);
+		let at = MatrixOps::transpose_to_owned(&self.a);
 		let gradient = at.mat_mul(&diff).scale_by(2.0);
 		Ok((cost, gradient))
 	}
@@ -251,7 +251,7 @@ impl CostFunction<f64> for Procrustes {
 		let diff = ax.sub(&self.b);
 		let n = diff.norm();
 		let cost = n * n;
-		let at = MatrixOps::transpose(&self.a);
+		let at = MatrixOps::transpose_to_owned(&self.a);
 		let g = at.mat_mul(&diff).scale_by(2.0);
 		gradient.copy_from(&g);
 		Ok(cost)
@@ -260,7 +260,7 @@ impl CostFunction<f64> for Procrustes {
 	fn gradient(&self, point: &linalg::Mat<f64>) -> ManifoldResult<linalg::Mat<f64>> {
 		let ax = self.a.mat_mul(point);
 		let diff = ax.sub(&self.b);
-		let at = MatrixOps::transpose(&self.a);
+		let at = MatrixOps::transpose_to_owned(&self.a);
 		Ok(at.mat_mul(&diff).scale_by(2.0))
 	}
 
@@ -276,7 +276,7 @@ impl CostFunction<f64> for Procrustes {
 		vector: &linalg::Mat<f64>,
 	) -> ManifoldResult<linalg::Mat<f64>> {
 		// 2 * A^T * A * V
-		let at = MatrixOps::transpose(&self.a);
+		let at = MatrixOps::transpose_to_owned(&self.a);
 		let ata = at.mat_mul(&self.a);
 		Ok(ata.mat_mul(vector).scale_by(2.0))
 	}
@@ -493,7 +493,7 @@ fn check_rayleigh_minimizer(x: &linalg::Vec<f64>, tol: f64) {
 /// The projection matrix P = Y Y^T should satisfy P e_i = e_i for i = 1..p.
 fn check_subspace_minimizer(y: &linalg::Mat<f64>, p: usize, tol: f64) {
 	let mut proj = linalg::Mat::<f64>::zeros(y.nrows(), y.nrows());
-	proj.gemm_bt(1.0, y, y, 0.0);
+	proj.gemm_bt(1.0, y.as_view(), y.as_view(), 0.0);
 	let nrows = y.nrows();
 	for i in 0..p {
 		let ei: linalg::Vec<f64> = VectorOps::from_fn(nrows, |k| if k == i { 1.0 } else { 0.0 });
@@ -1021,7 +1021,7 @@ mod procrustes_on_stiefel {
 		let svd = DecompositionOps::svd(&target);
 		let u = svd.u.unwrap();
 		let vt = svd.vt.unwrap();
-		let _x_star = u.columns(0, p).mat_mul(&vt.rows(0, p));
+		let _x_star = u.columns_to_owned(0, p).mat_mul(&vt.rows_to_owned(0, p));
 
 		let identity_n = <linalg::Mat<f64> as MatrixOps<f64>>::identity(n);
 		let cost_fn = Procrustes::new(identity_n, target);
@@ -1045,7 +1045,7 @@ mod procrustes_on_stiefel {
 		);
 
 		// Verify result is on Stiefel manifold: X^T X = I
-		let xtx = MatrixOps::transpose(&result.point).mat_mul(&result.point);
+		let xtx = MatrixOps::transpose_to_owned(&result.point).mat_mul(&result.point);
 		let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(p);
 		let orth_error = xtx.sub(&eye).norm();
 		assert!(
@@ -1067,7 +1067,7 @@ mod procrustes_on_stiefel {
 		let svd = DecompositionOps::svd(&target);
 		let u = svd.u.unwrap();
 		let vt = svd.vt.unwrap();
-		let x_star = u.columns(0, p).mat_mul(&vt.rows(0, p));
+		let x_star = u.columns_to_owned(0, p).mat_mul(&vt.rows_to_owned(0, p));
 		let diff = target.sub(&x_star);
 		let f_star = diff.norm() * diff.norm();
 
@@ -1228,7 +1228,7 @@ mod manifold_geometry {
 				let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 3);
 				st.retract(&x, &v_scaled, &mut y, &mut ()).unwrap();
 
-				let yty = MatrixOps::transpose(&y).mat_mul(&y);
+				let yty = MatrixOps::transpose_to_owned(&y).mat_mul(&y);
 				let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
 				let orth_error = yty.sub(&eye).norm();
 				assert!(
@@ -1518,7 +1518,7 @@ mod numerical_precision {
 			let crit = StoppingCriterion::new().with_max_iterations(1);
 			let result = opt.optimize(&cost_fn, &st, &x, &crit).unwrap();
 
-			let xtx = MatrixOps::transpose(&result.point).mat_mul(&result.point);
+			let xtx = MatrixOps::transpose_to_owned(&result.point).mat_mul(&result.point);
 			let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(p);
 			let orth_error = xtx.sub(&eye).norm();
 			assert!(

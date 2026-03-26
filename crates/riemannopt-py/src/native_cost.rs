@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
-	linalg::{DecompositionOps, MatrixOps, VectorOps},
+	linalg::{DecompositionOps, MatrixOps, MatrixView, VectorOps},
 };
 
 use crate::array_utils::{mat_to_numpy, numpy_to_mat, numpy_to_vec, vec_to_numpy, Mat64, Vec64};
@@ -155,7 +155,7 @@ impl PyTraceMinimization {
 	fn py_cost(&self, y: PyReadonlyArray2<'_, f64>) -> PyResult<f64> {
 		let ym = numpy_to_mat(y)?;
 		let ay = self.a.mat_mul(&ym);
-		Ok(MatrixOps::transpose(&ym).mat_mul(&ay).trace())
+		Ok(MatrixOps::transpose_to_owned(&ym).mat_mul(&ay).trace())
 	}
 
 	#[pyo3(name = "gradient")]
@@ -187,12 +187,12 @@ impl CostFunction<f64> for PyTraceMinimization {
 
 	fn cost(&self, point: &Mat64) -> Result<f64> {
 		let ay = self.a.mat_mul(point);
-		Ok(MatrixOps::transpose(point).mat_mul(&ay).trace())
+		Ok(MatrixOps::transpose_to_owned(point).mat_mul(&ay).trace())
 	}
 
 	fn cost_and_gradient_alloc(&self, point: &Mat64) -> Result<(f64, Mat64)> {
 		let ay = self.a.mat_mul(point);
-		let cost = MatrixOps::transpose(point).mat_mul(&ay).trace();
+		let cost = MatrixOps::transpose_to_owned(point).mat_mul(&ay).trace();
 		let mut gradient = ay;
 		gradient.scale_mut(2.0);
 		Ok((cost, gradient))
@@ -200,7 +200,7 @@ impl CostFunction<f64> for PyTraceMinimization {
 
 	fn cost_and_gradient(&self, point: &Mat64, gradient: &mut Mat64) -> Result<f64> {
 		let ay = self.a.mat_mul(point);
-		let cost = MatrixOps::transpose(point).mat_mul(&ay).trace();
+		let cost = MatrixOps::transpose_to_owned(point).mat_mul(&ay).trace();
 		gradient.copy_from(&ay);
 		gradient.scale_mut(2.0);
 		Ok(cost)
@@ -270,7 +270,7 @@ impl PyBrockett {
 	fn py_cost(&self, x: PyReadonlyArray2<'_, f64>) -> PyResult<f64> {
 		let xm = numpy_to_mat(x)?;
 		let ax = self.a.mat_mul(&xm);
-		Ok(MatrixOps::transpose(&xm)
+		Ok(MatrixOps::transpose_to_owned(&xm)
 			.mat_mul(&ax)
 			.mat_mul(&self.n_mat)
 			.trace())
@@ -305,7 +305,7 @@ impl CostFunction<f64> for PyBrockett {
 
 	fn cost(&self, point: &Mat64) -> Result<f64> {
 		let ax = self.a.mat_mul(point);
-		Ok(MatrixOps::transpose(point)
+		Ok(MatrixOps::transpose_to_owned(point)
 			.mat_mul(&ax)
 			.mat_mul(&self.n_mat)
 			.trace())
@@ -313,7 +313,7 @@ impl CostFunction<f64> for PyBrockett {
 
 	fn cost_and_gradient_alloc(&self, point: &Mat64) -> Result<(f64, Mat64)> {
 		let ax = self.a.mat_mul(point);
-		let cost = MatrixOps::transpose(point)
+		let cost = MatrixOps::transpose_to_owned(point)
 			.mat_mul(&ax)
 			.mat_mul(&self.n_mat)
 			.trace();
@@ -324,7 +324,7 @@ impl CostFunction<f64> for PyBrockett {
 
 	fn cost_and_gradient(&self, point: &Mat64, gradient: &mut Mat64) -> Result<f64> {
 		let ax = self.a.mat_mul(point);
-		let cost = MatrixOps::transpose(point)
+		let cost = MatrixOps::transpose_to_owned(point)
 			.mat_mul(&ax)
 			.mat_mul(&self.n_mat)
 			.trace();

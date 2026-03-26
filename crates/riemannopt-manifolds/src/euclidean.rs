@@ -67,7 +67,7 @@ use rand_distr::{Distribution, StandardNormal};
 
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, LinAlgBackend, VectorOps},
+	linalg::{self, LinAlgBackend, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -151,7 +151,7 @@ where
 		_ws: &mut (),
 	) -> Result<T> {
 		// Standard inner product
-		Ok(VectorOps::dot(u, v))
+		Ok(VectorView::dot(u, v))
 	}
 
 	fn retract(
@@ -197,7 +197,7 @@ where
 		let mut rng = rand::rng();
 
 		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
+		if VectorView::len(result) != self.n {
 			*result = VectorOps::zeros(self.n);
 		}
 
@@ -217,7 +217,7 @@ where
 
 	fn is_point_on_manifold(&self, point: &Self::Point, _tol: T) -> bool {
 		// Check dimension
-		VectorOps::len(point) == self.n
+		VectorView::len(point) == self.n
 	}
 
 	fn is_vector_in_tangent_space(
@@ -227,14 +227,14 @@ where
 		_tol: T,
 	) -> bool {
 		// Check dimension
-		VectorOps::len(vector) == self.n
+		VectorView::len(vector) == self.n
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
 		// ‖y - x‖² = ‖y‖² + ‖x‖² - 2⟨x,y⟩  (zero alloc)
-		let xx = VectorOps::dot(x, x);
-		let yy = VectorOps::dot(y, y);
-		let xy = VectorOps::dot(x, y);
+		let xx = VectorView::dot(x, x);
+		let yy = VectorView::dot(y, y);
+		let xy = VectorView::dot(x, y);
 		let dist_sq = xx + yy - (T::one() + T::one()) * xy;
 		// Guard against negative values from floating-point errors
 		Ok(<T as Float>::sqrt(<T as Float>::max(dist_sq, T::zero())))

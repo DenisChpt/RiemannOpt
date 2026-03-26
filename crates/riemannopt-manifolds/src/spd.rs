@@ -115,7 +115,7 @@
 //! ```rust,no_run
 //! use riemannopt_manifolds::SPD;
 //! use riemannopt_core::manifold::Manifold;
-//! use riemannopt_core::linalg::{self, MatrixOps, DecompositionOps, VectorOps};
+//! use riemannopt_core::linalg::{self, MatrixOps, DecompositionOps, VectorView};
 //!
 //! // Create SPD manifold S⁺⁺(3)
 //! let spd = SPD::<f64>::new(3)?;
@@ -126,13 +126,13 @@
 //!
 //! // Verify positive definiteness
 //! let eigen = DecompositionOps::symmetric_eigen(&p);
-//! assert!(VectorOps::iter(&eigen.eigenvalues).all(|l| l > 0.0));
+//! assert!(VectorView::iter(&eigen.eigenvalues).all(|l| l > 0.0));
 //!
 //! // Tangent vector (symmetric)
 //! let v = MatrixOps::from_fn(3, 3, |i, j| {
 //!     (i + j) as f64
 //! });
-//! let v_sym = MatrixOps::scale_by(&MatrixOps::add(&v, &MatrixOps::transpose(&v)), 0.5);
+//! let v_sym = MatrixOps::scale_by(&MatrixOps::add(&v, &MatrixOps::transpose_to_owned(&v)), 0.5);
 //!
 //! // Retraction
 //! let mut ws = spd.create_workspace(&p);
@@ -148,7 +148,7 @@ use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
 use riemannopt_core::{
 	error::{ManifoldError, Result},
-	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, VectorOps},
+	linalg::{self, DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -365,10 +365,10 @@ where
 	/// - `DimensionMismatch`: If matrix is not n×n
 	/// - `NotOnManifold`: If matrix is not symmetric or not positive definite
 	pub fn check_point(&self, p: &linalg::Mat<T>) -> Result<()> {
-		if MatrixOps::nrows(p) != self.n || MatrixOps::ncols(p) != self.n {
+		if MatrixView::nrows(p) != self.n || MatrixView::ncols(p) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.n,
-				MatrixOps::nrows(p) * MatrixOps::ncols(p),
+				MatrixView::nrows(p) * MatrixView::ncols(p),
 			));
 		}
 
@@ -399,7 +399,7 @@ where
 
 		// Check positive definiteness via eigenvalues
 		let eigen = DecompositionOps::symmetric_eigen(p);
-		let min_eval = VectorOps::iter(&eigen.eigenvalues)
+		let min_eval = VectorView::iter(&eigen.eigenvalues)
 			.fold(T::infinity(), |min, val| <T as Float>::min(min, val));
 
 		if min_eval <= self.min_eigenvalue {
@@ -425,10 +425,10 @@ where
 	pub fn check_tangent(&self, p: &linalg::Mat<T>, v: &linalg::Mat<T>) -> Result<()> {
 		self.check_point(p)?;
 
-		if MatrixOps::nrows(v) != self.n || MatrixOps::ncols(v) != self.n {
+		if MatrixView::nrows(v) != self.n || MatrixView::ncols(v) != self.n {
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.n,
-				MatrixOps::nrows(v) * MatrixOps::ncols(v),
+				MatrixView::nrows(v) * MatrixView::ncols(v),
 			));
 		}
 
@@ -460,7 +460,7 @@ where
 		let eigen = DecompositionOps::symmetric_eigen(p);
 		let mut sqrt_vals = <linalg::Vec<T> as VectorOps<T>>::zeros(self.n);
 		for i in 0..self.n {
-			let x = VectorOps::get(&eigen.eigenvalues, i);
+			let x = VectorView::get(&eigen.eigenvalues, i);
 			if x <= T::zero() {
 				return Err(ManifoldError::numerical_error(
 					"Cannot compute square root of non-positive eigenvalue".to_string(),
@@ -475,7 +475,7 @@ where
 		let mut buf = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 		buf.scale_columns(ev, &sqrt_vals);
 		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		out.gemm_bt(T::one(), &buf, ev, T::zero());
+		out.gemm_bt(T::one(), buf.as_view(), ev.as_view(), T::zero());
 		Ok(out)
 	}
 
@@ -485,7 +485,7 @@ where
 		let mut sqrt_inv_vals = <linalg::Vec<T> as VectorOps<T>>::zeros(self.n);
 
 		for i in 0..self.n {
-			let eval = VectorOps::get(&eigen.eigenvalues, i);
+			let eval = VectorView::get(&eigen.eigenvalues, i);
 			if eval <= self.min_eigenvalue {
 				return Err(ManifoldError::numerical_error(
 					"Matrix too close to singular for inverse square root".to_string(),
@@ -499,7 +499,7 @@ where
 		let mut buf = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 		buf.scale_columns(ev, &sqrt_inv_vals);
 		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		out.gemm_bt(T::one(), &buf, ev, T::zero());
+		out.gemm_bt(T::one(), buf.as_view(), ev.as_view(), T::zero());
 		Ok(out)
 	}
 
@@ -509,7 +509,7 @@ where
 		let mut log_vals = <linalg::Vec<T> as VectorOps<T>>::zeros(self.n);
 
 		for i in 0..self.n {
-			let eval = VectorOps::get(&eigen.eigenvalues, i);
+			let eval = VectorView::get(&eigen.eigenvalues, i);
 			if eval <= T::zero() {
 				return Err(ManifoldError::numerical_error(
 					"Cannot compute logarithm of non-positive eigenvalue".to_string(),
@@ -523,7 +523,7 @@ where
 		let mut buf = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 		buf.scale_columns(ev, &log_vals);
 		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		out.gemm_bt(T::one(), &buf, ev, T::zero());
+		out.gemm_bt(T::one(), buf.as_view(), ev.as_view(), T::zero());
 		Ok(out)
 	}
 
@@ -532,7 +532,7 @@ where
 		let mut eigen = DecompositionOps::symmetric_eigen(x);
 		// Transform eigenvalues in-place: λ_i → exp(λ_i)
 		for i in 0..self.n {
-			let v = VectorOps::get(&eigen.eigenvalues, i);
+			let v = VectorView::get(&eigen.eigenvalues, i);
 			*VectorOps::get_mut(&mut eigen.eigenvalues, i) = <T as Float>::exp(v);
 		}
 		let ev = &eigen.eigenvectors;
@@ -540,7 +540,7 @@ where
 		let mut buf = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 		buf.scale_columns(ev, &eigen.eigenvalues);
 		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		out.gemm_bt(T::one(), &buf, ev, T::zero());
+		out.gemm_bt(T::one(), buf.as_view(), ev.as_view(), T::zero());
 		out
 	}
 
@@ -558,18 +558,18 @@ where
 		let mut buf2 = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 
 		// buf1 = P^{-1/2} V
-		buf1.gemm(T::one(), &p_sqrt_inv, v, T::zero());
+		buf1.gemm(T::one(), p_sqrt_inv.as_view(), v.as_view(), T::zero());
 		// buf2 = buf1 * P^{-1/2} = P^{-1/2} V P^{-1/2}
-		buf2.gemm(T::one(), &buf1, &p_sqrt_inv, T::zero());
+		buf2.gemm(T::one(), buf1.as_view(), p_sqrt_inv.as_view(), T::zero());
 
 		// Compute exp(buf2)
 		let exp_middle = self.matrix_exp(&buf2);
 
 		// buf1 = P^{1/2} exp(middle)
-		buf1.gemm(T::one(), &p_sqrt, &exp_middle, T::zero());
+		buf1.gemm(T::one(), p_sqrt.as_view(), exp_middle.as_view(), T::zero());
 		// result = buf1 * P^{1/2}
 		let mut result = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		result.gemm(T::one(), &buf1, &p_sqrt, T::zero());
+		result.gemm(T::one(), buf1.as_view(), p_sqrt.as_view(), T::zero());
 		Ok(result)
 	}
 
@@ -587,18 +587,18 @@ where
 		let mut buf2 = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 
 		// buf1 = P^{-1/2} Q
-		buf1.gemm(T::one(), &p_sqrt_inv, q, T::zero());
+		buf1.gemm(T::one(), p_sqrt_inv.as_view(), q.as_view(), T::zero());
 		// buf2 = buf1 * P^{-1/2} = P^{-1/2} Q P^{-1/2}
-		buf2.gemm(T::one(), &buf1, &p_sqrt_inv, T::zero());
+		buf2.gemm(T::one(), buf1.as_view(), p_sqrt_inv.as_view(), T::zero());
 
 		// Compute log(buf2)
 		let log_middle = self.matrix_log(&buf2)?;
 
 		// buf1 = P^{1/2} log(middle)
-		buf1.gemm(T::one(), &p_sqrt, &log_middle, T::zero());
+		buf1.gemm(T::one(), p_sqrt.as_view(), log_middle.as_view(), T::zero());
 		// result = buf1 * P^{1/2}
 		let mut result = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		result.gemm(T::one(), &buf1, &p_sqrt, T::zero());
+		result.gemm(T::one(), buf1.as_view(), p_sqrt.as_view(), T::zero());
 		Ok(result)
 	}
 
@@ -620,28 +620,28 @@ where
 				let p_sqrt_inv = self.matrix_sqrt_inv(p)?;
 				let mut buf1 = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 				let mut buf2 = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-				buf1.gemm(T::one(), &p_sqrt_inv, q, T::zero());
-				buf2.gemm(T::one(), &buf1, &p_sqrt_inv, T::zero());
+				buf1.gemm(T::one(), p_sqrt_inv.as_view(), q.as_view(), T::zero());
+				buf2.gemm(T::one(), buf1.as_view(), p_sqrt_inv.as_view(), T::zero());
 				let log_middle = self.matrix_log(&buf2)?;
-				Ok(MatrixOps::norm(&log_middle))
+				Ok(MatrixView::norm(&log_middle))
 			}
 			SPDMetric::LogEuclidean => {
 				// d(P,Q) = ‖log(P) - log(Q)‖_F
 				let mut log_p = self.matrix_log(p)?;
 				let log_q = self.matrix_log(q)?;
 				log_p.sub_assign(&log_q);
-				Ok(MatrixOps::norm(&log_p))
+				Ok(MatrixView::norm(&log_p))
 			}
 			SPDMetric::BuresWasserstein => {
 				// d(P,Q) = [tr(P + Q - 2(P^{1/2} Q P^{1/2})^{1/2})]^{1/2}
 				let p_sqrt = self.matrix_sqrt(p)?;
 				let mut buf1 = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 				let mut buf2 = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-				buf1.gemm(T::one(), &p_sqrt, q, T::zero());
-				buf2.gemm(T::one(), &buf1, &p_sqrt, T::zero());
+				buf1.gemm(T::one(), p_sqrt.as_view(), q.as_view(), T::zero());
+				buf2.gemm(T::one(), buf1.as_view(), p_sqrt.as_view(), T::zero());
 				let middle_sqrt = self.matrix_sqrt(&buf2)?;
-				let trace_term = MatrixOps::trace(p) + MatrixOps::trace(q)
-					- <T as Scalar>::from_f64(2.0) * MatrixOps::trace(&middle_sqrt);
+				let trace_term = MatrixView::trace(p) + MatrixView::trace(q)
+					- <T as Scalar>::from_f64(2.0) * MatrixView::trace(&middle_sqrt);
 				Ok(<T as Float>::sqrt(trace_term))
 			}
 		}
@@ -666,18 +666,18 @@ where
 				let mut buf2 = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 
 				// buf1 = P * Q
-				buf1.gemm(T::one(), p, q, T::zero());
+				buf1.gemm(T::one(), p.as_view(), q.as_view(), T::zero());
 				let pq_sqrt = self.matrix_sqrt(&buf1)?;
 				let p_sqrt_inv = self.matrix_sqrt_inv(p)?;
 
 				// buf1 = (PQ)^{1/2} P^{-1/2} = E
-				buf1.gemm(T::one(), &pq_sqrt, &p_sqrt_inv, T::zero());
+				buf1.gemm(T::one(), pq_sqrt.as_view(), p_sqrt_inv.as_view(), T::zero());
 
 				// buf2 = E * V
-				buf2.gemm(T::one(), &buf1, v, T::zero());
+				buf2.gemm(T::one(), buf1.as_view(), v.as_view(), T::zero());
 				// out = buf2 * E^T
 				let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-				out.gemm_bt(T::one(), &buf2, &buf1, T::zero());
+				out.gemm_bt(T::one(), buf2.as_view(), buf1.as_view(), T::zero());
 				Ok(out)
 			}
 			_ => {
@@ -714,7 +714,7 @@ where
 	}
 
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
-		if MatrixOps::nrows(point) != self.n || MatrixOps::ncols(point) != self.n {
+		if MatrixView::nrows(point) != self.n || MatrixView::ncols(point) != self.n {
 			return false;
 		}
 
@@ -732,7 +732,7 @@ where
 
 		// Check positive definiteness
 		let eigen = DecompositionOps::symmetric_eigen(point);
-		let min_eval = VectorOps::iter(&eigen.eigenvalues)
+		let min_eval = VectorView::iter(&eigen.eigenvalues)
 			.fold(T::infinity(), |min, val| <T as Float>::min(min, val));
 
 		min_eval > self.min_eigenvalue && min_eval.is_finite()
@@ -747,7 +747,7 @@ where
 		if !self.is_point_on_manifold(point, tol) {
 			return false;
 		}
-		if MatrixOps::nrows(vector) != self.n || MatrixOps::ncols(vector) != self.n {
+		if MatrixView::nrows(vector) != self.n || MatrixView::ncols(vector) != self.n {
 			return false;
 		}
 
@@ -763,7 +763,7 @@ where
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		if MatrixOps::nrows(point) != self.n || MatrixOps::ncols(point) != self.n {
+		if MatrixView::nrows(point) != self.n || MatrixView::ncols(point) != self.n {
 			*result = <linalg::Mat<T> as MatrixOps<T>>::identity(self.n);
 			result.scale_mut(self.min_eigenvalue + <T as Scalar>::from_f64(1.0));
 			return;
@@ -784,8 +784,8 @@ where
 		let mut eigenvalues = eigen.eigenvalues;
 
 		// Clamp eigenvalues
-		for i in 0..VectorOps::len(&eigenvalues) {
-			let ev = VectorOps::get(&eigenvalues, i);
+		for i in 0..VectorView::len(&eigenvalues) {
+			let ev = VectorView::get(&eigenvalues, i);
 			if ev <= self.min_eigenvalue || !ev.is_finite() {
 				*VectorOps::get_mut(&mut eigenvalues, i) =
 					self.min_eigenvalue + <T as Scalar>::from_f64(1e-8);
@@ -798,7 +798,7 @@ where
 		let mut buf = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
 		buf.scale_columns(ev, &eigenvalues);
 		*result = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, n);
-		result.gemm_bt(T::one(), &buf, ev, T::zero());
+		result.gemm_bt(T::one(), buf.as_view(), ev.as_view(), T::zero());
 
 		// Final symmetry enforcement in-place
 		for i in 0..self.n {
@@ -817,14 +817,14 @@ where
 		result: &mut Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) -> Result<()> {
-		if MatrixOps::nrows(point) != self.n
-			|| MatrixOps::ncols(point) != self.n
-			|| MatrixOps::nrows(vector) != self.n
-			|| MatrixOps::ncols(vector) != self.n
+		if MatrixView::nrows(point) != self.n
+			|| MatrixView::ncols(point) != self.n
+			|| MatrixView::nrows(vector) != self.n
+			|| MatrixView::ncols(vector) != self.n
 		{
 			return Err(ManifoldError::dimension_mismatch(
 				self.n * self.n,
-				MatrixOps::nrows(point) * MatrixOps::ncols(point),
+				MatrixView::nrows(point) * MatrixView::ncols(point),
 			));
 		}
 
@@ -864,7 +864,7 @@ where
 							"Point matrix not invertible",
 						));
 					}
-					ws.buf_a.gemm(T::one(), &ws.buf_c, u, T::zero());
+					ws.buf_a.gemm(T::one(), ws.buf_c.as_view(), u.as_view(), T::zero());
 				}
 				if !DecompositionOps::cholesky_solve(point, v, &mut ws.buf_b) {
 					if !DecompositionOps::inverse(point, &mut ws.buf_c) {
@@ -872,11 +872,11 @@ where
 							"Point matrix not invertible",
 						));
 					}
-					ws.buf_b.gemm(T::one(), &ws.buf_c, v, T::zero());
+					ws.buf_b.gemm(T::one(), ws.buf_c.as_view(), v.as_view(), T::zero());
 				}
 				// tr(buf_a · buf_b) via GEMM into buf_c
-				ws.buf_c.gemm(T::one(), &ws.buf_a, &ws.buf_b, T::zero());
-				Ok(MatrixOps::trace(&ws.buf_c))
+				ws.buf_c.gemm(T::one(), ws.buf_a.as_view(), ws.buf_b.as_view(), T::zero());
+				Ok(MatrixView::trace(&ws.buf_c))
 			}
 			SPDMetric::LogEuclidean => {
 				let mut inner = T::zero();
@@ -896,15 +896,15 @@ where
 					));
 				}
 				// buf_a = U · P⁻¹
-				ws.buf_a.gemm(T::one(), u, &ws.buf_c, T::zero());
+				ws.buf_a.gemm(T::one(), u.as_view(), ws.buf_c.as_view(), T::zero());
 				// term1 = tr(buf_a · V)
-				ws.buf_b.gemm(T::one(), &ws.buf_a, v, T::zero());
-				let term1 = MatrixOps::trace(&ws.buf_b);
+				ws.buf_b.gemm(T::one(), ws.buf_a.as_view(), v.as_view(), T::zero());
+				let term1 = MatrixView::trace(&ws.buf_b);
 				// buf_a = V · P⁻¹
-				ws.buf_a.gemm(T::one(), v, &ws.buf_c, T::zero());
+				ws.buf_a.gemm(T::one(), v.as_view(), ws.buf_c.as_view(), T::zero());
 				// term2 = tr(buf_a · U)
-				ws.buf_b.gemm(T::one(), &ws.buf_a, u, T::zero());
-				let term2 = MatrixOps::trace(&ws.buf_b);
+				ws.buf_b.gemm(T::one(), ws.buf_a.as_view(), u.as_view(), T::zero());
+				let term2 = MatrixView::trace(&ws.buf_b);
 				Ok(<T as Scalar>::from_f64(0.25) * (term1 + term2))
 			}
 		}
@@ -928,14 +928,14 @@ where
 					}
 					// buf_a = P⁻¹ (or identity fallback), need P⁻¹V
 					ws.buf_b.copy_from(&ws.buf_a);
-					ws.buf_a.gemm(T::one(), &ws.buf_b, tangent, T::zero());
+					ws.buf_a.gemm(T::one(), ws.buf_b.as_view(), tangent.as_view(), T::zero());
 				}
 				let half = <T as Scalar>::from_f64(0.5);
 				// result = P + V
 				result.copy_from(point);
 				result.add_assign(tangent);
 				// result += 0.5 · V · P⁻¹V  (in-place GEMM)
-				result.gemm(half, tangent, &ws.buf_a, T::one());
+				result.gemm(half, tangent.as_view(), ws.buf_a.as_view(), T::one());
 				// Symmetrize in-place
 				for i in 0..n {
 					for j in i + 1..n {
@@ -1007,13 +1007,13 @@ where
 			SPDMetric::AffineInvariant => {
 				// grad^{AI} f(P) = P ∇f(P) P
 				// ws.buf_a = P · ∇f via GEMM, then result = ws.buf_a · P via GEMM
-				ws.buf_a.gemm(T::one(), point, euclidean_grad, T::zero());
-				result.gemm(T::one(), &ws.buf_a, point, T::zero());
+				ws.buf_a.gemm(T::one(), point.as_view(), euclidean_grad.as_view(), T::zero());
+				result.gemm(T::one(), ws.buf_a.as_view(), point.as_view(), T::zero());
 			}
 			SPDMetric::LogEuclidean => {
 				// grad^{LE} f(P) = P ∇f(P) + ∇f(P) P
-				result.gemm(T::one(), point, euclidean_grad, T::zero());
-				result.gemm(T::one(), euclidean_grad, point, T::one());
+				result.gemm(T::one(), point.as_view(), euclidean_grad.as_view(), T::zero());
+				result.gemm(T::one(), euclidean_grad.as_view(), point.as_view(), T::one());
 			}
 			SPDMetric::BuresWasserstein => {
 				// grad^{BW} f(P) = ∇f(P)
@@ -1061,7 +1061,7 @@ where
 		}
 
 		// Make SPD: P = A^T A + εI
-		result.gemm_at(T::one(), &a, &a, T::zero());
+		result.gemm_at(T::one(), a.as_view(), a.as_view(), T::zero());
 		// Add εI in-place
 		for i in 0..self.n {
 			*result.get_mut(i, i) = result.get(i, i) + self.min_eigenvalue;
@@ -1087,7 +1087,7 @@ where
 		}
 
 		// Normalize
-		let norm = MatrixOps::norm(result);
+		let norm = MatrixView::norm(result);
 		if norm > <T as Scalar>::from_f64(1e-16) {
 			result.scale_mut(T::one() / norm);
 		}

@@ -1,7 +1,7 @@
 //! Integration tests for the Euclidean manifold
 
 use approx::assert_relative_eq;
-use riemannopt_core::linalg::{self, VectorOps};
+use riemannopt_core::linalg::{self, VectorOps, VectorView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Euclidean;
 
