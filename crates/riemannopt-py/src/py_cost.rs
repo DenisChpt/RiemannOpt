@@ -36,11 +36,11 @@ use crate::{
 #[pyclass(name = "CostFunction", module = "riemannopt")]
 pub struct PyCostFunction {
 	/// The Python callable for computing the cost
-	cost_fn: PyObject,
+	cost_fn: Py<PyAny>,
 	/// Optional Python callable for computing the gradient
-	grad_fn: Option<PyObject>,
+	grad_fn: Option<Py<PyAny>>,
 	/// Optional Python callable for computing both cost and gradient
-	cost_and_grad_fn: Option<PyObject>,
+	cost_and_grad_fn: Option<Py<PyAny>>,
 	/// Dimension information for the problem
 	dimension_info: DimensionInfo,
 	/// Counter for function evaluations (for debugging/profiling)
@@ -84,13 +84,13 @@ impl PyCostFunction {
 	#[new]
 	#[pyo3(signature = (cost_fn, grad_fn=None, cost_and_grad_fn=None, dimension=None))]
 	pub fn new(
-		cost_fn: PyObject,
-		grad_fn: Option<PyObject>,
-		cost_and_grad_fn: Option<PyObject>,
-		dimension: Option<PyObject>,
+		cost_fn: Py<PyAny>,
+		grad_fn: Option<Py<PyAny>>,
+		cost_and_grad_fn: Option<Py<PyAny>>,
+		dimension: Option<Py<PyAny>>,
 	) -> PyResult<Self> {
 		// Parse dimension information
-		let dimension_info = Python::with_gil(|py| {
+		let dimension_info = Python::attach(|py| {
 			match dimension {
 				Some(dim_obj) => {
 					// Try to extract as integer first (vector case)
@@ -134,7 +134,7 @@ impl PyCostFunction {
 	/// Returns:
 	///     A dictionary with keys 'cost', 'gradient', and 'cost_and_gradient'
 	#[getter]
-	fn eval_counts(&self, py: Python<'_>) -> PyResult<PyObject> {
+	fn eval_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 		let counts = self.eval_count.read();
 		let dict = pyo3::types::PyDict::new(py);
 		dict.set_item("cost", counts.cost)?;
@@ -156,7 +156,7 @@ impl PyCostFunction {
 	///
 	/// Returns:
 	///     The cost value
-	pub fn cost(&self, py: Python<'_>, point: PyObject) -> PyResult<f64> {
+	pub fn cost(&self, py: Python<'_>, point: Py<PyAny>) -> PyResult<f64> {
 		self.eval_count.write().cost += 1;
 
 		// Call the Python function
@@ -173,7 +173,7 @@ impl PyCostFunction {
 	///
 	/// Returns:
 	///     The gradient as a numpy array
-	pub fn gradient(&self, py: Python<'_>, point: PyObject) -> PyResult<PyObject> {
+	pub fn gradient(&self, py: Python<'_>, point: Py<PyAny>) -> PyResult<Py<PyAny>> {
 		self.eval_count.write().gradient += 1;
 
 		if let Some(ref grad_fn) = self.grad_fn {
@@ -192,7 +192,7 @@ impl PyCostFunction {
 	///
 	/// Returns:
 	///     A tuple (cost, gradient)
-	pub fn cost_and_gradient(&self, py: Python<'_>, point: PyObject) -> PyResult<(f64, PyObject)> {
+	pub fn cost_and_gradient(&self, py: Python<'_>, point: Py<PyAny>) -> PyResult<(f64, Py<PyAny>)> {
 		self.eval_count.write().cost_and_gradient += 1;
 
 		if let Some(ref cost_and_grad_fn) = self.cost_and_grad_fn {
@@ -218,7 +218,7 @@ impl PyCostFunction {
 	}
 
 	/// Compute gradient using finite differences (Python API).
-	fn gradient_fd_py(&self, py: Python<'_>, point: PyObject) -> PyResult<PyObject> {
+	fn gradient_fd_py(&self, py: Python<'_>, point: Py<PyAny>) -> PyResult<Py<PyAny>> {
 		use numpy::{PyArray1, PyArray2, PyArrayMethods};
 
 		if self.dimension_info.is_matrix {
@@ -301,7 +301,7 @@ pub struct PyCostFunctionSphere {
 
 impl Clone for PyCostFunction {
 	fn clone(&self) -> Self {
-		Python::with_gil(|py| Self {
+		Python::attach(|py| Self {
 			cost_fn: self.cost_fn.clone_ref(py),
 			grad_fn: self.grad_fn.as_ref().map(|g| g.clone_ref(py)),
 			cost_and_grad_fn: self.cost_and_grad_fn.as_ref().map(|cg| cg.clone_ref(py)),
@@ -539,11 +539,11 @@ impl CostFunction<f64> for PyCostFunction {
 
 	fn cost(&self, point: &Self::Point) -> Result<f64> {
 		// Release GIL as soon as possible after getting the result
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			self.eval_count.write().cost += 1;
 
 			// Convert point to numpy array
-			let py_point: PyObject = match point {
+			let py_point: Py<PyAny> = match point {
 				PyPoint::Vector(vec) => vec_to_numpy(py, vec)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert vector: {}", e))
@@ -570,11 +570,11 @@ impl CostFunction<f64> for PyCostFunction {
 
 	fn cost_and_gradient_alloc(&self, point: &Self::Point) -> Result<(f64, Self::TangentVector)> {
 		use numpy::PyArrayMethods;
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			self.eval_count.write().cost_and_gradient += 1;
 
 			// Convert point to numpy
-			let py_point: PyObject = match point {
+			let py_point: Py<PyAny> = match point {
 				PyPoint::Vector(vec) => vec_to_numpy(py, vec)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert vector: {}", e))
@@ -641,7 +641,7 @@ impl CostFunction<f64> for PyCostFunction {
 				} else {
 					// Automatically compute gradient using finite differences
 					let grad = self.gradient_fd_alloc(point)?;
-					// Convert back to PyObject for consistency with the rest of the code
+					// Convert back to Py<PyAny> for consistency with the rest of the code
 					match &grad {
 						PyTangentVector::Vector(vec) => vec_to_numpy(py, vec)
 							.map_err(|e| {
@@ -774,9 +774,9 @@ impl CostFunction<f64> for PyCostFunction {
 
 	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		use numpy::PyArrayMethods;
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			// Convert point to numpy
-			let py_point: PyObject = match point {
+			let py_point: Py<PyAny> = match point {
 				PyPoint::Vector(vec) => vec_to_numpy(py, vec)
 					.map_err(|e| {
 						ManifoldError::numerical_error(format!("Failed to convert vector: {}", e))
@@ -861,10 +861,10 @@ impl std::fmt::Debug for PyCostFunction {
 #[pyo3(signature = (cost, gradient=None, cost_and_gradient=None, dimension=None, validate=false, auto_detect=true))]
 pub fn create_cost_function(
 	py: Python<'_>,
-	cost: PyObject,
-	gradient: Option<PyObject>,
-	cost_and_gradient: Option<PyObject>,
-	dimension: Option<PyObject>,
+	cost: Py<PyAny>,
+	gradient: Option<Py<PyAny>>,
+	cost_and_gradient: Option<Py<PyAny>>,
+	dimension: Option<Py<PyAny>>,
 	validate: bool,
 	auto_detect: bool,
 ) -> PyResult<PyCostFunction> {
@@ -875,16 +875,16 @@ pub fn create_cost_function(
 		&& dimension.is_some()
 	{
 		// Try calling the cost function to see what it returns
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			// Create a test point based on dimension
 			let test_point = match &dimension {
 				Some(dim_obj) => {
 					if let Ok(dim) = dim_obj.extract::<usize>(py) {
 						// Vector case
-						vec_to_numpy(py, &VectorOps::zeros(dim)).map(PyObject::from)?
+						vec_to_numpy(py, &VectorOps::zeros(dim)).map(|x| x.unbind().into_any())?
 					} else if let Ok((rows, cols)) = dim_obj.extract::<(usize, usize)>(py) {
 						// Matrix case
-						mat_to_numpy(py, &MatrixOps::zeros(rows, cols)).map(PyObject::from)?
+						mat_to_numpy(py, &MatrixOps::zeros(rows, cols)).map(|x| x.unbind().into_any())?
 					} else {
 						// Can't determine dimension, skip auto-detection
 						return Ok::<_, PyErr>((cost, gradient, cost_and_gradient, false));
@@ -1140,9 +1140,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 	type TangentVector = Vec64;
 
 	fn cost(&self, x: &Self::Point) -> Result<f64> {
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			let inner = &self.inner;
-			let x_py = vec_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = vec_to_numpy(py, x).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref cost_fn) = inner.cost_and_grad_fn {
 				let result = cost_fn.call1(py, (x_py,))?;
@@ -1159,9 +1159,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 	}
 
 	fn gradient(&self, x: &Self::Point) -> Result<Self::TangentVector> {
-		Python::with_gil(|py| -> PyResult<Vec64> {
+		Python::attach(|py| -> PyResult<Vec64> {
 			let inner = &self.inner;
-			let x_py = vec_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = vec_to_numpy(py, x).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref grad_fn) = inner.grad_fn {
 				let result = grad_fn.call1(py, (x_py,))?;
@@ -1201,9 +1201,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 	}
 
 	fn cost_and_gradient_alloc(&self, x: &Self::Point) -> Result<(f64, Self::TangentVector)> {
-		Python::with_gil(|py| -> PyResult<(f64, Vec64)> {
+		Python::attach(|py| -> PyResult<(f64, Vec64)> {
 			let inner = &self.inner;
-			let x_py = vec_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = vec_to_numpy(py, x).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
 				let result = cost_and_grad_fn.call1(py, (x_py,))?;
@@ -1326,9 +1326,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 	type TangentVector = Mat64;
 
 	fn cost(&self, x: &Self::Point) -> Result<f64> {
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, x).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref cost_fn) = inner.cost_and_grad_fn {
 				let result = cost_fn.call1(py, (x_py,))?;
@@ -1345,9 +1345,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 	}
 
 	fn gradient(&self, x: &Self::Point) -> Result<Self::TangentVector> {
-		Python::with_gil(|py| -> PyResult<Mat64> {
+		Python::attach(|py| -> PyResult<Mat64> {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, x).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref grad_fn) = inner.grad_fn {
 				let result = grad_fn.call1(py, (x_py,))?;
@@ -1386,9 +1386,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 	}
 
 	fn cost_and_gradient_alloc(&self, x: &Self::Point) -> Result<(f64, Self::TangentVector)> {
-		Python::with_gil(|py| -> PyResult<(f64, Mat64)> {
+		Python::attach(|py| -> PyResult<(f64, Mat64)> {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, x).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, x).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
 				let result = cost_and_grad_fn.call1(py, (x_py,))?;
@@ -1564,9 +1564,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 		// Convert vector to matrix for Python
 		let x_mat = self.vector_to_matrix(x);
 
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, &x_mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &x_mat).map(|x| x.unbind().into_any())?;
 			inner.cost_fn.call1(py, (x_py,))?.extract(py)
 		})
 		.map_err(|e: PyErr| ManifoldError::numerical_error(format!("Python error in cost: {}", e)))
@@ -1576,9 +1576,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 		// Convert vector to matrix for Python
 		let x_mat = self.vector_to_matrix(x);
 
-		Python::with_gil(|py| -> PyResult<Vec64> {
+		Python::attach(|py| -> PyResult<Vec64> {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, &x_mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &x_mat).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref grad_fn) = inner.grad_fn {
 				let grad_obj = grad_fn.call1(py, (x_py,))?;
@@ -1620,9 +1620,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 		// Convert vector to matrix for Python
 		let x_mat = self.vector_to_matrix(x);
 
-		Python::with_gil(|py| -> PyResult<(f64, Vec64)> {
+		Python::attach(|py| -> PyResult<(f64, Vec64)> {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, &x_mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &x_mat).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
 				let result = cost_and_grad_fn.call1(py, (x_py,))?;
@@ -1762,9 +1762,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRa
 
 	fn cost(&self, point: &Self::Point) -> Result<f64> {
 		let mat = Self::point_to_matrix(point);
-		Python::with_gil(|py| {
+		Python::attach(|py| {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, &mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &mat).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref cost_fn) = inner.cost_and_grad_fn {
 				let result = cost_fn.call1(py, (x_py,))?;
@@ -1782,9 +1782,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRa
 
 	fn gradient(&self, point: &Self::Point) -> Result<Self::TangentVector> {
 		let mat = Self::point_to_matrix(point);
-		let grad_mat: Mat64 = Python::with_gil(|py| -> PyResult<Mat64> {
+		let grad_mat: Mat64 = Python::attach(|py| -> PyResult<Mat64> {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, &mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &mat).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref grad_fn) = inner.grad_fn {
 				let result = grad_fn.call1(py, (x_py,))?;
@@ -1819,9 +1819,9 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRa
 
 	fn cost_and_gradient_alloc(&self, point: &Self::Point) -> Result<(f64, Self::TangentVector)> {
 		let mat = Self::point_to_matrix(point);
-		let (cost, grad_mat): (f64, Mat64) = Python::with_gil(|py| -> PyResult<(f64, Mat64)> {
+		let (cost, grad_mat): (f64, Mat64) = Python::attach(|py| -> PyResult<(f64, Mat64)> {
 			let inner = &self.inner;
-			let x_py = mat_to_numpy(py, &mat).map(PyObject::from)?;
+			let x_py = mat_to_numpy(py, &mat).map(|x| x.unbind().into_any())?;
 
 			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
 				let result = cost_and_grad_fn.call1(py, (x_py,))?;

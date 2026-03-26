@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 /// decide whether to continue or stop the optimization.
 #[pyclass(name = "CallbackManager")]
 pub struct PyCallbackManager {
-	callbacks: Vec<PyObject>,
+	callbacks: Vec<Py<PyAny>>,
 	#[pyo3(get)]
 	pub enabled: bool,
 }
@@ -22,7 +22,7 @@ impl PyCallbackManager {
 	///     callbacks: Optional list of callbacks to register initially
 	#[new]
 	#[pyo3(signature = (callbacks=None))]
-	pub fn new(callbacks: Option<Vec<PyObject>>) -> Self {
+	pub fn new(callbacks: Option<Vec<Py<PyAny>>>) -> Self {
 		Self {
 			callbacks: callbacks.unwrap_or_default(),
 			enabled: true,
@@ -33,7 +33,7 @@ impl PyCallbackManager {
 	///
 	/// Args:
 	///     callback: The callback to add
-	pub fn add_callback(&mut self, callback: PyObject) {
+	pub fn add_callback(&mut self, callback: Py<PyAny>) {
 		self.callbacks.push(callback);
 	}
 
@@ -44,7 +44,7 @@ impl PyCallbackManager {
 	///
 	/// Returns:
 	///     bool: True if the callback was found and removed
-	pub fn remove_callback(&mut self, _py: Python<'_>, callback: PyObject) -> bool {
+	pub fn remove_callback(&mut self, _py: Python<'_>, callback: Py<PyAny>) -> bool {
 		if let Some(pos) = self.callbacks.iter().position(|cb| cb.is(&callback)) {
 			self.callbacks.remove(pos);
 			true
@@ -75,7 +75,7 @@ impl PyCallbackManager {
 	}
 
 	/// Get the number of callbacks (for Python access).
-	/// Note: Direct access to callbacks list removed due to PyObject clone limitations
+	/// Note: Direct access to callbacks list removed due to Py<PyAny> clone limitations
 
 	fn __repr__(&self) -> String {
 		format!(
@@ -93,7 +93,7 @@ impl PyCallbackManager {
 /// Helper to create a callback manager from Python callbacks.
 #[pyfunction]
 #[pyo3(signature = (*callbacks))]
-pub fn create_callback_manager(callbacks: Vec<PyObject>) -> PyCallbackManager {
+pub fn create_callback_manager(callbacks: Vec<Py<PyAny>>) -> PyCallbackManager {
 	PyCallbackManager::new(Some(callbacks))
 }
 

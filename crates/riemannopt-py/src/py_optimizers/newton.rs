@@ -157,7 +157,7 @@ impl PyNewton {
 
 	/// Get optimizer configuration as a dictionary.
 	#[getter]
-	fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
+	fn config(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 		let dict = PyDict::new(py);
 		dict.set_item("max_cg_iterations", self.max_cg_iterations)?;
 		dict.set_item("cg_tolerance", self.cg_tolerance)?;
@@ -201,17 +201,17 @@ impl PyNewton {
 	pub fn optimize(
 		&mut self,
 		py: Python<'_>,
-		cost_function: PyObject,
-		manifold: PyObject,
-		initial_point: PyObject,
+		cost_function: Py<PyAny>,
+		manifold: Py<PyAny>,
+		initial_point: Py<PyAny>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
 		function_tolerance: Option<f64>,
 		point_tolerance: Option<f64>,
-		callback: Option<PyObject>,
+		callback: Option<Py<PyAny>>,
 		target_value: Option<f64>,
 		max_time: Option<f64>,
-	) -> PyResult<PyObject> {
+	) -> PyResult<Py<PyAny>> {
 		// Try native cost functions first (pure Rust, no GIL overhead)
 		if let Some(result) = self.try_native_optimize(
 			py,

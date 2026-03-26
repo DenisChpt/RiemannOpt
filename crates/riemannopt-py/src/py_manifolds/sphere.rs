@@ -5,7 +5,7 @@
 
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
-use riemannopt_core::linalg::VectorOps;
+use riemannopt_core::linalg::{VectorOps, VectorView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::Sphere;
 
@@ -455,7 +455,7 @@ impl PySphere {
 	/// Returns:
 	///     bool: True if point is on manifold
 	#[pyo3(signature = (point, atol=1e-10))]
-	fn contains(&self, py: Python<'_>, point: PyObject, atol: f64) -> PyResult<bool> {
+	fn contains(&self, py: Python<'_>, point: Py<PyAny>, atol: f64) -> PyResult<bool> {
 		let point = self.parse_point(py, point)?;
 		self.validate_point_shape(&point)?;
 
@@ -478,8 +478,8 @@ impl PySphere {
 	fn is_tangent(
 		&self,
 		py: Python<'_>,
-		point: PyObject,
-		vector: PyObject,
+		point: Py<PyAny>,
+		vector: Py<PyAny>,
 		atol: f64,
 	) -> PyResult<bool> {
 		let point = self.parse_point(py, point)?;
@@ -501,7 +501,7 @@ impl PySphere {
 // Additional helper methods specific to PySphere
 impl PySphere {
 	/// Parse a Python object as a point.
-	fn parse_point(&self, py: Python<'_>, obj: PyObject) -> PyResult<PyPoint> {
+	fn parse_point(&self, py: Python<'_>, obj: Py<PyAny>) -> PyResult<PyPoint> {
 		array_to_point(py, obj)
 	}
 

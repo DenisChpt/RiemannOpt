@@ -6,7 +6,7 @@
 
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
-use riemannopt_core::linalg::VectorOps;
+use riemannopt_core::linalg::{VectorOps, VectorView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::hyperbolic::Hyperbolic;
 
@@ -47,7 +47,8 @@ impl PyManifoldBase for PyHyperbolic {
 	}
 
 	fn ambient_dim(&self) -> usize {
-		self.n + 1
+		// Poincare ball model: points live in R^n (not R^{n+1})
+		self.n
 	}
 
 	fn intrinsic_dim(&self) -> usize {
@@ -55,7 +56,7 @@ impl PyManifoldBase for PyHyperbolic {
 	}
 
 	fn point_type(&self) -> PointType {
-		PointType::Vector(self.n + 1)
+		PointType::Vector(self.n)
 	}
 }
 
@@ -110,7 +111,7 @@ impl PyHyperbolic {
 	}
 
 	#[pyo3(signature = (point, atol=1e-10))]
-	fn contains(&self, py: Python<'_>, point: PyObject, atol: f64) -> PyResult<bool> {
+	fn contains(&self, py: Python<'_>, point: Py<PyAny>, atol: f64) -> PyResult<bool> {
 		let point = self.parse_point(py, point)?;
 		self.validate_point_shape(&point)?;
 
@@ -124,8 +125,8 @@ impl PyHyperbolic {
 	fn is_tangent(
 		&self,
 		py: Python<'_>,
-		point: PyObject,
-		vector: PyObject,
+		point: Py<PyAny>,
+		vector: Py<PyAny>,
 		atol: f64,
 	) -> PyResult<bool> {
 		let point = self.parse_point(py, point)?;
@@ -160,11 +161,11 @@ impl PyHyperbolic {
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
 		let point_vec = numpy_to_vec(point)?;
 
-		if point_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
-		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
+		let mut result: Vec64 = VectorOps::zeros(self.n);
 
 		self.inner.project_point(&point_vec, &mut result);
 		vec_to_numpy(py, &result)
@@ -179,11 +180,11 @@ impl PyHyperbolic {
 		let point_vec = numpy_to_vec(point)?;
 		let tangent_vec = numpy_to_vec(tangent)?;
 
-		if point_vec.len() != self.n + 1 || tangent_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n || tangent_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
-		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
+		let mut result: Vec64 = VectorOps::zeros(self.n);
 
 		self.inner
 			.retract(&point_vec, &tangent_vec, &mut result, &mut ())
@@ -201,11 +202,11 @@ impl PyHyperbolic {
 		let point_vec = numpy_to_vec(point)?;
 		let other_vec = numpy_to_vec(other)?;
 
-		if point_vec.len() != self.n + 1 || other_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n || other_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
-		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
+		let mut result: Vec64 = VectorOps::zeros(self.n);
 
 		self.inner
 			.inverse_retract(&point_vec, &other_vec, &mut result, &mut ())
@@ -223,11 +224,11 @@ impl PyHyperbolic {
 		let point_vec = numpy_to_vec(point)?;
 		let tangent_vec = numpy_to_vec(tangent)?;
 
-		if point_vec.len() != self.n + 1 || tangent_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n || tangent_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
-		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
+		let mut result: Vec64 = VectorOps::zeros(self.n);
 
 		self.inner
 			.retract(&point_vec, &tangent_vec, &mut result, &mut ())
@@ -245,11 +246,11 @@ impl PyHyperbolic {
 		let point_vec = numpy_to_vec(point)?;
 		let vector_vec = numpy_to_vec(vector)?;
 
-		if point_vec.len() != self.n + 1 || vector_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n || vector_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
-		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
+		let mut result: Vec64 = VectorOps::zeros(self.n);
 
 		self.inner
 			.project_tangent(&point_vec, &vector_vec, &mut result, &mut ())
@@ -268,13 +269,13 @@ impl PyHyperbolic {
 		let x_vec = numpy_to_vec(x)?;
 		let y_vec = numpy_to_vec(y)?;
 
-		if x_vec.len() != self.n + 1 || y_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[x_vec.len()]));
+		if x_vec.len() != self.n || y_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[x_vec.len()]));
 		}
 
 		// Compute Minkowski inner product
 		let mut result = -x_vec.get(0) * y_vec.get(0);
-		for i in 1..self.n + 1 {
+		for i in 1..self.n {
 			result += x_vec.get(i) * y_vec.get(i);
 		}
 
@@ -292,8 +293,8 @@ impl PyHyperbolic {
 		let u_vec = numpy_to_vec(u)?;
 		let v_vec = numpy_to_vec(v)?;
 
-		if point_vec.len() != self.n + 1 || u_vec.len() != self.n + 1 || v_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n || u_vec.len() != self.n || v_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
 		self.inner
@@ -310,8 +311,8 @@ impl PyHyperbolic {
 		let point_vec = numpy_to_vec(point)?;
 		let tangent_vec = numpy_to_vec(tangent)?;
 
-		if point_vec.len() != self.n + 1 || tangent_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n || tangent_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
 		self.inner
@@ -328,15 +329,15 @@ impl PyHyperbolic {
 		let x_vec = numpy_to_vec(x)?;
 		let y_vec = numpy_to_vec(y)?;
 
-		if x_vec.len() != self.n + 1 || y_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[x_vec.len()]));
+		if x_vec.len() != self.n || y_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[x_vec.len()]));
 		}
 
 		self.inner.distance(&x_vec, &y_vec).map_err(to_py_err)
 	}
 
 	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
+		let mut result: Vec64 = VectorOps::zeros(self.n);
 
 		self.inner.random_point(&mut result).map_err(to_py_err)?;
 
@@ -352,11 +353,11 @@ impl PyHyperbolic {
 	) -> PyResult<Bound<'py, PyArray1<f64>>> {
 		let point_vec = numpy_to_vec(point)?;
 
-		if point_vec.len() != self.n + 1 {
-			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
+		if point_vec.len() != self.n {
+			return Err(dimension_mismatch(&[self.n], &[point_vec.len()]));
 		}
 
-		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
+		let mut result: Vec64 = VectorOps::zeros(self.n);
 
 		self.inner
 			.random_tangent(&point_vec, &mut result)
@@ -380,11 +381,11 @@ impl PyHyperbolic {
 		let to_vec = numpy_to_vec(to_point)?;
 		let tangent_vec = numpy_to_vec(tangent)?;
 
-		if from_vec.len() != self.n + 1
-			|| to_vec.len() != self.n + 1
-			|| tangent_vec.len() != self.n + 1
+		if from_vec.len() != self.n
+			|| to_vec.len() != self.n
+			|| tangent_vec.len() != self.n
 		{
-			return Err(dimension_mismatch(&[self.n + 1], &[from_vec.len()]));
+			return Err(dimension_mismatch(&[self.n], &[from_vec.len()]));
 		}
 
 		let result = self
@@ -397,7 +398,7 @@ impl PyHyperbolic {
 }
 
 impl PyHyperbolic {
-	fn parse_point(&self, py: Python<'_>, obj: PyObject) -> PyResult<PyPoint> {
+	fn parse_point(&self, py: Python<'_>, obj: Py<PyAny>) -> PyResult<PyPoint> {
 		super::base::array_to_point(py, obj)
 	}
 

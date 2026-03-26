@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use riemannopt_core::{
 	cost_function::CostFunction,
 	error::{ManifoldError, Result},
-	linalg::{DecompositionOps, MatrixOps, MatrixView, VectorOps},
+	linalg::{DecompositionOps, MatrixOps, MatrixView, VectorOps, VectorView},
 };
 
 use crate::array_utils::{mat_to_numpy, numpy_to_mat, numpy_to_vec, vec_to_numpy, Mat64, Vec64};

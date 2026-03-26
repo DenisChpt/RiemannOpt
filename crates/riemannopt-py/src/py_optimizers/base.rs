@@ -39,7 +39,7 @@ use riemannopt_core::optimization::optimizer::{
 #[pyclass(name = "OptimizationResult", module = "riemannopt.optimizers")]
 pub struct PyOptimizationResult {
 	/// Final point as numpy array
-	pub point: PyObject,
+	pub point: Py<PyAny>,
 	/// Final objective value
 	pub value: f64,
 	/// Final gradient norm
@@ -57,7 +57,7 @@ pub struct PyOptimizationResult {
 	/// Termination reason as string
 	pub termination_reason: String,
 	/// Optional optimization history
-	pub history: Option<PyObject>,
+	pub history: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -76,7 +76,7 @@ impl PyOptimizationResult {
 
 	/// Get all result data as a dictionary.
 	#[getter]
-	fn as_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
+	fn as_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 		let dict = PyDict::new(py);
 		dict.set_item("point", &self.point)?;
 		dict.set_item("value", self.value)?;
@@ -132,8 +132,8 @@ impl PyOptimizationResult {
 
 	/// Get the final point (alias for point).
 	#[getter]
-	fn x(&self) -> PyObject {
-		Python::with_gil(|py| self.point.clone_ref(py))
+	fn x(&self) -> Py<PyAny> {
+		Python::attach(|py| self.point.clone_ref(py))
 	}
 
 	/// Get the final value.
@@ -186,8 +186,8 @@ impl PyOptimizationResult {
 
 	/// Get the final point.
 	#[getter]
-	fn point(&self) -> PyObject {
-		Python::with_gil(|py| self.point.clone_ref(py))
+	fn point(&self) -> Py<PyAny> {
+		Python::attach(|py| self.point.clone_ref(py))
 	}
 }
 
@@ -196,7 +196,7 @@ impl PyOptimizationResult {
 	pub fn from_rust_result<P>(
 		_py: Python<'_>,
 		result: RustOptimizationResult<f64, P>,
-		point_converter: impl FnOnce(&P) -> PyResult<PyObject>,
+		point_converter: impl FnOnce(&P) -> PyResult<Py<PyAny>>,
 	) -> PyResult<Self> {
 		let point = point_converter(&result.point)?;
 
