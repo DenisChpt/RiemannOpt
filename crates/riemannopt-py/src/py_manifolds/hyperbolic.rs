@@ -186,7 +186,7 @@ impl PyHyperbolic {
 		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
 
 		self.inner
-			.retract(&point_vec, &tangent_vec, &mut result)
+			.retract(&point_vec, &tangent_vec, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)
@@ -208,7 +208,7 @@ impl PyHyperbolic {
 		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
 
 		self.inner
-			.inverse_retract(&point_vec, &other_vec, &mut result)
+			.inverse_retract(&point_vec, &other_vec, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)
@@ -230,7 +230,7 @@ impl PyHyperbolic {
 		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
 
 		self.inner
-			.retract(&point_vec, &tangent_vec, &mut result)
+			.retract(&point_vec, &tangent_vec, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)
@@ -252,7 +252,7 @@ impl PyHyperbolic {
 		let mut result: Vec64 = VectorOps::zeros(self.n + 1);
 
 		self.inner
-			.project_tangent(&point_vec, &vector_vec, &mut result)
+			.project_tangent(&point_vec, &vector_vec, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)
@@ -297,7 +297,7 @@ impl PyHyperbolic {
 		}
 
 		self.inner
-			.inner_product(&point_vec, &u_vec, &v_vec)
+			.inner_product(&point_vec, &u_vec, &v_vec, &mut ())
 			.map_err(to_py_err)
 	}
 
@@ -314,7 +314,9 @@ impl PyHyperbolic {
 			return Err(dimension_mismatch(&[self.n + 1], &[point_vec.len()]));
 		}
 
-		self.inner.norm(&point_vec, &tangent_vec).map_err(to_py_err)
+		self.inner
+			.norm(&point_vec, &tangent_vec, &mut ())
+			.map_err(to_py_err)
 	}
 
 	pub fn distance(
@@ -387,7 +389,7 @@ impl PyHyperbolic {
 
 		let result = self
 			.inner
-			.parallel_transport(&from_vec, &to_vec, &tangent_vec)
+			.parallel_transport(&from_vec, &to_vec, &tangent_vec, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)

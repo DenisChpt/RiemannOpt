@@ -401,11 +401,7 @@ impl<'a> CostFunction<f64> for PyCostFunctionSphere {
 		}
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		let py_point = PyPoint::Vector(point.clone());
 		let mut py_gradient = PyTangentVector::Vector(gradient.clone());
 		<PyCostFunction as CostFunction<f64>>::gradient_fd(
@@ -517,11 +513,7 @@ impl<'a> CostFunction<f64> for PyCostFunctionStiefel {
 		}
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		let py_point = PyPoint::Matrix(point.clone());
 		let mut py_gradient = PyTangentVector::Matrix(gradient.clone());
 		<PyCostFunction as CostFunction<f64>>::gradient_fd(
@@ -823,11 +815,7 @@ impl CostFunction<f64> for PyCostFunction {
 		})
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		// For now, use the allocating version
 		// TODO: Optimize by using workspace buffers for finite differences
 		let grad = self.gradient_fd_alloc(point)?;
@@ -1283,11 +1271,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionVector 
 		Ok(gradient)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		let grad = self.gradient_fd_alloc(point)?;
 		gradient.copy_from(&grad);
 		Ok(())
@@ -1473,11 +1457,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionMatrix 
 		Ok(gradient)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		let grad = self.gradient_fd_alloc(point)?;
 		gradient.copy_from(&grad);
 		Ok(())
@@ -1709,11 +1689,7 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 		Ok(gradient)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Self::Point,
-		gradient: &mut Self::TangentVector,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Self::Point, gradient: &mut Self::TangentVector) -> Result<()> {
 		let grad = self.gradient_fd_alloc(point)?;
 		gradient.copy_from(&grad);
 		Ok(())
@@ -1741,6 +1717,226 @@ impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionPSDCone
 		let hv_product = (grad_perturbed - grad_original) / epsilon;
 
 		Ok(hv_product)
+	}
+}
+
+/// Cost function adapter for the FixedRank manifold.
+///
+/// Python callbacks receive and return m×n matrices. Internally, this adapter
+/// converts between `FixedRankPoint<f64>` / `FixedRankTangent<f64>` and full
+/// matrices via SVD factorization and `FixedRankTangent::from_ambient`.
+pub struct PyCostFunctionFixedRank {
+	inner: std::sync::Arc<PyCostFunction>,
+}
+
+impl PyCostFunctionFixedRank {
+	pub fn new(inner: &PyCostFunction) -> Self {
+		Self {
+			inner: std::sync::Arc::new(inner.clone()),
+		}
+	}
+
+	/// Convert a FixedRankPoint to a full m×n matrix for Python
+	fn point_to_matrix(point: &riemannopt_manifolds::fixed_rank::FixedRankPoint<f64>) -> Mat64 {
+		point.to_matrix()
+	}
+
+	/// Convert an ambient (euclidean) gradient matrix to a FixedRankTangent
+	fn gradient_to_tangent(
+		point: &riemannopt_manifolds::fixed_rank::FixedRankPoint<f64>,
+		grad_mat: &Mat64,
+	) -> riemannopt_manifolds::fixed_rank::FixedRankTangent<f64> {
+		riemannopt_manifolds::fixed_rank::FixedRankTangent::from_ambient(point, grad_mat)
+	}
+}
+
+impl std::fmt::Debug for PyCostFunctionFixedRank {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("PyCostFunctionFixedRank").finish()
+	}
+}
+
+impl riemannopt_core::cost_function::CostFunction<f64> for PyCostFunctionFixedRank {
+	type Point = riemannopt_manifolds::fixed_rank::FixedRankPoint<f64>;
+	type TangentVector = riemannopt_manifolds::fixed_rank::FixedRankTangent<f64>;
+
+	fn cost(&self, point: &Self::Point) -> Result<f64> {
+		let mat = Self::point_to_matrix(point);
+		Python::with_gil(|py| {
+			let inner = &self.inner;
+			let x_py = mat_to_numpy(py, &mat).map(PyObject::from)?;
+
+			if let Some(ref cost_fn) = inner.cost_and_grad_fn {
+				let result = cost_fn.call1(py, (x_py,))?;
+				let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+				let cost: f64 = tuple.get_item(0)?.extract()?;
+				Ok(cost)
+			} else {
+				let result = inner.cost_fn.call1(py, (x_py,))?;
+				let cost: f64 = result.extract(py)?;
+				Ok(cost)
+			}
+		})
+		.map_err(|e: PyErr| ManifoldError::numerical_error(format!("Python error in cost: {}", e)))
+	}
+
+	fn gradient(&self, point: &Self::Point) -> Result<Self::TangentVector> {
+		let mat = Self::point_to_matrix(point);
+		let grad_mat: Mat64 = Python::with_gil(|py| -> PyResult<Mat64> {
+			let inner = &self.inner;
+			let x_py = mat_to_numpy(py, &mat).map(PyObject::from)?;
+
+			if let Some(ref grad_fn) = inner.grad_fn {
+				let result = grad_fn.call1(py, (x_py,))?;
+				let grad_array = result.downcast_bound::<numpy::PyArray2<f64>>(py)?;
+				numpy_to_mat(grad_array.readonly()).map_err(|e| {
+					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+						"Failed to convert gradient: {e}"
+					))
+				})
+			} else if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
+				let result = cost_and_grad_fn.call1(py, (x_py,))?;
+				let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+				let grad_obj = tuple.get_item(1)?;
+				let grad_array = grad_obj.downcast::<numpy::PyArray2<f64>>()?;
+				numpy_to_mat(grad_array.readonly()).map_err(|e| {
+					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+						"Failed to convert gradient: {e}"
+					))
+				})
+			} else {
+				Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+					"FixedRank requires an explicit gradient function",
+				))
+			}
+		})
+		.map_err(|e: PyErr| {
+			ManifoldError::numerical_error(format!("Python error in gradient: {e}"))
+		})?;
+
+		Ok(Self::gradient_to_tangent(point, &grad_mat))
+	}
+
+	fn cost_and_gradient_alloc(&self, point: &Self::Point) -> Result<(f64, Self::TangentVector)> {
+		let mat = Self::point_to_matrix(point);
+		let (cost, grad_mat): (f64, Mat64) = Python::with_gil(|py| -> PyResult<(f64, Mat64)> {
+			let inner = &self.inner;
+			let x_py = mat_to_numpy(py, &mat).map(PyObject::from)?;
+
+			if let Some(ref cost_and_grad_fn) = inner.cost_and_grad_fn {
+				let result = cost_and_grad_fn.call1(py, (x_py,))?;
+				let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+				let c: f64 = tuple.get_item(0)?.extract()?;
+				let grad_obj = tuple.get_item(1)?;
+				let grad_array = grad_obj.downcast::<numpy::PyArray2<f64>>()?;
+				let g = numpy_to_mat(grad_array.readonly()).map_err(|e| {
+					PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+						"Failed to convert gradient: {e}"
+					))
+				})?;
+				Ok((c, g))
+			} else {
+				let cost_result = inner.cost_fn.call1(py, (x_py.clone_ref(py),))?;
+				let c: f64 = cost_result.extract(py)?;
+
+				if let Some(ref grad_fn) = inner.grad_fn {
+					let grad_result = grad_fn.call1(py, (x_py,))?;
+					let grad_array = grad_result.downcast_bound::<numpy::PyArray2<f64>>(py)?;
+					let g = numpy_to_mat(grad_array.readonly()).map_err(|e| {
+						PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+							"Failed to convert gradient: {e}"
+						))
+					})?;
+					Ok((c, g))
+				} else {
+					Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+						"FixedRank requires an explicit gradient function",
+					))
+				}
+			}
+		})
+		.map_err(|e: PyErr| {
+			ManifoldError::numerical_error(format!("Python error in cost_and_gradient: {e}"))
+		})?;
+
+		Ok((cost, Self::gradient_to_tangent(point, &grad_mat)))
+	}
+
+	fn cost_and_gradient(
+		&self,
+		point: &Self::Point,
+		gradient: &mut Self::TangentVector,
+	) -> Result<f64> {
+		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
+		gradient.u_perp_m = grad.u_perp_m;
+		gradient.s_dot = grad.s_dot;
+		gradient.v_perp_n = grad.v_perp_n;
+		Ok(cost)
+	}
+
+	fn gradient_fd_alloc(&self, point: &Self::Point) -> Result<Self::TangentVector> {
+		// Finite differences in ambient space, projected back to tangent space
+		let mat = Self::point_to_matrix(point);
+		let (m, n) = (MatrixOps::nrows(&mat), MatrixOps::ncols(&mat));
+		let h = f64::sqrt(f64::EPSILON);
+		let mut grad_mat: Mat64 = MatrixOps::zeros(m, n);
+
+		for i in 0..m {
+			for j in 0..n {
+				let mut plus = mat.clone();
+				let mut minus = mat.clone();
+				*MatrixOps::get_mut(&mut plus, i, j) += h;
+				*MatrixOps::get_mut(&mut minus, i, j) -= h;
+
+				// Project perturbed matrices back to rank-k and evaluate cost
+				let k = VectorOps::len(&point.s);
+				let p_plus =
+					riemannopt_manifolds::fixed_rank::FixedRankPoint::from_matrix(&plus, k)?;
+				let p_minus =
+					riemannopt_manifolds::fixed_rank::FixedRankPoint::from_matrix(&minus, k)?;
+
+				let f_plus = self.cost(&p_plus)?;
+				let f_minus = self.cost(&p_minus)?;
+
+				*MatrixOps::get_mut(&mut grad_mat, i, j) = (f_plus - f_minus) / (2.0 * h);
+			}
+		}
+
+		Ok(Self::gradient_to_tangent(point, &grad_mat))
+	}
+
+	fn hessian_vector_product(
+		&self,
+		point: &Self::Point,
+		vector: &Self::TangentVector,
+	) -> Result<Self::TangentVector> {
+		// Finite difference: H*v ≈ (∇f(x + εξ) - ∇f(x)) / ε
+		// where x + εξ is computed via retraction-like perturbation in ambient space
+		let epsilon = 1.4901161193847656e-8_f64;
+
+		let mat = Self::point_to_matrix(point);
+		let tangent_mat = vector.to_matrix(point);
+		let perturbed = MatrixOps::add(&mat, &(tangent_mat * epsilon));
+
+		// Truncate perturbed matrix back to rank k via SVD
+		let k = VectorOps::len(&point.s);
+		let perturbed_point =
+			riemannopt_manifolds::fixed_rank::FixedRankPoint::from_matrix(&perturbed, k)?;
+
+		let grad_perturbed = self.gradient(&perturbed_point)?;
+		let grad_original = self.gradient(point)?;
+
+		// Compute (grad_perturbed - grad_original) / epsilon in tangent components
+		let u_perp_m = (grad_perturbed.u_perp_m - &grad_original.u_perp_m) / epsilon;
+		let s_dot = <Vec64 as VectorOps<f64>>::from_fn(VectorOps::len(&grad_original.s_dot), |i| {
+			(VectorOps::get(&grad_perturbed.s_dot, i) - VectorOps::get(&grad_original.s_dot, i))
+				/ epsilon
+		});
+		let v_perp_n = (grad_perturbed.v_perp_n - &grad_original.v_perp_n) / epsilon;
+
+		Ok(riemannopt_manifolds::fixed_rank::FixedRankTangent::new(
+			u_perp_m, s_dot, v_perp_n,
+		))
 	}
 }
 

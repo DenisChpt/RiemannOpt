@@ -116,7 +116,7 @@
 //! // Tangent vector
 //! let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 1.0, 0.0]);
 //! let mut v_tangent = v.clone();
-//! sphere.project_tangent(&x, &v, &mut v_tangent)?;
+//! sphere.project_tangent(&x, &v, &mut v_tangent, &mut ())?;
 //! assert!(x.dot(&v_tangent).abs() < 1e-14);
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
@@ -430,6 +430,9 @@ where
 		let t = v.norm();
 		let threshold = small_angle_threshold::<T>();
 
+		// Allocate result once, then work entirely in-place
+		let mut result: linalg::Vec<T> = VectorOps::zeros(self.ambient_dim);
+
 		if t < threshold {
 			// Use Taylor series: y ≈ x*(1 - t²/2) + v*(1 - t²/6)
 			// This provides O(t⁴) accuracy and avoids division by small t
@@ -437,21 +440,20 @@ where
 			let half = T::from(0.5).unwrap();
 			let sixth = T::from(1.0 / 6.0).unwrap();
 
-			let mut result = x.clone();
+			// result = (1 - t²/2) * x + (1 - t²/6) * v
+			result.copy_from(x);
 			result.scale_mut(T::one() - half * t_sq);
-			let mut v_scaled = v.clone();
-			v_scaled.scale_mut(T::one() - sixth * t_sq);
-			result.add_assign(&v_scaled);
+			result.axpy(T::one() - sixth * t_sq, v, T::one());
 			Ok(result)
 		} else {
 			// Use exact formula: exp_x(v) = cos(t)x + (sin(t)/t)v
 			let cos_t = <T as Float>::cos(t);
 			let sinc_t = <T as Float>::sin(t) / t;
-			let mut result = x.clone();
+
+			// result = cos(t) * x + sinc(t) * v
+			result.copy_from(x);
 			result.scale_mut(cos_t);
-			let mut v_scaled = v.clone();
-			v_scaled.scale_mut(sinc_t);
-			result.add_assign(&v_scaled);
+			result.axpy(sinc_t, v, T::one());
 			Ok(result)
 		}
 	}
@@ -500,10 +502,11 @@ where
 		}
 
 		// Compute the exactly tangent vector: δ = y - (x^T y)x
-		let mut delta = x.clone();
-		delta.scale_mut(xy_inner);
-		let mut result = y.clone();
-		result.sub_assign(&delta);
+		// Allocate result once, then work entirely in-place
+		let mut result: linalg::Vec<T> = VectorOps::zeros(self.ambient_dim);
+		// result = y - xy_inner * x
+		result.copy_from(y);
+		result.axpy(-xy_inner, x, T::one());
 
 		// Compute angle
 		let theta = <T as Float>::acos(clamped);
@@ -569,6 +572,7 @@ where
 		from: &linalg::Vec<T>,
 		to: &linalg::Vec<T>,
 		vector: &linalg::Vec<T>,
+		_ws: &mut (),
 	) -> Result<linalg::Vec<T>> {
 		self.check_tangent(from, vector)?;
 		self.check_point(to)?;
@@ -594,12 +598,15 @@ where
 		}
 
 		// Use the formula: Γ(v) = v - ((from+to)^T v)/(1 + from^T to) · (from + to)
-		let w = VectorOps::add(from, to);
-		let scale = vector.dot(&w) / denom;
-		let mut result = vector.clone();
-		let mut w_scaled = w;
-		w_scaled.scale_mut(scale);
-		result.sub_assign(&w_scaled);
+		// Compute (from+to)^T v without allocating the sum vector
+		let w_dot_v = from.dot(vector) + to.dot(vector);
+		let scale = w_dot_v / denom;
+
+		// result = v - scale * from - scale * to
+		let mut result: linalg::Vec<T> = VectorOps::zeros(self.ambient_dim);
+		result.copy_from(vector);
+		result.axpy(-scale, from, T::one());
+		result.axpy(-scale, to, T::one());
 		Ok(result)
 	}
 
@@ -691,6 +698,7 @@ where
 {
 	type Point = linalg::Vec<T>;
 	type TangentVector = linalg::Vec<T>;
+	type Workspace = ();
 
 	fn name(&self) -> &str {
 		"Sphere"
@@ -741,6 +749,7 @@ where
 		point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		if VectorOps::len(point) != self.ambient_dim || VectorOps::len(vector) != self.ambient_dim {
 			return Err(ManifoldError::dimension_mismatch(
@@ -774,6 +783,7 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
 		// The sphere inherits the Euclidean inner product.
 		// No tangent check here: validation is the caller's responsibility.
@@ -786,6 +796,7 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Projection retraction: R_x(v) = (x + v) / ||x + v||
 		// This is cheaper than exp_map and sufficient for optimization.
@@ -803,6 +814,7 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Use logarithmic map as the inverse retraction
 		let log_result = self.log_map(point, other)?;
@@ -815,9 +827,10 @@ where
 		point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Riemannian gradient is the projection of Euclidean gradient
-		self.project_tangent(point, euclidean_grad, result)
+		self.project_tangent(point, euclidean_grad, result, _ws)
 	}
 
 	fn euclidean_to_riemannian_hessian(
@@ -827,11 +840,12 @@ where
 		euclidean_hvp: &Self::TangentVector,
 		tangent_vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Sphere ehess2rhess:
 		// rhess = project(point, ehess) - ⟨point, egrad⟩ · ξ
 		// The second term is the Weingarten correction for the sphere.
-		self.project_tangent(point, euclidean_hvp, result)?;
+		self.project_tangent(point, euclidean_hvp, result, _ws)?;
 		let pt_egrad = point.dot(euclidean_grad);
 		// result = result - pt_egrad * tangent_vector
 		result.axpy(-pt_egrad, tangent_vector, T::one());
@@ -844,9 +858,37 @@ where
 		to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		let transported = self.parallel_transport(from, to, vector)?;
-		result.copy_from(&transported);
+		// Γ(v) = v - ((from+to)^T v)/(1 + from^T to) · (from + to)
+		// In-place into result (zero alloc).
+		let from_to_inner = from.dot(to);
+		let threshold = small_angle_threshold::<T>();
+
+		if <T as Float>::abs(from_to_inner - T::one()) < threshold {
+			result.copy_from(vector);
+			return Ok(());
+		}
+
+		let denom = T::one() + from_to_inner;
+		let stability_threshold = T::from(10.0).unwrap() * <T as Float>::sqrt(T::epsilon());
+
+		if denom < stability_threshold {
+			return Err(ManifoldError::invalid_point(format!(
+				"Parallel transport ill-conditioned: near-antipodal (1 + from^T to = {} < {})",
+				denom, stability_threshold
+			)));
+		}
+
+		// w_dot_v = (from + to)^T v = from^T v + to^T v
+		let w_dot_v = from.dot(vector) + to.dot(vector);
+		let scale = w_dot_v / denom;
+
+		// result = v - scale * (from + to) = v - scale*from - scale*to
+		result.copy_from(vector);
+		result.axpy(-scale, from, T::one());
+		result.axpy(-scale, to, T::one());
+
 		Ok(())
 	}
 
@@ -908,7 +950,7 @@ where
 		self.geodesic_distance(x, y)
 	}
 
-	fn norm(&self, point: &Self::Point, vector: &Self::TangentVector) -> Result<T> {
+	fn norm(&self, point: &Self::Point, vector: &Self::TangentVector, _ws: &mut ()) -> Result<T> {
 		self.check_tangent(point, vector)?;
 		Ok(vector.norm())
 	}
@@ -940,7 +982,6 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Linear combinations of tangent vectors remain in the tangent space.
 		// Mathematical justification:

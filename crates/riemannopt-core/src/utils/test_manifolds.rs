@@ -34,6 +34,7 @@ where
 {
 	type Point = linalg::Vec<T>;
 	type TangentVector = linalg::Vec<T>;
+	type Workspace = ();
 	fn name(&self) -> &str {
 		"TestEuclidean"
 	}
@@ -64,6 +65,7 @@ where
 		_point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, vector);
 		Ok(())
@@ -74,6 +76,7 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
 		Ok(VectorOps::dot(u, v))
 	}
@@ -83,6 +86,7 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, point);
 		VectorOps::add_assign(result, tangent);
@@ -94,6 +98,7 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, other);
 		VectorOps::sub_assign(result, point);
@@ -105,6 +110,7 @@ where
 		_point: &Self::Point,
 		grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, grad);
 		Ok(())
@@ -147,8 +153,6 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		VectorOps::copy_from(result, v1);
 		VectorOps::add_assign(result, v2);
@@ -176,6 +180,7 @@ where
 {
 	type Point = linalg::Vec<T>;
 	type TangentVector = linalg::Vec<T>;
+	type Workspace = ();
 	fn name(&self) -> &str {
 		"TestSphere"
 	}
@@ -214,6 +219,7 @@ where
 		point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Project to tangent space: v - <v, p>p
 		let inner = VectorOps::dot(point, vector);
@@ -227,6 +233,7 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
 		Ok(VectorOps::dot(u, v))
 	}
@@ -236,6 +243,7 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Simple projection retraction
 		VectorOps::copy_from(result, point);
@@ -250,10 +258,11 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Project the difference onto the tangent space
 		let diff = VectorOps::sub(other, point);
-		self.project_tangent(point, &diff, result)
+		self.project_tangent(point, &diff, result, _ws)
 	}
 
 	fn euclidean_to_riemannian_gradient(
@@ -261,8 +270,9 @@ where
 		point: &Self::Point,
 		grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		self.project_tangent(point, grad, result)
+		self.project_tangent(point, grad, result, _ws)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
@@ -283,7 +293,7 @@ where
 		let v = linalg::Vec::<T>::from_fn(self.dim, |_| {
 			<T as Scalar>::from_f64(rand::random::<f64>() * 2.0 - 1.0)
 		});
-		self.project_tangent(point, &v, result)
+		self.project_tangent(point, &v, result, &mut ())
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
@@ -313,13 +323,11 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Add vectors and project to ensure result is in tangent space
-		VectorOps::copy_from(temp, v1);
-		VectorOps::add_assign(temp, v2);
-		self.project_tangent(point, temp, result)
+		let mut sum = v1.clone();
+		VectorOps::add_assign(&mut sum, v2);
+		self.project_tangent(point, &sum, result, &mut ())
 	}
 }
 
@@ -343,6 +351,7 @@ where
 {
 	type Point = linalg::Vec<T>;
 	type TangentVector = linalg::Vec<T>;
+	type Workspace = ();
 	fn name(&self) -> &str {
 		"MinimalTest"
 	}
@@ -373,6 +382,7 @@ where
 		_point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, vector);
 		Ok(())
@@ -383,6 +393,7 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
 		Ok(VectorOps::dot(u, v))
 	}
@@ -392,6 +403,7 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, point);
 		VectorOps::add_assign(result, tangent);
@@ -403,6 +415,7 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, other);
 		VectorOps::sub_assign(result, point);
@@ -414,6 +427,7 @@ where
 		_point: &Self::Point,
 		grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		VectorOps::copy_from(result, grad);
 		Ok(())
@@ -452,8 +466,6 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		VectorOps::copy_from(result, v1);
 		VectorOps::add_assign(result, v2);

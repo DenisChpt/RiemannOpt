@@ -272,6 +272,18 @@ macro_rules! impl_faer_matrix_ops {
 				*self *= faer::Scale(alpha);
 			}
 
+			fn scale_columns(&mut self, source: &Self, diag: &Self::Col) {
+				// Use faer's native col_mut for SIMD-optimized column scaling
+				let n = source.nrows();
+				let p = source.ncols();
+				self.as_mut().copy_from(source.as_ref());
+				for j in 0..p {
+					let s = faer::Scale(VectorOps::get(diag, j));
+					let mut col = self.as_mut().col_mut(j);
+					col *= s;
+				}
+			}
+
 			fn transpose(&self) -> Self {
 				self.transpose().to_owned()
 			}
@@ -465,24 +477,32 @@ macro_rules! impl_faer_decomposition_ops {
 				}
 			}
 
-			fn try_inverse(&self) -> Option<Self> {
+			fn inverse(&self, result: &mut Self) -> bool {
 				let n = self.nrows();
 				if n != self.ncols() {
-					return None;
+					return false;
 				}
-				// DenseSolveCore::inverse uses a specialized triangular inverse
-				// algorithm — faster than solving LU against identity.
-				Some(self.partial_piv_lu().inverse())
-			}
-
-			fn cholesky_solve(&self, rhs: &Self) -> Option<Self> {
+				*result = Self::identity(n, n);
 				match self.llt(Side::Lower) {
 					Ok(llt) => {
-						let mut result = rhs.clone();
 						llt.solve_in_place(result.as_mut());
-						Some(result)
+						true
 					}
-					Err(_) => None,
+					Err(_) => {
+						*result = self.partial_piv_lu().inverse();
+						true
+					}
+				}
+			}
+
+			fn cholesky_solve(&self, rhs: &Self, result: &mut Self) -> bool {
+				match self.llt(Side::Lower) {
+					Ok(llt) => {
+						result.copy_from(rhs);
+						llt.solve_in_place(result.as_mut());
+						true
+					}
+					Err(_) => false,
 				}
 			}
 		}
@@ -597,7 +617,8 @@ mod tests {
 	fn test_cholesky_solve() {
 		let a = <Mat<f64> as MatrixOps<f64>>::from_fn(2, 2, |i, j| [[4.0, 2.0], [2.0, 3.0]][i][j]);
 		let b = <Mat<f64> as MatrixOps<f64>>::identity(2);
-		let x = DecompositionOps::cholesky_solve(&a, &b).unwrap();
+		let mut x = <Mat<f64> as MatrixOps<f64>>::zeros(2, 2);
+		assert!(DecompositionOps::cholesky_solve(&a, &b, &mut x));
 		let ax = MatrixOps::mat_mul(&a, &x);
 		for i in 0..2 {
 			for j in 0..2 {

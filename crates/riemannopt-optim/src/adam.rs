@@ -292,13 +292,12 @@ impl<T: Scalar> Adam<T> {
 		previous_cost: Option<T>,
 		gradient_norm: Option<T>,
 		current_point: &M::Point,
-		previous_point: &Option<M::Point>,
+		previous_point: Option<&M::Point>,
 		criterion: &StoppingCriterion<T>,
 	) -> Option<TerminationReason>
 	where
 		M: Manifold<T>,
 	{
-		// Check iteration limit
 		if let Some(max_iter) = criterion.max_iterations {
 			if iteration >= max_iter {
 				return Some(TerminationReason::MaxIterations);
@@ -335,7 +334,7 @@ impl<T: Scalar> Adam<T> {
 
 		// Check point change
 		if let Some(point_tol) = criterion.point_tolerance {
-			if let Some(ref prev_point) = previous_point {
+			if let Some(prev_point) = previous_point {
 				if iteration > 0 {
 					// Compute distance using manifold metric
 					if let Ok(distance) = manifold.distance(prev_point, current_point) {
@@ -358,26 +357,28 @@ impl<T: Scalar> Adam<T> {
 	}
 
 	/// Computes the Adam direction with proper moment updates and parallel transport.
-	fn compute_adam_direction_inplace<M>(
+	///
+	/// Uses `scratch0` and `scratch1` as temporary buffers instead of allocating.
+	fn compute_adam_direction<M>(
 		&self,
 		manifold: &M,
 		current_point: &M::Point,
-		previous_point: &Option<M::Point>,
+		previous_point: Option<&M::Point>,
 		gradient: &M::TangentVector,
 		adam_state: &mut AdamState<T, M::TangentVector>,
 		direction: &mut M::TangentVector,
+		scratch0: &mut M::TangentVector,
+		scratch1: &mut M::TangentVector,
+		manifold_ws: &mut M::Workspace,
 	) -> Result<()>
 	where
 		M: Manifold<T>,
 	{
-		// Update time step for bias correction
 		adam_state.t += 1;
 
-		// Initialize or update moments
+		// Initialize moments on first iteration (unavoidable clones)
 		match (&mut adam_state.m, &mut adam_state.v) {
 			(None, None) => {
-				// First iteration - initialize moments
-				// m_0 = (1-β₁) * g_0
 				let mut m_init = gradient.clone();
 				manifold.scale_tangent(
 					current_point,
@@ -386,11 +387,9 @@ impl<T: Scalar> Adam<T> {
 					&mut m_init,
 				)?;
 
-				// For second moment, we use gradient norm approximation
-				// v_0 = (1-β₂) * ||g_0||²
-				let grad_norm_sq = manifold.inner_product(current_point, gradient, gradient)?;
+				let grad_norm_sq =
+					manifold.inner_product(current_point, gradient, gradient, manifold_ws)?;
 				let mut v_init = gradient.clone();
-				// Scale gradient by sqrt((1-β₂) * ||g||²) / ||g|| to get a vector with norm sqrt((1-β₂) * ||g||²)
 				let grad_norm = <T as Float>::sqrt(grad_norm_sq);
 				if grad_norm > T::zero() {
 					let scale = <T as Float>::sqrt((T::one() - adam_state.beta2) * grad_norm_sq)
@@ -407,9 +406,7 @@ impl<T: Scalar> Adam<T> {
 					adam_state.v_max = adam_state.v.clone();
 				}
 			}
-			(Some(_m), Some(_v)) => {
-				// Moments already exist
-			}
+			(Some(_), Some(_)) => {}
 			_ => {
 				return Err(riemannopt_core::error::ManifoldError::invalid_point(
 					"Invalid Adam state",
@@ -417,79 +414,62 @@ impl<T: Scalar> Adam<T> {
 			}
 		}
 
-		// Now update the moments
+		// Update moments
 		if let (Some(m), Some(v)) = (&mut adam_state.m, &mut adam_state.v) {
-			// Transport previous moments if we have a previous point
-			if let Some(ref prev_point) = previous_point {
-				let mut transported_m = m.clone();
-				let mut transported_v = v.clone();
+			// Transport moments using scratch buffers (zero alloc)
+			if let Some(prev_point) = previous_point {
+				manifold.parallel_transport(prev_point, current_point, m, scratch0, manifold_ws)?;
+				manifold.project_tangent(current_point, scratch0, m, manifold_ws)?;
 
-				manifold.parallel_transport(prev_point, current_point, m, &mut transported_m)?;
-				manifold.parallel_transport(prev_point, current_point, v, &mut transported_v)?;
-
-				// Re-project into tangent space to prevent numerical drift
-				manifold.project_tangent(current_point, &transported_m, m)?;
-				manifold.project_tangent(current_point, &transported_v, v)?;
+				manifold.parallel_transport(prev_point, current_point, v, scratch0, manifold_ws)?;
+				manifold.project_tangent(current_point, scratch0, v, manifold_ws)?;
 
 				if let Some(v_max) = &mut adam_state.v_max {
-					let mut transported_v_max = v_max.clone();
 					manifold.parallel_transport(
 						prev_point,
 						current_point,
 						v_max,
-						&mut transported_v_max,
+						scratch0,
+						manifold_ws,
 					)?;
-					manifold.project_tangent(current_point, &transported_v_max, v_max)?;
+					manifold.project_tangent(current_point, scratch0, v_max, manifold_ws)?;
 				}
 			}
 
-			// Update first moment: m = β₁ * m + (1-β₁) * gradient
+			// m = β₁ · m + (1-β₁) · gradient
 			let beta1 = adam_state.beta1;
-			let one_minus_beta1 = T::one() - beta1;
+			manifold.scale_tangent(current_point, beta1, m, scratch0)?;
+			manifold.scale_tangent(current_point, T::one() - beta1, gradient, scratch1)?;
+			manifold.add_tangents(current_point, scratch0, scratch1, m)?;
+			// direction is used as temp for add_tangents here, m gets the result
 
-			let mut temp_m = m.clone();
-			manifold.scale_tangent(current_point, beta1, m, &mut temp_m)?;
-			let mut scaled_grad = gradient.clone();
-			manifold.scale_tangent(current_point, one_minus_beta1, gradient, &mut scaled_grad)?;
-			let mut temp_add = m.clone();
-			manifold.add_tangents(current_point, &temp_m, &scaled_grad, m, &mut temp_add)?;
-
-			// Update second moment approximation
-			// In standard Adam: v = β₂ * v + (1-β₂) * g²
-			// Since we can't do element-wise operations, we approximate using norms
+			// Update second moment norm: ||v_new||² = β₂ · ||v||² + (1-β₂) · ||g||²
 			let beta2 = adam_state.beta2;
-			let one_minus_beta2 = T::one() - beta2;
-
-			// Current approach: maintain v as a vector whose norm represents the second moment
-			let v_norm_sq = manifold.inner_product(current_point, v, v)?;
-			let grad_norm_sq = manifold.inner_product(current_point, gradient, gradient)?;
-
-			// New second moment estimate: β₂ * ||v||² + (1-β₂) * ||g||²
-			let new_v_norm_sq = beta2 * v_norm_sq + one_minus_beta2 * grad_norm_sq;
+			let v_norm_sq = manifold.inner_product(current_point, v, v, manifold_ws)?;
+			let grad_norm_sq =
+				manifold.inner_product(current_point, gradient, gradient, manifold_ws)?;
+			let new_v_norm_sq = beta2 * v_norm_sq + (T::one() - beta2) * grad_norm_sq;
 			let new_v_norm = <T as Float>::sqrt(new_v_norm_sq);
-
-			// Scale v to have the new norm, maintaining direction
 			let current_v_norm = <T as Float>::sqrt(v_norm_sq);
+
 			if current_v_norm > T::zero() {
-				let scale = new_v_norm / current_v_norm;
-				let temp_v = v.clone();
-				manifold.scale_tangent(current_point, scale, &temp_v, v)?;
-			} else {
-				// If v has zero norm, use gradient direction
-				if grad_norm_sq > T::zero() {
-					manifold.scale_tangent(
-						current_point,
-						new_v_norm / <T as Float>::sqrt(grad_norm_sq),
-						gradient,
-						v,
-					)?;
-				}
+				// scale_tangent reads v into scratch0, then writes back to v
+				manifold.scale_tangent(current_point, new_v_norm / current_v_norm, v, scratch0)?;
+				v.clone_from(scratch0);
+			} else if grad_norm_sq > T::zero() {
+				manifold.scale_tangent(
+					current_point,
+					new_v_norm / <T as Float>::sqrt(grad_norm_sq),
+					gradient,
+					v,
+				)?;
 			}
 
-			// Update v_max for AMSGrad
+			// AMSGrad: v_max = max(v_max, v) by norm
 			if adam_state.amsgrad {
 				if let Some(v_max) = &mut adam_state.v_max {
-					let v_max_norm_sq = manifold.inner_product(current_point, v_max, v_max)?;
+					let v_max_norm_sq =
+						manifold.inner_product(current_point, v_max, v_max, manifold_ws)?;
 					if new_v_norm_sq > v_max_norm_sq {
 						v_max.clone_from(v);
 					}
@@ -497,34 +477,31 @@ impl<T: Scalar> Adam<T> {
 			}
 		}
 
-		// Compute bias correction
+		// Compute bias-corrected direction
 		let t = adam_state.t as f64;
 		let bias1 = T::one() - <T as Scalar>::from_f64(adam_state.beta1.to_f64().powf(t));
 		let bias2 = T::one() - <T as Scalar>::from_f64(adam_state.beta2.to_f64().powf(t));
 
-		// Compute direction
 		if let (Some(m), Some(v)) = (&adam_state.m, &adam_state.v) {
-			// For AMSGrad, use v_max instead of v
 			let v_to_use = if adam_state.amsgrad {
 				adam_state.v_max.as_ref().unwrap_or(v)
 			} else {
 				v
 			};
 
-			// Bias-corrected first moment: m̂ = m / (1 - β₁^t)
-			direction.clone_from(m);
-			let mut m_hat = direction.clone();
-			manifold.scale_tangent(current_point, T::one() / bias1, &direction, &mut m_hat)?;
+			// m̂ = m / (1 - β₁^t)  →  into scratch0
+			manifold.scale_tangent(current_point, T::one() / bias1, m, scratch0)?;
 
-			// For second moment, compute effective learning rate adjustment
-			// Standard Adam: direction = m̂ / (√v̂ + ε)
-			// Our approximation: direction = m̂ / (||v|| / √bias2 + ε)
-			let v_norm =
-				<T as Float>::sqrt(manifold.inner_product(current_point, v_to_use, v_to_use)?);
+			// direction = m̂ / (||v̂|| + ε)
+			let v_norm = <T as Float>::sqrt(manifold.inner_product(
+				current_point,
+				v_to_use,
+				v_to_use,
+				manifold_ws,
+			)?);
 			let v_hat_norm = v_norm / <T as Float>::sqrt(bias2);
 			let scale = T::one() / (v_hat_norm + adam_state.epsilon);
-
-			manifold.scale_tangent(current_point, scale, &m_hat, direction)?;
+			manifold.scale_tangent(current_point, scale, scratch0, direction)?;
 		}
 
 		Ok(())
@@ -552,9 +529,10 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 		M: Manifold<T>,
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
+		use riemannopt_core::optimization::workspace::CommonWorkspace;
+
 		let start_time = Instant::now();
 
-		// Initialize state
 		let initial_cost = cost_fn.cost(initial_point)?;
 		let mut adam_state = AdamState::new(
 			self.config.beta1,
@@ -563,7 +541,7 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 			self.config.use_amsgrad,
 		);
 		let mut current_point = initial_point.clone();
-		let mut previous_point: Option<M::Point> = None;
+		let mut has_previous_point = false;
 		let mut current_cost = initial_cost;
 		let mut previous_cost: Option<T> = None;
 		let mut gradient_norm: Option<T> = None;
@@ -571,14 +549,21 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 		let mut function_evaluations = 1;
 		let mut gradient_evaluations = 0;
 
-		// Compute initial gradient to get the right type
-		let mut euclidean_grad = cost_fn.gradient(&initial_point)?;
-		let mut riemannian_grad = euclidean_grad.clone();
+		// Compute initial gradient to initialize workspace
+		let initial_grad = cost_fn.gradient(initial_point)?;
 		gradient_evaluations += 1;
 
-		// Main optimization loop
+		// Pre-allocate all buffers once
+		let mut ws = CommonWorkspace::new(initial_point, &initial_grad);
+		let mut manifold_ws = manifold.create_workspace(initial_point);
+		ws.euclidean_grad.clone_from(&initial_grad);
+
 		loop {
-			// Check stopping criteria
+			let prev_ref = if has_previous_point {
+				Some(&ws.previous_point)
+			} else {
+				None
+			};
 			let reason = self.check_stopping_criteria(
 				manifold,
 				iteration,
@@ -589,7 +574,7 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 				previous_cost,
 				gradient_norm,
 				&current_point,
-				&previous_point,
+				prev_ref,
 				stopping_criterion,
 			);
 
@@ -606,64 +591,81 @@ impl<T: Scalar> Optimizer<T> for Adam<T> {
 				.with_gradient_norm(gradient_norm.unwrap_or(T::zero())));
 			}
 
-			// Compute gradient at current point
-			let new_cost = cost_fn.cost_and_gradient(&current_point, &mut euclidean_grad)?;
+			// Gradient computation (in-place)
+			let new_cost = cost_fn.cost_and_gradient(&current_point, &mut ws.euclidean_grad)?;
 			function_evaluations += 1;
 			gradient_evaluations += 1;
 
-			// Convert to Riemannian gradient
 			manifold.euclidean_to_riemannian_gradient(
 				&current_point,
-				&euclidean_grad,
-				&mut riemannian_grad,
+				&ws.euclidean_grad,
+				&mut ws.riemannian_grad,
+				&mut manifold_ws,
 			)?;
 
-			// Compute gradient norm
-			let grad_norm_squared =
-				manifold.inner_product(&current_point, &riemannian_grad, &riemannian_grad)?;
+			let grad_norm_squared = manifold.inner_product(
+				&current_point,
+				&ws.riemannian_grad,
+				&ws.riemannian_grad,
+				&mut manifold_ws,
+			)?;
 			let grad_norm = <T as Float>::sqrt(grad_norm_squared);
 			gradient_norm = Some(grad_norm);
 
-			// Apply gradient clipping if enabled
+			// Gradient clipping (in-place via scratch)
 			if let Some(threshold) = self.config.gradient_clip {
 				if grad_norm > threshold {
 					let scale = threshold / grad_norm;
-					let clipped_grad = riemannian_grad.clone();
+					ws.scratch[0].clone_from(&ws.riemannian_grad);
 					manifold.scale_tangent(
 						&current_point,
 						scale,
-						&clipped_grad,
-						&mut riemannian_grad,
+						&ws.scratch[0],
+						&mut ws.riemannian_grad,
 					)?;
 				}
 			}
 
-			// Compute Adam direction
-			let mut direction = riemannian_grad.clone();
-			self.compute_adam_direction_inplace(
-				manifold,
-				&current_point,
-				&previous_point,
-				&riemannian_grad,
-				&mut adam_state,
-				&mut direction,
-			)?;
+			// Adam direction (uses scratch[0..1] internally)
+			let prev_ref = if has_previous_point {
+				Some(&ws.previous_point as &M::Point)
+			} else {
+				None
+			};
+			{
+				let [ref mut s0, ref mut s1, ..] = ws.scratch;
+				self.compute_adam_direction(
+					manifold,
+					&current_point,
+					prev_ref,
+					&ws.riemannian_grad,
+					&mut adam_state,
+					&mut ws.direction,
+					s0,
+					s1,
+					&mut manifold_ws,
+				)?;
+			}
 
-			// Scale by negative learning rate and take step
-			let mut search_direction = direction.clone();
+			// Scale by -lr and retract (in-place)
 			manifold.scale_tangent(
 				&current_point,
 				-self.config.learning_rate,
-				&direction,
-				&mut search_direction,
+				&ws.direction,
+				&mut ws.scaled_direction,
+			)?;
+			manifold.retract(
+				&current_point,
+				&ws.scaled_direction,
+				&mut ws.new_point,
+				&mut manifold_ws,
 			)?;
 
-			// Take the step using retraction
-			let mut new_point = current_point.clone();
-			manifold.retract(&current_point, &search_direction, &mut new_point)?;
+			// Swap points (zero alloc)
+			std::mem::swap(&mut ws.previous_point, &mut current_point);
+			has_previous_point = true;
+			std::mem::swap(&mut current_point, &mut ws.new_point);
 
-			// Update state
-			previous_point = Some(std::mem::replace(&mut current_point, new_point));
 			previous_cost = Some(current_cost);
 			current_cost = new_cost;
 			iteration += 1;

@@ -156,6 +156,21 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 	type Point: Clone + Debug + Send + Sync;
 	/// The type of data for a tangent vector.
 	type TangentVector: Clone + Debug + Send + Sync;
+	/// Pre-allocated workspace for hot-path operations.
+	///
+	/// Manifolds that need temporary buffers (e.g. SPD's n×n matrix for
+	/// `cholesky_solve`, Product's split component vectors) define a concrete
+	/// workspace type here.  Manifolds with no extra buffer needs use `()`,
+	/// which is a zero-sized type — the compiler eliminates it entirely.
+	type Workspace: Default + Send + Sync;
+
+	/// Creates a workspace sized for the given prototype point.
+	///
+	/// The default implementation returns `Default::default()`, which is
+	/// a no-op for `()`.
+	fn create_workspace(&self, _proto_point: &Self::Point) -> Self::Workspace {
+		Self::Workspace::default()
+	}
 	/// Returns a human-readable name for the manifold.
 	fn name(&self) -> &str;
 
@@ -239,6 +254,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		ws: &mut Self::Workspace,
 	) -> Result<()>;
 
 	/// Computes the Riemannian inner product between two tangent vectors.
@@ -280,6 +296,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		ws: &mut Self::Workspace,
 	) -> Result<T>;
 
 	/// Computes the norm of a tangent vector.
@@ -294,8 +311,13 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 	/// # Returns
 	///
 	/// The norm ||v||_g.
-	fn norm(&self, point: &Self::Point, vector: &Self::TangentVector) -> Result<T> {
-		self.inner_product(point, vector, vector)
+	fn norm(
+		&self,
+		point: &Self::Point,
+		vector: &Self::TangentVector,
+		ws: &mut Self::Workspace,
+	) -> Result<T> {
+		self.inner_product(point, vector, vector, ws)
 			.map(|ip| <T as Float>::sqrt(ip))
 	}
 
@@ -343,6 +365,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		ws: &mut Self::Workspace,
 	) -> Result<()>;
 
 	/// Computes the inverse retraction (logarithmic map).
@@ -365,6 +388,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		ws: &mut Self::Workspace,
 	) -> Result<()>;
 
 	/// Converts the Euclidean gradient to the Riemannian gradient.
@@ -383,6 +407,7 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		ws: &mut Self::Workspace,
 	) -> Result<()>;
 
 	/// Converts an Euclidean Hessian-vector product to the Riemannian Hessian-vector product.
@@ -404,11 +429,12 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		euclidean_hvp: &Self::TangentVector,
 		tangent_vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		ws: &mut Self::Workspace,
 	) -> Result<()> {
 		// Default: just project the Euclidean HVP onto the tangent space
 		let _ = euclidean_grad;
 		let _ = tangent_vector;
-		self.project_tangent(point, euclidean_hvp, result)
+		self.project_tangent(point, euclidean_hvp, result, ws)
 	}
 
 	/// Performs parallel transport of a vector along a retraction.
@@ -433,9 +459,10 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		ws: &mut Self::Workspace,
 	) -> Result<()> {
 		// Default: vector transport by projection
-		self.project_tangent(to, vector, result)
+		self.project_tangent(to, vector, result, ws)
 	}
 
 	/// Generates a random point on the manifold.
@@ -524,60 +551,32 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		result: &mut Self::TangentVector,
 	) -> Result<()>;
 
-	/// Adds two tangent vectors.
+	/// Adds two tangent vectors: result = v1 + v2.
 	///
-	/// Computes: result = v1 + v2
-	///
-	/// For most manifolds embedded in Euclidean space, this is standard vector
-	/// addition. However, the result must be in the tangent space, so projection
-	/// may be necessary for numerical stability.
+	/// For most manifolds this is standard vector addition followed by
+	/// re-projection to the tangent space for numerical stability.
+	/// Manifolds whose tangent spaces are closed under addition (Euclidean,
+	/// Sphere, Hyperbolic) skip the re-projection step.
 	///
 	/// # Arguments
 	///
 	/// * `point` - A point on the manifold
 	/// * `v1` - First tangent vector
-	/// * `v2` - Second tangent vector  
+	/// * `v2` - Second tangent vector
 	/// * `result` - Pre-allocated output buffer for the sum
-	/// * `temp` - Temporary buffer for projection if needed
-	///
-	/// # Errors
-	///
-	/// Returns an error if either vector is not in the tangent space.
 	fn add_tangents(
 		&self,
 		point: &Self::Point,
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		temp: &mut Self::TangentVector,
 	) -> Result<()>;
 
-	/// Computes a linear combination of tangent vectors (axpy operation).
-	///
-	/// Computes: result = y + alpha * x
-	///
-	/// This is a fundamental operation for many optimization algorithms,
-	/// combining scaling and addition in a single step for efficiency.
-	///
-	/// # Arguments
-	///
-	/// * `point` - A point on the manifold
-	/// * `alpha` - Scalar coefficient
-	/// * `x` - Tangent vector to scale
-	/// * `y` - Tangent vector to add
-	/// * `result` - Pre-allocated output buffer for the result
-	/// * `temp1` - First temporary buffer for computation
-	/// * `temp2` - Second temporary buffer for computation
+	/// Computes a linear combination: result = y + alpha · x.
 	///
 	/// # Default Implementation
 	///
-	/// The default implementation uses scale_tangent and add_tangents, but
-	/// specific manifolds may provide more efficient implementations.
-	///
-	/// # Errors
-	///
-	/// Returns an error if either vector is not in the tangent space.
+	/// Uses `scale_tangent` into `result`, then `add_tangents`.
 	fn axpy_tangent(
 		&self,
 		point: &Self::Point,
@@ -585,12 +584,9 @@ pub trait Manifold<T: Scalar>: Debug + Send + Sync {
 		x: &Self::TangentVector,
 		y: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffers for computation
-		temp1: &mut Self::TangentVector,
-		temp2: &mut Self::TangentVector,
+		temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		// Default implementation: compute alpha * x, then add y
-		self.scale_tangent(point, alpha, x, temp1)?;
-		self.add_tangents(point, temp1, y, result, temp2)
+		self.scale_tangent(point, alpha, x, temp)?;
+		self.add_tangents(point, temp, y, result)
 	}
 }

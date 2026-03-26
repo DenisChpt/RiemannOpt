@@ -90,11 +90,7 @@ impl CostFunction<f64> for PyRayleighQuotient {
 		Ok((cost, gradient))
 	}
 
-	fn cost_and_gradient(
-		&self,
-		point: &Vec64,
-		gradient: &mut Vec64,
-	) -> Result<f64> {
+	fn cost_and_gradient(&self, point: &Vec64, gradient: &mut Vec64) -> Result<f64> {
 		let ax = self.a.mat_vec(point);
 		let cost = point.dot(&ax);
 		gradient.copy_from(&ax);
@@ -118,11 +114,7 @@ impl CostFunction<f64> for PyRayleighQuotient {
 		CostFunction::gradient(self, point)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Vec64,
-		gradient: &mut Vec64,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Vec64, gradient: &mut Vec64) -> Result<()> {
 		let g = self.a.mat_vec(point);
 		gradient.copy_from(&g);
 		gradient.scale_mut(2.0);
@@ -206,11 +198,7 @@ impl CostFunction<f64> for PyTraceMinimization {
 		Ok((cost, gradient))
 	}
 
-	fn cost_and_gradient(
-		&self,
-		point: &Mat64,
-		gradient: &mut Mat64,
-	) -> Result<f64> {
+	fn cost_and_gradient(&self, point: &Mat64, gradient: &mut Mat64) -> Result<f64> {
 		let ay = self.a.mat_mul(point);
 		let cost = MatrixOps::transpose(point).mat_mul(&ay).trace();
 		gradient.copy_from(&ay);
@@ -234,11 +222,7 @@ impl CostFunction<f64> for PyTraceMinimization {
 		CostFunction::gradient(self, point)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Mat64,
-		gradient: &mut Mat64,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Mat64, gradient: &mut Mat64) -> Result<()> {
 		*gradient = CostFunction::gradient(self, point)?;
 		Ok(())
 	}
@@ -338,11 +322,7 @@ impl CostFunction<f64> for PyBrockett {
 		Ok((cost, gradient))
 	}
 
-	fn cost_and_gradient(
-		&self,
-		point: &Mat64,
-		gradient: &mut Mat64,
-	) -> Result<f64> {
+	fn cost_and_gradient(&self, point: &Mat64, gradient: &mut Mat64) -> Result<f64> {
 		let ax = self.a.mat_mul(point);
 		let cost = MatrixOps::transpose(point)
 			.mat_mul(&ax)
@@ -370,11 +350,7 @@ impl CostFunction<f64> for PyBrockett {
 		CostFunction::gradient(self, point)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Mat64,
-		gradient: &mut Mat64,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Mat64, gradient: &mut Mat64) -> Result<()> {
 		*gradient = CostFunction::gradient(self, point)?;
 		Ok(())
 	}
@@ -424,9 +400,12 @@ impl PyLogDetDivergence {
 	) -> PyResult<Bound<'py, PyArray2<f64>>> {
 		let pm = numpy_to_mat(p)?;
 		let n = pm.nrows();
-		let p_inv = pm
-			.try_inverse()
-			.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Matrix is not invertible"))?;
+		let mut p_inv = <Mat64 as MatrixOps<f64>>::zeros(n, n);
+		if !DecompositionOps::inverse(&pm, &mut p_inv) {
+			return Err(pyo3::exceptions::PyValueError::new_err(
+				"Matrix is not invertible",
+			));
+		}
 		let grad = <Mat64 as MatrixOps<f64>>::identity(n).sub(&p_inv);
 		mat_to_numpy(py, &grad)
 	}
@@ -472,18 +451,17 @@ impl CostFunction<f64> for PyLogDetDivergence {
 			log_det += l.get(i, i).ln();
 		}
 		log_det *= 2.0;
-		let p_inv = point.try_inverse().ok_or_else(|| {
-			ManifoldError::numerical_error("Matrix is not invertible in LogDetDivergence")
-		})?;
+		let mut p_inv = <Mat64 as MatrixOps<f64>>::zeros(n, n);
+		if !DecompositionOps::inverse(point, &mut p_inv) {
+			return Err(ManifoldError::numerical_error(
+				"Matrix is not invertible in LogDetDivergence",
+			));
+		}
 		let gradient = <Mat64 as MatrixOps<f64>>::identity(n).sub(&p_inv);
 		Ok((trace_val - log_det, gradient))
 	}
 
-	fn cost_and_gradient(
-		&self,
-		point: &Mat64,
-		gradient: &mut Mat64,
-	) -> Result<f64> {
+	fn cost_and_gradient(&self, point: &Mat64, gradient: &mut Mat64) -> Result<f64> {
 		let (cost, grad) = self.cost_and_gradient_alloc(point)?;
 		*gradient = grad;
 		Ok(cost)
@@ -491,16 +469,23 @@ impl CostFunction<f64> for PyLogDetDivergence {
 
 	fn gradient(&self, point: &Mat64) -> Result<Mat64> {
 		let n = point.nrows();
-		let p_inv = point.try_inverse().ok_or_else(|| {
-			ManifoldError::numerical_error("Matrix is not invertible in LogDetDivergence")
-		})?;
+		let mut p_inv = <Mat64 as MatrixOps<f64>>::zeros(n, n);
+		if !DecompositionOps::inverse(point, &mut p_inv) {
+			return Err(ManifoldError::numerical_error(
+				"Matrix is not invertible in LogDetDivergence",
+			));
+		}
 		Ok(<Mat64 as MatrixOps<f64>>::identity(n).sub(&p_inv))
 	}
 
 	fn hessian_vector_product(&self, point: &Mat64, vector: &Mat64) -> Result<Mat64> {
-		let p_inv = point.try_inverse().ok_or_else(|| {
-			ManifoldError::numerical_error("Matrix is not invertible in LogDetDivergence")
-		})?;
+		let n = point.nrows();
+		let mut p_inv = <Mat64 as MatrixOps<f64>>::zeros(n, n);
+		if !DecompositionOps::inverse(point, &mut p_inv) {
+			return Err(ManifoldError::numerical_error(
+				"Matrix is not invertible in LogDetDivergence",
+			));
+		}
 		Ok(p_inv.mat_mul(vector).mat_mul(&p_inv))
 	}
 
@@ -508,11 +493,7 @@ impl CostFunction<f64> for PyLogDetDivergence {
 		CostFunction::gradient(self, point)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Mat64,
-		gradient: &mut Mat64,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Mat64, gradient: &mut Mat64) -> Result<()> {
 		*gradient = CostFunction::gradient(self, point)?;
 		Ok(())
 	}
@@ -601,11 +582,7 @@ impl CostFunction<f64> for PyQuadratic {
 		Ok((cost, gradient))
 	}
 
-	fn cost_and_gradient(
-		&self,
-		point: &Vec64,
-		gradient: &mut Vec64,
-	) -> Result<f64> {
+	fn cost_and_gradient(&self, point: &Vec64, gradient: &mut Vec64) -> Result<f64> {
 		let ax = self.a.mat_vec(point);
 		let cost = 0.5 * point.dot(&ax) + self.b.dot(point);
 		let g = VectorOps::add(&ax, &self.b);
@@ -625,11 +602,7 @@ impl CostFunction<f64> for PyQuadratic {
 		CostFunction::gradient(self, point)
 	}
 
-	fn gradient_fd(
-		&self,
-		point: &Vec64,
-		gradient: &mut Vec64,
-	) -> Result<()> {
+	fn gradient_fd(&self, point: &Vec64, gradient: &mut Vec64) -> Result<()> {
 		let g = VectorOps::add(&self.a.mat_vec(point), &self.b);
 		gradient.copy_from(&g);
 		Ok(())

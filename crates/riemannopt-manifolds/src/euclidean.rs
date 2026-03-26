@@ -58,7 +58,7 @@
 //!
 //! // Retraction is just addition
 //! let mut y = riemannopt_core::linalg::Vec::<f64>::zeros(10);
-//! manifold.retract(&x, &v, &mut y)?;
+//! manifold.retract(&x, &v, &mut y, &mut ())?;
 //! # Ok::<(), riemannopt_core::error::ManifoldError>(())
 //! ```
 
@@ -116,6 +116,7 @@ where
 {
 	type Point = linalg::Vec<T>;
 	type TangentVector = linalg::Vec<T>;
+	type Workspace = ();
 
 	fn name(&self) -> &str {
 		"Euclidean"
@@ -135,6 +136,7 @@ where
 		_point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Projection is identity in Euclidean space
 		result.copy_from(tangent);
@@ -146,6 +148,7 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
 		// Standard inner product
 		Ok(VectorOps::dot(u, v))
@@ -156,6 +159,7 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Retraction is addition: result = point + tangent
 		result.copy_from(point);
@@ -169,6 +173,7 @@ where
 		_to: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Parallel transport is identity in flat space
 		result.copy_from(tangent);
@@ -180,6 +185,7 @@ where
 		x: &Self::Point,
 		y: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Inverse retraction is subtraction: result = y - x
 		result.copy_from(y);
@@ -225,9 +231,13 @@ where
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		// Euclidean distance: ‖y - x‖
-		let diff = VectorOps::sub(y, x);
-		Ok(VectorOps::norm(&diff))
+		// ‖y - x‖² = ‖y‖² + ‖x‖² - 2⟨x,y⟩  (zero alloc)
+		let xx = VectorOps::dot(x, x);
+		let yy = VectorOps::dot(y, y);
+		let xy = VectorOps::dot(x, y);
+		let dist_sq = xx + yy - (T::one() + T::one()) * xy;
+		// Guard against negative values from floating-point errors
+		Ok(<T as Float>::sqrt(<T as Float>::max(dist_sq, T::zero())))
 	}
 
 	fn scale_tangent(
@@ -249,7 +259,6 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		// Standard vector addition
 		result.copy_from(v1);
@@ -262,6 +271,7 @@ where
 		_point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// In Euclidean space, Euclidean and Riemannian gradients are the same
 		result.copy_from(euclidean_grad);

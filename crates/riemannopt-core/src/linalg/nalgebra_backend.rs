@@ -315,12 +315,23 @@ where
 		nalgebra::linalg::Cholesky::new(self.clone()).map(|c| CholeskyResult::new(c.l()))
 	}
 
-	fn try_inverse(&self) -> Option<Self> {
-		self.clone().try_inverse()
+	fn inverse(&self, result: &mut Self) -> bool {
+		if let Some(inv) = nalgebra::DMatrix::try_inverse(self.clone()) {
+			result.copy_from(&inv);
+			true
+		} else {
+			false
+		}
 	}
 
-	fn cholesky_solve(&self, rhs: &Self) -> Option<Self> {
-		nalgebra::linalg::Cholesky::new(self.clone()).map(|chol| chol.solve(rhs))
+	fn cholesky_solve(&self, rhs: &Self, result: &mut Self) -> bool {
+		if let Some(chol) = nalgebra::linalg::Cholesky::new(self.clone()) {
+			let sol = chol.solve(rhs);
+			result.copy_from(&sol);
+			true
+		} else {
+			false
+		}
 	}
 }
 
@@ -510,7 +521,8 @@ mod tests {
 		let a =
 			<DMatrix<f64> as MatrixOps<f64>>::from_fn(2, 2, |i, j| [[4.0, 2.0], [2.0, 3.0]][i][j]);
 		let b = <DMatrix<f64> as MatrixOps<f64>>::identity(2);
-		let x = DecompositionOps::cholesky_solve(&a, &b).unwrap();
+		let mut x = <DMatrix<f64> as MatrixOps<f64>>::zeros(2, 2);
+		assert!(DecompositionOps::cholesky_solve(&a, &b, &mut x));
 		// A * x should be identity
 		let ax = MatrixOps::mat_mul(&a, &x);
 		for i in 0..2 {

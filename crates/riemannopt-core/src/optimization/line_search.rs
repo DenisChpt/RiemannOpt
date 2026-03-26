@@ -631,13 +631,14 @@ where
 		gradient: &M::TangentVector,
 		direction: &M::TangentVector,
 		params: &LineSearchParams<T>,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 		M: Manifold<T>,
 	{
 		// Default implementation: compute directional derivative and use efficient method
-		let directional_deriv = manifold.inner_product(point, gradient, direction)?;
+		let directional_deriv = manifold.inner_product(point, gradient, direction, ws)?;
 		self.search_with_deriv(
 			cost_fn,
 			manifold,
@@ -646,6 +647,7 @@ where
 			direction,
 			directional_deriv,
 			params,
+			ws,
 		)
 	}
 
@@ -712,6 +714,7 @@ where
 		direction: &M::TangentVector,
 		directional_deriv: T,
 		params: &LineSearchParams<T>,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -777,6 +780,7 @@ where
 		gradient: &M::TangentVector,
 		direction: &M::TangentVector,
 		params: &LineSearchParams<T>,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -791,6 +795,7 @@ where
 			gradient,
 			direction,
 			params,
+			ws,
 		)
 	}
 }
@@ -875,6 +880,7 @@ where
 		direction: &M::TangentVector,
 		directional_deriv: T,
 		params: &LineSearchParams<T>,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -901,7 +907,7 @@ where
 			// Retract along alpha * direction
 			let mut scaled_dir = direction.clone();
 			manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
-			manifold.retract(point, &scaled_dir, &mut new_point)?;
+			manifold.retract(point, &scaled_dir, &mut new_point, ws)?;
 
 			let new_value = cost_fn.cost(&new_point)?;
 			func_evals += 1;
@@ -930,7 +936,7 @@ where
 		// Return best effort (last tried point)
 		let mut scaled_dir = direction.clone();
 		manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
-		manifold.retract(point, &scaled_dir, &mut new_point)?;
+		manifold.retract(point, &scaled_dir, &mut new_point, ws)?;
 		let new_value = cost_fn.cost(&new_point)?;
 		func_evals += 1;
 
@@ -1027,6 +1033,7 @@ where
 		direction: &M::TangentVector,
 		directional_deriv: T,
 		params: &LineSearchParams<T>,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -1053,7 +1060,7 @@ where
 		};
 
 		// Compute direction norm for initial step normalization
-		let norm_d = <T as Float>::sqrt(manifold.inner_product(point, direction, direction)?);
+		let norm_d = <T as Float>::sqrt(manifold.inner_product(point, direction, direction, ws)?);
 
 		// Determine initial alpha
 		let mut alpha = if let Some(prev) = self.previous_alpha {
@@ -1073,7 +1080,7 @@ where
 			// Retract along direction with step size alpha
 			let mut scaled_dir = direction.clone();
 			manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
-			manifold.retract(point, &scaled_dir, &mut new_point)?;
+			manifold.retract(point, &scaled_dir, &mut new_point, ws)?;
 			new_value = cost_fn.cost(&new_point)?;
 			cost_evaluations += 1;
 
@@ -1282,6 +1289,7 @@ impl StrongWolfeLineSearch {
 		point: &M::Point,
 		direction: &M::TangentVector,
 		alpha: T,
+		ws: &mut M::Workspace,
 	) -> Result<(T, M::Point)>
 	where
 		T: Scalar,
@@ -1291,7 +1299,7 @@ impl StrongWolfeLineSearch {
 		let mut scaled_dir = direction.clone();
 		manifold.scale_tangent(point, alpha, direction, &mut scaled_dir)?;
 		let mut trial_point = point.clone();
-		manifold.retract(point, &scaled_dir, &mut trial_point)?;
+		manifold.retract(point, &scaled_dir, &mut trial_point, ws)?;
 		let cost = cost_fn.cost(&trial_point)?;
 		Ok((cost, trial_point))
 	}
@@ -1310,6 +1318,7 @@ impl StrongWolfeLineSearch {
 		base_point: &M::Point,
 		trial_point: &M::Point,
 		direction: &M::TangentVector,
+		ws: &mut M::Workspace,
 	) -> Result<(T, M::TangentVector)>
 	where
 		T: Scalar,
@@ -1320,14 +1329,20 @@ impl StrongWolfeLineSearch {
 		let mut euc_grad = direction.clone();
 		cost_fn.cost_and_gradient(trial_point, &mut euc_grad)?;
 		let mut riem_grad = euc_grad.clone();
-		manifold.euclidean_to_riemannian_gradient(trial_point, &euc_grad, &mut riem_grad)?;
+		manifold.euclidean_to_riemannian_gradient(trial_point, &euc_grad, &mut riem_grad, ws)?;
 
 		// Transport search direction from base to trial
 		let mut transported_dir = direction.clone();
-		manifold.parallel_transport(base_point, trial_point, direction, &mut transported_dir)?;
+		manifold.parallel_transport(
+			base_point,
+			trial_point,
+			direction,
+			&mut transported_dir,
+			ws,
+		)?;
 
 		// Directional derivative at trial point
-		let dphi = manifold.inner_product(trial_point, &riem_grad, &transported_dir)?;
+		let dphi = manifold.inner_product(trial_point, &riem_grad, &transported_dir, ws)?;
 		Ok((dphi, riem_grad))
 	}
 
@@ -1356,6 +1371,7 @@ impl StrongWolfeLineSearch {
 		best_result: &mut Option<LineSearchResult<T, M::Point, M::TangentVector>>,
 		func_evals: &mut usize,
 		grad_evals: &mut usize,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		T: Scalar,
@@ -1372,7 +1388,7 @@ impl StrongWolfeLineSearch {
 
 			// Evaluate φ(α_j)
 			let (phi_j, trial_point) =
-				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha_j)?;
+				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha_j, ws)?;
 			*func_evals += 1;
 
 			if phi_j > phi_0 + c1 * alpha_j * dphi_0 || phi_j >= phi_lo {
@@ -1385,7 +1401,7 @@ impl StrongWolfeLineSearch {
 			} else {
 				// Armijo satisfied and phi_j < phi_lo — check curvature
 				let (dphi_j, grad_j) =
-					Self::evaluate_dphi(cost_fn, manifold, point, &trial_point, direction)?;
+					Self::evaluate_dphi(cost_fn, manifold, point, &trial_point, direction, ws)?;
 				*grad_evals += 1;
 				*func_evals += 1; // cost_and_gradient counts as both
 
@@ -1437,7 +1453,7 @@ impl StrongWolfeLineSearch {
 		} else {
 			// Fallback: evaluate at alpha_lo (which satisfies Armijo)
 			let (phi, new_point) =
-				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha_lo)?;
+				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha_lo, ws)?;
 			*func_evals += 1;
 			Ok(LineSearchResult {
 				step_size: alpha_lo,
@@ -1471,6 +1487,7 @@ where
 		direction: &M::TangentVector,
 		directional_deriv: T,
 		params: &LineSearchParams<T>,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -1516,7 +1533,7 @@ where
 		// ── Phase 1: Bracketing (Nocedal & Wright Algorithm 3.5) ──
 		for i in 0..params.max_iterations {
 			let (phi, trial_point) =
-				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha)?;
+				Self::evaluate_phi(cost_fn, manifold, point, direction, alpha, ws)?;
 			func_evals += 1;
 
 			// Check Armijo condition
@@ -1542,12 +1559,13 @@ where
 					&mut best_result,
 					&mut func_evals,
 					&mut grad_evals,
+					ws,
 				);
 			}
 
 			// Armijo satisfied — check curvature
 			let (dphi, grad) =
-				Self::evaluate_dphi(cost_fn, manifold, point, &trial_point, direction)?;
+				Self::evaluate_dphi(cost_fn, manifold, point, &trial_point, direction, ws)?;
 			grad_evals += 1;
 			func_evals += 1; // cost_and_gradient
 
@@ -1595,6 +1613,7 @@ where
 					&mut best_result,
 					&mut func_evals,
 					&mut grad_evals,
+					ws,
 				);
 			}
 
@@ -1736,6 +1755,7 @@ where
 		direction: &M::TangentVector,
 		_directional_deriv: T,
 		_params: &LineSearchParams<T>,
+		ws: &mut M::Workspace,
 	) -> Result<LineSearchResult<T, M::Point, M::TangentVector>>
 	where
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
@@ -1744,7 +1764,7 @@ where
 		let mut new_point = point.clone();
 
 		// Use manifold's retract - scaling would require trait bounds on TangentVector
-		manifold.retract(point, direction, &mut new_point)?;
+		manifold.retract(point, direction, &mut new_point, ws)?;
 		let new_value = cost_fn.cost(&new_point)?;
 
 		Ok(LineSearchResult {

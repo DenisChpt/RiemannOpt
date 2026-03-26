@@ -8,7 +8,8 @@ use riemannopt_manifolds::Oblique;
 /// Helper to call trait methods with f64 type parameter.
 fn as_manifold(
 	ob: &Oblique,
-) -> &dyn Manifold<f64, Point = linalg::Mat<f64>, TangentVector = linalg::Mat<f64>> {
+) -> &dyn Manifold<f64, Point = linalg::Mat<f64>, TangentVector = linalg::Mat<f64>, Workspace = ()>
+{
 	ob
 }
 
@@ -73,7 +74,7 @@ fn test_oblique_tangent_projection() {
 	});
 
 	let mut v_tangent: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
-	m.project_tangent(&x, &v, &mut v_tangent).unwrap();
+	m.project_tangent(&x, &v, &mut v_tangent, &mut ()).unwrap();
 
 	// Check orthogonality: x_j^T v_j = 0 for each column
 	for j in 0..3 {
@@ -99,7 +100,7 @@ fn test_oblique_retraction() {
 	v.scale_mut(0.1);
 
 	let mut y: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
-	m.retract(&x, &v, &mut y).unwrap();
+	m.retract(&x, &v, &mut y, &mut ()).unwrap();
 
 	// Result should have unit-norm columns
 	for j in 0..3 {
@@ -110,7 +111,7 @@ fn test_oblique_retraction() {
 	// Zero retraction returns same point
 	let zero: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
 	let mut x_recovered: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
-	m.retract(&x, &zero, &mut x_recovered).unwrap();
+	m.retract(&x, &zero, &mut x_recovered, &mut ()).unwrap();
 	let diff = MatrixOps::sub(&x, &x_recovered);
 	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 }
@@ -130,12 +131,12 @@ fn test_oblique_inner_product() {
 	m.random_tangent(&x, &mut v).unwrap();
 
 	// Test symmetry
-	let inner_uv = m.inner_product(&x, &u, &v).unwrap();
-	let inner_vu = m.inner_product(&x, &v, &u).unwrap();
+	let inner_uv = m.inner_product(&x, &u, &v, &mut ()).unwrap();
+	let inner_vu = m.inner_product(&x, &v, &u, &mut ()).unwrap();
 	assert_relative_eq!(inner_uv, inner_vu, epsilon = 1e-14);
 
 	// Test positive definiteness
-	let inner_uu = m.inner_product(&x, &u, &u).unwrap();
+	let inner_uu = m.inner_product(&x, &u, &u, &mut ()).unwrap();
 	assert!(inner_uu >= 0.0);
 }
 
@@ -172,7 +173,8 @@ fn test_oblique_parallel_transport() {
 	m.random_tangent(&x, &mut v).unwrap();
 
 	let mut transported: linalg::Mat<f64> = MatrixOps::zeros(4, 2);
-	m.parallel_transport(&x, &y, &v, &mut transported).unwrap();
+	m.parallel_transport(&x, &y, &v, &mut transported, &mut ())
+		.unwrap();
 
 	// Transported vector should be in tangent space at y:
 	// y_j^T transported_j = 0 for each column
@@ -200,7 +202,7 @@ fn test_oblique_euclidean_to_riemannian_gradient() {
 	});
 
 	let mut rgrad: linalg::Mat<f64> = MatrixOps::zeros(4, 3);
-	m.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad)
+	m.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad, &mut ())
 		.unwrap();
 
 	// Result should be in tangent space: x_j^T rgrad_j = 0

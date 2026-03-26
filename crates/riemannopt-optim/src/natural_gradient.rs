@@ -247,7 +247,7 @@ impl<T: Scalar> NaturalGradient<T> {
 
 		// Check point change
 		if let Some(point_tol) = criterion.point_tolerance {
-			if let Some(ref prev_point) = previous_point {
+			if let Some(prev_point) = previous_point {
 				if iteration > 0 {
 					// Compute distance using manifold metric
 					if let Ok(distance) = manifold.distance(prev_point, current_point) {
@@ -286,40 +286,50 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
 		M: Manifold<T>,
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
+		use riemannopt_core::optimization::workspace::CommonWorkspace;
+
 		let start_time = Instant::now();
 
 		// Initialize state
 		let mut current_point = initial_point.clone();
-		let mut previous_point = None;
+		let mut has_previous_point = false;
+		let mut current_cost = cost_fn.cost(initial_point)?;
+		let mut previous_cost: Option<T> = None;
 
-		// Compute initial cost and gradient
-		let mut current_cost = cost_fn.cost(&current_point)?;
-		let mut previous_cost = None;
+		// Compute initial gradient to initialize workspace with the right shape
+		let initial_grad = cost_fn.gradient(initial_point)?;
 
-		// Compute initial gradients
-		let euclidean_grad = cost_fn.gradient(&current_point)?;
-		let mut riemannian_grad = euclidean_grad.clone();
+		// Pre-allocate all buffers once — zero allocations from here on
+		let mut ws = CommonWorkspace::new(initial_point, &initial_grad);
+		let mut manifold_ws = manifold.create_workspace(initial_point);
+		ws.euclidean_grad.clone_from(&initial_grad);
+
+		// Compute initial Riemannian gradient
 		manifold.euclidean_to_riemannian_gradient(
 			&current_point,
-			&euclidean_grad,
-			&mut riemannian_grad,
+			&ws.euclidean_grad,
+			&mut ws.riemannian_grad,
+			&mut manifold_ws,
 		)?;
 
-		let mut gradient_norm = manifold.norm(&current_point, &riemannian_grad)?;
+		let mut gradient_norm =
+			manifold.norm(&current_point, &ws.riemannian_grad, &mut manifold_ws)?;
 
 		// Tracking variables
 		let mut iteration = 0;
 		let mut function_evaluations = 1;
 		let mut gradient_evaluations = 1;
 
-		// Allocate natural gradient direction
-		let mut natural_grad = riemannian_grad.clone();
-
 		// Main optimization loop
 		loop {
 			// Check stopping criteria
+			let prev_ref = if has_previous_point {
+				Some(&ws.previous_point)
+			} else {
+				None
+			};
 			if let Some(reason) = self.check_stopping_criteria(
-				&stopping_criterion,
+				stopping_criterion,
 				iteration,
 				current_cost,
 				previous_cost,
@@ -327,63 +337,63 @@ impl<T: Scalar> Optimizer<T> for NaturalGradient<T> {
 				function_evaluations,
 				start_time,
 				&current_point,
-				previous_point.as_ref(),
+				prev_ref,
 				manifold,
 			) {
-				let duration = start_time.elapsed();
-
-				return Ok(OptimizationResult {
-					point: current_point,
-					value: current_cost,
-					gradient_norm: Some(gradient_norm),
-					iterations: iteration,
-					function_evaluations,
-					gradient_evaluations,
-					duration,
-					termination_reason: reason,
-					converged: matches!(
-						reason,
-						TerminationReason::Converged | TerminationReason::TargetReached
-					),
-				});
+				return Ok(OptimizationResult::new(
+					current_point,
+					current_cost,
+					iteration,
+					start_time.elapsed(),
+					reason,
+				)
+				.with_function_evaluations(function_evaluations)
+				.with_gradient_evaluations(gradient_evaluations)
+				.with_gradient_norm(gradient_norm));
 			}
 
-			// Store previous state
+			// Store previous cost
 			previous_cost = Some(current_cost);
 
 			// Apply Fisher information matrix inverse to get natural gradient
+			// Use ws.direction as the natural gradient buffer
 			self.apply_fisher_inverse(
 				manifold,
 				&current_point,
-				&riemannian_grad,
-				&mut natural_grad,
+				&ws.riemannian_grad,
+				&mut ws.direction,
 			)?;
 
-			// Scale by negative learning rate (descent direction)
-			let mut search_direction = natural_grad.clone();
+			// Scale by negative learning rate (descent direction) into scaled_direction
 			manifold.scale_tangent(
 				&current_point,
 				-self.config.learning_rate,
-				&natural_grad,
-				&mut search_direction,
+				&ws.direction,
+				&mut ws.scaled_direction,
 			)?;
 
-			// Update point: x_{k+1} = R_{x_k}(search_direction)
-			let mut new_point = current_point.clone();
-			manifold.retract(&current_point, &search_direction, &mut new_point)?;
+			// Update point: x_{k+1} = R_{x_k}(scaled_direction)
+			manifold.retract(
+				&current_point,
+				&ws.scaled_direction,
+				&mut ws.new_point,
+				&mut manifold_ws,
+			)?;
 
-			// Update current point
-			previous_point = Some(std::mem::replace(&mut current_point, new_point));
+			// Swap: previous ← current, current ← new
+			std::mem::swap(&mut ws.previous_point, &mut current_point);
+			has_previous_point = true;
+			std::mem::swap(&mut current_point, &mut ws.new_point);
 
-			// Compute new cost and gradient
-			current_cost = cost_fn.cost(&current_point)?;
-			let euclidean_grad = cost_fn.gradient(&current_point)?;
+			// Compute new cost and gradient (in-place into workspace)
+			current_cost = cost_fn.cost_and_gradient(&current_point, &mut ws.euclidean_grad)?;
 			manifold.euclidean_to_riemannian_gradient(
 				&current_point,
-				&euclidean_grad,
-				&mut riemannian_grad,
+				&ws.euclidean_grad,
+				&mut ws.riemannian_grad,
+				&mut manifold_ws,
 			)?;
-			gradient_norm = manifold.norm(&current_point, &riemannian_grad)?;
+			gradient_norm = manifold.norm(&current_point, &ws.riemannian_grad, &mut manifold_ws)?;
 
 			function_evaluations += 1;
 			gradient_evaluations += 1;

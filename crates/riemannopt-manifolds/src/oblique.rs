@@ -572,6 +572,7 @@ where
 {
 	type Point = linalg::Mat<T>;
 	type TangentVector = linalg::Mat<T>;
+	type Workspace = ();
 
 	fn name(&self) -> &str {
 		"Oblique"
@@ -635,18 +636,16 @@ where
 		point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		result.copy_from(vector);
 
-		// For each column: v_j - (x_j^T v_j) x_j
+		// For each column: result_j -= (x_j^T v_j) x_j  (zero alloc)
 		for j in 0..self.p {
-			let x_col = point.column(j);
-			let v_col = vector.column(j);
-			let inner = x_col.dot(&v_col);
-
+			let inner = point.column_dot(j, vector, j);
 			let col_slice = result.column_as_mut_slice(j);
 			for i in 0..self.n {
-				col_slice[i] = col_slice[i] - inner * x_col.get(i);
+				col_slice[i] = col_slice[i] - inner * point.get(i, j);
 			}
 		}
 
@@ -658,13 +657,12 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
-		// Sum of column-wise inner products
+		// Frobenius inner product = Σ_ij u_ij * v_ij  (zero alloc)
 		let mut total = T::zero();
 		for j in 0..self.p {
-			let u_col = u.column(j);
-			let v_col = v.column(j);
-			total = total + u_col.dot(&v_col);
+			total = total + u.column_dot(j, v, j);
 		}
 		Ok(total)
 	}
@@ -674,13 +672,16 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
-		// Normalize each column of (X + V)
-		let sum = point.add(tangent);
-		result.copy_from(&sum);
+		// result = point + tangent, then normalize each column (zero alloc)
+		result.copy_from(point);
+		result.add_assign(tangent);
 
 		for j in 0..self.p {
-			let col_norm = result.column(j).norm();
+			// Column norm via column_dot(j, self, j)
+			let col_norm_sq = result.column_dot(j, result, j);
+			let col_norm = <T as Float>::sqrt(col_norm_sq);
 			if col_norm > T::zero() {
 				let inv_norm = T::one() / col_norm;
 				let col_slice = result.column_as_mut_slice(j);
@@ -698,6 +699,7 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		result.fill(T::zero());
 
@@ -729,7 +731,7 @@ where
 
 		// Ensure result is in tangent space
 		let result_clone = result.clone();
-		self.project_tangent(point, &result_clone, result)?;
+		self.project_tangent(point, &result_clone, result, _ws)?;
 
 		Ok(())
 	}
@@ -739,9 +741,10 @@ where
 		point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Project to tangent space
-		self.project_tangent(point, euclidean_grad, result)
+		self.project_tangent(point, euclidean_grad, result, _ws)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
@@ -797,7 +800,7 @@ where
 
 		// Project to tangent space
 		let result_clone = result.clone();
-		self.project_tangent(point, &result_clone, result)?;
+		self.project_tangent(point, &result_clone, result, &mut ())?;
 
 		Ok(())
 	}
@@ -808,53 +811,43 @@ where
 		to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		result.fill(T::zero());
-
-		// Parallel transport each column independently
+		// Parallel transport each column independently on its sphere (zero alloc)
 		for j in 0..self.p {
-			let x_col = from.column(j);
-			let y_col = to.column(j);
-			let v_col = vector.column(j);
-
-			let inner = x_col.dot(&y_col);
+			let inner = from.column_dot(j, to, j);
 			let clamped = <T as Float>::min(<T as Float>::max(inner, -T::one()), T::one());
 
 			let col_slice = result.column_as_mut_slice(j);
 
-			if <T as Float>::abs(clamped - T::one()) < <T as Scalar>::from_f64(1e-10) {
-				// Same point, no transport needed
+			if <T as Float>::abs(clamped - T::one()) < <T as Scalar>::from_f64(1e-10)
+				|| <T as Float>::abs(clamped + T::one()) < <T as Scalar>::from_f64(1e-10)
+			{
+				// Same or antipodal point — copy
 				for i in 0..self.n {
-					col_slice[i] = v_col.get(i);
+					col_slice[i] = vector.get(i, j);
 				}
 				continue;
 			}
 
-			if <T as Float>::abs(clamped + T::one()) < <T as Scalar>::from_f64(1e-10) {
-				// Antipodal points
-				for i in 0..self.n {
-					col_slice[i] = v_col.get(i);
-				}
-				continue;
-			}
-
-			// Compute transported vector
 			let theta = <T as Float>::acos(clamped);
 			let sin_theta = <T as Float>::sin(theta);
+			let inv_sin = T::one() / sin_theta;
 
-			// Tangent direction at x towards y
-			let mut xi = linalg::Vec::<T>::zeros(self.n);
+			// ξ_i = (y_i - cos(θ) x_i) / sin(θ)
+			// ⟨v, ξ⟩ = Σ_i v_i ξ_i = inv_sin * Σ_i v_i (y_i - clamped * x_i)
+			let mut v_xi_inner = T::zero();
 			for i in 0..self.n {
-				*xi.get_mut(i) = y_col.get(i) - clamped * x_col.get(i);
+				let xi_i = (to.get(i, j) - clamped * from.get(i, j)) * inv_sin;
+				v_xi_inner = v_xi_inner + vector.get(i, j) * xi_i;
 			}
-			xi.scale_mut(T::one() / sin_theta);
 
-			// Transport formula: τ(v) = v - sin(θ)⟨v,ξ⟩·x + (cos(θ)-1)⟨v,ξ⟩·ξ
-			let v_xi_inner = v_col.dot(&xi);
-			let sin_coeff = T::zero() - sin_theta * v_xi_inner;
+			// τ(v)_i = v_i - sin(θ)⟨v,ξ⟩·x_i + (cos(θ)-1)⟨v,ξ⟩·ξ_i
+			let sin_coeff = -sin_theta * v_xi_inner;
 			let cos_coeff = (<T as Float>::cos(theta) - T::one()) * v_xi_inner;
 			for i in 0..self.n {
-				col_slice[i] = v_col.get(i) + sin_coeff * x_col.get(i) + cos_coeff * xi.get(i);
+				let xi_i = (to.get(i, j) - clamped * from.get(i, j)) * inv_sin;
+				col_slice[i] = vector.get(i, j) + sin_coeff * from.get(i, j) + cos_coeff * xi_i;
 			}
 		}
 
@@ -862,20 +855,14 @@ where
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
+		// Sum of squared geodesic distances on each sphere (zero alloc)
 		let mut dist_squared = T::zero();
-
-		// Sum of squared distances on each sphere
 		for j in 0..self.p {
-			let x_col = x.column(j);
-			let y_col = y.column(j);
-
-			let inner = x_col.dot(&y_col);
+			let inner = x.column_dot(j, y, j);
 			let clamped = <T as Float>::min(<T as Float>::max(inner, -T::one()), T::one());
 			let angle = <T as Float>::acos(clamped);
-
 			dist_squared = dist_squared + angle * angle;
 		}
-
 		Ok(<T as Float>::sqrt(dist_squared))
 	}
 
@@ -907,17 +894,17 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		// Add the tangent vectors
-		temp.copy_from(v1);
-		temp.add_assign(v2);
-
-		// The sum should already satisfy the tangent space constraint if v1 and v2 do,
-		// but we project for numerical stability
-		self.project_tangent(point, temp, result)?;
-
+		result.copy_from(v1);
+		result.add_assign(v2);
+		// In-place projection: result_j -= (x_j^T result_j) x_j  (zero alloc)
+		for j in 0..self.p {
+			let inner = point.column_dot(j, result, j);
+			let col_slice = result.column_as_mut_slice(j);
+			for i in 0..self.n {
+				col_slice[i] = col_slice[i] - inner * point.get(i, j);
+			}
+		}
 		Ok(())
 	}
 }

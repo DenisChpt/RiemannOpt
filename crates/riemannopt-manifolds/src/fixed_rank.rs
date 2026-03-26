@@ -173,10 +173,16 @@ where
 	}
 
 	/// Convert to full matrix representation
+	///
+	/// Computes X = U diag(S) V^T using column-scaled GEMM to avoid
+	/// allocating a full diagonal matrix.
 	pub fn to_matrix(&self) -> linalg::Mat<T> {
-		let s_mat = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&self.s);
-		let temp = MatrixOps::mat_mul(&self.u, &s_mat);
-		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.u.nrows(), self.v.nrows());
+		let m = self.u.nrows();
+		let k = VectorOps::len(&self.s);
+		// temp = U * diag(S) via backend-optimized column-scaling
+		let mut temp = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, k);
+		temp.scale_columns(&self.u, &self.s);
+		let mut out = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, self.v.nrows());
 		out.gemm_bt(T::one(), &temp, &self.v, T::zero());
 		out
 	}
@@ -192,12 +198,25 @@ where
 			.vt
 			.ok_or_else(|| ManifoldError::numerical_error("SVD failed to compute V^T"))?;
 
-		// Truncate to rank k
-		let u_k = MatrixOps::columns(&u_full, 0, k);
+		// Truncate to rank k — copy element-by-element to avoid allocating via columns()
+		let m = MatrixOps::nrows(&u_full);
+		let mut u_k = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, k);
+		for j in 0..k {
+			for i in 0..m {
+				*MatrixOps::get_mut(&mut u_k, i, j) = MatrixOps::get(&u_full, i, j);
+			}
+		}
 		let s_k = <linalg::Vec<T> as VectorOps<T>>::from_fn(k, |i| {
 			VectorOps::get(&svd.singular_values, i)
 		});
-		let v_k = MatrixOps::columns(&MatrixOps::transpose(&vt_full), 0, k);
+		// V = Vt^T[:, 0..k] — transpose element-by-element to avoid full transpose allocation
+		let n = MatrixOps::ncols(&vt_full);
+		let mut v_k = <linalg::Mat<T> as MatrixOps<T>>::zeros(n, k);
+		for j in 0..k {
+			for i in 0..n {
+				*MatrixOps::get_mut(&mut v_k, i, j) = MatrixOps::get(&vt_full, j, i);
+			}
+		}
 
 		Ok(Self::new(u_k, s_k, v_k))
 	}
@@ -244,23 +263,36 @@ where
 	}
 
 	/// Convert to full matrix representation given a base point
+	///
+	/// Computes ξ = U_⊥ M V^T + U diag(Ṡ) V^T + U N V_⊥^T using in-place GEMM
+	/// to minimize intermediate allocations.
 	pub fn to_matrix(&self, point: &FixedRankPoint<T>) -> linalg::Mat<T> {
-		let s_dot_mat = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&self.s_dot);
+		let m = point.u.nrows();
+		let n = point.v.nrows();
+		let k = VectorOps::len(&point.s);
 
 		// Compute U_perp and V_perp using QR decomposition
 		let (u_perp, _) = Self::compute_orthogonal_complement(&point.u);
 		let (v_perp, _) = Self::compute_orthogonal_complement(&point.v);
 
-		// Combine the three components
-		let vt = MatrixOps::transpose(&point.v);
-		let term1 = MatrixOps::mat_mul(&MatrixOps::mat_mul(&u_perp, &self.u_perp_m), &vt);
-		let term2 = MatrixOps::mat_mul(&MatrixOps::mat_mul(&point.u, &s_dot_mat), &vt);
-		let term3 = MatrixOps::mat_mul(
-			&MatrixOps::mat_mul(&point.u, &self.v_perp_n),
-			&MatrixOps::transpose(&v_perp),
-		);
+		// term1: U_perp * M * V^T — use buffer for U_perp * M, then GEMM_BT into result
+		let mut buf = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, k);
+		buf.gemm(T::one(), &u_perp, &self.u_perp_m, T::zero()); // buf = U_perp * M  (m × k)
+		let mut result = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, n);
+		result.gemm_bt(T::one(), &buf, &point.v, T::zero()); // result = buf * V^T
 
-		MatrixOps::add(&MatrixOps::add(&term1, &term2), &term3)
+		// term2: U * diag(Ṡ) * V^T — scale columns of U by s_dot, accumulate into result
+		// Reuse buf for U * diag(Ṡ)
+		buf.scale_columns(&point.u, &self.s_dot);
+		result.gemm_bt(T::one(), &buf, &point.v, T::one()); // result += buf * V^T
+
+		// term3: U * N * V_perp^T — reuse buf for U * N
+		let nk = MatrixOps::ncols(&self.v_perp_n); // n-k
+		let mut buf2 = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, nk);
+		buf2.gemm(T::one(), &point.u, &self.v_perp_n, T::zero()); // buf2 = U * N  (m × (n-k))
+		result.gemm_bt(T::one(), &buf2, &v_perp, T::one()); // result += buf2 * V_perp^T
+
+		result
 	}
 
 	/// Compute orthogonal complement of a matrix with orthonormal columns
@@ -284,11 +316,54 @@ where
 		let qr = DecompositionOps::qr(&q);
 		let q_full = qr.q();
 
-		// Extract the last m-k columns
-		let u_perp = MatrixOps::columns(q_full, k, m - k);
+		// Extract the last m-k columns — copy element-by-element to avoid allocating via columns()
+		let mut u_perp = <linalg::Mat<T> as MatrixOps<T>>::zeros(m, m - k);
+		for j in 0..m - k {
+			for i in 0..m {
+				*MatrixOps::get_mut(&mut u_perp, i, j) = MatrixOps::get(q_full, i, j + k);
+			}
+		}
 		let r_perp = <linalg::Mat<T> as MatrixOps<T>>::zeros(m - k, m - k); // Placeholder
 
 		(u_perp, r_perp)
+	}
+
+	/// Project an ambient-space m×n matrix onto the tangent space at a point.
+	///
+	/// Given point P = U Σ V^T and ambient matrix Z, computes the tangent
+	/// components:
+	/// - S_dot = U^T Z V  (k × k diagonal change)
+	/// - M = U_perp^T Z V  ((m-k) × k, orthogonal complement direction)
+	/// - N = U^T Z V_perp  (k × (n-k), orthogonal complement direction)
+	pub fn from_ambient(point: &FixedRankPoint<T>, ambient: &linalg::Mat<T>) -> Self {
+		let k = VectorOps::len(&point.s);
+		let n = MatrixOps::ncols(ambient);
+
+		// ut_z = U^T * Z  (k × n) — use gemm_at to avoid transposing U
+		let mut ut_z = <linalg::Mat<T> as MatrixOps<T>>::zeros(k, n);
+		ut_z.gemm_at(T::one(), &point.u, ambient, T::zero());
+
+		// S_dot = diag(U^T Z V) = diag(ut_z * V)
+		let mut ut_z_v = <linalg::Mat<T> as MatrixOps<T>>::zeros(k, k);
+		ut_z_v.gemm(T::one(), &ut_z, &point.v, T::zero());
+		let s_dot = VectorOps::from_fn(k, |i| MatrixOps::get(&ut_z_v, i, i));
+
+		// M = U_perp^T Z V — use gemm_at to avoid transposing U_perp
+		let (u_perp, _) = Self::compute_orthogonal_complement(&point.u);
+		let (v_perp, _) = Self::compute_orthogonal_complement(&point.v);
+
+		let mk = MatrixOps::ncols(&u_perp); // m-k
+		let mut upt_z = <linalg::Mat<T> as MatrixOps<T>>::zeros(mk, n);
+		upt_z.gemm_at(T::one(), &u_perp, ambient, T::zero()); // (m-k) × n
+		let mut u_perp_m = <linalg::Mat<T> as MatrixOps<T>>::zeros(mk, k);
+		u_perp_m.gemm(T::one(), &upt_z, &point.v, T::zero()); // (m-k) × k
+
+		// N = U^T Z V_perp — reuse ut_z
+		let nk = MatrixOps::ncols(&v_perp); // n-k
+		let mut v_perp_n = <linalg::Mat<T> as MatrixOps<T>>::zeros(k, nk);
+		v_perp_n.gemm(T::one(), &ut_z, &v_perp, T::zero()); // k × (n-k)
+
+		Self::new(u_perp_m, s_dot, v_perp_n)
 	}
 }
 
@@ -380,6 +455,12 @@ impl FixedRank {
 		(self.m, self.n, self.k)
 	}
 
+	/// Returns the rank k.
+	#[inline]
+	pub fn rank(&self) -> usize {
+		self.k
+	}
+
 	/// Returns the manifold dimension k(m + n - k).
 	#[inline]
 	pub fn manifold_dim(&self) -> usize {
@@ -391,13 +472,33 @@ impl FixedRank {
 	where
 		linalg::DefaultBackend: LinAlgBackend<T>,
 	{
-		// QR decomposition for U
-		let qr_u = DecompositionOps::qr(u);
-		*u = qr_u.q().clone();
+		// QR decomposition with sign correction to ensure continuity.
+		// Without sign correction, QR can flip column signs arbitrarily
+		// (QR is only unique up to sign of diagonal of R).
+		let m = MatrixOps::nrows(u);
+		let k = MatrixOps::ncols(u);
+		let n = MatrixOps::nrows(v);
 
-		// QR decomposition for V
+		let qr_u = DecompositionOps::qr(u);
+		u.copy_from(qr_u.q());
+		// Read diagonal of R directly — no clone needed since qr.r() returns a reference
+		for j in 0..k.min(MatrixOps::ncols(qr_u.r())) {
+			if MatrixOps::get(qr_u.r(), j, j) < T::zero() {
+				for i in 0..m {
+					*MatrixOps::get_mut(u, i, j) = T::zero() - MatrixOps::get(u, i, j);
+				}
+			}
+		}
+
 		let qr_v = DecompositionOps::qr(v);
-		*v = qr_v.q().clone();
+		v.copy_from(qr_v.q());
+		for j in 0..k.min(MatrixOps::ncols(qr_v.r())) {
+			if MatrixOps::get(qr_v.r(), j, j) < T::zero() {
+				for i in 0..n {
+					*MatrixOps::get_mut(v, i, j) = T::zero() - MatrixOps::get(v, i, j);
+				}
+			}
+		}
 	}
 
 	/// Validates that a matrix has the correct fixed rank.
@@ -477,6 +578,7 @@ where
 {
 	type Point = FixedRankPoint<T>;
 	type TangentVector = FixedRankTangent<T>;
+	type Workspace = ();
 
 	fn name(&self) -> &str {
 		"FixedRank"
@@ -524,10 +626,30 @@ where
 	}
 
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		// Copy the input point
-		result.u = point.u.clone();
-		result.s = point.s.clone();
-		result.v = point.v.clone();
+		// Copy the input point — use in-place copy to avoid allocation
+		// Ensure result has correct dimensions before copying
+		if MatrixOps::nrows(&result.u) != MatrixOps::nrows(&point.u)
+			|| MatrixOps::ncols(&result.u) != MatrixOps::ncols(&point.u)
+		{
+			result.u = <linalg::Mat<T> as MatrixOps<T>>::zeros(
+				MatrixOps::nrows(&point.u),
+				MatrixOps::ncols(&point.u),
+			);
+		}
+		if VectorOps::len(&result.s) != VectorOps::len(&point.s) {
+			result.s = <linalg::Vec<T> as VectorOps<T>>::zeros(VectorOps::len(&point.s));
+		}
+		if MatrixOps::nrows(&result.v) != MatrixOps::nrows(&point.v)
+			|| MatrixOps::ncols(&result.v) != MatrixOps::ncols(&point.v)
+		{
+			result.v = <linalg::Mat<T> as MatrixOps<T>>::zeros(
+				MatrixOps::nrows(&point.v),
+				MatrixOps::ncols(&point.v),
+			);
+		}
+		result.u.copy_from(&point.u);
+		result.s.copy_from(&point.s);
+		result.v.copy_from(&point.v);
 
 		// Project U and V onto Stiefel manifolds
 		self.project_factors(&mut result.u, &mut result.v);
@@ -545,13 +667,12 @@ where
 		_point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		// For a tangent vector at point (U,S,V), the tangent space has the form:
-		// ξ = U_perp * M * V^T + U * S_dot * V^T + U * N * V_perp^T
-		// The input vector already has this structure, so we just copy it
-		result.u_perp_m = vector.u_perp_m.clone();
-		result.s_dot = vector.s_dot.clone();
-		result.v_perp_n = vector.v_perp_n.clone();
+		// Tangent vectors already have the correct structure — copy in-place
+		result.u_perp_m.copy_from(&vector.u_perp_m);
+		result.s_dot.copy_from(&vector.s_dot);
+		result.v_perp_n.copy_from(&vector.v_perp_n);
 		Ok(())
 	}
 
@@ -560,33 +681,34 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
-		// The inner product is the Frobenius inner product of the matrix representations
-		// <u, v> = tr(u^T * v) = tr(U_perp*M_u*V^T + U*S_dot_u*V^T + U*N_u*V_perp^T)^T *
-		//                           (U_perp*M_v*V^T + U*S_dot_v*V^T + U*N_v*V_perp^T)
-		// Since U, U_perp, V, V_perp are orthogonal, this simplifies to:
-		// <u, v> = tr(M_u^T * M_v) + tr(S_dot_u * S_dot_v) + tr(N_u^T * N_v)
-
+		// <u, v> = tr(M_u^T M_v) + ⟨s_dot_u, s_dot_v⟩ + tr(N_u^T N_v)
+		// Frobenius inner product = Σ a_ij * b_ij (zero alloc)
 		let mut inner = T::zero();
 
-		// U_perp component
-		inner = inner
-			+ MatrixOps::trace(&MatrixOps::mat_mul(
-				&MatrixOps::transpose(&u.u_perp_m),
-				&v.u_perp_m,
-			));
-
-		// S component
-		for i in 0..self.k {
-			inner = inner + VectorOps::get(&u.s_dot, i) * VectorOps::get(&v.s_dot, i);
+		// U_perp component: tr(M_u^T M_v) = Σ_ij M_u[i,j] * M_v[i,j]
+		let rows_m = MatrixOps::nrows(&u.u_perp_m);
+		let cols_m = MatrixOps::ncols(&u.u_perp_m);
+		for i in 0..rows_m {
+			for j in 0..cols_m {
+				inner =
+					inner + MatrixOps::get(&u.u_perp_m, i, j) * MatrixOps::get(&v.u_perp_m, i, j);
+			}
 		}
 
-		// V_perp component
-		inner = inner
-			+ MatrixOps::trace(&MatrixOps::mat_mul(
-				&MatrixOps::transpose(&u.v_perp_n),
-				&v.v_perp_n,
-			));
+		// S component: ⟨s_dot_u, s_dot_v⟩
+		inner = inner + VectorOps::dot(&u.s_dot, &v.s_dot);
+
+		// V_perp component: tr(N_u^T N_v) = Σ_ij N_u[i,j] * N_v[i,j]
+		let rows_n = MatrixOps::nrows(&u.v_perp_n);
+		let cols_n = MatrixOps::ncols(&u.v_perp_n);
+		for i in 0..rows_n {
+			for j in 0..cols_n {
+				inner =
+					inner + MatrixOps::get(&u.v_perp_n, i, j) * MatrixOps::get(&v.v_perp_n, i, j);
+			}
+		}
 
 		Ok(inner)
 	}
@@ -596,31 +718,44 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
-		// Use the orthographic retraction for fixed-rank manifolds
-		// R_X(ξ) = (U + U_perp*M*S^{-1})(S + S_dot)(V + V_perp*N^T*S^{-1})^T
+		// Orthographic retraction: R_X(ξ) = (U + U_perp·M·S⁻¹)(S + S_dot)(V + V_perp·Nᵀ·S⁻¹)ᵀ
 
-		// Compute U_perp and V_perp
+		// compute_orthogonal_complement allocates (QR inside) — unavoidable
 		let (u_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.u);
 		let (v_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.v);
 
-		// Compute S^{-1}
-		let s_inv_vec = VectorOps::map(&point.s, |x| T::one() / x);
-		let s_inv = <linalg::Mat<T> as MatrixOps<T>>::from_diagonal(&s_inv_vec);
+		// S⁻¹ diagonal — small k×k alloc
+		let s_inv = <linalg::Mat<T> as MatrixOps<T>>::from_fn(self.k, self.k, |i, j| {
+			if i == j {
+				T::one() / VectorOps::get(&point.s, i)
+			} else {
+				T::zero()
+			}
+		});
 
-		// Update U: U_new = U + U_perp * M * S^{-1}
-		let u_perp_m_sinv = MatrixOps::mat_mul(&tangent.u_perp_m, &s_inv);
-		let u_update = MatrixOps::mat_mul(&u_perp, &u_perp_m_sinv);
-		result.u = MatrixOps::add(&point.u, &u_update);
+		// U_new = U + U_perp · M · S⁻¹  →  result.u = point.u, then += via GEMM chain
+		result.u.copy_from(&point.u);
+		// temp = M · S⁻¹  (reuse u_perp_m_sinv would alloc; use GEMM into a small buffer)
+		let mut m_sinv =
+			<linalg::Mat<T> as MatrixOps<T>>::zeros(MatrixOps::nrows(&tangent.u_perp_m), self.k);
+		m_sinv.gemm(T::one(), &tangent.u_perp_m, &s_inv, T::zero());
+		// result.u += U_perp · m_sinv
+		result.u.gemm(T::one(), &u_perp, &m_sinv, T::one());
 
-		// Update S: S_new = S + S_dot
-		result.s = VectorOps::add(&point.s, &tangent.s_dot);
+		// S_new = S + S_dot (in-place)
+		result.s.copy_from(&point.s);
+		result.s.add_assign(&tangent.s_dot);
 
-		// Update V: V_new = V + V_perp * N^T * S^{-1}
-		let vn_t = MatrixOps::transpose(&tangent.v_perp_n);
-		let vn_t_sinv = MatrixOps::mat_mul(&vn_t, &s_inv);
-		let v_update = MatrixOps::mat_mul(&v_perp, &vn_t_sinv);
-		result.v = MatrixOps::add(&point.v, &v_update);
+		// V_new = V + V_perp · Nᵀ · S⁻¹
+		result.v.copy_from(&point.v);
+		// temp = Nᵀ · S⁻¹
+		let mut nt_sinv =
+			<linalg::Mat<T> as MatrixOps<T>>::zeros(MatrixOps::ncols(&tangent.v_perp_n), self.k);
+		nt_sinv.gemm_at(T::one(), &tangent.v_perp_n, &s_inv, T::zero());
+		// result.v += V_perp · nt_sinv
+		result.v.gemm(T::one(), &v_perp, &nt_sinv, T::one());
 
 		// Project factors back to Stiefel
 		self.project_factors(&mut result.u, &mut result.v);
@@ -640,9 +775,10 @@ where
 		point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// For the canonical metric, just project to tangent space
-		self.project_tangent(point, euclidean_grad, result)
+		self.project_tangent(point, euclidean_grad, result, _ws)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
@@ -664,12 +800,12 @@ where
 			}
 		}
 
-		// Orthogonalize
+		// Orthogonalize — copy Q factor into u/v to avoid cloning
 		let qr_u = DecompositionOps::qr(&u);
-		let u_orth = qr_u.q().clone();
+		u.copy_from(qr_u.q());
 
 		let qr_v = DecompositionOps::qr(&v);
-		let v_orth = qr_v.q().clone();
+		v.copy_from(qr_v.q());
 
 		// Random positive singular values
 		let mut s = <linalg::Vec<T> as VectorOps<T>>::zeros(self.k);
@@ -678,7 +814,7 @@ where
 			*VectorOps::get_mut(&mut s, i) = <T as Scalar>::from_f64(val.abs() + 1.0);
 		}
 
-		*result = FixedRankPoint::new(u_orth, s, v_orth);
+		*result = FixedRankPoint::new(u, s, v);
 		Ok(())
 	}
 
@@ -744,38 +880,51 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// For fixed-rank manifold, we use a simple approximation
 		// The inverse of the orthographic retraction is complex, so we approximate
 		// by computing the tangent that moves in the direction of other - point
 
-		// Compute the difference in matrix form
+		// Compute the difference in matrix form: diff = other - point
 		let point_mat = point.to_matrix();
 		let other_mat = other.to_matrix();
-		let diff = MatrixOps::sub(&other_mat, &point_mat);
+		// Compute diff in-place: reuse other_mat by subtracting point_mat element-wise
+		let mut diff = other_mat;
+		for i in 0..MatrixOps::nrows(&diff) {
+			for j in 0..MatrixOps::ncols(&diff) {
+				*MatrixOps::get_mut(&mut diff, i, j) =
+					MatrixOps::get(&diff, i, j) - MatrixOps::get(&point_mat, i, j);
+			}
+		}
 
 		// Project onto the tangent space at point
-		// Compute U_perp and V_perp
 		let (u_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.u);
 		let (v_perp, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&point.v);
 
-		// Decompose the difference into tangent components
-		// M = U_perp^T * diff * V
-		let mut upt_diff = linalg::Mat::<T>::zeros(u_perp.ncols(), diff.ncols());
+		// M = U_perp^T * diff * V — use gemm_at, then gemm into result
+		let mk = MatrixOps::ncols(&u_perp);
+		let n = MatrixOps::ncols(&diff);
+		let mut upt_diff = linalg::Mat::<T>::zeros(mk, n);
 		upt_diff.gemm_at(T::one(), &u_perp, &diff, T::zero());
-		result.u_perp_m = MatrixOps::mat_mul(&upt_diff, &point.v);
+		result.u_perp_m = <linalg::Mat<T> as MatrixOps<T>>::zeros(mk, self.k);
+		result
+			.u_perp_m
+			.gemm(T::one(), &upt_diff, &point.v, T::zero());
 
-		// S_dot = diag(U^T * diff * V)
-		let mut ut_diff = linalg::Mat::<T>::zeros(self.k, diff.ncols());
+		// S_dot = diag(U^T * diff * V) — use gemm_at, then gemm into buffer
+		let mut ut_diff = linalg::Mat::<T>::zeros(self.k, n);
 		ut_diff.gemm_at(T::one(), &point.u, &diff, T::zero());
-		let s_component = MatrixOps::mat_mul(&ut_diff, &point.v);
-		// Extract diagonal
+		let mut s_component = linalg::Mat::<T>::zeros(self.k, self.k);
+		s_component.gemm(T::one(), &ut_diff, &point.v, T::zero());
 		result.s_dot = <linalg::Vec<T> as VectorOps<T>>::from_fn(self.k, |i| {
 			MatrixOps::get(&s_component, i, i)
 		});
 
-		// N = U^T * diff * V_perp
-		result.v_perp_n = MatrixOps::mat_mul(&ut_diff, &v_perp);
+		// N = U^T * diff * V_perp — reuse ut_diff
+		let nk = MatrixOps::ncols(&v_perp);
+		result.v_perp_n = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.k, nk);
+		result.v_perp_n.gemm(T::one(), &ut_diff, &v_perp, T::zero());
 
 		Ok(())
 	}
@@ -783,54 +932,30 @@ where
 	fn parallel_transport(
 		&self,
 		_from: &Self::Point,
-		to: &Self::Point,
+		_to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		// For fixed-rank manifold, parallel transport is complex
-		// We use a simple approximation: transport the tangent by adapting to the new basis
-
-		// Compute U_perp and V_perp at the destination point
-		let (_u_perp_to, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&to.u);
-		let (_v_perp_to, _) = FixedRankTangent::<T>::compute_orthogonal_complement(&to.v);
-
-		// For simplicity, we project the tangent vector's matrix representation
-		// onto the tangent space at the destination
-		// This preserves the general direction but may not be exact parallel transport
-
-		// The transported tangent has the same structure but adapted to the new point
-		result.u_perp_m = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.m - self.k, self.k);
-		result.s_dot = vector.s_dot.clone();
-		result.v_perp_n = <linalg::Mat<T> as MatrixOps<T>>::zeros(self.k, self.n - self.k);
-
-		// Fill with appropriate values (simplified transport)
-		for j in 0..self.k {
-			for i in 0..(self.m - self.k).min(MatrixOps::nrows(&vector.u_perp_m)) {
-				if i < MatrixOps::nrows(&result.u_perp_m) && j < MatrixOps::ncols(&vector.u_perp_m)
-				{
-					*MatrixOps::get_mut(&mut result.u_perp_m, i, j) =
-						MatrixOps::get(&vector.u_perp_m, i, j);
-				}
-			}
-			for i in 0..(self.n - self.k).min(MatrixOps::ncols(&vector.v_perp_n)) {
-				if j < MatrixOps::nrows(&vector.v_perp_n) && i < MatrixOps::ncols(&result.v_perp_n)
-				{
-					*MatrixOps::get_mut(&mut result.v_perp_n, j, i) =
-						MatrixOps::get(&vector.v_perp_n, j, i);
-				}
-			}
-		}
-
+		// Simplified transport: copy components in-place (zero alloc).
+		// This is an approximation — exact transport on fixed-rank is complex.
+		result.u_perp_m.copy_from(&vector.u_perp_m);
+		result.s_dot.copy_from(&vector.s_dot);
+		result.v_perp_n.copy_from(&vector.v_perp_n);
 		Ok(())
 	}
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		// Use Frobenius distance in the embedded space
+		// Frobenius distance ‖Y - X‖_F without allocating a diff matrix
 		let x_mat = x.to_matrix();
 		let y_mat = y.to_matrix();
-		let diff = MatrixOps::sub(&y_mat, &x_mat);
-
-		// Frobenius norm of the difference
-		Ok(MatrixOps::norm(&diff))
+		let mut norm_sq = T::zero();
+		for i in 0..MatrixOps::nrows(&y_mat) {
+			for j in 0..MatrixOps::ncols(&y_mat) {
+				let d = MatrixOps::get(&y_mat, i, j) - MatrixOps::get(&x_mat, i, j);
+				norm_sq = norm_sq + d * d;
+			}
+		}
+		Ok(Float::sqrt(norm_sq))
 	}
 
 	fn has_exact_exp_log(&self) -> bool {
@@ -848,11 +973,13 @@ where
 		tangent: &Self::TangentVector,
 		result: &mut Self::TangentVector,
 	) -> Result<()> {
-		// Scale each component of the tangent vector
-		result.u_perp_m = MatrixOps::scale_by(&tangent.u_perp_m, scalar);
-		result.s_dot = tangent.s_dot.clone();
+		// Copy then scale in-place (zero alloc)
+		result.u_perp_m.copy_from(&tangent.u_perp_m);
+		result.u_perp_m.scale_mut(scalar);
+		result.s_dot.copy_from(&tangent.s_dot);
 		result.s_dot.scale_mut(scalar);
-		result.v_perp_n = MatrixOps::scale_by(&tangent.v_perp_n, scalar);
+		result.v_perp_n.copy_from(&tangent.v_perp_n);
+		result.v_perp_n.scale_mut(scalar);
 		Ok(())
 	}
 
@@ -862,13 +989,14 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		// Add each component of the tangent vectors
-		result.u_perp_m = MatrixOps::add(&v1.u_perp_m, &v2.u_perp_m);
-		result.s_dot = VectorOps::add(&v1.s_dot, &v2.s_dot);
-		result.v_perp_n = MatrixOps::add(&v1.v_perp_n, &v2.v_perp_n);
+		// Copy v1 then add v2 in-place (zero alloc)
+		result.u_perp_m.copy_from(&v1.u_perp_m);
+		result.u_perp_m.add_assign(&v2.u_perp_m);
+		result.s_dot.copy_from(&v1.s_dot);
+		result.s_dot.add_assign(&v2.s_dot);
+		result.v_perp_n.copy_from(&v1.v_perp_n);
+		result.v_perp_n.add_assign(&v2.v_perp_n);
 		Ok(())
 	}
 }

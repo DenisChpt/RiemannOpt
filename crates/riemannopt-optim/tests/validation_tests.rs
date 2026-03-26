@@ -1160,7 +1160,7 @@ mod manifold_geometry {
 			let y = sphere.exp_map(&x, &v_small).unwrap();
 
 			let u = sphere.random_tangent(&x).unwrap();
-			let transported = sphere.parallel_transport(&x, &y, &u).unwrap();
+			let transported = sphere.parallel_transport(&x, &y, &u, &mut ()).unwrap();
 
 			let norm_before = u.norm();
 			let norm_after = transported.norm();
@@ -1196,8 +1196,8 @@ mod manifold_geometry {
 			v_small.scale_mut(0.3);
 			let y = sphere.exp_map(&x, &v_small).unwrap();
 
-			let u_t = sphere.parallel_transport(&x, &y, &u).unwrap();
-			let w_t = sphere.parallel_transport(&x, &y, &w).unwrap();
+			let u_t = sphere.parallel_transport(&x, &y, &u, &mut ()).unwrap();
+			let w_t = sphere.parallel_transport(&x, &y, &w, &mut ()).unwrap();
 
 			let ip_before = u.dot(&w);
 			let ip_after = u_t.dot(&w_t);
@@ -1226,7 +1226,7 @@ mod manifold_geometry {
 			for &scale in &[0.01, 0.1, 0.5, 1.0] {
 				let v_scaled = v.scale_by(scale);
 				let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(6, 3);
-				st.retract(&x, &v_scaled, &mut y).unwrap();
+				st.retract(&x, &v_scaled, &mut y, &mut ()).unwrap();
 
 				let yty = MatrixOps::transpose(&y).mat_mul(&y);
 				let eye = <linalg::Mat<f64> as MatrixOps<f64>>::identity(3);
@@ -1279,7 +1279,7 @@ mod manifold_geometry {
 		let x: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
 		let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.3, 0.4, 0.5]);
 		let mut y: linalg::Vec<f64> = VectorOps::zeros(5);
-		eucl.retract(&x, &v, &mut y).unwrap();
+		eucl.retract(&x, &v, &mut y, &mut ()).unwrap();
 		let expected_y = x.add(&v);
 		assert!(
 			y.sub(&expected_y).norm() < 1e-15,
@@ -1289,7 +1289,7 @@ mod manifold_geometry {
 		// Parallel transport = identity
 		let z: linalg::Vec<f64> = VectorOps::from_slice(&[5.0, 4.0, 3.0, 2.0, 1.0]);
 		let mut transported: linalg::Vec<f64> = VectorOps::zeros(5);
-		eucl.parallel_transport(&x, &z, &v, &mut transported)
+		eucl.parallel_transport(&x, &z, &v, &mut transported, &mut ())
 			.unwrap();
 		assert!(
 			transported.sub(&v).norm() < 1e-15,
@@ -1444,7 +1444,7 @@ mod numerical_precision {
 
 			let mut rgrad: linalg::Vec<f64> = VectorOps::zeros(10);
 			sphere
-				.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad)
+				.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad, &mut ())
 				.unwrap();
 
 			// Riemannian gradient must be tangent: <x, rgrad> = 0

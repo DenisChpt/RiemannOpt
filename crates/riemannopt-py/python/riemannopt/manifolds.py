@@ -29,6 +29,9 @@ Hyperbolic = _m.Hyperbolic
 Oblique = _m.Oblique
 PSDCone = _m.PSDCone
 ProductManifold = _m.ProductManifold
+FixedRank = _m.FixedRank
+FixedRankPoint = _m.FixedRankPoint
+FixedRankTangent = _m.FixedRankTangent
 
 __all__ = [
     "Sphere",
@@ -40,4 +43,7 @@ __all__ = [
     "Oblique",
     "PSDCone",
     "ProductManifold",
+    "FixedRank",
+    "FixedRankPoint",
+    "FixedRankTangent",
 ]
