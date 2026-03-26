@@ -59,7 +59,7 @@ pub use trust_region::PyTrustRegion;
 ///
 /// Returns
 /// -------
-/// optimizer : PyObject
+/// optimizer : Py<PyAny>
 ///     The initialized optimizer instance
 #[pyfunction]
 #[pyo3(signature = (optimizer_name, **kwargs))]
@@ -67,7 +67,7 @@ pub fn create_optimizer(
 	py: Python<'_>,
 	optimizer_name: &str,
 	kwargs: Option<&Bound<'_, PyDict>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
 	// Normalize optimizer name (case-insensitive)
 	let normalized = match optimizer_name.to_lowercase().as_str() {
         "sgd" => "SGD",
@@ -98,7 +98,7 @@ pub fn create_optimizer(
 					opt.momentum = m.extract()?;
 				}
 			}
-			Ok(opt.into_py(py))
+			Ok(opt.into_pyobject(py).unwrap().into_any().unbind())
 		}
 		"Adam" => {
 			let mut opt = PyAdam {
@@ -146,7 +146,7 @@ pub fn create_optimizer(
 					"epsilon must be positive",
 				));
 			}
-			Ok(opt.into_py(py))
+			Ok(opt.into_pyobject(py).unwrap().into_any().unbind())
 		}
 		"LBFGS" => {
 			let mut opt = PyLBFGS {
@@ -199,7 +199,7 @@ pub fn create_optimizer(
 					"initial_step_size must be positive",
 				));
 			}
-			Ok(opt.into_py(py))
+			Ok(opt.into_pyobject(py).unwrap().into_any().unbind())
 		}
 		"ConjugateGradient" => {
 			let mut opt = PyConjugateGradient {
@@ -243,7 +243,7 @@ pub fn create_optimizer(
                     format!("Unknown CG method: {}. Available: FletcherReeves, PolakRibiere, HestenesStiefel, DaiYuan", opt.method)
                 ));
 			}
-			Ok(opt.into_py(py))
+			Ok(opt.into_pyobject(py).unwrap().into_any().unbind())
 		}
 		"TrustRegion" => {
 			let mut opt = PyTrustRegion {
@@ -289,7 +289,7 @@ pub fn create_optimizer(
 					"max_radius must be greater than initial_radius",
 				));
 			}
-			Ok(opt.into_py(py))
+			Ok(opt.into_pyobject(py).unwrap().into_any().unbind())
 		}
 		"Newton" => {
 			let mut opt = PyNewton {
@@ -340,7 +340,7 @@ pub fn create_optimizer(
 					"beta must be in (0, 1)",
 				));
 			}
-			Ok(opt.into_py(py))
+			Ok(opt.into_pyobject(py).unwrap().into_any().unbind())
 		}
 		"NaturalGradient" => {
 			let mut opt = PyNaturalGradient {
@@ -379,7 +379,7 @@ pub fn create_optimizer(
 					"momentum must be in [0, 1)",
 				));
 			}
-			Ok(opt.into_py(py))
+			Ok(opt.into_pyobject(py).unwrap().into_any().unbind())
 		}
 		_ => unreachable!(),
 	}
@@ -420,12 +420,12 @@ pub fn create_optimizer(
 pub fn optimize(
 	py: Python<'_>,
 	cost_function: PyRef<'_, crate::py_cost::PyCostFunction>,
-	manifold: PyObject,
-	initial_point: PyObject,
+	manifold: Py<PyAny>,
+	initial_point: Py<PyAny>,
 	optimizer: &str,
 	max_iterations: usize,
 	gradient_tolerance: f64,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
 	// Create optimizer using the centralized function
 	let opt_obj = create_optimizer(py, optimizer, None)?;
 

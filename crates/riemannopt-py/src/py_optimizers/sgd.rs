@@ -140,7 +140,7 @@ impl PySGD {
     
     /// Get optimizer configuration as a dictionary.
     #[getter]
-    fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn config(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         dict.set_item("learning_rate", self.learning_rate)?;
         dict.set_item("momentum", self.momentum)?;
@@ -194,16 +194,16 @@ impl PySGD {
     pub fn optimize(
         &mut self,
         py: Python<'_>,
-        cost_function: PyObject,
-        manifold: PyObject,
-        initial_point: PyObject,
+        cost_function: Py<PyAny>,
+        manifold: Py<PyAny>,
+        initial_point: Py<PyAny>,
         max_iterations: usize,
         gradient_tolerance: f64,
         function_tolerance: f64,
         point_tolerance: f64,
         max_time: Option<f64>,
         target_value: Option<f64>,
-        callback: Option<PyObject>,
+        callback: Option<Py<PyAny>>,
     ) -> PyResult<PyOptimizationResult> {
         // Validate configuration
         self.validate_config()?;
@@ -300,7 +300,7 @@ impl PySGD {
         optimizer: &mut SGD<f64>,
         cost_fn: PyRef<'_, PyCostFunction>,
         sphere: &PySphere,
-        initial_point: PyObject,
+        initial_point: Py<PyAny>,
         criterion: &StoppingCriterion<f64>,
     ) -> PyResult<PyOptimizationResult> {
         // Convert initial point
@@ -314,7 +314,7 @@ impl PySGD {
         let cost_fn_adapter = crate::py_cost::PyCostFunctionSphere::new(&*cost_fn);
         
         // Run optimization with GIL released for better performance
-        let result = py.allow_threads(|| {
+        let result = py.detach(|| {
             optimizer.optimize(&cost_fn_adapter, manifold, &x0, criterion)
         }).map_err(to_py_err)?;
         
@@ -331,7 +331,7 @@ impl PySGD {
         optimizer: &mut SGD<f64>,
         cost_fn: PyRef<'_, PyCostFunction>,
         stiefel: &PyStiefel,
-        initial_point: PyObject,
+        initial_point: Py<PyAny>,
         criterion: &StoppingCriterion<f64>,
     ) -> PyResult<PyOptimizationResult> {
         // Convert initial point
@@ -345,7 +345,7 @@ impl PySGD {
         let cost_fn_adapter = crate::py_cost::PyCostFunctionStiefel::new(&*cost_fn);
         
         // Run optimization with GIL released for better performance
-        let result = py.allow_threads(|| {
+        let result = py.detach(|| {
             optimizer.optimize(&cost_fn_adapter, manifold, &x0, criterion)
         }).map_err(to_py_err)?;
         

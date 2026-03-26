@@ -67,17 +67,17 @@ use crate::{
 #[derive()]
 pub struct PyProductManifold {
 	/// Component manifolds (stored as Python objects)
-	manifolds: Vec<PyObject>,
+	manifolds: Vec<Py<PyAny>>,
 	/// Total dimension
 	total_dim: usize,
 	/// Total ambient dimension
 	total_ambient_dim: usize,
 }
 
-// Manual Clone implementation for PyObject handling
+// Manual Clone implementation for Py<PyAny> handling
 impl Clone for PyProductManifold {
 	fn clone(&self) -> Self {
-		Python::with_gil(|py| PyProductManifold {
+		Python::attach(|py| PyProductManifold {
 			manifolds: self.manifolds.iter().map(|obj| obj.clone_ref(py)).collect(),
 			total_dim: self.total_dim,
 			total_ambient_dim: self.total_ambient_dim,
@@ -173,7 +173,7 @@ impl PyProductManifold {
 
 	/// Get the component manifolds.
 	#[getter]
-	fn manifolds(&self, py: Python<'_>) -> PyResult<PyObject> {
+	fn manifolds(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 		Ok(PyList::new(py, &self.manifolds)?.into())
 	}
 
@@ -195,7 +195,7 @@ impl PyProductManifold {
 	/// Returns:
 	///     bool: True if all components are on their manifolds
 	#[pyo3(signature = (point, atol=1e-10))]
-	fn contains(&self, py: Python<'_>, point: PyObject, atol: f64) -> PyResult<bool> {
+	fn contains(&self, py: Python<'_>, point: Py<PyAny>, atol: f64) -> PyResult<bool> {
 		let tuple = point.downcast_bound::<PyTuple>(py)?;
 
 		if tuple.len() != self.manifolds.len() {
@@ -226,7 +226,7 @@ impl PyProductManifold {
 	/// -------
 	/// tuple
 	///     Tuple of random points, one from each component manifold
-	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+	pub fn random_point<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
 		let components = self
 			.manifolds
 			.iter()
@@ -249,7 +249,7 @@ impl PyProductManifold {
 	/// -------
 	/// tuple
 	///     Tuple of projected points
-	pub fn project<'py>(&self, py: Python<'py>, point: PyObject) -> PyResult<PyObject> {
+	pub fn project<'py>(&self, py: Python<'py>, point: Py<PyAny>) -> PyResult<Py<PyAny>> {
 		let tuple = point.downcast_bound::<PyTuple>(py)?;
 
 		if tuple.len() != self.manifolds.len() {
@@ -284,9 +284,9 @@ impl PyProductManifold {
 	pub fn exp<'py>(
 		&self,
 		py: Python<'py>,
-		point: PyObject,
-		tangent: PyObject,
-	) -> PyResult<PyObject> {
+		point: Py<PyAny>,
+		tangent: Py<PyAny>,
+	) -> PyResult<Py<PyAny>> {
 		let point_tuple = point.downcast_bound::<PyTuple>(py)?;
 		let tangent_tuple = tangent.downcast_bound::<PyTuple>(py)?;
 
@@ -319,7 +319,7 @@ impl PyProductManifold {
 	/// -------
 	/// tuple
 	///     Random tangent vector (tuple of tangent vectors)
-	pub fn random_tangent<'py>(&self, py: Python<'py>, point: PyObject) -> PyResult<PyObject> {
+	pub fn random_tangent<'py>(&self, py: Python<'py>, point: Py<PyAny>) -> PyResult<Py<PyAny>> {
 		let point_tuple = point.downcast_bound::<PyTuple>(py)?;
 
 		if point_tuple.len() != self.manifolds.len() {
@@ -357,9 +357,9 @@ impl PyProductManifold {
 	pub fn project_tangent<'py>(
 		&self,
 		py: Python<'py>,
-		point: PyObject,
-		vector: PyObject,
-	) -> PyResult<PyObject> {
+		point: Py<PyAny>,
+		vector: Py<PyAny>,
+	) -> PyResult<Py<PyAny>> {
 		let point_tuple = point.downcast_bound::<PyTuple>(py)?;
 		let vector_tuple = vector.downcast_bound::<PyTuple>(py)?;
 
@@ -398,9 +398,9 @@ impl PyProductManifold {
 	pub fn retract<'py>(
 		&self,
 		py: Python<'py>,
-		point: PyObject,
-		tangent: PyObject,
-	) -> PyResult<PyObject> {
+		point: Py<PyAny>,
+		tangent: Py<PyAny>,
+	) -> PyResult<Py<PyAny>> {
 		let point_tuple = point.downcast_bound::<PyTuple>(py)?;
 		let tangent_tuple = tangent.downcast_bound::<PyTuple>(py)?;
 
@@ -442,9 +442,9 @@ impl PyProductManifold {
 	pub fn inner<'py>(
 		&self,
 		py: Python<'py>,
-		point: PyObject,
-		u: PyObject,
-		v: PyObject,
+		point: Py<PyAny>,
+		u: Py<PyAny>,
+		v: Py<PyAny>,
 	) -> PyResult<f64> {
 		let point_tuple = point.downcast_bound::<PyTuple>(py)?;
 		let u_tuple = u.downcast_bound::<PyTuple>(py)?;
@@ -489,7 +489,7 @@ impl PyProductManifold {
 	/// -------
 	/// float
 	///     Norm of the tangent vector
-	pub fn norm<'py>(&self, py: Python<'py>, point: PyObject, tangent: PyObject) -> PyResult<f64> {
+	pub fn norm<'py>(&self, py: Python<'py>, point: Py<PyAny>, tangent: Py<PyAny>) -> PyResult<f64> {
 		let inner_product = self.inner(py, point.clone_ref(py), tangent.clone_ref(py), tangent)?;
 		Ok(inner_product.sqrt())
 	}
@@ -509,7 +509,7 @@ impl PyProductManifold {
 	/// -------
 	/// float
 	///     Distance between x and y
-	pub fn dist<'py>(&self, py: Python<'py>, x: PyObject, y: PyObject) -> PyResult<f64> {
+	pub fn dist<'py>(&self, py: Python<'py>, x: Py<PyAny>, y: Py<PyAny>) -> PyResult<f64> {
 		let x_tuple = x.downcast_bound::<PyTuple>(py)?;
 		let y_tuple = y.downcast_bound::<PyTuple>(py)?;
 
@@ -582,7 +582,7 @@ impl PyProductManifold {
 	}
 
 	/// Convert a concatenated vector to a tuple of component points
-	fn vector_to_tuple(&self, py: Python<'_>, vector: &Vec64) -> PyResult<PyObject> {
+	fn vector_to_tuple(&self, py: Python<'_>, vector: &Vec64) -> PyResult<Py<PyAny>> {
 		if vector.len() != self.total_ambient_dim {
 			return Err(dimension_mismatch(
 				&[self.total_ambient_dim],
@@ -590,7 +590,7 @@ impl PyProductManifold {
 			));
 		}
 
-		let mut components: Vec<PyObject> = Vec::new();
+		let mut components: Vec<Py<PyAny>> = Vec::new();
 		let mut offset = 0;
 
 		for manifold in &self.manifolds {

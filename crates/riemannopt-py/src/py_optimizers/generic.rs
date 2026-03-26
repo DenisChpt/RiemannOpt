@@ -36,7 +36,7 @@ pub enum ManifoldKind<'py> {
 
 impl<'py> ManifoldKind<'py> {
 	/// Try to extract a manifold from a Python object.
-	pub fn extract(py: Python<'py>, obj: &'py PyObject) -> PyResult<Self> {
+	pub fn extract(py: Python<'py>, obj: &'py Py<PyAny>) -> PyResult<Self> {
 		if let Ok(m) = obj.extract::<PyRef<PySphere>>(py) {
 			return Ok(Self::Sphere(m));
 		}
@@ -75,16 +75,16 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 	optimizer: &mut O,
 	py: Python<'_>,
 	cost_function: PyRef<'_, PyCostFunction>,
-	manifold: PyObject,
-	initial_point: PyObject,
+	manifold: Py<PyAny>,
+	initial_point: Py<PyAny>,
 	max_iterations: usize,
 	gradient_tolerance: Option<f64>,
 	function_tolerance: Option<f64>,
 	point_tolerance: Option<f64>,
-	_callback: Option<PyObject>, // For future use
+	_callback: Option<Py<PyAny>>, // For future use
 	_target_value: Option<f64>,  // For future use
 	_max_time: Option<f64>,      // For future use
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
 	use numpy::{PyArray1, PyArray2, PyArrayMethods};
 
 	let kind = ManifoldKind::extract(py, &manifold)?;
@@ -109,7 +109,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::Stiefel(stiefel) => {
 			let arr = initial_point
@@ -130,7 +130,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::Grassmann(grassmann) => {
 			let arr = initial_point
@@ -151,7 +151,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::SPD(spd) => {
 			let arr = initial_point
@@ -172,7 +172,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::Hyperbolic(hyperbolic) => {
 			let arr = initial_point
@@ -193,7 +193,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::Oblique(oblique) => {
 			let arr = initial_point
@@ -214,7 +214,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::PSDCone(psd_cone) => {
 			let arr = initial_point
@@ -235,7 +235,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::Euclidean(euclidean) => {
 			let arr = initial_point
@@ -256,7 +256,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 		ManifoldKind::FixedRank(fixed_rank) => {
 			let arr = initial_point
@@ -277,7 +277,7 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 					function_tolerance,
 					point_tolerance,
 				)
-				.map(|r| r.into_py(py))
+				.map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
 		}
 	}
 }
@@ -420,12 +420,12 @@ pub trait PyOptimizerGeneric {
 	fn try_native_optimize(
 		&mut self,
 		py: Python<'_>,
-		cost_function: &PyObject,
-		manifold: &PyObject,
-		initial_point: &PyObject,
+		cost_function: &Py<PyAny>,
+		manifold: &Py<PyAny>,
+		initial_point: &Py<PyAny>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
-	) -> PyResult<Option<PyObject>>;
+	) -> PyResult<Option<Py<PyAny>>>;
 }
 
 /// Macro to generate optimize methods for all manifolds
@@ -442,14 +442,14 @@ macro_rules! impl_optimizer_methods {
             pub fn optimize(
                 &mut self,
                 py: Python<'_>,
-                cost_function: PyObject,
-                manifold: PyObject,
-                initial_point: PyObject,
+                cost_function: Py<PyAny>,
+                manifold: Py<PyAny>,
+                initial_point: Py<PyAny>,
                 max_iterations: usize,
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 use crate::py_optimizers::generic::optimize_dispatcher;
 
                 // Try native cost functions first (pure Rust, no GIL overhead)
@@ -491,11 +491,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_sphere_impl(
                     py, &*cost_function, &*sphere, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
 
             /// Optimize on a Stiefel manifold
@@ -510,11 +510,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_stiefel_impl(
                     py, &*cost_function, &*stiefel, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
             /// Optimize on a Grassmann manifold
             #[pyo3(signature = (cost_function, grassmann, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
@@ -528,11 +528,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_grassmann_impl(
                     py, &*cost_function, &*grassmann, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
 
             /// Optimize on an SPD manifold
@@ -547,11 +547,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_spd_impl(
                     py, &*cost_function, &*spd, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
 
             /// Optimize on a Hyperbolic manifold
@@ -566,11 +566,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_hyperbolic_impl(
                     py, &*cost_function, &*hyperbolic, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
 
             /// Optimize on an Oblique manifold
@@ -585,11 +585,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_oblique_impl(
                     py, &*cost_function, &*oblique, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
 
             /// Optimize on a FixedRank manifold
@@ -604,11 +604,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_fixed_rank_impl(
                     py, &*cost_function, &*fixed_rank, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
 
             /// Optimize on a PSDCone manifold
@@ -623,11 +623,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_psd_cone_impl(
                     py, &*cost_function, &*psd_cone, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
 
             /// Optimize on a Euclidean manifold
@@ -642,11 +642,11 @@ macro_rules! impl_optimizer_methods {
                 gradient_tolerance: Option<f64>,
                 function_tolerance: Option<f64>,
                 point_tolerance: Option<f64>,
-            ) -> PyResult<PyObject> {
+            ) -> PyResult<Py<PyAny>> {
                 self.optimize_euclidean_impl(
                     py, &*cost_function, &*euclidean, initial_point,
                     max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-                ).map(|r| r.into_py(py))
+                ).map(|r| { let bound = r.into_pyobject(py).unwrap(); bound.into_any().unbind() })
             }
     };
 }
@@ -686,7 +686,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionSphere::new(cost_function);
 
 				let result = py
-					.allow_threads(|| optimizer.optimize(&cost_fn, &sphere.inner, &x0, &criterion))
+					.detach(|| optimizer.optimize(&cost_fn, &sphere.inner, &x0, &criterion))
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
@@ -725,7 +725,7 @@ macro_rules! impl_optimizer_generic_default {
 				// Note: CachedDynamicCostFunction only works with DVector types, not DMatrix
 
 				let result = py
-					.allow_threads(|| optimizer.optimize(&cost_fn, &stiefel.inner, &x0, &criterion))
+					.detach(|| optimizer.optimize(&cost_fn, &stiefel.inner, &x0, &criterion))
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
@@ -763,7 +763,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionMatrix::new(cost_function);
 
 				let result = py
-					.allow_threads(|| {
+					.detach(|| {
 						optimizer.optimize(&cost_fn, &grassmann.inner, &x0, &criterion)
 					})
 					.map_err(to_py_err)?;
@@ -803,7 +803,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionMatrix::new(cost_function);
 
 				let result = py
-					.allow_threads(|| optimizer.optimize(&cost_fn, &spd.inner, &x0, &criterion))
+					.detach(|| optimizer.optimize(&cost_fn, &spd.inner, &x0, &criterion))
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
@@ -841,7 +841,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionVector::new(cost_function);
 
 				let result = py
-					.allow_threads(|| {
+					.detach(|| {
 						optimizer.optimize(&cost_fn, &hyperbolic.inner, &x0, &criterion)
 					})
 					.map_err(to_py_err)?;
@@ -881,7 +881,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionMatrix::new(cost_function);
 
 				let result = py
-					.allow_threads(|| optimizer.optimize(&cost_fn, &oblique.inner, &x0, &criterion))
+					.detach(|| optimizer.optimize(&cost_fn, &oblique.inner, &x0, &criterion))
 					.map_err(to_py_err)?;
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
@@ -918,7 +918,7 @@ macro_rules! impl_optimizer_generic_default {
 			//     let mut optimizer = <$rust_optimizer>::new(config);
 			//     let cost_fn = PyCostFunctionMatrix::new(cost_function);
 			//
-			//     let result = py.allow_threads(|| {
+			//     let result = py.detach(|| {
 			//         optimizer.optimize(&cost_fn, &fixed_rank.inner, &x0, &criterion)
 			//     }).map_err(to_py_err)?;
 			//
@@ -961,7 +961,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionPSDCone::new(cost_function, psd_cone.n);
 
 				let result = py
-					.allow_threads(|| {
+					.detach(|| {
 						optimizer.optimize(&cost_fn, &psd_cone.inner, &x0, &criterion)
 					})
 					.map_err(to_py_err)?;
@@ -1004,7 +1004,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionVector::new(cost_function);
 
 				let result = py
-					.allow_threads(|| {
+					.detach(|| {
 						optimizer.optimize(&cost_fn, &euclidean.inner, &x0, &criterion)
 					})
 					.map_err(to_py_err)?;
@@ -1048,7 +1048,7 @@ macro_rules! impl_optimizer_generic_default {
 				let cost_fn = PyCostFunctionFixedRank::new(cost_function);
 
 				let result = py
-					.allow_threads(|| {
+					.detach(|| {
 						optimizer.optimize(&cost_fn, &fixed_rank.inner, &x0, &criterion)
 					})
 					.map_err(to_py_err)?;
@@ -1063,12 +1063,12 @@ macro_rules! impl_optimizer_generic_default {
 			fn try_native_optimize(
 				&mut self,
 				py: Python<'_>,
-				cost_function: &PyObject,
-				manifold: &PyObject,
-				initial_point: &PyObject,
+				cost_function: &Py<PyAny>,
+				manifold: &Py<PyAny>,
+				initial_point: &Py<PyAny>,
 				max_iterations: usize,
 				gradient_tolerance: Option<f64>,
-			) -> PyResult<Option<PyObject>> {
+			) -> PyResult<Option<Py<PyAny>>> {
 				use crate::native_cost::*;
 				use crate::py_optimizers::generic::ManifoldKind;
 				use numpy::{PyArray1, PyArray2, PyArrayMethods};
@@ -1092,7 +1092,7 @@ macro_rules! impl_optimizer_generic_default {
 						let x0 = $x0;
 						let manifold_ref = $manifold_inner;
 						let result = py
-							.allow_threads(|| {
+							.detach(|| {
 								optimizer.optimize(&cost_fn, manifold_ref, &x0, &criterion)
 							})
 							.map_err(to_py_err)?;
@@ -1100,7 +1100,7 @@ macro_rules! impl_optimizer_generic_default {
 							PyOptimizationResult::from_rust_result(py, result, |point| {
 								Ok(vec_to_numpy(py, point)?.into())
 							})?;
-						return Ok(Some(py_result.into_py(py)));
+						return Ok(Some(Py::new(py, py_result)?.into_any()));
 					}};
 				}
 
@@ -1112,7 +1112,7 @@ macro_rules! impl_optimizer_generic_default {
 						let x0 = $x0;
 						let manifold_ref = $manifold_inner;
 						let result = py
-							.allow_threads(|| {
+							.detach(|| {
 								optimizer.optimize(&cost_fn, manifold_ref, &x0, &criterion)
 							})
 							.map_err(to_py_err)?;
@@ -1120,7 +1120,7 @@ macro_rules! impl_optimizer_generic_default {
 							PyOptimizationResult::from_rust_result(py, result, |point| {
 								Ok(mat_to_numpy(py, point)?.into())
 							})?;
-						return Ok(Some(py_result.into_py(py)));
+						return Ok(Some(Py::new(py, py_result)?.into_any()));
 					}};
 				}
 

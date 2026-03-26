@@ -5,7 +5,7 @@
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use riemannopt_core::linalg::VectorOps;
+use riemannopt_core::linalg::{VectorOps, VectorView};
 
 use crate::array_utils::{Mat64, Vec64};
 

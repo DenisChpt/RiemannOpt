@@ -5,7 +5,7 @@
 
 use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
-use riemannopt_core::linalg::VectorOps;
+use riemannopt_core::linalg::VectorView;
 
 use crate::types::PyPoint;
 
@@ -106,7 +106,7 @@ macro_rules! impl_py_manifold_methods {
 		/// Returns:
 		///     bool: True if point is on manifold
 		#[pyo3(signature = (point, atol=1e-10))]
-		fn contains(&self, py: Python<'_>, point: PyObject, atol: f64) -> PyResult<bool> {
+		fn contains(&self, py: Python<'_>, point: Py<PyAny>, atol: f64) -> PyResult<bool> {
 			let point = self.parse_point(py, point)?;
 			self.validate_point_shape(&point)?;
 
@@ -129,8 +129,8 @@ macro_rules! impl_py_manifold_methods {
 		fn is_tangent(
 			&self,
 			py: Python<'_>,
-			point: PyObject,
-			vector: PyObject,
+			point: Py<PyAny>,
+			vector: Py<PyAny>,
 			atol: f64,
 		) -> PyResult<bool> {
 			let point = self.parse_point(py, point)?;
@@ -151,7 +151,7 @@ macro_rules! impl_py_manifold_methods {
 }
 
 /// Utility function to convert Python array to PyPoint.
-pub fn array_to_point(py: Python<'_>, array: PyObject) -> PyResult<PyPoint> {
+pub fn array_to_point(py: Python<'_>, array: Py<PyAny>) -> PyResult<PyPoint> {
 	if let Ok(array_1d) = array.downcast_bound::<PyArray1<f64>>(py) {
 		PyPoint::from_numpy_1d(array_1d.readonly())
 	} else if let Ok(array_2d) = array.downcast_bound::<PyArray2<f64>>(py) {

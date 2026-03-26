@@ -50,7 +50,7 @@ pub struct PyCallbackInfo {
 
 	/// Optimizer-specific information as a dictionary
 	#[pyo3(get)]
-	pub extra_info: Option<PyObject>,
+	pub extra_info: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -78,7 +78,7 @@ impl PyCallbackInfo {
 	/// Get the current point (if available)
 	/// Returns None if point tracking is disabled for memory efficiency
 	#[getter]
-	fn point(&self, _py: Python<'_>) -> Option<PyObject> {
+	fn point(&self, _py: Python<'_>) -> Option<Py<PyAny>> {
 		// This will be populated by the optimizer if point tracking is enabled
 		None
 	}
@@ -86,14 +86,14 @@ impl PyCallbackInfo {
 	/// Get the current gradient (if available)
 	/// Returns None if gradient tracking is disabled
 	#[getter]
-	fn gradient(&self, _py: Python<'_>) -> Option<PyObject> {
+	fn gradient(&self, _py: Python<'_>) -> Option<Py<PyAny>> {
 		// This will be populated by the optimizer if gradient tracking is enabled
 		None
 	}
 
 	/// Get the search direction (if available)
 	#[getter]
-	fn search_direction(&self, _py: Python<'_>) -> Option<PyObject> {
+	fn search_direction(&self, _py: Python<'_>) -> Option<Py<PyAny>> {
 		// This will be populated by the optimizer if available
 		None
 	}

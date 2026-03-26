@@ -152,7 +152,7 @@ impl PyGrassmann {
 	/// Returns:
 	///     bool: True if point is on manifold
 	#[pyo3(signature = (point, atol=1e-10))]
-	fn contains(&self, py: Python<'_>, point: PyObject, atol: f64) -> PyResult<bool> {
+	fn contains(&self, py: Python<'_>, point: Py<PyAny>, atol: f64) -> PyResult<bool> {
 		let point = self.parse_point(py, point)?;
 		self.validate_point_shape(&point)?;
 
@@ -175,8 +175,8 @@ impl PyGrassmann {
 	fn is_tangent(
 		&self,
 		py: Python<'_>,
-		point: PyObject,
-		vector: PyObject,
+		point: Py<PyAny>,
+		vector: Py<PyAny>,
 		atol: f64,
 	) -> PyResult<bool> {
 		let point = self.parse_point(py, point)?;
@@ -623,7 +623,7 @@ impl PyGrassmann {
 
 // Internal methods for trait implementation
 impl PyGrassmann {
-	fn parse_point(&self, py: Python<'_>, obj: PyObject) -> PyResult<PyPoint> {
+	fn parse_point(&self, py: Python<'_>, obj: Py<PyAny>) -> PyResult<PyPoint> {
 		super::base::array_to_point(py, obj)
 	}
 

@@ -4,7 +4,7 @@
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use riemannopt_core::linalg::{MatrixOps, VectorOps};
+use riemannopt_core::linalg::{MatrixOps, VectorView};
 use riemannopt_core::manifold::Manifold;
 use riemannopt_manifolds::fixed_rank::{FixedRank, FixedRankPoint, FixedRankTangent};
 
