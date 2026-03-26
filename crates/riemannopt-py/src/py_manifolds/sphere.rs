@@ -168,7 +168,7 @@ impl PySphere {
 
 		let mut result: Vec64 = VectorOps::zeros(self.dimension);
 		self.inner
-			.inverse_retract(&point_vec, &other_vec, &mut result)
+			.inverse_retract(&point_vec, &other_vec, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)
@@ -204,7 +204,7 @@ impl PySphere {
 		let mut result: Vec64 = VectorOps::zeros(self.dimension);
 
 		self.inner
-			.retract(&point_vec, &tangent_vec, &mut result)
+			.retract(&point_vec, &tangent_vec, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)
@@ -238,7 +238,7 @@ impl PySphere {
 		let mut result: Vec64 = VectorOps::zeros(self.dimension);
 
 		self.inner
-			.project_tangent(&point_vec, &vector_vec, &mut result)
+			.project_tangent(&point_vec, &vector_vec, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)
@@ -276,7 +276,7 @@ impl PySphere {
 		}
 
 		self.inner
-			.inner_product(&point_vec, &u_vec, &v_vec)
+			.inner_product(&point_vec, &u_vec, &v_vec, &mut ())
 			.map_err(to_py_err)
 	}
 
@@ -307,7 +307,7 @@ impl PySphere {
 
 		Ok(self
 			.inner
-			.norm(&point_vec, &tangent_vec)
+			.norm(&point_vec, &tangent_vec, &mut ())
 			.map_err(to_py_err)?)
 	}
 
@@ -417,7 +417,7 @@ impl PySphere {
 
 		let result = self
 			.inner
-			.parallel_transport(&from_vec, &to_vec, &tangent_vec)
+			.parallel_transport(&from_vec, &to_vec, &tangent_vec, &mut ())
 			.map_err(to_py_err)?;
 
 		vec_to_numpy(py, &result)

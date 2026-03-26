@@ -229,7 +229,7 @@ impl PyEuclidean {
 		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
-			.project_tangent(&point, &vector, &mut result)
+			.project_tangent(&point, &vector, &mut result, &mut ())
 			.map_err(|e| PyValueError::new_err(format!("Projection failed: {}", e)))?;
 
 		vec_to_numpy(py, &result)
@@ -288,7 +288,7 @@ impl PyEuclidean {
 		let v = numpy_to_vec(v)?;
 
 		self.inner
-			.inner_product(&point, &u, &v)
+			.inner_product(&point, &u, &v, &mut ())
 			.map_err(|e| PyValueError::new_err(format!("Inner product failed: {}", e)))
 	}
 
@@ -333,7 +333,7 @@ impl PyEuclidean {
 		let vector = numpy_to_vec(vector)?;
 
 		self.inner
-			.norm(&point, &vector)
+			.norm(&point, &vector, &mut ())
 			.map_err(|e| PyValueError::new_err(format!("Norm computation failed: {}", e)))
 	}
 
@@ -380,7 +380,7 @@ impl PyEuclidean {
 		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
-			.retract(&point, &tangent, &mut result)
+			.retract(&point, &tangent, &mut result, &mut ())
 			.map_err(|e| PyValueError::new_err(format!("Retraction failed: {}", e)))?;
 
 		vec_to_numpy(py, &result)
@@ -429,7 +429,7 @@ impl PyEuclidean {
 		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
-			.inverse_retract(&point, &other, &mut result)
+			.inverse_retract(&point, &other, &mut result, &mut ())
 			.map_err(|e| PyValueError::new_err(format!("Inverse retraction failed: {}", e)))?;
 
 		vec_to_numpy(py, &result)
@@ -478,7 +478,7 @@ impl PyEuclidean {
 		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
-			.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut result)
+			.euclidean_to_riemannian_gradient(&point, &euclidean_grad, &mut result, &mut ())
 			.map_err(|e| PyValueError::new_err(format!("Gradient conversion failed: {}", e)))?;
 
 		vec_to_numpy(py, &result)
@@ -539,7 +539,7 @@ impl PyEuclidean {
 		let mut result: Vec64 = VectorOps::zeros(self.inner.dimension());
 
 		self.inner
-			.parallel_transport(&from_point, &to_point, &vector, &mut result)
+			.parallel_transport(&from_point, &to_point, &vector, &mut result, &mut ())
 			.map_err(|e| PyValueError::new_err(format!("Parallel transport failed: {}", e)))?;
 
 		vec_to_numpy(py, &result)

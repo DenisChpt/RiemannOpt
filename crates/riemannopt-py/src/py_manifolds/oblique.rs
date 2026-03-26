@@ -187,8 +187,14 @@ impl PyOblique {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		Manifold::<f64>::project_tangent(&self.inner, &point_mat, &tangent_mat, &mut result)
-			.map_err(to_py_err)?;
+		Manifold::<f64>::project_tangent(
+			&self.inner,
+			&point_mat,
+			&tangent_mat,
+			&mut result,
+			&mut (),
+		)
+		.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
 	}
@@ -212,8 +218,14 @@ impl PyOblique {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		<Oblique as Manifold<f64>>::retract(&self.inner, &point_mat, &tangent_mat, &mut result)
-			.map_err(to_py_err)?;
+		<Oblique as Manifold<f64>>::retract(
+			&self.inner,
+			&point_mat,
+			&tangent_mat,
+			&mut result,
+			&mut (),
+		)
+		.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
 	}
@@ -237,8 +249,14 @@ impl PyOblique {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		<Oblique as Manifold<f64>>::inverse_retract(&self.inner, &x_mat, &y_mat, &mut result)
-			.map_err(to_py_err)?;
+		<Oblique as Manifold<f64>>::inverse_retract(
+			&self.inner,
+			&x_mat,
+			&y_mat,
+			&mut result,
+			&mut (),
+		)
+		.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
 	}
@@ -262,8 +280,14 @@ impl PyOblique {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		<Oblique as Manifold<f64>>::retract(&self.inner, &point_mat, &tangent_mat, &mut result)
-			.map_err(to_py_err)?;
+		<Oblique as Manifold<f64>>::retract(
+			&self.inner,
+			&point_mat,
+			&tangent_mat,
+			&mut result,
+			&mut (),
+		)
+		.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
 	}
@@ -287,8 +311,14 @@ impl PyOblique {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
-		<Oblique as Manifold<f64>>::inverse_retract(&self.inner, &x_mat, &y_mat, &mut result)
-			.map_err(to_py_err)?;
+		<Oblique as Manifold<f64>>::inverse_retract(
+			&self.inner,
+			&x_mat,
+			&y_mat,
+			&mut result,
+			&mut (),
+		)
+		.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
 	}
@@ -314,7 +344,7 @@ impl PyOblique {
 
 		Ok(self
 			.inner
-			.inner_product(&point_mat, &u_mat, &v_mat)
+			.inner_product(&point_mat, &u_mat, &v_mat, &mut ())
 			.map_err(to_py_err)?)
 	}
 
@@ -336,7 +366,7 @@ impl PyOblique {
 
 		Ok(self
 			.inner
-			.norm(&point_mat, &tangent_mat)
+			.norm(&point_mat, &tangent_mat, &mut ())
 			.map_err(to_py_err)?)
 	}
 
@@ -458,6 +488,7 @@ impl PyOblique {
 			&to_mat,
 			&tangent_mat,
 			&mut result,
+			&mut (),
 		)
 		.map_err(to_py_err)?;
 

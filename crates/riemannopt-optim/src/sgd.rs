@@ -236,7 +236,7 @@ impl<T: Scalar> SGD<T> {
 		previous_cost: Option<T>,
 		gradient_norm: Option<T>,
 		current_point: &M::Point,
-		previous_point: &Option<M::Point>,
+		previous_point: Option<&M::Point>,
 		criterion: &StoppingCriterion<T>,
 	) -> Option<TerminationReason>
 	where
@@ -279,7 +279,7 @@ impl<T: Scalar> SGD<T> {
 
 		// Check point change
 		if let Some(point_tol) = criterion.point_tolerance {
-			if let Some(ref prev_point) = previous_point {
+			if let Some(prev_point) = previous_point {
 				if iteration > 0 {
 					// Compute distance using manifold metric
 					if let Ok(distance) = manifold.distance(prev_point, current_point) {
@@ -302,79 +302,64 @@ impl<T: Scalar> SGD<T> {
 	}
 
 	/// Computes the search direction based on the momentum configuration (in-place).
-	fn compute_momentum_direction_inplace<M>(
+	///
+	/// Uses `scratch0`, `scratch1`, `scratch2` as temporary buffers instead of
+	/// allocating per iteration.
+	fn compute_momentum_direction<M>(
 		&self,
 		manifold: &M,
 		current_point: &M::Point,
-		previous_point: &Option<M::Point>,
+		previous_point: Option<&M::Point>,
 		momentum_state: &mut MomentumState<T, M::TangentVector>,
 		gradient: &mut M::TangentVector,
+		scratch0: &mut M::TangentVector,
+		scratch1: &mut M::TangentVector,
+		_scratch2: &mut M::TangentVector,
+		manifold_ws: &mut M::Workspace,
 	) -> Result<()>
 	where
 		M: Manifold<T>,
 	{
 		if momentum_state.coefficient.is_none() {
-			// No momentum - gradient is already the direction
 			return Ok(());
 		}
 
 		let coefficient = momentum_state.coefficient.unwrap();
 
-		// Handle momentum
 		match &mut momentum_state.momentum_vector {
 			None => {
-				// First iteration - initialize momentum with gradient
+				// First iteration — initialize momentum with gradient (unavoidable clone)
 				momentum_state.momentum_vector = Some(gradient.clone());
 			}
 			Some(momentum) => {
-				// Transport momentum from previous point to current point if needed
-				if let Some(ref prev_point) = previous_point {
-					// Parallel transport the momentum vector
-					let mut transported_momentum = momentum.clone();
+				// Transport momentum from previous point to current point
+				if let Some(prev_point) = previous_point {
 					manifold.parallel_transport(
 						prev_point,
 						current_point,
 						momentum,
-						&mut transported_momentum,
+						scratch0,
+						manifold_ws,
 					)?;
-					// Re-project into tangent space to prevent numerical drift
-					manifold.project_tangent(
-						current_point,
-						&transported_momentum,
-						momentum,
-					)?;
+					manifold.project_tangent(current_point, scratch0, momentum, manifold_ws)?;
 				}
 
 				if momentum_state.is_nesterov {
-					// Nesterov momentum
-					// Update momentum: m = β * m + gradient
-					let mut temp = momentum.clone();
-					let mut temp2 = momentum.clone(); // Additional temp for add_tangents
-					manifold.scale_tangent(current_point, coefficient, momentum, &mut temp)?;
-					manifold.add_tangents(current_point, &temp, gradient, momentum, &mut temp2)?;
+					// m = β · m + gradient
+					manifold.scale_tangent(current_point, coefficient, momentum, scratch0)?;
+					manifold.add_tangents(current_point, scratch0, gradient, momentum)?;
 				} else {
-					// Classical momentum
-					// Update momentum: m = β * m + (1-β) * gradient
-					let mut temp = momentum.clone();
-					let mut temp2 = momentum.clone(); // Additional temp for add_tangents
-					manifold.scale_tangent(current_point, coefficient, momentum, &mut temp)?;
-					let mut scaled_grad = gradient.clone();
+					// m = β · m + (1-β) · gradient
+					manifold.scale_tangent(current_point, coefficient, momentum, scratch0)?;
 					manifold.scale_tangent(
 						current_point,
 						T::one() - coefficient,
 						gradient,
-						&mut scaled_grad,
+						scratch1,
 					)?;
-					manifold.add_tangents(
-						current_point,
-						&temp,
-						&scaled_grad,
-						momentum,
-						&mut temp2,
-					)?;
+					manifold.add_tangents(current_point, scratch0, scratch1, momentum)?;
 				}
 
-				// Direction is the momentum
 				gradient.clone_from(momentum);
 			}
 		}
@@ -400,13 +385,15 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 		M: Manifold<T>,
 		C: CostFunction<T, Point = M::Point, TangentVector = M::TangentVector>,
 	{
+		use riemannopt_core::optimization::workspace::CommonWorkspace;
+
 		let start_time = Instant::now();
 
 		// Initialize state
 		let initial_cost = cost_fn.cost(initial_point)?;
 		let mut momentum_state = MomentumState::new(&self.config.momentum);
 		let mut current_point = initial_point.clone();
-		let mut previous_point: Option<M::Point> = None;
+		let mut has_previous_point = false;
 		let mut current_cost = initial_cost;
 		let mut previous_cost: Option<T> = None;
 		let mut gradient_norm: Option<T> = None;
@@ -414,14 +401,23 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 		let mut function_evaluations = 1;
 		let mut gradient_evaluations = 0;
 
-		// Compute initial gradient to get the right type
-		let mut euclidean_grad = cost_fn.gradient(&initial_point)?;
-		let mut riemannian_grad = euclidean_grad.clone();
+		// Compute initial gradient to initialize workspace with the right shape
+		let initial_grad = cost_fn.gradient(initial_point)?;
 		gradient_evaluations += 1;
+
+		// Pre-allocate all buffers once — zero allocations from here on
+		let mut ws = CommonWorkspace::new(initial_point, &initial_grad);
+		let mut manifold_ws = manifold.create_workspace(initial_point);
+		ws.euclidean_grad.clone_from(&initial_grad);
 
 		// Main optimization loop
 		loop {
 			// Check stopping criteria
+			let prev_ref = if has_previous_point {
+				Some(&ws.previous_point)
+			} else {
+				None
+			};
 			let reason = self.check_stopping_criteria(
 				manifold,
 				iteration,
@@ -432,7 +428,7 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 				previous_cost,
 				gradient_norm,
 				&current_point,
-				&previous_point,
+				prev_ref,
 				stopping_criterion,
 			);
 
@@ -449,32 +445,49 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 				.with_gradient_norm(gradient_norm.unwrap_or(T::zero())));
 			}
 
-			// Compute gradient at current point
-			let new_cost = cost_fn.cost_and_gradient(&current_point, &mut euclidean_grad)?;
+			// Compute gradient at current point (in-place into workspace)
+			let new_cost = cost_fn.cost_and_gradient(&current_point, &mut ws.euclidean_grad)?;
 			function_evaluations += 1;
 			gradient_evaluations += 1;
 
-			// Convert to Riemannian gradient
+			// Convert to Riemannian gradient (in-place)
 			manifold.euclidean_to_riemannian_gradient(
 				&current_point,
-				&euclidean_grad,
-				&mut riemannian_grad,
+				&ws.euclidean_grad,
+				&mut ws.riemannian_grad,
+				&mut manifold_ws,
 			)?;
 
 			// Compute gradient norm
-			let grad_norm_squared =
-				manifold.inner_product(&current_point, &riemannian_grad, &riemannian_grad)?;
+			let grad_norm_squared = manifold.inner_product(
+				&current_point,
+				&ws.riemannian_grad,
+				&ws.riemannian_grad,
+				&mut manifold_ws,
+			)?;
 			let grad_norm = <T as Float>::sqrt(grad_norm_squared);
 			gradient_norm = Some(grad_norm);
 
 			// Compute search direction with momentum
-			self.compute_momentum_direction_inplace(
-				manifold,
-				&current_point,
-				&previous_point,
-				&mut momentum_state,
-				&mut riemannian_grad,
-			)?;
+			let prev_ref = if has_previous_point {
+				Some(&ws.previous_point as &M::Point)
+			} else {
+				None
+			};
+			{
+				let [ref mut s0, ref mut s1, ref mut s2, ..] = ws.scratch;
+				self.compute_momentum_direction(
+					manifold,
+					&current_point,
+					prev_ref,
+					&mut momentum_state,
+					&mut ws.riemannian_grad,
+					s0,
+					s1,
+					s2,
+					&mut manifold_ws,
+				)?;
+			}
 
 			// Determine step size
 			let base_step_size = self.config.step_size.get_step_size(iteration);
@@ -490,76 +503,60 @@ impl<T: Scalar> Optimizer<T> for SGD<T> {
 				base_step_size
 			};
 
-			// Scale direction by negative step size (descent direction)
-			let mut search_direction = riemannian_grad.clone();
+			// Scale direction by negative step size (in-place into workspace)
 			manifold.scale_tangent(
 				&current_point,
 				-step_size,
-				&riemannian_grad,
-				&mut search_direction,
+				&ws.riemannian_grad,
+				&mut ws.scaled_direction,
 			)?;
 
 			// Perform line search if configured
-			let (_final_step_size, new_point) = if let Some(line_search) =
-				&mut self.config.line_search
-			{
-				// We need the directional derivative: <grad f(x), direction>
-				// Since direction = -step_size * grad, this is -step_size * ||grad||^2
-				// But line search expects a direction vector, usually descent direction.
-				// Here `search_direction` is already scaled by `step_size`.
-				// Standard line search expects direction `d` and finds `alpha` such that `x + alpha*d` ...
-				// Our `search_direction` is `-step_size * grad`.
-				// So we effectively want alpha=1.0 for this direction, or we can pass the raw descent direction.
-
-				// Let's use the raw descent direction (negative gradient) and let line search find the step size.
-				// This allows the line search to scale it properly.
-
-				let mut descent_direction = riemannian_grad.clone();
+			if let Some(line_search) = &mut self.config.line_search {
+				// Compute descent direction into workspace direction buffer
 				manifold.scale_tangent(
 					&current_point,
 					-T::one(),
-					&riemannian_grad,
-					&mut descent_direction,
+					&ws.riemannian_grad,
+					&mut ws.direction,
 				)?;
 
-				// The directional derivative is <grad, -grad> = -||grad||^2
 				let dir_deriv = -grad_norm_squared;
-
-				// Configure parameters: set initial step size to what we calculated
 				let mut params =
 					riemannopt_core::optimization::line_search::LineSearchParams::backtracking();
 				params.initial_step_size = step_size;
 
-				// Perform search
 				let result = line_search.search_with_deriv(
 					cost_fn,
 					manifold,
 					&current_point,
 					current_cost,
-					&descent_direction,
+					&ws.direction,
 					dir_deriv,
 					&params,
+					&mut manifold_ws,
 				)?;
 
-				if !result.success {
-					// Fallback to small step if line search fails
-					// or return error? For SGD, maybe just take a small step or the proposed one.
-					// Let's log a warning (if we had logging) and take the proposed step size but check validity.
-					// For now, we'll stick to the result if it returned a point, or fallback.
-					// The LineSearchResult always returns a point (best found or last tried).
-					(result.step_size, result.new_point)
-				} else {
-					(result.step_size, result.new_point)
-				}
+				// Line search returns a new point — swap into workspace
+				ws.previous_point.clone_from(&current_point);
+				has_previous_point = true;
+				current_point = result.new_point;
 			} else {
-				// No line search: just retract along the computed direction
-				let mut new_point = current_point.clone();
-				manifold.retract(&current_point, &search_direction, &mut new_point)?;
-				(step_size, new_point)
+				// No line search: retract in-place
+				manifold.retract(
+					&current_point,
+					&ws.scaled_direction,
+					&mut ws.new_point,
+					&mut manifold_ws,
+				)?;
+
+				// Swap: previous ← current, current ← new
+				std::mem::swap(&mut ws.previous_point, &mut current_point);
+				has_previous_point = true;
+				std::mem::swap(&mut current_point, &mut ws.new_point);
 			};
 
 			// Update state
-			previous_point = Some(std::mem::replace(&mut current_point, new_point));
 			previous_cost = Some(current_cost);
 			current_cost = new_cost;
 			iteration += 1;

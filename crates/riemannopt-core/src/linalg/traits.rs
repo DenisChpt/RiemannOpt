@@ -361,6 +361,21 @@ pub trait MatrixOps<T: RealScalar>: Sized + Clone + Debug + Send + Sync {
 		}
 	}
 
+	/// Column-scaling: self[i,j] = source[i,j] * diag[j].
+	///
+	/// Computes `self = source * diag(diag)` without allocating a diagonal matrix.
+	/// Each column j of the result is column j of source scaled by diag[j].
+	fn scale_columns(&mut self, source: &Self, diag: &Self::Col) {
+		let n = source.nrows();
+		let p = source.ncols();
+		for j in 0..p {
+			let s = diag.get(j);
+			for i in 0..n {
+				*self.get_mut(i, j) = source.get(i, j) * s;
+			}
+		}
+	}
+
 	// ── In-place BLAS-like ────────────────────────────────────────────
 
 	/// self += other.
@@ -410,25 +425,17 @@ pub trait DecompositionOps<T: RealScalar>: MatrixOps<T> {
 	/// Returns `None` if the matrix is not positive definite.
 	fn cholesky(&self) -> Option<CholeskyResult<T, Self>>;
 
-	/// Matrix inverse. Returns `None` if singular.
-	fn try_inverse(&self) -> Option<Self>;
+	/// Compute matrix inverse into pre-allocated `result`.
+	///
+	/// Returns `false` if singular (result is unchanged).
+	fn inverse(&self, result: &mut Self) -> bool;
 
-	/// Solve the system A x = rhs via Cholesky decomposition (A = L Lᵀ).
-	/// Returns `None` if A is not positive definite.
-	fn cholesky_solve(&self, rhs: &Self) -> Option<Self>;
-
-	/// Solve the system A x = rhs via Cholesky, where rhs is a column vector.
-	/// Returns `None` if A is not positive definite.
-	fn cholesky_solve_vec(&self, rhs: &Self::Col) -> Option<Self::Col>
-	where
-		Self: MatrixOps<T>,
-	{
-		// Default: convert vector to 1-column matrix, solve, extract column
-		let n = rhs.len();
-		let rhs_mat = Self::from_fn(n, 1, |i, _| rhs.get(i));
-		self.cholesky_solve(&rhs_mat)
-			.map(|sol| MatrixOps::column(&sol, 0))
-	}
+	/// Solve the system A x = rhs via Cholesky decomposition (A = L Lᵀ),
+	/// writing into pre-allocated `result`.
+	///
+	/// Copies `rhs` into `result`, then solves in-place.
+	/// Returns `false` if A is not positive definite (result is unchanged).
+	fn cholesky_solve(&self, rhs: &Self, result: &mut Self) -> bool;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

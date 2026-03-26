@@ -154,7 +154,7 @@ impl PyStiefel {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner
-			.retract(&point_mat, &tangent_mat, &mut result)
+			.retract(&point_mat, &tangent_mat, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
@@ -194,7 +194,7 @@ impl PyStiefel {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner
-			.inverse_retract(&point_mat, &other_mat, &mut result)
+			.inverse_retract(&point_mat, &other_mat, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
@@ -235,7 +235,7 @@ impl PyStiefel {
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
 		self.inner
-			.retract(&point_mat, &tangent_mat, &mut result)
+			.retract(&point_mat, &tangent_mat, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
@@ -276,7 +276,7 @@ impl PyStiefel {
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 
 		self.inner
-			.project_tangent(&point_mat, &vector_mat, &mut result)
+			.project_tangent(&point_mat, &vector_mat, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)
@@ -321,7 +321,7 @@ impl PyStiefel {
 		}
 
 		self.inner
-			.inner_product(&point_mat, &u_mat, &v_mat)
+			.inner_product(&point_mat, &u_mat, &v_mat, &mut ())
 			.map_err(to_py_err)
 	}
 
@@ -359,7 +359,7 @@ impl PyStiefel {
 
 		Ok(self
 			.inner
-			.norm(&point_mat, &tangent_mat)
+			.norm(&point_mat, &tangent_mat, &mut ())
 			.map_err(to_py_err)?)
 	}
 
@@ -496,7 +496,7 @@ impl PyStiefel {
 
 		let mut result: Mat64 = MatrixOps::zeros(self.n, self.p);
 		self.inner
-			.parallel_transport(&from_mat, &to_mat, &tangent_mat, &mut result)
+			.parallel_transport(&from_mat, &to_mat, &tangent_mat, &mut result, &mut ())
 			.map_err(to_py_err)?;
 
 		mat_to_numpy(py, &result)

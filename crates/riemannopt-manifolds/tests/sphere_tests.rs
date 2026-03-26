@@ -38,7 +38,9 @@ fn test_sphere_tangent_projection() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.5, 1.0, 2.0]);
 	let mut v_tangent: linalg::Vec<f64> = VectorOps::zeros(3);
 
-	sphere.project_tangent(&x, &v, &mut v_tangent).unwrap();
+	sphere
+		.project_tangent(&x, &v, &mut v_tangent, &mut ())
+		.unwrap();
 
 	// Check orthogonality
 	assert_relative_eq!(x.dot(&v_tangent), 0.0, epsilon = 1e-14);
@@ -61,7 +63,7 @@ fn test_sphere_retraction() {
 	let mut y: linalg::Vec<f64> = VectorOps::zeros(3);
 
 	// Test retraction
-	sphere.retract(&x, &v, &mut y).unwrap();
+	sphere.retract(&x, &v, &mut y, &mut ()).unwrap();
 
 	// Result should be on sphere
 	assert_relative_eq!(y.norm(), 1.0, epsilon = 1e-14);
@@ -69,7 +71,9 @@ fn test_sphere_retraction() {
 	// Test zero retraction returns same point
 	let zero: linalg::Vec<f64> = VectorOps::zeros(3);
 	let mut x_recovered: linalg::Vec<f64> = VectorOps::zeros(3);
-	sphere.retract(&x, &zero, &mut x_recovered).unwrap();
+	sphere
+		.retract(&x, &zero, &mut x_recovered, &mut ())
+		.unwrap();
 	let diff = VectorOps::sub(&x, &x_recovered);
 	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);
 }
@@ -83,10 +87,10 @@ fn test_sphere_inner_product() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 0.0, 1.0]);
 
 	// Test inner product (should be standard Euclidean)
-	let inner_uv = sphere.inner_product(&x, &u, &v).unwrap();
+	let inner_uv = sphere.inner_product(&x, &u, &v, &mut ()).unwrap();
 	assert_relative_eq!(inner_uv, 0.0, epsilon = 1e-14);
 
-	let inner_uu = sphere.inner_product(&x, &u, &u).unwrap();
+	let inner_uu = sphere.inner_product(&x, &u, &u, &mut ()).unwrap();
 	assert_relative_eq!(inner_uu, 1.0, epsilon = 1e-14);
 }
 
@@ -110,7 +114,7 @@ fn test_sphere_parallel_transport() {
 	let y: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 1.0, 0.0]);
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 0.0, 1.0]);
 
-	let transported = sphere.parallel_transport(&x, &y, &v).unwrap();
+	let transported = sphere.parallel_transport(&x, &y, &v, &mut ()).unwrap();
 
 	// Check transported vector is in tangent space at y
 	assert_relative_eq!(y.dot(&transported), 0.0, epsilon = 1e-14);

@@ -28,8 +28,7 @@ pub mod prelude {
 
 	// Manifold implementations
 	pub use riemannopt_manifolds::{
-		Euclidean, FixedRank, Grassmann, Hyperbolic, Oblique, Product, ProductStatic, Sphere,
-		Stiefel, SPD,
+		Euclidean, FixedRank, Grassmann, Hyperbolic, Oblique, Product, Sphere, Stiefel, SPD,
 	};
 
 	// Optimizers

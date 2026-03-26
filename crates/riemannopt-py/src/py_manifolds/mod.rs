@@ -7,27 +7,27 @@ use pyo3::prelude::*;
 
 #[macro_use]
 pub mod base;
+pub mod euclidean;
+pub mod fixed_rank;
 pub mod grassmann;
 pub mod hyperbolic;
 pub mod oblique;
+pub mod product;
+pub mod psd_cone;
 pub mod spd;
 pub mod sphere;
 pub mod stiefel;
-// pub mod fixed_rank;  // TODO: Fix compilation with new Manifold trait
-pub mod euclidean;
-pub mod product;
-pub mod psd_cone;
 
+pub use euclidean::PyEuclidean;
+pub use fixed_rank::{PyFixedRank, PyFixedRankPoint, PyFixedRankTangent};
 pub use grassmann::PyGrassmann;
 pub use hyperbolic::PyHyperbolic;
 pub use oblique::PyOblique;
+pub use product::PyProductManifold;
+pub use psd_cone::PyPSDCone;
 pub use spd::PySPD;
 pub use sphere::PySphere;
 pub use stiefel::PyStiefel;
-// pub use fixed_rank::{PyFixedRank, PyFixedRankPoint, PyFixedRankTangent};  // TODO: Fix
-pub use euclidean::PyEuclidean;
-pub use product::PyProductManifold;
-pub use psd_cone::PyPSDCone;
 
 /// Register all manifold classes with the Python module.
 pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -40,10 +40,9 @@ pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
 	m.add_class::<PySPD>()?;
 	m.add_class::<PyHyperbolic>()?;
 	m.add_class::<PyOblique>()?;
-	// TODO: Fix FixedRank compilation issues with the new Manifold trait
-	// m.add_class::<PyFixedRank>()?;
-	// m.add_class::<PyFixedRankPoint>()?;
-	// m.add_class::<PyFixedRankTangent>()?;
+	m.add_class::<PyFixedRank>()?;
+	m.add_class::<PyFixedRankPoint>()?;
+	m.add_class::<PyFixedRankTangent>()?;
 	m.add_class::<PyPSDCone>()?;
 	m.add_class::<PyEuclidean>()?;
 	m.add_class::<PyProductManifold>()?;

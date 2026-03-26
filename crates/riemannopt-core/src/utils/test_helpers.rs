@@ -25,6 +25,7 @@ impl TestSphere {
 impl Manifold<f64> for TestSphere {
 	type Point = linalg::Vec<f64>;
 	type TangentVector = linalg::Vec<f64>;
+	type Workspace = ();
 	fn name(&self) -> &str {
 		"Test Sphere"
 	}
@@ -62,6 +63,7 @@ impl Manifold<f64> for TestSphere {
 		point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		let inner = VectorOps::dot(point, vector);
 		VectorOps::copy_from(result, vector);
@@ -74,6 +76,7 @@ impl Manifold<f64> for TestSphere {
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<f64> {
 		Ok(VectorOps::dot(u, v))
 	}
@@ -83,6 +86,7 @@ impl Manifold<f64> for TestSphere {
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Exponential map on sphere
 		let norm_v = VectorOps::norm(tangent);
@@ -104,6 +108,7 @@ impl Manifold<f64> for TestSphere {
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		let inner = VectorOps::dot(point, other).min(1.0).max(-1.0);
 		let theta = inner.acos();
@@ -129,8 +134,9 @@ impl Manifold<f64> for TestSphere {
 		point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		self.project_tangent(point, euclidean_grad, result)
+		self.project_tangent(point, euclidean_grad, result, _ws)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
@@ -144,7 +150,7 @@ impl Manifold<f64> for TestSphere {
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) -> Result<()> {
 		let mut rng = rand::rng();
 		let v = linalg::Vec::<f64>::from_fn(self.dim, |_| rng.random::<f64>() * 2.0 - 1.0);
-		self.project_tangent(point, &v, result)
+		self.project_tangent(point, &v, result, &mut ())
 	}
 
 	fn parallel_transport(
@@ -153,8 +159,9 @@ impl Manifold<f64> for TestSphere {
 		to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		self.project_tangent(to, vector, result)
+		self.project_tangent(to, vector, result, _ws)
 	}
 
 	fn has_exact_exp_log(&self) -> bool {
@@ -163,8 +170,9 @@ impl Manifold<f64> for TestSphere {
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<f64> {
 		let mut tangent = linalg::Vec::<f64>::zeros(VectorOps::len(x));
-		self.inverse_retract(x, y, &mut tangent)?;
-		self.inner_product(x, &tangent, &tangent).map(|v| v.sqrt())
+		self.inverse_retract(x, y, &mut tangent, &mut ())?;
+		self.inner_product(x, &tangent, &tangent, &mut ())
+			.map(|v| v.sqrt())
 	}
 
 	fn scale_tangent(
@@ -185,10 +193,9 @@ impl Manifold<f64> for TestSphere {
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		let sum = VectorOps::add(v1, v2);
-		self.project_tangent(point, &sum, result)
+		self.project_tangent(point, &sum, result, &mut ())
 	}
 
 	fn axpy_tangent(
@@ -198,16 +205,20 @@ impl Manifold<f64> for TestSphere {
 		x: &Self::TangentVector,
 		y: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		_temp1: &mut Self::TangentVector,
-		_temp2: &mut Self::TangentVector,
+		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		// result = y + alpha * x
 		let mut axpy_result = y.clone();
 		axpy_result.axpy(alpha, x, 1.0);
-		self.project_tangent(point, &axpy_result, result)
+		self.project_tangent(point, &axpy_result, result, &mut ())
 	}
 
-	fn norm(&self, _point: &Self::Point, vector: &Self::TangentVector) -> Result<f64> {
+	fn norm(
+		&self,
+		_point: &Self::Point,
+		vector: &Self::TangentVector,
+		_ws: &mut (),
+	) -> Result<f64> {
 		Ok(VectorOps::norm(vector))
 	}
 }

@@ -133,7 +133,7 @@
 //! // Tangent vector (orthogonal to subspace)
 //! let z = riemannopt_core::linalg::Mat::<f64>::from_fn(5, 2, |i, j| 0.1 * (i as f64 - j as f64));
 //! let mut z_horizontal = z.clone();
-//! grassmann.project_tangent(&y, &z, &mut z_horizontal)?;
+//! grassmann.project_tangent(&y, &z, &mut z_horizontal, &mut ())?;
 //!
 //! // Verify horizontality: Y^T Z = 0
 //! let ytz = yt.mat_mul(&z_horizontal);
@@ -299,8 +299,15 @@ where
 		// Check orthonormality: Y^T Y = I
 		let mut yty = linalg::Mat::<T>::zeros(self.p, self.p);
 		yty.gemm_at(T::one(), y, y, T::zero());
-		let identity = linalg::Mat::<T>::identity(self.p);
-		let constraint_error = yty.sub(&identity).norm();
+		// Element-wise ‖Y^T Y - I‖_F without allocation
+		let mut constraint_sq = T::zero();
+		for i in 0..self.p {
+			for j in 0..self.p {
+				let diff = yty.get(i, j) - if i == j { T::one() } else { T::zero() };
+				constraint_sq = constraint_sq + diff * diff;
+			}
+		}
+		let constraint_error = <T as Float>::sqrt(constraint_sq);
 
 		if constraint_error > self.tolerance {
 			return Err(ManifoldError::invalid_point(format!(
@@ -363,29 +370,31 @@ where
 	///
 	/// The retracted point R_Y(Z) on the manifold.
 	pub fn qr_retraction(&self, y: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
-		// Compute Y + Z
-		let y_plus_z = y.add(z);
+		// Compute Y + Z in buffer
+		let mut y_plus_z = linalg::Mat::<T>::zeros(self.n, self.p);
+		y_plus_z.copy_from(y);
+		y_plus_z.add_assign(z);
 
-		// QR decomposition
+		// QR decomposition — allocate only n×p result, not the full Q
 		let qr = y_plus_z.qr();
-		let mut q = qr.q().clone();
-
-		// Extract first p columns
-		if q.ncols() > self.p {
-			q = q.columns(0, self.p);
-		}
+		let q = qr.q();
+		let mut result = if q.ncols() > self.p {
+			q.columns(0, self.p)
+		} else {
+			q.clone()
+		};
 
 		// Fix signs for continuity
 		let r = qr.r();
 		for j in 0..self.p.min(r.ncols()) {
 			if r.get(j, j) < T::zero() {
 				for i in 0..self.n {
-					*q.get_mut(i, j) = T::zero() - q.get(i, j);
+					*result.get_mut(i, j) = T::zero() - result.get(i, j);
 				}
 			}
 		}
 
-		Ok(q)
+		Ok(result)
 	}
 
 	/// Performs SVD-based retraction (more stable).
@@ -403,7 +412,9 @@ where
 	///
 	/// The retracted point using SVD.
 	pub fn svd_retraction(&self, y: &linalg::Mat<T>, z: &linalg::Mat<T>) -> Result<linalg::Mat<T>> {
-		let y_plus_z = y.add(z);
+		let mut y_plus_z = linalg::Mat::<T>::zeros(self.n, self.p);
+		y_plus_z.copy_from(y);
+		y_plus_z.add_assign(z);
 
 		// Compute SVD
 		let svd = y_plus_z.svd();
@@ -422,7 +433,9 @@ where
 				vt
 			};
 
-			Ok(u_truncated.mat_mul(&vt_truncated))
+			let mut result: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
+			result.gemm(T::one(), &u_truncated, &vt_truncated, T::zero());
+			Ok(result)
 		} else {
 			Err(ManifoldError::numerical_error(
 				"SVD computation failed in retraction",
@@ -490,16 +503,18 @@ where
 		let svd = y2ty1.svd();
 
 		if let Some(u) = svd.u {
-			// Transport: (I - Y₂Y₂^T)ZU
-			let zu = z.mat_mul(&u);
-			let mut y2t_zu = linalg::Mat::<T>::zeros(self.p, zu.ncols());
+			// Transport: (I - Y₂Y₂^T)ZU using buffers + gemm
+			let mut zu: linalg::Mat<T> = MatrixOps::zeros(self.n, self.p);
+			zu.gemm(T::one(), z, &u, T::zero());
+			let mut y2t_zu = linalg::Mat::<T>::zeros(self.p, self.p);
 			y2t_zu.gemm_at(T::one(), y2, &zu, T::zero());
-			let y2_zu = y2.mat_mul(&y2t_zu);
-			Ok(zu.sub(&y2_zu))
+			// zu -= Y₂ * (Y₂^T * ZU)
+			zu.gemm(-T::one(), y2, &y2t_zu, T::one());
+			Ok(zu)
 		} else {
 			// Fallback to simple projection
 			let mut result = z.clone();
-			self.project_tangent(y2, z, &mut result)?;
+			self.project_tangent(y2, z, &mut result, &mut ())?;
 			Ok(result)
 		}
 	}
@@ -512,6 +527,7 @@ where
 {
 	type Point = linalg::Mat<T>;
 	type TangentVector = linalg::Mat<T>;
+	type Workspace = ();
 
 	fn name(&self) -> &str {
 		"Grassmann"
@@ -526,11 +542,17 @@ where
 			return false;
 		}
 
-		// Check Y^T Y = I_p
+		// Check Y^T Y = I_p (element-wise, no allocation)
 		let mut yty = linalg::Mat::<T>::zeros(self.p, self.p);
 		yty.gemm_at(T::one(), point, point, T::zero());
-		let identity = linalg::Mat::<T>::identity(self.p);
-		yty.sub(&identity).norm() < tol
+		let mut err_sq = T::zero();
+		for i in 0..self.p {
+			for j in 0..self.p {
+				let diff = yty.get(i, j) - if i == j { T::one() } else { T::zero() };
+				err_sq = err_sq + diff * diff;
+			}
+		}
+		<T as Float>::sqrt(err_sq) < tol
 	}
 
 	fn is_vector_in_tangent_space(
@@ -558,26 +580,27 @@ where
 			return;
 		}
 
-		// Use QR decomposition for projection
+		// Use QR decomposition for projection — write directly into result
 		let qr = point.qr();
-		let mut q = qr.q().clone();
+		let q = qr.q();
 
-		// Extract first p columns
+		// Copy first p columns into result (or all if ncols <= p)
 		if q.ncols() > self.p {
-			q = q.columns(0, self.p);
+			let q_trunc = q.columns(0, self.p);
+			result.copy_from(&q_trunc);
+		} else {
+			result.copy_from(&q);
 		}
 
-		// Fix signs for continuity
+		// Fix signs for continuity (directly on result)
 		let r = qr.r();
 		for j in 0..self.p.min(r.ncols()) {
 			if r.get(j, j) < T::zero() {
 				for i in 0..self.n {
-					*q.get_mut(i, j) = T::zero() - q.get(i, j);
+					*result.get_mut(i, j) = T::zero() - result.get(i, j);
 				}
 			}
 		}
-
-		*result = q;
 	}
 
 	fn project_tangent(
@@ -585,6 +608,7 @@ where
 		point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Horizontal projection: result = Z - Y(Y^T Z)
 		// Uses in-place GEMM to avoid allocating n×p temporaries.
@@ -601,6 +625,7 @@ where
 		_point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
 		// Canonical metric: tr(U^T V)
 		// No tangent validation on hot path.
@@ -618,6 +643,7 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Polar retraction via SVD: Y = X + G;  U Σ V^T = SVD(Y);  return U V^T
 		// Compute Y = X + G in-place into result (avoids n×p allocation).
@@ -645,14 +671,17 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		self.check_point(point)?;
 		self.check_point(other)?;
 
-		// Compute log map approximation using projection
-		// For close points: log_Y(Ỹ) ≈ P_h(Ỹ - Y)
-		let diff = other.sub(point);
-		self.project_tangent(point, &diff, result)
+		// log_Y(Ỹ) ≈ P_h(Ỹ - Y)
+		// Compute diff in result, then project.
+		result.copy_from(other);
+		result.sub_assign(point);
+		let diff = result.clone();
+		self.project_tangent(point, &diff, result, _ws)
 	}
 
 	fn euclidean_to_riemannian_gradient(
@@ -660,9 +689,10 @@ where
 		point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Riemannian gradient is the horizontal projection of Euclidean gradient
-		self.project_tangent(point, euclidean_grad, result)
+		self.project_tangent(point, euclidean_grad, result, _ws)
 	}
 
 	fn euclidean_to_riemannian_hessian(
@@ -672,12 +702,13 @@ where
 		euclidean_hvp: &Self::TangentVector,
 		tangent_vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Grassmann ehess2rhess (cf. pymanopt grassmann.py):
 		// rhess = project(point, ehess) - ξ @ (Y^T @ egrad)
 		//
 		// Step 1: result = project(point, ehess) = ehess - Y(Y^T ehess)
-		self.project_tangent(point, euclidean_hvp, result)?;
+		self.project_tangent(point, euclidean_hvp, result, _ws)?;
 
 		// Step 2: curvature correction via in-place GEMM
 		// Reuse a small p×p buffer for Y^T egrad
@@ -695,11 +726,12 @@ where
 		to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Projection-based vector transport: τ_Y(Z) = Π_Y(Z) = Z - Y(Y^T Z)
 		// This is the standard choice in pymanopt and manopt (grassmannfactory.m line 310).
 		// It is compatible with the polar retraction and sufficient for quotient geometry.
-		self.project_tangent(to, vector, result)
+		self.project_tangent(to, vector, result, _ws)
 	}
 
 	fn random_point(&self, result: &mut Self::Point) -> Result<()> {
@@ -743,7 +775,7 @@ where
 		}
 
 		// Project to horizontal space
-		self.project_tangent(point, &z, result)?;
+		self.project_tangent(point, &z, result, &mut ())?;
 
 		// Normalize
 		let norm = result.norm();
@@ -786,17 +818,13 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		temp: &mut Self::TangentVector,
 	) -> Result<()> {
-		// Add the tangent vectors
-		temp.copy_from(v1);
-		temp.add_assign(v2);
-
-		// The sum should already be in the horizontal space if v1 and v2 are,
-		// but we project for numerical stability
-		self.project_tangent(point, temp, result)?;
-
+		result.copy_from(v1);
+		result.add_assign(v2);
+		// In-place projection: result = result - Y · (Y^T result)
+		let mut ytz = linalg::Mat::<T>::zeros(self.p, self.p);
+		ytz.gemm_at(T::one(), point, result, T::zero());
+		result.gemm(-T::one(), point, &ytz, T::one());
 		Ok(())
 	}
 }

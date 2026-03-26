@@ -64,7 +64,7 @@ fn test_grassmann_tangent_projection() {
 	});
 
 	let mut z_tangent = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
-	gr.project_tangent(&y, &z, &mut z_tangent).unwrap();
+	gr.project_tangent(&y, &z, &mut z_tangent, &mut ()).unwrap();
 
 	// Check horizontality: Y^T Z = 0
 	let ytz = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &z_tangent);
@@ -85,7 +85,7 @@ fn test_grassmann_retraction() {
 	v.scale_mut(0.1);
 
 	let mut result = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
-	gr.retract(&y, &v, &mut result).unwrap();
+	gr.retract(&y, &v, &mut result, &mut ()).unwrap();
 
 	// Result should be on manifold: Y^T Y = I
 	let rtr = MatrixOps::mat_mul(&MatrixOps::transpose(&result), &result);
@@ -96,7 +96,7 @@ fn test_grassmann_retraction() {
 	// Zero retraction returns same point
 	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	let mut y_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
-	gr.retract(&y, &zero, &mut y_recovered).unwrap();
+	gr.retract(&y, &zero, &mut y_recovered, &mut ()).unwrap();
 	let diff = MatrixOps::sub(&y, &y_recovered);
 	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-12);
 }
@@ -115,12 +115,12 @@ fn test_grassmann_inner_product() {
 	gr.random_tangent(&y, &mut v).unwrap();
 
 	// Test symmetry
-	let inner_uv = gr.inner_product(&y, &u, &v).unwrap();
-	let inner_vu = gr.inner_product(&y, &v, &u).unwrap();
+	let inner_uv = gr.inner_product(&y, &u, &v, &mut ()).unwrap();
+	let inner_vu = gr.inner_product(&y, &v, &u, &mut ()).unwrap();
 	assert_relative_eq!(inner_uv, inner_vu, epsilon = 1e-12);
 
 	// Test positive definiteness
-	let inner_uu = gr.inner_product(&y, &u, &u).unwrap();
+	let inner_uu = gr.inner_product(&y, &u, &u, &mut ()).unwrap();
 	assert!(inner_uu >= 0.0);
 }
 
@@ -154,7 +154,7 @@ fn test_grassmann_parallel_transport() {
 	gr.random_tangent(&y1, &mut v).unwrap();
 
 	let mut transported = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
-	gr.parallel_transport(&y1, &y2, &v, &mut transported)
+	gr.parallel_transport(&y1, &y2, &v, &mut transported, &mut ())
 		.unwrap();
 
 	// Check transported vector is in tangent space at y2: Y2^T transported = 0
@@ -178,7 +178,7 @@ fn test_grassmann_euclidean_to_riemannian_gradient() {
 	});
 
 	let mut rgrad = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(5, 2);
-	gr.euclidean_to_riemannian_gradient(&y, &egrad, &mut rgrad)
+	gr.euclidean_to_riemannian_gradient(&y, &egrad, &mut rgrad, &mut ())
 		.unwrap();
 
 	// Result should be in tangent space: Y^T rgrad = 0

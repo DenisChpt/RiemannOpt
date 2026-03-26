@@ -63,7 +63,9 @@ fn test_stiefel_tangent_projection() {
 	});
 
 	let mut z_tangent = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
-	stiefel.project_tangent(&x, &z, &mut z_tangent).unwrap();
+	stiefel
+		.project_tangent(&x, &z, &mut z_tangent, &mut ())
+		.unwrap();
 
 	// Check tangent space constraint: X^T Z + Z^T X = 0
 	let xtz = MatrixOps::mat_mul(&MatrixOps::transpose(&x), &z_tangent);
@@ -87,7 +89,7 @@ fn test_stiefel_retraction() {
 	v.scale_mut(0.1);
 
 	let mut y = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
-	stiefel.retract(&x, &v, &mut y).unwrap();
+	stiefel.retract(&x, &v, &mut y, &mut ()).unwrap();
 
 	// Check that result is on manifold: Y^T Y = I
 	let yty = MatrixOps::mat_mul(&MatrixOps::transpose(&y), &y);
@@ -98,7 +100,9 @@ fn test_stiefel_retraction() {
 	// Test zero retraction
 	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
 	let mut x_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
-	stiefel.retract(&x, &zero, &mut x_recovered).unwrap();
+	stiefel
+		.retract(&x, &zero, &mut x_recovered, &mut ())
+		.unwrap();
 	let diff = MatrixOps::sub(&x, &x_recovered);
 	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-14);
 }
@@ -117,16 +121,16 @@ fn test_stiefel_inner_product() {
 	stiefel.random_tangent(&x, &mut v).unwrap();
 
 	// Test inner product (should be Frobenius inner product)
-	let inner_uv = stiefel.inner_product(&x, &u, &v).unwrap();
+	let inner_uv = stiefel.inner_product(&x, &u, &v, &mut ()).unwrap();
 	let expected = MatrixOps::trace(&MatrixOps::mat_mul(&MatrixOps::transpose(&u), &v));
 	assert_relative_eq!(inner_uv, expected, epsilon = 1e-14);
 
 	// Test symmetry
-	let inner_vu = stiefel.inner_product(&x, &v, &u).unwrap();
+	let inner_vu = stiefel.inner_product(&x, &v, &u, &mut ()).unwrap();
 	assert_relative_eq!(inner_uv, inner_vu, epsilon = 1e-14);
 
 	// Test positive definiteness
-	let inner_uu = stiefel.inner_product(&x, &u, &u).unwrap();
+	let inner_uu = stiefel.inner_product(&x, &u, &u, &mut ()).unwrap();
 	assert!(inner_uu >= 0.0);
 }
 
@@ -145,7 +149,7 @@ fn test_stiefel_parallel_transport() {
 
 	let mut transported = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(4, 2);
 	stiefel
-		.parallel_transport(&x, &y, &v, &mut transported)
+		.parallel_transport(&x, &y, &v, &mut transported, &mut ())
 		.unwrap();
 
 	// Check transported vector is in tangent space at y

@@ -9,8 +9,9 @@ use pyo3::prelude::*;
 use crate::{
 	py_cost::PyCostFunction,
 	py_manifolds::{
-		euclidean::PyEuclidean, grassmann::PyGrassmann, hyperbolic::PyHyperbolic,
-		oblique::PyOblique, psd_cone::PyPSDCone, spd::PySPD, sphere::PySphere, stiefel::PyStiefel,
+		euclidean::PyEuclidean, fixed_rank::PyFixedRank, grassmann::PyGrassmann,
+		hyperbolic::PyHyperbolic, oblique::PyOblique, psd_cone::PyPSDCone, spd::PySPD,
+		sphere::PySphere, stiefel::PyStiefel,
 	},
 };
 
@@ -30,6 +31,7 @@ pub enum ManifoldKind<'py> {
 	Oblique(PyRef<'py, PyOblique>),
 	PSDCone(PyRef<'py, PyPSDCone>),
 	Euclidean(PyRef<'py, PyEuclidean>),
+	FixedRank(PyRef<'py, PyFixedRank>),
 }
 
 impl<'py> ManifoldKind<'py> {
@@ -59,8 +61,11 @@ impl<'py> ManifoldKind<'py> {
 		if let Ok(m) = obj.extract::<PyRef<PyEuclidean>>(py) {
 			return Ok(Self::Euclidean(m));
 		}
+		if let Ok(m) = obj.extract::<PyRef<PyFixedRank>>(py) {
+			return Ok(Self::FixedRank(m));
+		}
 		Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-			"Unsupported manifold type. Supported: Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, PSDCone, Euclidean",
+			"Unsupported manifold type. Supported: Sphere, Stiefel, Grassmann, SPD, Hyperbolic, Oblique, PSDCone, Euclidean, FixedRank",
 		))
 	}
 }
@@ -253,6 +258,27 @@ pub fn optimize_dispatcher<O: PyOptimizerGeneric>(
 				)
 				.map(|r| r.into_py(py))
 		}
+		ManifoldKind::FixedRank(fixed_rank) => {
+			let arr = initial_point
+				.downcast_bound::<PyArray2<f64>>(py)
+				.map_err(|_| {
+					PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+						"initial_point must be a 2D numpy array for FixedRank manifold",
+					)
+				})?;
+			optimizer
+				.optimize_fixed_rank_impl(
+					py,
+					&*cost_function,
+					&*fixed_rank,
+					arr.readonly(),
+					max_iterations,
+					gradient_tolerance,
+					function_tolerance,
+					point_tolerance,
+				)
+				.map(|r| r.into_py(py))
+		}
 	}
 }
 
@@ -369,6 +395,19 @@ pub trait PyOptimizerGeneric {
 		cost_function: &PyCostFunction,
 		euclidean: &crate::py_manifolds::euclidean::PyEuclidean,
 		initial_point: PyReadonlyArray1<'_, f64>,
+		max_iterations: usize,
+		gradient_tolerance: Option<f64>,
+		function_tolerance: Option<f64>,
+		point_tolerance: Option<f64>,
+	) -> PyResult<PyOptimizationResult>;
+
+	/// Optimize on a FixedRank manifold
+	fn optimize_fixed_rank_impl(
+		&mut self,
+		py: Python<'_>,
+		cost_function: &PyCostFunction,
+		fixed_rank: &crate::py_manifolds::fixed_rank::PyFixedRank,
+		initial_point: PyReadonlyArray2<'_, f64>,
 		max_iterations: usize,
 		gradient_tolerance: Option<f64>,
 		function_tolerance: Option<f64>,
@@ -553,24 +592,24 @@ macro_rules! impl_optimizer_methods {
                 ).map(|r| r.into_py(py))
             }
 
-            // /// Optimize on a FixedRank manifold
-            // #[pyo3(signature = (cost_function, fixed_rank, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
-            // pub fn optimize_fixed_rank(
-            //     &mut self,
-            //     py: Python<'_>,
-            //     cost_function: PyRef<'_, PyCostFunction>,
-            //     fixed_rank: PyRef<'_, PyFixedRank>,
-            //     initial_point: PyReadonlyArray2<'_, f64>,
-            //     max_iterations: usize,
-            //     gradient_tolerance: Option<f64>,
-            //     function_tolerance: Option<f64>,
-            //     point_tolerance: Option<f64>,
-            // ) -> PyResult<PyObject> {
-            //     self.optimize_fixed_rank_impl(
-            //         py, &*cost_function, &*fixed_rank, initial_point,
-            //         max_iterations, gradient_tolerance, function_tolerance, point_tolerance
-            //     ).map(|r| r.into_py(py))
-            // }
+            /// Optimize on a FixedRank manifold
+            #[pyo3(signature = (cost_function, fixed_rank, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
+            pub fn optimize_fixed_rank(
+                &mut self,
+                py: Python<'_>,
+                cost_function: PyRef<'_, PyCostFunction>,
+                fixed_rank: PyRef<'_, crate::py_manifolds::fixed_rank::PyFixedRank>,
+                initial_point: PyReadonlyArray2<'_, f64>,
+                max_iterations: usize,
+                gradient_tolerance: Option<f64>,
+                function_tolerance: Option<f64>,
+                point_tolerance: Option<f64>,
+            ) -> PyResult<PyObject> {
+                self.optimize_fixed_rank_impl(
+                    py, &*cost_function, &*fixed_rank, initial_point,
+                    max_iterations, gradient_tolerance, function_tolerance, point_tolerance
+                ).map(|r| r.into_py(py))
+            }
 
             /// Optimize on a PSDCone manifold
             #[pyo3(signature = (cost_function, psd_cone, initial_point, max_iterations, gradient_tolerance=None, function_tolerance=None, point_tolerance=None))]
@@ -903,7 +942,8 @@ macro_rules! impl_optimizer_generic_default {
 
 				let x0_mat = numpy_to_mat(initial_point)?;
 				// Convert matrix to vector representation
-				let x0 = psd_cone.inner.matrix_to_vector::<f64>(&x0_mat);
+				let mut x0: riemannopt_core::linalg::Vec<f64> = riemannopt_core::linalg::VectorOps::zeros(psd_cone.n * (psd_cone.n + 1) / 2);
+				psd_cone.inner.matrix_to_vector::<f64>(&x0_mat, &mut x0);
 
 				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
 				if let Some(tol) = gradient_tolerance {
@@ -928,7 +968,8 @@ macro_rules! impl_optimizer_generic_default {
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
 					// Convert vector back to matrix
-					let point_mat = psd_cone.inner.vector_to_matrix::<f64>(point);
+					let mut point_mat: riemannopt_core::linalg::Mat<f64> = riemannopt_core::linalg::MatrixOps::zeros(psd_cone.n, psd_cone.n);
+					psd_cone.inner.vector_to_matrix::<f64>(point, &mut point_mat);
 					Ok(mat_to_numpy(py, &point_mat)?.into())
 				})
 			}
@@ -970,6 +1011,51 @@ macro_rules! impl_optimizer_generic_default {
 
 				PyOptimizationResult::from_rust_result(py, result, |point| {
 					Ok(vec_to_numpy(py, point)?.into())
+				})
+			}
+
+			fn optimize_fixed_rank_impl(
+				&mut self,
+				py: Python<'_>,
+				cost_function: &PyCostFunction,
+				fixed_rank: &crate::py_manifolds::fixed_rank::PyFixedRank,
+				initial_point: PyReadonlyArray2<'_, f64>,
+				max_iterations: usize,
+				gradient_tolerance: Option<f64>,
+				function_tolerance: Option<f64>,
+				point_tolerance: Option<f64>,
+			) -> PyResult<PyOptimizationResult> {
+				use crate::py_cost::PyCostFunctionFixedRank;
+				use riemannopt_manifolds::fixed_rank::FixedRankPoint;
+
+				let x0_mat = numpy_to_mat(initial_point)?;
+				let x0 = FixedRankPoint::from_matrix(&x0_mat, fixed_rank.inner.rank())
+					.map_err(to_py_err)?;
+
+				let mut criterion = StoppingCriterion::new().with_max_iterations(max_iterations);
+				if let Some(tol) = gradient_tolerance {
+					criterion = criterion.with_gradient_tolerance(tol);
+				}
+				if let Some(tol) = function_tolerance {
+					criterion = criterion.with_function_tolerance(tol);
+				}
+				if let Some(tol) = point_tolerance {
+					criterion = criterion.with_point_tolerance(tol);
+				}
+
+				let config: $config_type = $create_config(self);
+				let mut optimizer = <$rust_optimizer>::new(config);
+				let cost_fn = PyCostFunctionFixedRank::new(cost_function);
+
+				let result = py
+					.allow_threads(|| {
+						optimizer.optimize(&cost_fn, &fixed_rank.inner, &x0, &criterion)
+					})
+					.map_err(to_py_err)?;
+
+				PyOptimizationResult::from_rust_result(py, result, |point| {
+					let mat = point.to_matrix();
+					Ok(mat_to_numpy(py, &mat)?.into())
 				})
 			}
 

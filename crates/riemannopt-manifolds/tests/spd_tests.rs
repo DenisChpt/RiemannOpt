@@ -68,7 +68,9 @@ fn test_spd_tangent_projection() {
 	});
 
 	let mut v_tangent = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
-	spd.project_tangent(&p, &v, &mut v_tangent).unwrap();
+	let mut ws = spd.create_workspace(&p);
+	spd.project_tangent(&p, &v, &mut v_tangent, &mut ws)
+		.unwrap();
 
 	// Tangent vector should be symmetric
 	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(
@@ -91,8 +93,9 @@ fn test_spd_retraction() {
 	spd.random_tangent(&p, &mut v).unwrap();
 	v.scale_mut(0.01); // small step
 
+	let mut ws = spd.create_workspace(&p);
 	let mut q = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
-	spd.retract(&p, &v, &mut q).unwrap();
+	spd.retract(&p, &v, &mut q, &mut ws).unwrap();
 
 	// Result should be on manifold (symmetric, positive definite)
 	assert!(spd.is_point_on_manifold(&q, 1e-8));
@@ -100,7 +103,7 @@ fn test_spd_retraction() {
 	// Zero retraction should return same point
 	let zero = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
 	let mut p_recovered = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
-	spd.retract(&p, &zero, &mut p_recovered).unwrap();
+	spd.retract(&p, &zero, &mut p_recovered, &mut ws).unwrap();
 	let diff = MatrixOps::sub(&p, &p_recovered);
 	assert_relative_eq!(MatrixOps::norm(&diff), 0.0, epsilon = 1e-10);
 }
@@ -119,12 +122,13 @@ fn test_spd_inner_product() {
 	spd.random_tangent(&p, &mut v).unwrap();
 
 	// Test symmetry
-	let inner_uv = spd.inner_product(&p, &u, &v).unwrap();
-	let inner_vu = spd.inner_product(&p, &v, &u).unwrap();
+	let mut ws = spd.create_workspace(&p);
+	let inner_uv = spd.inner_product(&p, &u, &v, &mut ws).unwrap();
+	let inner_vu = spd.inner_product(&p, &v, &u, &mut ws).unwrap();
 	assert_relative_eq!(inner_uv, inner_vu, epsilon = 1e-10);
 
 	// Test positive definiteness
-	let inner_uu = spd.inner_product(&p, &u, &u).unwrap();
+	let inner_uu = spd.inner_product(&p, &u, &u, &mut ws).unwrap();
 	assert!(inner_uu >= 0.0);
 }
 
@@ -168,7 +172,8 @@ fn test_spd_euclidean_to_riemannian_gradient() {
 	);
 
 	let mut rgrad = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
-	spd.euclidean_to_riemannian_gradient(&p, &egrad, &mut rgrad)
+	let mut ws = spd.create_workspace(&p);
+	spd.euclidean_to_riemannian_gradient(&p, &egrad, &mut rgrad, &mut ws)
 		.unwrap();
 
 	// Result should be symmetric (in tangent space)
@@ -206,7 +211,8 @@ fn test_spd_parallel_transport() {
 
 	// Transport from P to P (self-transport) via trait method
 	let mut transported = <linalg::Mat<f64> as MatrixOps<f64>>::zeros(3, 3);
-	Manifold::<f64>::parallel_transport(&spd, &p, &p, &v, &mut transported).unwrap();
+	let mut ws = spd.create_workspace(&p);
+	Manifold::<f64>::parallel_transport(&spd, &p, &p, &v, &mut transported, &mut ws).unwrap();
 
 	// Transported vector should be symmetric (tangent space constraint)
 	let symmetry_error = MatrixOps::norm(&MatrixOps::sub(

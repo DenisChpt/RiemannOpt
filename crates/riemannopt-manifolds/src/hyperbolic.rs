@@ -114,7 +114,7 @@
 //!
 //! // Retraction
 //! let mut y = linalg::Vec::<f64>::zeros(2);
-//! hyperbolic.retract(&x, &v, &mut y)?;
+//! hyperbolic.retract(&x, &v, &mut y, &mut ())?;
 //!
 //! // Verify y is in the ball
 //! assert!(hyperbolic.is_point_on_manifold(&y, 1e-10));
@@ -350,7 +350,9 @@ where
 	pub fn log_map(&self, x: &linalg::Vec<T>, y: &linalg::Vec<T>) -> Result<linalg::Vec<T>> {
 		self.check_point(x)?;
 		self.check_point(y)?;
-		Ok(self.logarithmic_map(x, y))
+		let mut result: linalg::Vec<T> = VectorOps::zeros(self.n);
+		self.logarithmic_map(x, y, &mut result);
+		Ok(result)
 	}
 
 	/// Computes the hyperbolic distance between two points.
@@ -389,6 +391,7 @@ where
 		x: &linalg::Vec<T>,
 		y: &linalg::Vec<T>,
 		v: &linalg::Vec<T>,
+		_ws: &mut (),
 	) -> Result<linalg::Vec<T>> {
 		self.check_tangent(x, v)?;
 		self.check_point(y)?;
@@ -409,25 +412,26 @@ where
 		norm_squared < boundary_squared
 	}
 
-	/// Projects a point to the Poincare ball.
+	/// Projects a point to the Poincare ball, writing into `result`.
 	///
 	/// For general curvature K < 0, the ball has radius √(-1/K).
 	/// If the point is outside the ball, project it to a point
 	/// slightly inside the boundary for numerical stability.
-	fn project_to_poincare_ball(&self, point: &linalg::Vec<T>) -> linalg::Vec<T> {
+	fn project_to_poincare_ball(
+		&self,
+		point: &linalg::Vec<T>,
+		result: &mut linalg::Vec<T>,
+	) {
 		let norm = point.norm();
 		let neg_curv = -self.curvature;
 		let ball_radius = <T as Float>::sqrt(neg_curv);
 		let max_norm = ball_radius - self.boundary_tolerance;
 
+		result.copy_from(point);
 		if norm > max_norm {
 			// Project to boundary with tolerance (slightly inside)
 			let safe_norm = max_norm * <T as Scalar>::from_f64(PROJECTION_SAFETY_MARGIN);
-			let mut result = point.clone();
 			result.scale_mut(safe_norm / norm);
-			result
-		} else {
-			point.clone()
 		}
 	}
 
@@ -446,16 +450,17 @@ where
 	///
 	/// For curvature K < 0:
 	/// d(x,y) = 1/√(-K) * arcosh(1 + 2||x-y||^2 / ((1-||x||^2/(-K))(1-||y||^2/(-K))))
+	///
+	/// Uses ‖x-y‖² = ‖x‖² + ‖y‖² - 2⟨x,y⟩ to avoid allocating a difference vector.
 	fn hyperbolic_distance(&self, x: &linalg::Vec<T>, y: &linalg::Vec<T>) -> T {
-		let diff = VectorOps::sub(x, y);
-		let diff_norm_sq = diff.norm_squared();
-
 		let x_norm_sq = x.norm_squared();
 		let y_norm_sq = y.norm_squared();
-		let neg_curv = -self.curvature;
-
-		let denominator = (T::one() - x_norm_sq / neg_curv) * (T::one() - y_norm_sq / neg_curv);
+		let xy = x.dot(y);
 		let two = <T as Scalar>::from_f64(2.0);
+		let diff_norm_sq = x_norm_sq + y_norm_sq - two * xy;
+
+		let neg_curv = -self.curvature;
+		let denominator = (T::one() - x_norm_sq / neg_curv) * (T::one() - y_norm_sq / neg_curv);
 
 		let argument = T::one() + two * diff_norm_sq / denominator;
 
@@ -468,11 +473,15 @@ where
 	/// Computes the exponential map in the Poincare ball model.
 	///
 	/// The exponential map moves along geodesics from a point in a given direction.
+	/// Allocates a single result vector; all intermediate work is done in-place.
 	fn exponential_map(&self, point: &linalg::Vec<T>, tangent: &linalg::Vec<T>) -> linalg::Vec<T> {
 		let tangent_norm = tangent.norm();
 
+		let mut result: linalg::Vec<T> = VectorOps::zeros(VectorOps::len(point));
+
 		if tangent_norm < <T as Scalar>::from_f64(1e-16) {
-			return point.clone();
+			result.copy_from(point);
+			return result;
 		}
 
 		let lambda = self.conformal_factor(point);
@@ -481,59 +490,55 @@ where
 
 		// Exponential map formula in Poincare ball
 		let alpha = <T as Float>::tanh(scaled_norm);
-		let mut normalized_tangent = tangent.clone();
-		normalized_tangent.div_scalar_mut(tangent_norm);
 
-		// numerator = point + normalized_tangent * alpha
-		let mut numerator = point.clone();
-		numerator.axpy(alpha, &normalized_tangent, T::one());
+		// result = point + (alpha / tangent_norm) * tangent
+		result.copy_from(point);
+		result.axpy(alpha / tangent_norm, tangent, T::one());
 
-		// denominator = 1 + alpha * point.dot(&normalized_tangent)
-		let denominator = T::one() + alpha * point.dot(&normalized_tangent);
+		// denominator = 1 + alpha * dot(point, tangent/norm)
+		let denominator = T::one() + alpha * point.dot(tangent) / tangent_norm;
 
-		numerator.div_scalar_mut(denominator);
-		self.project_to_poincare_ball(&numerator)
-	}
+		result.div_scalar_mut(denominator);
 
-	/// Computes the logarithmic map in the Poincare ball model.
-	///
-	/// The logarithmic map finds the tangent vector from point to other.
-	fn logarithmic_map(&self, point: &linalg::Vec<T>, other: &linalg::Vec<T>) -> linalg::Vec<T> {
-		// Check if points are the same
-		let diff = VectorOps::sub(other, point);
-		if diff.norm() < <T as Scalar>::from_f64(1e-16) {
-			return VectorOps::zeros(self.n);
+		// Project to ball boundary if needed (inlined)
+		let norm = result.norm();
+		let neg_curv = -self.curvature;
+		let ball_radius = <T as Float>::sqrt(neg_curv);
+		let max_norm = ball_radius - self.boundary_tolerance;
+		if norm > max_norm {
+			let safe_norm = max_norm * <T as Scalar>::from_f64(PROJECTION_SAFETY_MARGIN);
+			result.scale_mut(safe_norm / norm);
 		}
 
-		// Use a simpler approach based on the geodesic connecting the points
-		// For the Poincaré ball model, we can use the formula:
-		// log_x(y) = d(x,y) * (y-x) / ||y-x||_x
-		// where ||.||_x is the norm in the tangent space at x
+		result
+	}
 
+	/// Computes the logarithmic map in the Poincare ball model, writing into `result`.
+	///
+	/// The logarithmic map finds the tangent vector from point to other.
+	/// Zero allocation: all work is done in the caller-provided `result`.
+	fn logarithmic_map(
+		&self,
+		point: &linalg::Vec<T>,
+		other: &linalg::Vec<T>,
+		result: &mut linalg::Vec<T>,
+	) {
+		// result = other - point
+		result.copy_from(other);
+		result.sub_assign(point);
+
+		let diff_norm = result.norm();
+		if diff_norm < <T as Scalar>::from_f64(1e-16) {
+			result.fill(T::zero());
+			return;
+		}
+
+		// log_x(y) = d(x,y) * (y-x) / ||y-x||_x
 		let dist = self.hyperbolic_distance(point, other);
 		let lambda = self.conformal_factor(point);
 
-		// The vector in the tangent space pointing from x to y
-		let diff_norm = diff.norm();
-		let mut direction = diff;
-		direction.div_scalar_mut(diff_norm);
-
-		// Scale by the geodesic distance and metric factor
-		direction.scale_mut(dist * <T as Scalar>::from_f64(2.0) / lambda);
-		direction
-	}
-
-	/// Projects a vector to the tangent space at a point.
-	///
-	/// In the Poincare ball model, all vectors are valid tangent vectors,
-	/// so this is essentially the identity operation.
-	fn project_to_tangent(
-		&self,
-		_point: &linalg::Vec<T>,
-		vector: &linalg::Vec<T>,
-	) -> linalg::Vec<T> {
-		// In Poincare ball, tangent space is full R^n
-		vector.clone()
+		// result = (other - point) / diff_norm * dist * 2 / lambda
+		result.scale_mut(dist * <T as Scalar>::from_f64(2.0) / (lambda * diff_norm));
 	}
 
 	/// Generates a random point in the Poincare ball.
@@ -576,58 +581,60 @@ where
 	/// Parallel transport using the Levi-Civita connection.
 	///
 	/// Transports a tangent vector along the geodesic from one point to another.
+	/// Allocates a single result vector; all intermediate work is done in-place via axpy.
 	fn parallel_transport_vector(
 		&self,
 		from: &linalg::Vec<T>,
 		to: &linalg::Vec<T>,
 		vector: &linalg::Vec<T>,
 	) -> linalg::Vec<T> {
-		// Exact parallel transport formula for the Poincaré ball model
-		// Based on the gyrovector formalism and the Levi-Civita connection
+		let n = VectorOps::len(vector);
+		let mut result: linalg::Vec<T> = VectorOps::zeros(n);
 
-		// If from == to, no transport needed
-		let diff = VectorOps::sub(to, from);
-		if diff.norm() < <T as Scalar>::from_f64(1e-16) {
-			return vector.clone();
-		}
-
-		// Compute the necessary components for parallel transport
-		let _from_norm_sq = from.norm_squared();
+		// Check if from == to without allocating: ‖to-from‖² = ‖to‖²+‖from‖²-2⟨to,from⟩
+		let from_norm_sq = from.norm_squared();
 		let to_norm_sq = to.norm_squared();
 		let from_dot_to = from.dot(to);
+		let diff_norm_sq = from_norm_sq + to_norm_sq - <T as Scalar>::from_f64(2.0) * from_dot_to;
+
+		if diff_norm_sq < <T as Scalar>::from_f64(1e-32) {
+			result.copy_from(vector);
+			return result;
+		}
+
 		let from_dot_v = from.dot(vector);
 		let to_dot_v = to.dot(vector);
 
-		// The formula for parallel transport in the Poincaré ball with curvature K is:
-		// P_{x→y}(v) = v + 2/(1 - K||y||^2) * (⟨y,v⟩y - ⟨x,v⟩/(1 + ⟨x,y⟩) * (y + x))
+		// P_{x→y}(v) = v + 2/(1 - K||y||²) * (⟨y,v⟩·y - ⟨x,v⟩/(1+⟨x,y⟩) · (y+x))
 
 		let denominator = T::one() + from_dot_to;
 
-		// Avoid division by zero
+		// Avoid division by zero (nearly antipodal)
 		if <T as Float>::abs(denominator) < <T as Scalar>::from_f64(1e-16) {
-			// Points are nearly antipodal in the ball - use simple scaling
 			let lambda_from = self.conformal_factor(from);
 			let lambda_to = self.conformal_factor(to);
-			let mut result = vector.clone();
+			result.copy_from(vector);
 			result.scale_mut(lambda_from / lambda_to);
 			return result;
 		}
 
 		let scale_factor = <T as Scalar>::from_f64(2.0) / (T::one() - self.curvature * to_norm_sq);
+		let coeff_from_v = from_dot_v / denominator;
 
-		// term1 = to * to_dot_v
-		let mut term1 = to.clone();
-		term1.scale_mut(to_dot_v);
+		// Build: result = to_dot_v · to − coeff_from_v · (to + from)
+		//               = (to_dot_v − coeff_from_v) · to − coeff_from_v · from
+		// Then:  result = vector + scale_factor · result
 
-		// term2 = (to + from) * (from_dot_v / denominator)
-		let mut term2 = VectorOps::add(to, from);
-		term2.scale_mut(from_dot_v / denominator);
+		// Step 1: result = (to_dot_v - coeff_from_v) · to
+		result.copy_from(to);
+		result.scale_mut(to_dot_v - coeff_from_v);
 
-		// result = vector + (term1 - term2) * scale_factor
-		let mut result = vector.clone();
-		term1.sub_assign(&term2);
-		term1.scale_mut(scale_factor);
-		result.add_assign(&term1);
+		// Step 2: result -= coeff_from_v · from
+		result.axpy(-coeff_from_v, from, T::one());
+
+		// Step 3: result = vector + scale_factor · result
+		result.axpy(T::one(), vector, scale_factor);
+
 		result
 	}
 }
@@ -639,6 +646,7 @@ where
 {
 	type Point = linalg::Vec<T>;
 	type TangentVector = linalg::Vec<T>;
+	type Workspace = ();
 
 	fn name(&self) -> &str {
 		"Hyperbolic"
@@ -675,34 +683,21 @@ where
 			for i in 0..copy_len {
 				*temp.get_mut(i) = point.get(i);
 			}
-			let projected = self.project_to_poincare_ball(&temp);
-			result.copy_from(&projected);
+			self.project_to_poincare_ball(&temp, result);
 		} else {
-			let projected = self.project_to_poincare_ball(point);
-			result.copy_from(&projected);
+			self.project_to_poincare_ball(point, result);
 		}
 	}
 
 	fn project_tangent(
 		&self,
-		point: &Self::Point,
+		_point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
-			*result = VectorOps::zeros(self.n);
-		}
-
-		if VectorOps::len(point) != self.n || VectorOps::len(vector) != self.n {
-			return Err(ManifoldError::dimension_mismatch(
-				self.n,
-				VectorOps::len(point).max(VectorOps::len(vector)),
-			));
-		}
-
-		let proj = self.project_to_tangent(point, vector);
-		result.copy_from(&proj);
+		// In Poincaré ball model, tangent space at any point is ℝⁿ — identity projection
+		result.copy_from(vector);
 		Ok(())
 	}
 
@@ -711,6 +706,7 @@ where
 		point: &Self::Point,
 		u: &Self::TangentVector,
 		v: &Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<T> {
 		if VectorOps::len(point) != self.n
 			|| VectorOps::len(u) != self.n
@@ -735,22 +731,39 @@ where
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
+		_ws: &mut (),
 	) -> Result<()> {
-		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
-			*result = VectorOps::zeros(self.n);
+		// Exponential map in Poincaré ball — in-place into result
+		let tangent_norm = tangent.norm();
+
+		if tangent_norm < <T as Scalar>::from_f64(1e-16) {
+			result.copy_from(point);
+			return Ok(());
 		}
 
-		if VectorOps::len(point) != self.n || VectorOps::len(tangent) != self.n {
-			return Err(ManifoldError::dimension_mismatch(
-				self.n,
-				VectorOps::len(point).max(VectorOps::len(tangent)),
-			));
+		let lambda = self.conformal_factor(point);
+		let sqrt_neg_curv = <T as Float>::sqrt(-self.curvature);
+		let scaled_norm = sqrt_neg_curv * tangent_norm * lambda / <T as Scalar>::from_f64(2.0);
+		let alpha = <T as Float>::tanh(scaled_norm);
+
+		// result = point + (alpha / tangent_norm) * tangent
+		result.copy_from(point);
+		result.axpy(alpha / tangent_norm, tangent, T::one());
+
+		// result /= (1 + alpha * dot(point, tangent/norm))
+		let denominator = T::one() + alpha * point.dot(tangent) / tangent_norm;
+		result.div_scalar_mut(denominator);
+
+		// Project to ball boundary if needed
+		let norm = result.norm();
+		let neg_curv = -self.curvature;
+		let ball_radius = <T as Float>::sqrt(neg_curv);
+		let max_norm = ball_radius - self.boundary_tolerance;
+		if norm > max_norm {
+			let safe_norm = max_norm * <T as Scalar>::from_f64(PROJECTION_SAFETY_MARGIN);
+			result.scale_mut(safe_norm / norm);
 		}
 
-		// Use exponential map as retraction
-		let exp = self.exponential_map(point, tangent);
-		result.copy_from(&exp);
 		Ok(())
 	}
 
@@ -759,6 +772,7 @@ where
 		point: &Self::Point,
 		other: &Self::Point,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Ensure result has correct size
 		if VectorOps::len(result) != self.n {
@@ -772,9 +786,8 @@ where
 			));
 		}
 
-		// Use logarithmic map as inverse retraction
-		let log = self.logarithmic_map(point, other);
-		result.copy_from(&log);
+		// Use logarithmic map as inverse retraction (zero-alloc: writes directly into result)
+		self.logarithmic_map(point, other, result);
 		Ok(())
 	}
 
@@ -783,6 +796,7 @@ where
 		point: &Self::Point,
 		euclidean_grad: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
 		// Ensure result has correct size
 		if VectorOps::len(result) != self.n {
@@ -833,8 +847,7 @@ where
 			*tangent.get_mut(i) = <T as Scalar>::from_f64(val);
 		}
 
-		let proj = self.project_to_tangent(point, &tangent);
-		result.copy_from(&proj);
+		self.project_tangent(point, &tangent, result, &mut ())?;
 		Ok(())
 	}
 
@@ -848,38 +861,56 @@ where
 		to: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
+		_ws: &mut (),
 	) -> Result<()> {
-		// Ensure result has correct size
-		if VectorOps::len(result) != self.n {
-			*result = VectorOps::zeros(self.n);
+		// P_{x→y}(v) = v + scale_factor * (⟨y,v⟩·y - ⟨x,v⟩/(1+⟨x,y⟩) · (y+x))
+		// In-place into result.
+
+		let from_dot_to = from.dot(to);
+		let denominator = T::one() + from_dot_to;
+
+		if <T as Float>::abs(denominator) < <T as Scalar>::from_f64(1e-16) {
+			// Nearly antipodal — simple scaling fallback
+			let lambda_from = self.conformal_factor(from);
+			let lambda_to = self.conformal_factor(to);
+			result.copy_from(vector);
+			result.scale_mut(lambda_from / lambda_to);
+			return Ok(());
 		}
 
-		if VectorOps::len(from) != self.n
-			|| VectorOps::len(to) != self.n
-			|| VectorOps::len(vector) != self.n
-		{
-			return Err(ManifoldError::dimension_mismatch(
-				self.n,
-				VectorOps::len(from)
-					.max(VectorOps::len(to))
-					.max(VectorOps::len(vector)),
-			));
-		}
+		let to_norm_sq = to.norm_squared();
+		let from_dot_v = from.dot(vector);
+		let to_dot_v = to.dot(vector);
+		let scale_factor = <T as Scalar>::from_f64(2.0) / (T::one() - self.curvature * to_norm_sq);
 
-		let transported = self.parallel_transport_vector(from, to, vector);
-		result.copy_from(&transported);
+		// result = vector + scale_factor * (to_dot_v · to - (from_dot_v / denom) · (to + from))
+		// Step 1: result = to * to_dot_v
+		result.copy_from(to);
+		result.scale_mut(to_dot_v);
+		// Step 2: result -= (from_dot_v / denom) * to
+		result.axpy(-from_dot_v / denominator, to, T::one());
+		// Step 3: result -= (from_dot_v / denom) * from
+		result.axpy(-from_dot_v / denominator, from, T::one());
+		// Step 4: result *= scale_factor, then += vector
+		result.scale_mut(scale_factor);
+		result.add_assign(vector);
+
 		Ok(())
 	}
 
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> Result<T> {
-		if VectorOps::len(x) != self.n || VectorOps::len(y) != self.n {
-			return Err(ManifoldError::dimension_mismatch(
-				self.n,
-				VectorOps::len(x).max(VectorOps::len(y)),
-			));
-		}
+		// d(x,y) = 1/√(-K) · acosh(1 + 2‖x-y‖² / ((1-‖x‖²/(-K))(1-‖y‖²/(-K))))
+		// ‖x-y‖² = ‖x‖² + ‖y‖² - 2⟨x,y⟩  (zero alloc)
+		let x_norm_sq = x.norm_squared();
+		let y_norm_sq = y.norm_squared();
+		let xy = x.dot(y);
+		let diff_norm_sq = x_norm_sq + y_norm_sq - (T::one() + T::one()) * xy;
 
-		Ok(self.hyperbolic_distance(x, y))
+		let neg_curv = -self.curvature;
+		let denominator = (T::one() - x_norm_sq / neg_curv) * (T::one() - y_norm_sq / neg_curv);
+		let argument = T::one() + (T::one() + T::one()) * diff_norm_sq / denominator;
+		let clamped = <T as Float>::max(argument, T::one());
+		Ok(<T as Float>::acosh(clamped) / <T as Float>::sqrt(neg_curv))
 	}
 
 	fn is_flat(&self) -> bool {
@@ -906,8 +937,6 @@ where
 		v1: &Self::TangentVector,
 		v2: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		// Temporary buffer for projection if needed
-		_temp: &mut Self::TangentVector,
 	) -> Result<()> {
 		// In the Poincaré ball model, tangent space at a point is just R^n
 		// So addition is standard vector addition

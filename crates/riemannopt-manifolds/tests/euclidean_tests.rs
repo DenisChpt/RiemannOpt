@@ -48,7 +48,9 @@ fn test_euclidean_tangent_projection() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.5, -1.0, 2.0]);
 	let mut v_tangent: linalg::Vec<f64> = VectorOps::zeros(3);
 
-	euclidean.project_tangent(&x, &v, &mut v_tangent).unwrap();
+	euclidean
+		.project_tangent(&x, &v, &mut v_tangent, &mut ())
+		.unwrap();
 
 	// Tangent projection is identity in Euclidean space
 	let diff = VectorOps::sub(&v_tangent, &v);
@@ -63,7 +65,7 @@ fn test_euclidean_retraction() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.1, 0.2, 0.3]);
 	let mut y: linalg::Vec<f64> = VectorOps::zeros(3);
 
-	euclidean.retract(&x, &v, &mut y).unwrap();
+	euclidean.retract(&x, &v, &mut y, &mut ()).unwrap();
 
 	// Retraction is addition in Euclidean space
 	let expected = VectorOps::add(&x, &v);
@@ -73,7 +75,9 @@ fn test_euclidean_retraction() {
 	// Zero retraction returns same point
 	let zero: linalg::Vec<f64> = VectorOps::zeros(3);
 	let mut x_recovered: linalg::Vec<f64> = VectorOps::zeros(3);
-	euclidean.retract(&x, &zero, &mut x_recovered).unwrap();
+	euclidean
+		.retract(&x, &zero, &mut x_recovered, &mut ())
+		.unwrap();
 	let diff = VectorOps::sub(&x, &x_recovered);
 	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);
 }
@@ -87,21 +91,21 @@ fn test_euclidean_inner_product() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[4.0, 5.0, 6.0]);
 
 	// Test inner product is standard dot product
-	let inner_uv = euclidean.inner_product(&x, &u, &v).unwrap();
+	let inner_uv = euclidean.inner_product(&x, &u, &v, &mut ()).unwrap();
 	assert_relative_eq!(inner_uv, u.dot(&v), epsilon = 1e-14);
 
 	// Test symmetry
-	let inner_vu = euclidean.inner_product(&x, &v, &u).unwrap();
+	let inner_vu = euclidean.inner_product(&x, &v, &u, &mut ()).unwrap();
 	assert_relative_eq!(inner_uv, inner_vu, epsilon = 1e-14);
 
 	// Test positive definiteness
-	let inner_uu = euclidean.inner_product(&x, &u, &u).unwrap();
+	let inner_uu = euclidean.inner_product(&x, &u, &u, &mut ()).unwrap();
 	assert!(inner_uu > 0.0);
 
 	// Test orthogonality
 	let e1: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
 	let e2: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 1.0, 0.0]);
-	let inner_e1e2 = euclidean.inner_product(&x, &e1, &e2).unwrap();
+	let inner_e1e2 = euclidean.inner_product(&x, &e1, &e2, &mut ()).unwrap();
 	assert_relative_eq!(inner_e1e2, 0.0, epsilon = 1e-14);
 }
 
@@ -129,7 +133,7 @@ fn test_euclidean_parallel_transport() {
 
 	let mut transported: linalg::Vec<f64> = VectorOps::zeros(3);
 	euclidean
-		.parallel_transport(&x, &y, &v, &mut transported)
+		.parallel_transport(&x, &y, &v, &mut transported, &mut ())
 		.unwrap();
 
 	// Parallel transport is identity in flat space
@@ -149,7 +153,7 @@ fn test_euclidean_euclidean_to_riemannian_gradient() {
 	let mut rgrad: linalg::Vec<f64> = VectorOps::zeros(3);
 
 	euclidean
-		.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad)
+		.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad, &mut ())
 		.unwrap();
 
 	// In Euclidean space, gradients are the same
@@ -194,7 +198,7 @@ fn test_euclidean_is_flat() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, 0.0, 0.0]);
 	let mut transported: linalg::Vec<f64> = VectorOps::zeros(3);
 	euclidean
-		.parallel_transport(&x, &y, &v, &mut transported)
+		.parallel_transport(&x, &y, &v, &mut transported, &mut ())
 		.unwrap();
 	let diff = VectorOps::sub(&transported, &v);
 	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);

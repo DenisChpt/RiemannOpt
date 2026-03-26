@@ -57,7 +57,8 @@ fn test_hyperbolic_tangent_projection() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, -2.0, 0.5]);
 	let mut v_tangent: linalg::Vec<f64> = VectorOps::zeros(3);
 
-	hyp.project_tangent(&x, &v, &mut v_tangent).unwrap();
+	hyp.project_tangent(&x, &v, &mut v_tangent, &mut ())
+		.unwrap();
 
 	// Tangent projection is identity in the Poincare ball
 	let diff = VectorOps::sub(&v_tangent, &v);
@@ -72,7 +73,7 @@ fn test_hyperbolic_retraction() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.05, -0.03, 0.01]);
 	let mut y: linalg::Vec<f64> = VectorOps::zeros(3);
 
-	hyp.retract(&x, &v, &mut y).unwrap();
+	hyp.retract(&x, &v, &mut y, &mut ()).unwrap();
 
 	// Result should be inside the ball
 	assert!(y.norm() < 1.0, "Retracted point should be in Poincare ball");
@@ -81,7 +82,7 @@ fn test_hyperbolic_retraction() {
 	// Zero retraction returns same point
 	let zero: linalg::Vec<f64> = VectorOps::zeros(3);
 	let mut x_recovered: linalg::Vec<f64> = VectorOps::zeros(3);
-	hyp.retract(&x, &zero, &mut x_recovered).unwrap();
+	hyp.retract(&x, &zero, &mut x_recovered, &mut ()).unwrap();
 	let diff = VectorOps::sub(&x, &x_recovered);
 	assert_relative_eq!(diff.norm(), 0.0, epsilon = 1e-14);
 }
@@ -95,12 +96,12 @@ fn test_hyperbolic_inner_product() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.0, 1.0, 0.0]);
 
 	// Test symmetry
-	let inner_uv = hyp.inner_product(&x, &u, &v).unwrap();
-	let inner_vu = hyp.inner_product(&x, &v, &u).unwrap();
+	let inner_uv = hyp.inner_product(&x, &u, &v, &mut ()).unwrap();
+	let inner_vu = hyp.inner_product(&x, &v, &u, &mut ()).unwrap();
 	assert_relative_eq!(inner_uv, inner_vu, epsilon = 1e-14);
 
 	// Test positive definiteness
-	let inner_uu = hyp.inner_product(&x, &u, &u).unwrap();
+	let inner_uu = hyp.inner_product(&x, &u, &u, &mut ()).unwrap();
 	assert!(inner_uu > 0.0);
 
 	// The hyperbolic inner product should differ from Euclidean
@@ -133,7 +134,7 @@ fn test_hyperbolic_parallel_transport() {
 	let v: linalg::Vec<f64> = VectorOps::from_slice(&[0.5, 0.0, 0.1]);
 
 	let mut transported: linalg::Vec<f64> = VectorOps::zeros(3);
-	Manifold::<f64>::parallel_transport(&hyp, &x, &y, &v, &mut transported).unwrap();
+	Manifold::<f64>::parallel_transport(&hyp, &x, &y, &v, &mut transported, &mut ()).unwrap();
 
 	// Transported vector should have correct dimension
 	assert_eq!(transported.len(), 3);
@@ -150,7 +151,7 @@ fn test_hyperbolic_euclidean_to_riemannian_gradient() {
 	let egrad: linalg::Vec<f64> = VectorOps::from_slice(&[1.0, -0.5, 0.3]);
 	let mut rgrad: linalg::Vec<f64> = VectorOps::zeros(3);
 
-	hyp.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad)
+	hyp.euclidean_to_riemannian_gradient(&x, &egrad, &mut rgrad, &mut ())
 		.unwrap();
 
 	// Riemannian gradient should be a scaled version of Euclidean gradient
