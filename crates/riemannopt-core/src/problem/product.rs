@@ -64,14 +64,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> PoseEstimation<T, B> {
 	pub fn new(sources: B::Matrix, targets: B::Matrix, weights: B::Vector) -> Self {
 		debug_assert_eq!(MatrixView::nrows(&sources), 3);
 		debug_assert_eq!(MatrixView::nrows(&targets), 3);
-		debug_assert_eq!(
-			MatrixView::ncols(&sources),
-			MatrixView::ncols(&targets)
-		);
-		debug_assert_eq!(
-			MatrixView::ncols(&sources),
-			VectorView::len(&weights)
-		);
+		debug_assert_eq!(MatrixView::ncols(&sources), MatrixView::ncols(&targets));
+		debug_assert_eq!(MatrixView::ncols(&sources), VectorView::len(&weights));
 		Self {
 			sources,
 			targets,
@@ -370,16 +364,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for CoupledWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for CoupledWorkspace<T, B>
-where
-	B::Matrix: Send,
-{
-}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for CoupledWorkspace<T, B>
-where
-	B::Matrix: Sync,
-{
-}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for CoupledWorkspace<T, B> where B::Matrix: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for CoupledWorkspace<T, B> where B::Matrix: Sync {}
 
 impl<T, B, M1, M2> Problem<T, Product<M1, M2>> for CoupledFactorization<T, B>
 where
@@ -442,22 +428,14 @@ where
 		self.compute_residual(a, b, ws);
 
 		// ∂f/∂A = −R B S (n×p = n×m · m×p, then scale columns by s)
-		ws.egrad_a.gemm(
-			-T::one(),
-			ws.residual.as_view(),
-			b.as_view(),
-			T::zero(),
-		);
+		ws.egrad_a
+			.gemm(-T::one(), ws.residual.as_view(), b.as_view(), T::zero());
 		ws.tmp_a.copy_from(&ws.egrad_a);
 		ws.egrad_a.scale_columns(&ws.tmp_a, &self.core_diag);
 
 		// ∂f/∂B = −Rᵀ A S (m×p = m×n · n×p, then scale)
-		ws.egrad_b.gemm_at(
-			-T::one(),
-			ws.residual.as_view(),
-			a.as_view(),
-			T::zero(),
-		);
+		ws.egrad_b
+			.gemm_at(-T::one(), ws.residual.as_view(), a.as_view(), T::zero());
 		ws.tmp_b.copy_from(&ws.egrad_b);
 		ws.egrad_b.scale_columns(&ws.tmp_b, &self.core_diag);
 
@@ -489,21 +467,13 @@ where
 		self.compute_residual(a, b, ws);
 		let cost = half * ws.residual.frobenius_dot(&ws.residual);
 
-		ws.egrad_a.gemm(
-			-T::one(),
-			ws.residual.as_view(),
-			b.as_view(),
-			T::zero(),
-		);
+		ws.egrad_a
+			.gemm(-T::one(), ws.residual.as_view(), b.as_view(), T::zero());
 		ws.tmp_a.copy_from(&ws.egrad_a);
 		ws.egrad_a.scale_columns(&ws.tmp_a, &self.core_diag);
 
-		ws.egrad_b.gemm_at(
-			-T::one(),
-			ws.residual.as_view(),
-			a.as_view(),
-			T::zero(),
-		);
+		ws.egrad_b
+			.gemm_at(-T::one(), ws.residual.as_view(), a.as_view(), T::zero());
 		ws.tmp_b.copy_from(&ws.egrad_b);
 		ws.egrad_b.scale_columns(&ws.tmp_b, &self.core_diag);
 
@@ -524,22 +494,13 @@ where
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> CoupledFactorization<T, B> {
-	fn compute_residual(
-		&self,
-		a: &B::Matrix,
-		b: &B::Matrix,
-		ws: &mut CoupledWorkspace<T, B>,
-	) {
+	fn compute_residual(&self, a: &B::Matrix, b: &B::Matrix, ws: &mut CoupledWorkspace<T, B>) {
 		// A S → a_scaled
 		ws.a_scaled.scale_columns(a, &self.core_diag);
 
 		// A S Bᵀ → approx
-		ws.approx.gemm_bt(
-			T::one(),
-			ws.a_scaled.as_view(),
-			b.as_view(),
-			T::zero(),
-		);
+		ws.approx
+			.gemm_bt(T::one(), ws.a_scaled.as_view(), b.as_view(), T::zero());
 
 		// R = Y − approx
 		ws.residual.copy_from(&self.data);

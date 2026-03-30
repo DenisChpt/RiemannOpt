@@ -624,6 +624,44 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			#[inline]
+			fn mat_t_vec_axpy(&self, alpha: $t, x: &Self::Col, beta: $t, y: &mut Self::Col) {
+				// y = alpha * A^T * x + beta * y
+				// Uses faer's native transpose view (stride swap, zero-alloc).
+				let par = faer::get_global_parallelism();
+				let accum = if beta == 0.0 {
+					faer::Accum::Replace
+				} else {
+					if beta != 1.0 {
+						*y *= faer::Scale(beta);
+					}
+					faer::Accum::Add
+				};
+				faer::linalg::matmul::matmul(
+					y.as_mut().as_mat_mut(),
+					accum,
+					self.as_ref().transpose(),
+					x.as_ref().as_mat(),
+					alpha,
+					par,
+				);
+			}
+
+			#[inline]
+			fn ger(&mut self, alpha: $t, x: &Self::Col, y: &Self::Col) {
+				// self += alpha * x * y^T  (rank-1 update)
+				// Uses faer's native matmul with column-as-matrix views.
+				let par = faer::get_global_parallelism();
+				faer::linalg::matmul::matmul(
+					self.as_mut(),
+					faer::Accum::Add,
+					x.as_ref().as_mat(),
+					y.as_ref().as_mat().transpose(),
+					alpha,
+					par,
+				);
+			}
+
+			#[inline]
 			fn mat_component_mul_assign(&mut self, other: &Self) {
 				faer::zip!(self.as_mut(), other.as_ref()).for_each(|faer::unzip!(s, o)| {
 					*s *= *o;

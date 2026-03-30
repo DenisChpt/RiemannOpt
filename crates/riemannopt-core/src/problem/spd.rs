@@ -9,7 +9,9 @@
 use std::marker::PhantomData;
 
 use crate::{
-	linalg::{DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView},
+	linalg::{
+		DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
+	},
 	manifold::Manifold,
 	problem::Problem,
 	types::Scalar,
@@ -134,16 +136,10 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for FrechetMeanWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for FrechetMeanWorkspace<T, B>
-where
-	B::Matrix: Send,
-{
-}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for FrechetMeanWorkspace<T, B>
-where
-	B::Matrix: Sync,
-{
-}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for FrechetMeanWorkspace<T, B> where B::Matrix: Send
+{}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for FrechetMeanWorkspace<T, B> where B::Matrix: Sync
+{}
 
 impl<T, B, M> Problem<T, M> for FrechetMean<T, B>
 where
@@ -275,9 +271,7 @@ impl<T: Scalar, B: LinAlgBackend<T>> MetricLearning<T, B> {
 		// Store dissimilar pair differences (element-wise, no column_to_owned)
 		let dissimilar_diffs: Vec<_> = dissimilar_pairs
 			.iter()
-			.map(|&(i, j)| {
-				B::Vector::from_fn(n, |r| data.get(r, i) - data.get(r, j))
-			})
+			.map(|&(i, j)| B::Vector::from_fn(n, |r| data.get(r, i) - data.get(r, j)))
 			.collect();
 
 		Self {
@@ -372,8 +366,7 @@ where
 				// Rank-1 update: egrad += weight * d d^T
 				for r in 0..n {
 					for c in 0..n {
-						*ws.egrad.get_mut(r, c) =
-							ws.egrad.get(r, c) + weight * d.get(r) * d.get(c);
+						*ws.egrad.get_mut(r, c) = ws.egrad.get(r, c) + weight * d.get(r) * d.get(c);
 					}
 				}
 			}
@@ -485,16 +478,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for GMMWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for GMMWorkspace<T, B>
-where
-	B::Matrix: Send,
-{
-}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for GMMWorkspace<T, B>
-where
-	B::Matrix: Sync,
-{
-}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for GMMWorkspace<T, B> where B::Matrix: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for GMMWorkspace<T, B> where B::Matrix: Sync {}
 
 impl<T, B, M> Problem<T, M> for GaussianMixtureCovariance<T, B>
 where

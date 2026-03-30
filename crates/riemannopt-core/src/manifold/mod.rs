@@ -10,8 +10,8 @@ pub mod hyperbolic;
 pub mod oblique;
 pub mod product;
 pub mod psd_cone;
-pub mod sphere;
 pub mod spd;
+pub mod sphere;
 pub mod stiefel;
 pub mod utils;
 
@@ -23,8 +23,8 @@ pub use hyperbolic::Hyperbolic;
 pub use oblique::Oblique;
 pub use product::Product;
 pub use psd_cone::PSDCone;
-pub use sphere::Sphere;
 pub use spd::SPD;
+pub use sphere::Sphere;
 pub use stiefel::Stiefel;
 
 use crate::types::Scalar;

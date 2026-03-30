@@ -302,7 +302,8 @@ where
 		result.copy_from(other);
 		result.sub_assign(point);
 
-		ws.pp_mat.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
+		ws.pp_mat
+			.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
 		Self::symmetrize_in_place(&mut ws.pp_mat, self.p);
 	}
 

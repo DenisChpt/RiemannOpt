@@ -121,8 +121,8 @@ where
 		let half = <T as Scalar>::from_f64(0.5);
 		let mut cost = T::zero();
 		for idx in 0..self.rows.len() {
-			let residual =
-				self.reconstruct_entry::<B>(point, self.rows[idx], self.cols[idx]) - self.values[idx];
+			let residual = self.reconstruct_entry::<B>(point, self.rows[idx], self.cols[idx])
+				- self.values[idx];
 			cost = cost + residual * residual;
 		}
 		half * cost
@@ -171,19 +171,24 @@ where
 		}
 
 		// R_Ω V → m×k
-		ws.rv.gemm(T::one(), ws.r_omega.as_view(), point.v.as_view(), T::zero());
+		ws.rv
+			.gemm(T::one(), ws.r_omega.as_view(), point.v.as_view(), T::zero());
 
 		// (I − UUᵀ) R_Ω V → u_perp component
 		// tmp = U (Uᵀ (R_Ω V))
-		ws.ut_rv.gemm_at(T::one(), point.u.as_view(), ws.rv.as_view(), T::zero());
-		ws.u_proj.gemm(T::one(), point.u.as_view(), ws.ut_rv.as_view(), T::zero());
+		ws.ut_rv
+			.gemm_at(T::one(), point.u.as_view(), ws.rv.as_view(), T::zero());
+		ws.u_proj
+			.gemm(T::one(), point.u.as_view(), ws.ut_rv.as_view(), T::zero());
 		ws.rv.sub_assign(&ws.u_proj);
 		result.u_perp_m.copy_from(&ws.rv);
 
 		// Uᵀ R_Ω (I − VVᵀ) → v_perp component → k×n
-		ws.ut_r.gemm_at(T::one(), point.u.as_view(), ws.r_omega.as_view(), T::zero());
+		ws.ut_r
+			.gemm_at(T::one(), point.u.as_view(), ws.r_omega.as_view(), T::zero());
 		// Subtract (Uᵀ R_Ω V) Vᵀ
-		ws.vt_proj.gemm_bt(T::one(), ws.ut_rv.as_view(), point.v.as_view(), T::zero());
+		ws.vt_proj
+			.gemm_bt(T::one(), ws.ut_rv.as_view(), point.v.as_view(), T::zero());
 		ws.ut_r.sub_assign(&ws.vt_proj);
 		result.v_perp_n.copy_from(&ws.ut_r);
 
@@ -223,14 +228,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for MatrixCompletionWorkspace<T, B>
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for MatrixCompletionWorkspace<T, B>
-where
-	B::Matrix: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for MatrixCompletionWorkspace<T, B> where
+	B::Matrix: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for MatrixCompletionWorkspace<T, B>
-where
-	B::Matrix: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for MatrixCompletionWorkspace<T, B> where
+	B::Matrix: Sync
 {
 }
 
@@ -329,14 +332,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for MatrixSensingWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for MatrixSensingWorkspace<T, B>
-where
-	B::Matrix: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for MatrixSensingWorkspace<T, B> where
+	B::Matrix: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for MatrixSensingWorkspace<T, B>
-where
-	B::Matrix: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for MatrixSensingWorkspace<T, B> where
+	B::Matrix: Sync
 {
 }
 
@@ -391,22 +392,27 @@ where
 		}
 
 		// Project to tangent space (same approach as MatrixCompletion)
-		ws.rv.gemm(T::one(), ws.egrad.as_view(), point.v.as_view(), T::zero());
+		ws.rv
+			.gemm(T::one(), ws.egrad.as_view(), point.v.as_view(), T::zero());
 
 		// s_dot = Uᵀ ∇f V
-		ws.ut_rv.gemm_at(T::one(), point.u.as_view(), ws.rv.as_view(), T::zero());
+		ws.ut_rv
+			.gemm_at(T::one(), point.u.as_view(), ws.rv.as_view(), T::zero());
 		for k in 0..rank {
 			*result.s_dot.get_mut(k) = ws.ut_rv.get(k, k);
 		}
 
 		// u_perp_m = (I − UUᵀ) ∇f V
-		ws.u_proj.gemm(T::one(), point.u.as_view(), ws.ut_rv.as_view(), T::zero());
+		ws.u_proj
+			.gemm(T::one(), point.u.as_view(), ws.ut_rv.as_view(), T::zero());
 		ws.rv.sub_assign(&ws.u_proj);
 		result.u_perp_m.copy_from(&ws.rv);
 
 		// v_perp_n = Uᵀ ∇f (I − VVᵀ)
-		ws.ut_e.gemm_at(T::one(), point.u.as_view(), ws.egrad.as_view(), T::zero());
-		ws.vt_proj.gemm_bt(T::one(), ws.ut_rv.as_view(), point.v.as_view(), T::zero());
+		ws.ut_e
+			.gemm_at(T::one(), point.u.as_view(), ws.egrad.as_view(), T::zero());
+		ws.vt_proj
+			.gemm_bt(T::one(), ws.ut_rv.as_view(), point.v.as_view(), T::zero());
 		ws.ut_e.sub_assign(&ws.vt_proj);
 		result.v_perp_n.copy_from(&ws.ut_e);
 

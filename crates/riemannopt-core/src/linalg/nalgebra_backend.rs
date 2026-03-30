@@ -407,6 +407,14 @@ where
 		y.gemv(alpha, self, x, beta);
 	}
 
+	fn mat_t_vec_axpy(&self, alpha: T, x: &Self::Col, beta: T, y: &mut Self::Col) {
+		y.gemv_tr(alpha, self, x, beta);
+	}
+
+	fn ger(&mut self, alpha: T, x: &Self::Col, y: &Self::Col) {
+		nalgebra::Matrix::ger(self, alpha, x, y, T::one());
+	}
+
 	fn add(&self, other: &Self) -> Self {
 		self + other
 	}
@@ -562,8 +570,7 @@ mod tests {
 	#[test]
 	fn test_gemm_with_views() {
 		let a = <DMatrix<f64> as MatrixOps<f64>>::identity(3);
-		let b =
-			<DMatrix<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| (i + j * 3 + 1) as f64);
+		let b = <DMatrix<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| (i + j * 3 + 1) as f64);
 		let mut c = <DMatrix<f64> as MatrixOps<f64>>::zeros(3, 2);
 		MatrixOps::gemm(&mut c, 1.0, a.as_view(), b.as_view(), 0.0);
 		assert_relative_eq!(MatrixView::get(&c, 0, 0), 1.0);

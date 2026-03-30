@@ -22,8 +22,8 @@ use std::time::Instant;
 
 use crate::{
 	manifold::Manifold,
-	solver::{SolverResult, Solver, StoppingCriterion, TerminationReason},
 	problem::Problem,
+	solver::{Solver, SolverResult, StoppingCriterion, TerminationReason},
 	types::Scalar,
 };
 

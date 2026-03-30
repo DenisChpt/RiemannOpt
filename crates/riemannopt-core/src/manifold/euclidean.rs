@@ -148,12 +148,7 @@ where
 
 	/// ‖v‖_x = ‖v‖₂
 	#[inline]
-	fn norm(
-		&self,
-		_point: &Self::Point,
-		vector: &Self::TangentVector,
-		_ws: &mut (),
-	) -> T {
+	fn norm(&self, _point: &Self::Point, vector: &Self::TangentVector, _ws: &mut ()) -> T {
 		vector.norm()
 	}
 

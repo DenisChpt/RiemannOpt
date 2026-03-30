@@ -245,7 +245,11 @@ where
 	type Workspace = RayleighWorkspace<T, B>;
 
 	fn create_workspace(&self, manifold: &M, proto_point: &M::Point) -> Self::Workspace {
-		<RayleighQuotient<T, B> as Problem<T, M>>::create_workspace(&self.inner, manifold, proto_point)
+		<RayleighQuotient<T, B> as Problem<T, M>>::create_workspace(
+			&self.inner,
+			manifold,
+			proto_point,
+		)
 	}
 
 	#[inline]
@@ -262,7 +266,12 @@ where
 		manifold_ws: &mut M::Workspace,
 	) {
 		<RayleighQuotient<T, B> as Problem<T, M>>::riemannian_gradient(
-			&self.inner, manifold, point, result, ws, manifold_ws,
+			&self.inner,
+			manifold,
+			point,
+			result,
+			ws,
+			manifold_ws,
 		);
 	}
 
@@ -275,7 +284,12 @@ where
 		manifold_ws: &mut M::Workspace,
 	) -> T {
 		<RayleighQuotient<T, B> as Problem<T, M>>::cost_and_gradient(
-			&self.inner, manifold, point, gradient, ws, manifold_ws,
+			&self.inner,
+			manifold,
+			point,
+			gradient,
+			ws,
+			manifold_ws,
 		)
 	}
 
@@ -289,7 +303,13 @@ where
 		manifold_ws: &mut M::Workspace,
 	) {
 		<RayleighQuotient<T, B> as Problem<T, M>>::riemannian_hessian_vector_product(
-			&self.inner, manifold, point, vector, result, ws, manifold_ws,
+			&self.inner,
+			manifold,
+			point,
+			vector,
+			result,
+			ws,
+			manifold_ws,
 		);
 	}
 }
@@ -318,8 +338,14 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for SphericalKMeansWorkspace<T, B> 
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for SphericalKMeansWorkspace<T, B> where B::Vector: Send {}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for SphericalKMeansWorkspace<T, B> where B::Vector: Sync {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for SphericalKMeansWorkspace<T, B> where
+	B::Vector: Send
+{
+}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for SphericalKMeansWorkspace<T, B> where
+	B::Vector: Sync
+{
+}
 
 /// Spherical K-Means clustering on S^{n-1}.
 ///

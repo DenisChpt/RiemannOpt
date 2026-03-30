@@ -60,6 +60,23 @@ impl<T: RealScalar, B: LinAlgBackend<T>> AdSession<T, B> {
 		self.input_matrix_count = 0;
 	}
 
+	/// Returns the total capacity (in slots) of the pool and gradient arenas.
+	///
+	/// Useful for verifying that repeated forward/backward passes do not
+	/// allocate after the first iteration.  Returns
+	/// `(pool_scalars, pool_vectors, pool_matrices,
+	///   grad_scalars, grad_vectors, grad_matrices)`.
+	pub fn arena_capacities(&self) -> (usize, usize, usize, usize, usize, usize) {
+		(
+			self.pool.scalars.capacity(),
+			self.pool.vectors.capacity(),
+			self.pool.matrices.capacity(),
+			self.grad.scalars.capacity(),
+			self.grad.vectors.capacity(),
+			self.grad.matrices.capacity(),
+		)
+	}
+
 	// ═══════════════════════════════════════════════════════════════════
 	//  Input creation
 	// ═══════════════════════════════════════════════════════════════════
@@ -479,11 +496,9 @@ impl<T: RealScalar, B: LinAlgBackend<T>> AdSession<T, B> {
 		let out = self.pool.alloc_matrix(c, r);
 		{
 			let (src, dst) = self.pool.mat_ref_mut(a.0, out);
-			let s = src.as_slice();
-			let d = dst.as_mut_slice();
 			for j in 0..c {
 				for i in 0..r {
-					d[i * c + j] = s[j * r + i];
+					*MatrixOps::get_mut(dst, j, i) = MatrixView::get(src, i, j);
 				}
 			}
 		}

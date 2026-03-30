@@ -43,15 +43,17 @@ pub mod prelude {
 	pub use crate::problem::{CountingProblem, Problem, QuadraticCost};
 
 	// Problem implementations
-	pub use crate::problem::euclidean::{LogisticRegression, Rastrigin, RidgeRegression, Rosenbrock};
+	pub use crate::problem::euclidean::{
+		LogisticRegression, Rastrigin, RidgeRegression, Rosenbrock,
+	};
 	pub use crate::problem::fixed_rank::{MatrixCompletion, MatrixSensing};
 	pub use crate::problem::grassmann::{BrockettCost, RobustPCA};
 	pub use crate::problem::hyperbolic::{HyperbolicLogisticRegression, PoincareEmbedding};
 	pub use crate::problem::oblique::{DictionaryLearning, ObliqueICA, PhaseRetrieval};
 	pub use crate::problem::product::{CoupledFactorization, PoseEstimation};
 	pub use crate::problem::psd_cone::{MaxCutSDP, NearestCorrelation};
-	pub use crate::problem::sphere::{MaxCutSphere, RayleighQuotient, SphericalKMeans};
 	pub use crate::problem::spd::{FrechetMean, GaussianMixtureCovariance, MetricLearning};
+	pub use crate::problem::sphere::{MaxCutSphere, RayleighQuotient, SphericalKMeans};
 	pub use crate::problem::stiefel::{
 		ICAContrast, OrderedBrockett, OrthogonalICA, OrthogonalProcrustes,
 	};

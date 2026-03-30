@@ -278,8 +278,9 @@ where
 		// Compute diff in result, then project.
 		result.copy_from(other);
 		result.sub_assign(point);
-		
-		ws.pp_mat.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
+
+		ws.pp_mat
+			.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
 		result.gemm(-T::one(), point.as_view(), ws.pp_mat.as_view(), T::one());
 	}
 

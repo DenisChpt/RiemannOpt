@@ -62,7 +62,11 @@ pub struct OrthogonalProcrustes<T: Scalar, B: LinAlgBackend<T>> {
 impl<T: Scalar, B: LinAlgBackend<T>> OrthogonalProcrustes<T, B> {
 	/// Creates an orthogonal Procrustes problem.
 	pub fn new(a: B::Matrix, b: B::Matrix) -> Self {
-		debug_assert_eq!(a.nrows(), b.nrows(), "A and B must have same number of rows");
+		debug_assert_eq!(
+			a.nrows(),
+			b.nrows(),
+			"A and B must have same number of rows"
+		);
 		let mut ata = B::Matrix::zeros(a.ncols(), a.ncols());
 		ata.gemm_at(T::one(), a.as_view(), a.as_view(), T::zero());
 		let mut atb = B::Matrix::zeros(a.ncols(), b.ncols());
@@ -90,10 +94,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for ProcrustesWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for ProcrustesWorkspace<T, B> where B::Matrix: Send
-{}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for ProcrustesWorkspace<T, B> where B::Matrix: Sync
-{}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for ProcrustesWorkspace<T, B> where B::Matrix: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for ProcrustesWorkspace<T, B> where B::Matrix: Sync {}
 
 impl<T, B, M> Problem<T, M> for OrthogonalProcrustes<T, B>
 where
@@ -500,14 +502,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for OrderedBrockettWorkspace<T, B> 
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for OrderedBrockettWorkspace<T, B>
-where
-	B::Matrix: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for OrderedBrockettWorkspace<T, B> where
+	B::Matrix: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for OrderedBrockettWorkspace<T, B>
-where
-	B::Matrix: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for OrderedBrockettWorkspace<T, B> where
+	B::Matrix: Sync
 {
 }
 

@@ -97,10 +97,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for DictLearnWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for DictLearnWorkspace<T, B> where B::Matrix: Send
-{}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for DictLearnWorkspace<T, B> where B::Matrix: Sync
-{}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for DictLearnWorkspace<T, B> where B::Matrix: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for DictLearnWorkspace<T, B> where B::Matrix: Sync {}
 
 impl<T, B, M> Problem<T, M> for DictionaryLearning<T, B>
 where
@@ -260,10 +258,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for ObliqueICAWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for ObliqueICAWorkspace<T, B> where B::Matrix: Send
-{}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for ObliqueICAWorkspace<T, B> where B::Matrix: Sync
-{}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for ObliqueICAWorkspace<T, B> where B::Matrix: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for ObliqueICAWorkspace<T, B> where B::Matrix: Sync {}
 
 impl<T, B, M> Problem<T, M> for ObliqueICA<T, B>
 where
@@ -441,14 +437,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for PhaseRetrievalWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for PhaseRetrievalWorkspace<T, B>
-where
-	B::Matrix: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for PhaseRetrievalWorkspace<T, B> where
+	B::Matrix: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for PhaseRetrievalWorkspace<T, B>
-where
-	B::Matrix: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for PhaseRetrievalWorkspace<T, B> where
+	B::Matrix: Sync
 {
 }
 
@@ -477,7 +471,12 @@ where
 
 		// AX (m×p)
 		let mut ax = B::Matrix::zeros(m, p);
-		ax.gemm(T::one(), self.measurements.as_view(), point.as_view(), T::zero());
+		ax.gemm(
+			T::one(),
+			self.measurements.as_view(),
+			point.as_view(),
+			T::zero(),
+		);
 
 		let quarter_inv_m = <T as Scalar>::from_f64(0.25) * self.inv_m;
 		let mut cost = T::zero();

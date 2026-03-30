@@ -52,14 +52,14 @@
 //! - Clamped arccos to handle rounding beyond [-1, 1]
 //! - Near-antipodal guard in parallel transport (denominator 1 + x^T y → 0)
 
-use num_traits::Float;
-use rand_distr::{Distribution, StandardNormal};
 use crate::{
 	error::{ManifoldError, Result},
 	linalg::{self, LinAlgBackend, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
+use num_traits::Float;
+use rand_distr::{Distribution, StandardNormal};
 use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 
@@ -138,7 +138,9 @@ where
 		let norm = x.norm();
 		let deviation = <T as Float>::abs(norm - T::one());
 		// Adaptive: c · n · ε
-		let tol = <T as Scalar>::from_f64(32.0) * T::EPSILON * <T as Scalar>::from_f64(self.ambient_dim as f64);
+		let tol = <T as Scalar>::from_f64(32.0)
+			* T::EPSILON
+			* <T as Scalar>::from_f64(self.ambient_dim as f64);
 		if deviation > tol {
 			return Err(ManifoldError::invalid_point(format!(
 				"Point not on sphere: ‖x‖ = {:.6} (deviation: {}, tol: {})",
@@ -181,12 +183,7 @@ where
 	/// - If ‖v‖ < threshold: result ≈ x(1 − ‖v‖²/2) + v(1 − ‖v‖²/6)
 	/// - Otherwise: result = cos(‖v‖)x + (sin(‖v‖)/‖v‖)v
 	#[inline]
-	pub fn exp_map(
-		&self,
-		x: &B::Vector,
-		v: &B::Vector,
-		result: &mut B::Vector,
-	) {
+	pub fn exp_map(&self, x: &B::Vector, v: &B::Vector, result: &mut B::Vector) {
 		let t = v.norm();
 		let threshold = T::SMALL_ANGLE_THRESHOLD;
 
@@ -224,12 +221,7 @@ where
 	///
 	/// Sets result to zero if x ≈ y. Panics (debug) if x ≈ −y.
 	#[inline]
-	pub fn log_map(
-		&self,
-		x: &B::Vector,
-		y: &B::Vector,
-		result: &mut B::Vector,
-	) {
+	pub fn log_map(&self, x: &B::Vector, y: &B::Vector, result: &mut B::Vector) {
 		let xy_inner = x.dot(y);
 		let clamped = <T as Float>::min(<T as Float>::max(xy_inner, -T::one()), T::one());
 		let threshold = T::SMALL_ANGLE_THRESHOLD;
@@ -305,8 +297,7 @@ where
 		vector: &Self::TangentVector,
 		tol: T,
 	) -> bool {
-		VectorView::len(vector) == self.ambient_dim
-			&& <T as Float>::abs(point.dot(vector)) <= tol
+		VectorView::len(vector) == self.ambient_dim && <T as Float>::abs(point.dot(vector)) <= tol
 	}
 
 	#[inline]
@@ -354,12 +345,7 @@ where
 
 	/// ‖v‖_x = ‖v‖₂  (Euclidean norm, avoids sqrt(dot) overhead of default)
 	#[inline]
-	fn norm(
-		&self,
-		_point: &Self::Point,
-		vector: &Self::TangentVector,
-		_ws: &mut (),
-	) -> T {
+	fn norm(&self, _point: &Self::Point, vector: &Self::TangentVector, _ws: &mut ()) -> T {
 		vector.norm()
 	}
 

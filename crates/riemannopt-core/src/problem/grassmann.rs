@@ -120,7 +120,8 @@ where
 		manifold_ws: &mut M::Workspace,
 	) {
 		// ∇f = −2AY
-		ws.ay.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
+		ws.ay
+			.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
 		ws.egrad.copy_from(&ws.ay);
 		ws.egrad.scale_mut(<T as Scalar>::from_f64(-2.0));
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, result, manifold_ws);
@@ -135,7 +136,8 @@ where
 		manifold_ws: &mut M::Workspace,
 	) -> T {
 		// AY → ws.ay
-		ws.ay.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
+		ws.ay
+			.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
 		let cost = -point.frobenius_dot(&ws.ay);
 
 		// ∇f = −2AY
@@ -157,7 +159,8 @@ where
 		let two = <T as Scalar>::from_f64(2.0);
 
 		// Euclidean gradient: −2AY
-		ws.ay.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
+		ws.ay
+			.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
 		ws.egrad.copy_from(&ws.ay);
 		ws.egrad.scale_mut(-two);
 
@@ -282,16 +285,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for RobustPCAWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RobustPCAWorkspace<T, B>
-where
-	B::Matrix: Send,
-{
-}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RobustPCAWorkspace<T, B>
-where
-	B::Matrix: Sync,
-{
-}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RobustPCAWorkspace<T, B> where B::Matrix: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RobustPCAWorkspace<T, B> where B::Matrix: Sync {}
 
 /// Huber function ψ_δ(t).
 #[inline]
@@ -419,19 +414,11 @@ impl<T: Scalar, B: LinAlgBackend<T>> RobustPCA<T, B> {
 	/// Computes residual R = D − YY^T D and intermediate Y^T D into workspace.
 	fn compute_residual(&self, point: &B::Matrix, ws: &mut RobustPCAWorkspace<T, B>) {
 		// Y^T D → ws.ytd
-		ws.ytd.gemm_at(
-			T::one(),
-			point.as_view(),
-			self.data.as_view(),
-			T::zero(),
-		);
+		ws.ytd
+			.gemm_at(T::one(), point.as_view(), self.data.as_view(), T::zero());
 		// YY^T D → ws.yytd
-		ws.yytd.gemm(
-			T::one(),
-			point.as_view(),
-			ws.ytd.as_view(),
-			T::zero(),
-		);
+		ws.yytd
+			.gemm(T::one(), point.as_view(), ws.ytd.as_view(), T::zero());
 		// R = D − YY^T D
 		ws.residual.copy_from(&self.data);
 		ws.residual.sub_assign(&ws.yytd);
@@ -525,12 +512,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> RobustPCA<T, B> {
 		// egrad (n×p) = −D (m columns) · (Y^T D)^T (m×p)
 		// = −D · (Y^T D)^T ... using gemm_bt:
 		// egrad = −1 · data · ytd^T + 0
-		ws.egrad.gemm_bt(
-			-T::one(),
-			self.data.as_view(),
-			ws.ytd.as_view(),
-			T::zero(),
-		);
+		ws.egrad
+			.gemm_bt(-T::one(), self.data.as_view(), ws.ytd.as_view(), T::zero());
 
 		// Add Huber penalty gradient if μ > 0
 		if self.mu > T::zero() {
@@ -546,24 +529,16 @@ impl<T: Scalar, B: LinAlgBackend<T>> RobustPCA<T, B> {
 
 			// Gradient of μ·Huber term: −μ (W · (Y^T D)^T + D · W^T · Y)
 			// First part: −μ · W · (Y^T D)^T   (n×p = n×m · m×p)
-			ws.tmp_np.gemm_bt(
-				-self.mu,
-				ws.residual.as_view(),
-				ws.ytd.as_view(),
-				T::zero(),
-			);
+			ws.tmp_np
+				.gemm_bt(-self.mu, ws.residual.as_view(), ws.ytd.as_view(), T::zero());
 			ws.egrad.add_assign(&ws.tmp_np);
 
 			// Second part: −μ · D · W^T · Y   (n×p = n×m · m×n · n×p)
 			// D · W^T (n×n) then multiply by Y... expensive.
 			// Instead: (D W^T) Y = D (W^T Y) where W^T Y is m×p
 			// W^T Y (m×p) = ws.residual^T · Y
-			ws.wty.gemm_at(
-				T::one(),
-				ws.residual.as_view(),
-				point.as_view(),
-				T::zero(),
-			);
+			ws.wty
+				.gemm_at(T::one(), ws.residual.as_view(), point.as_view(), T::zero());
 			// −μ · D · wty  (n×p = n×m · m×p)
 			ws.tmp_np
 				.gemm(-self.mu, self.data.as_view(), ws.wty.as_view(), T::zero());

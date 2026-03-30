@@ -73,7 +73,8 @@ impl<T: Scalar> StepSizeSchedule<T> {
 				decay_rate,
 				power,
 			} => {
-				let base = (T::one() + *decay_rate * <T as Scalar>::from_f64(iteration as f64)).to_f64();
+				let base =
+					(T::one() + *decay_rate * <T as Scalar>::from_f64(iteration as f64)).to_f64();
 				let exp = (*power).to_f64();
 				*initial / <T as Scalar>::from_f64(base.powf(exp))
 			}
