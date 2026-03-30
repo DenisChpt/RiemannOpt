@@ -283,6 +283,23 @@ pub trait MatrixView<T: RealScalar>: Sized + Clone + Debug {
 		}
 		sum
 	}
+
+	/// Frobenius inner product: ⟨A, B⟩_F = tr(Aᵀ B) = Σᵢⱼ Aᵢⱼ Bᵢⱼ.
+	///
+	/// Default implementation iterates element-wise. Backends should override
+	/// with SIMD-optimized kernels (e.g. faer `zip!`).
+	fn frobenius_dot(&self, other: &Self) -> T {
+		let (rows, cols) = (self.nrows(), self.ncols());
+		debug_assert_eq!((rows, cols), (other.nrows(), other.ncols()));
+		let mut sum = T::zero();
+		// Column-major iteration for cache friendliness
+		for j in 0..cols {
+			for i in 0..rows {
+				sum = sum + self.get(i, j) * other.get(i, j);
+			}
+		}
+		sum
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -326,6 +343,9 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	}
 
 	// ── View accessors (zero-allocation) ─────────────────────────────
+
+	/// Create a read-only view from a column-major slice (zero allocation).
+	fn view_from_column_slice<'a>(nrows: usize, ncols: usize, data: &'a [T]) -> Self::View<'a>;
 
 	/// Borrow the entire matrix as a view.
 	fn as_view(&self) -> Self::View<'_>;
@@ -481,6 +501,19 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	///
 	/// Zero-allocation: the backend transposes the view in-place (stride swap).
 	fn gemm_bt(&mut self, alpha: T, a: Self::View<'_>, b: Self::View<'_>, beta: T);
+
+	/// Computes y = alpha * self * x + beta * y in-place.
+	///
+	/// Avoids allocation by writing directly into the `y` vector.
+	fn mat_vec_axpy(&self, alpha: T, x: &Self::Col, beta: T, y: &mut Self::Col);
+
+	/// Computes y = self * x in-place.
+	///
+	/// This is the zero-allocation equivalent of `mat_vec`.
+	#[inline]
+	fn mat_vec_into(&self, x: &Self::Col, y: &mut Self::Col) {
+		self.mat_vec_axpy(T::one(), x, T::zero(), y);
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

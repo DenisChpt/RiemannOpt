@@ -1,49 +1,39 @@
-//! Tape-based reverse-mode automatic differentiation for Riemannian
-//! optimization.
+//! Zero-allocation reverse-mode automatic differentiation for
+//! Riemannian optimization.
+//!
+//! This crate provides a typed buffer pool, flat instruction tape, and
+//! in-place VJP backward pass that integrates with the [`Problem`] trait
+//! from `riemannopt-core`.  After the first forward pass the entire
+//! forward–backward cycle runs without heap allocation.
 //!
 //! # Architecture
 //!
-//! Values are stored as backend-native types (`faer::Col<T>`, `faer::Mat<T>`)
-//! enabling SIMD/BLAS operations without intermediate copies. A buffer pool
-//! recycles allocations across evaluations — zero allocation in steady state.
+//! * **[`BufferPool`]** — three typed arenas (scalars, vectors, matrices)
+//!   with O(1) cursor-based allocation and zero-cost reset.
+//! * **[`Tape`]** — a flat `Vec<Op>` of enum instructions.  No data,
+//!   no `dyn Trait`, no `Box`.
+//! * **[`AdSession`]** — user-facing API that owns pool + tape + grad pool.
+//!   Eagerly computes forward values and records ops for the backward pass.
+//! * **[`AutoDiffProblem`] / [`AutoDiffMatProblem`]** — implement
+//!   `Problem<T, M>` so any solver can optimise an AD-defined cost.
+//! * **[`Dual`]** — dual numbers for forward-mode AD (Hessian-vector
+//!   products via forward-over-reverse).
 //!
-//! # Quick Start
-//!
-//! ```
-//! use riemannopt_autodiff::{Tape, TapeGuard, Var, backward};
-//!
-//! let mut tape = Tape::<f64>::new();
-//! let _g = TapeGuard::new(&mut tape);
-//!
-//! let x = tape.var(&[1.0_f64, 2.0, 3.0], (3, 1));
-//! let f = x.dot(x);
-//!
-//! let grads = backward(&tape, f);
-//! let df_dx = grads.wrt(x);
-//! assert!((df_dx[0] - 2.0_f64).abs() < 1e-12);
-//! assert!((df_dx[1] - 4.0_f64).abs() < 1e-12);
-//! assert!((df_dx[2] - 6.0_f64).abs() < 1e-12);
-//! ```
-//!
-//! # Integration with Optimizers
-//!
-//! ```rust,no_run
-//! use riemannopt_autodiff::{AutoDiffCostFunction, Var};
-//!
-//! let cost_fn = AutoDiffCostFunction::new(10, |x: Var<f64>| {
-//!     x.dot(x)
-//! });
-//! // `cost_fn` implements `CostFunction<f64>` — pass it to any optimizer.
-//! ```
+//! [`Problem`]: riemannopt_core::problem::Problem
 
 pub mod backward;
-pub(crate) mod buffer_pool;
-pub mod cost_function;
+pub mod dual;
+pub mod pool;
+pub mod problem;
+pub mod session;
 pub mod tape;
-pub(crate) mod value;
 pub mod var;
 
-pub use backward::{backward, check_gradient, Gradients};
-pub use cost_function::{AutoDiffCostFunction, AutoDiffMatCostFunction};
-pub use tape::{NodeIdx, OpCode, Tape, TapeEntry, TapeGuard, TapeThreadLocal};
-pub use var::Var;
+// ── Public re-exports ────────────────────────────────────────────────
+
+pub use dual::Dual;
+pub use pool::BufferPool;
+pub use problem::{AutoDiffMatProblem, AutoDiffProblem};
+pub use session::AdSession;
+pub use tape::{Op, Tape};
+pub use var::{MVar, SVar, VVar};
