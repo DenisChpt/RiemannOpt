@@ -1,94 +1,69 @@
-//! Core traits and types for Riemannian optimization.
+//! RiemannOpt Core — High-performance Riemannian optimization in Rust.
 //!
-//! This crate provides the foundational traits and types for implementing
-//! Riemannian optimization algorithms. It defines the mathematical abstractions
-//! needed to work with smooth manifolds, tangent spaces, and Riemannian metrics.
-//!
-//! # Key Concepts
-//!
-//! - **Manifolds**: Smooth spaces that locally resemble Euclidean space
-//! - **Tangent Spaces**: Linear approximations of manifolds at each point
-//! - **Riemannian Metrics**: Inner products on tangent spaces
-//! - **Retractions**: Smooth maps from tangent spaces back to the manifold
+//! This crate provides the complete mathematical engine for optimization
+//! on Riemannian manifolds: traits, manifold implementations, solvers,
+//! and linear algebra abstractions.
 //!
 //! # Modules
 //!
-//! - [`core`]: Core traits and types (manifold, cost function, error, types)
-//! - [`linalg`]: Linear algebra abstractions and backends
-//! - [`optimization`]: Optimization algorithms and utilities
-//! - [`utils`]: Utility functions and test helpers
+//! - [`linalg`]: Backend-agnostic linear algebra (faer / nalgebra)
+//! - [`manifold`]: [`Manifold`] trait + implementations (Sphere, Stiefel, Grassmann, …)
+//! - [`problem`]: [`Problem`] trait for cost functions on manifolds
+//! - [`solver`]: [`Solver`] trait + solvers (SGD, Adam, L-BFGS, CG, Trust-Region, …)
+//! - [`error`]: Error types
+//! - [`types`]: [`Scalar`] trait and numerical constants
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-// Module declarations
-pub mod core;
+pub mod error;
 pub mod linalg;
-pub mod optimization;
-pub mod utils;
+pub mod manifold;
+pub mod problem;
+pub mod solver;
+pub mod types;
 
-// Re-export key items from core for backward compatibility
-pub use core::{
-	cost_function, error, manifold, types, ManifoldError, OptimizerError, OptimizerResult, Result,
-};
+// ────────────────────────────────────────────────────────────────────────────
+// Top-level re-exports
+// ────────────────────────────────────────────────────────────────────────────
 
-// Re-export optimization module for backward compatibility
-pub use optimization::{line_search, optimizer, preconditioner, step_size};
-pub use utils::parallel_thresholds;
+pub use error::{ManifoldError, OptimizerError, Result};
+pub use manifold::Manifold;
+pub use problem::Problem;
+pub use solver::{Solver, SolverResult, StoppingCriterion, TerminationReason};
+pub use types::Scalar;
 
-#[cfg(any(test, feature = "test-utils"))]
-pub use utils::{test_manifolds, test_utils};
+// ────────────────────────────────────────────────────────────────────────────
+// Prelude
+// ────────────────────────────────────────────────────────────────────────────
 
-/// Prelude module for convenient imports.
-///
-/// # Example
-/// ```
-/// use riemannopt_core::prelude::*;
-/// ```
+/// Convenient wildcard import for common types and traits.
 pub mod prelude {
-	// Core types
-	pub use crate::core::{
-		// From types
-		constants,
-		// From cost_function
-		CostFunction,
-		CountingCostFunction,
-		DerivativeChecker,
-		// From manifold
-		Manifold,
-		// From error
-		ManifoldError,
-		OptimizerError,
-		OptimizerResult,
-		QuadraticCost,
-		Result,
-		Scalar,
-	};
+	pub use crate::error::{ManifoldError, OptimizerError, Result};
+	pub use crate::manifold::Manifold;
+	pub use crate::problem::{CountingProblem, Problem, QuadraticCost};
 
-	// Optimization components
-	pub use crate::optimization::{
-		// From line_search
-		BacktrackingLineSearch,
-		FixedStepSize,
-		LineSearch,
-		LineSearchParams,
-		LineSearchResult,
-		// From optimizer
-		OptimizationResult,
-		Optimizer,
-		StoppingCriterion,
-		StrongWolfeLineSearch,
-		TerminationReason,
+	// Problem implementations
+	pub use crate::problem::euclidean::{LogisticRegression, Rastrigin, RidgeRegression, Rosenbrock};
+	pub use crate::problem::fixed_rank::{MatrixCompletion, MatrixSensing};
+	pub use crate::problem::grassmann::{BrockettCost, RobustPCA};
+	pub use crate::problem::hyperbolic::{HyperbolicLogisticRegression, PoincareEmbedding};
+	pub use crate::problem::oblique::{DictionaryLearning, ObliqueICA, PhaseRetrieval};
+	pub use crate::problem::product::{CoupledFactorization, PoseEstimation};
+	pub use crate::problem::psd_cone::{MaxCutSDP, NearestCorrelation};
+	pub use crate::problem::sphere::{MaxCutSphere, RayleighQuotient, SphericalKMeans};
+	pub use crate::problem::spd::{FrechetMean, GaussianMixtureCovariance, MetricLearning};
+	pub use crate::problem::stiefel::{
+		ICAContrast, OrderedBrockett, OrthogonalICA, OrthogonalProcrustes,
 	};
+	pub use crate::solver::{
+		Adam, AdamConfig, CGConfig, ConjugateGradient, LBFGSConfig, MomentumMethod, Newton,
+		NewtonConfig, SGDConfig, Solver, SolverResult, StoppingCriterion, TerminationReason,
+		TrustRegion, TrustRegionConfig, LBFGS, SGD,
+	};
+	pub use crate::types::Scalar;
 
-	// Utils
-	pub use crate::utils::{
-		get_parallel_config,
-		set_parallel_config,
-		DecompositionKind,
-		ParallelDecision,
-		ParallelThresholdsBuilder,
-		// From parallel_thresholds
-		ParallelThresholdsConfig,
-		ShouldParallelize,
+	// Manifold implementations
+	pub use crate::manifold::{
+		Euclidean, FixedRank, Grassmann, Hyperbolic, Oblique, Product, Sphere, Stiefel, SPD,
 	};
 }

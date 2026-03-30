@@ -311,6 +311,11 @@ where
 	// ── View accessors ───────────────────────────────────────────────
 
 	#[inline]
+	fn view_from_column_slice<'a>(nrows: usize, ncols: usize, data: &'a [T]) -> Self::View<'a> {
+		DMatrixView::from_slice(data, nrows, ncols)
+	}
+
+	#[inline]
 	fn as_view(&self) -> Self::View<'_> {
 		self.as_view()
 	}
@@ -396,6 +401,10 @@ where
 
 	fn mat_vec(&self, v: &Self::Col) -> Self::Col {
 		self * v
+	}
+
+	fn mat_vec_axpy(&self, alpha: T, x: &Self::Col, beta: T, y: &mut Self::Col) {
+		y.gemv(alpha, self, x, beta);
 	}
 
 	fn add(&self, other: &Self) -> Self {

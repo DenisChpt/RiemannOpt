@@ -16,6 +16,7 @@ num-traits = { workspace = true }
 approx = { workspace = true }
 serde = { workspace = true, optional = true }
 rand = { workspace = true }
+rand_distr = { workspace = true }
 rayon = { workspace = true }
 wide = { workspace = true }
 cudarc = { workspace = true, optional = true }

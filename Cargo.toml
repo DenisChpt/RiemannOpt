@@ -1,11 +1,8 @@
 [workspace]
 members = [
 	"crates/riemannopt-core",
-	"crates/riemannopt-manifolds", 
-	"crates/riemannopt-optim",
 	"crates/riemannopt-autodiff",
 	"crates/riemannopt",
-	"crates/riemannopt-py",
 ]
 resolver = "2"
 

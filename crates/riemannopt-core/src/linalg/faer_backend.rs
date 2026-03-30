@@ -28,8 +28,6 @@ use super::types::{CholeskyResult, EigenResult, QrResult, SvdResult};
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The faer linear algebra backend.
-///
-/// Provides near-BLAS performance with pure Rust (no C dependencies).
 #[derive(Debug, Clone, Copy)]
 pub struct FaerBackend;
 
@@ -62,12 +60,7 @@ macro_rules! impl_faer_vector_view_for_colref {
 
 			#[inline]
 			fn dot(&self, other: &Self) -> $t {
-				faer::linalg::matmul::dot::inner_prod(
-					self.transpose(),
-					Conj::No,
-					*other,
-					Conj::No,
-				)
+				faer::linalg::matmul::dot::inner_prod(self.transpose(), Conj::No, *other, Conj::No)
 			}
 
 			#[inline]
@@ -291,6 +284,15 @@ macro_rules! impl_faer_matrix_view_for_matref {
 					Conj::No,
 				)
 			}
+
+			#[inline]
+			fn frobenius_dot(&self, other: &Self) -> $t {
+				let mut sum: $t = 0.0;
+				faer::zip!(self, other).for_each(|faer::unzip!(a, b)| {
+					sum += *a * *b;
+				});
+				sum
+			}
 		}
 	};
 }
@@ -349,6 +351,15 @@ macro_rules! impl_faer_matrix_view_for_mat {
 					Conj::No,
 				)
 			}
+
+			#[inline]
+			fn frobenius_dot(&self, other: &Self) -> $t {
+				let mut sum: $t = 0.0;
+				faer::zip!(self, other).for_each(|faer::unzip!(a, b)| {
+					sum += *a * *b;
+				});
+				sum
+			}
 		}
 	};
 }
@@ -398,6 +409,15 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			// ── View accessors (zero-alloc) ──────────────────────────
+
+			#[inline]
+			fn view_from_column_slice<'a>(
+				nrows: usize,
+				ncols: usize,
+				data: &'a [$t],
+			) -> Self::View<'a> {
+				faer::MatRef::from_column_major_slice(data, nrows, ncols)
+			}
 
 			#[inline]
 			fn as_view(&self) -> Self::View<'_> {
@@ -462,8 +482,11 @@ macro_rules! impl_faer_matrix_ops {
 				let ncols = (*self).ncols();
 				let stride = self.col_stride();
 				if ncols <= 1 || stride == nrows as isize {
-					let len =
-						if ncols == 0 { 0 } else { stride as usize * (ncols - 1) + nrows };
+					let len = if ncols == 0 {
+						0
+					} else {
+						stride as usize * (ncols - 1) + nrows
+					};
 					unsafe { std::slice::from_raw_parts(ptr, len) }
 				} else {
 					panic!(
@@ -480,8 +503,11 @@ macro_rules! impl_faer_matrix_ops {
 				let ncols = (*self).ncols();
 				let stride = self.col_stride();
 				if ncols <= 1 || stride == nrows as isize {
-					let len =
-						if ncols == 0 { 0 } else { stride as usize * (ncols - 1) + nrows };
+					let len = if ncols == 0 {
+						0
+					} else {
+						stride as usize * (ncols - 1) + nrows
+					};
 					unsafe { std::slice::from_raw_parts_mut(ptr, len) }
 				} else {
 					panic!(
@@ -572,6 +598,31 @@ macro_rules! impl_faer_matrix_ops {
 				}
 			}
 
+			// ── In-place Matrix-Vector ───────────────────────────────
+
+			#[inline]
+			fn mat_vec_axpy(&self, alpha: $t, x: &Self::Col, beta: $t, y: &mut Self::Col) {
+				// y = alpha * A * x + beta * y
+				// Use faer's SIMD-optimized matmul with as_mat() for zero-copy Col→MatRef
+				let par = faer::get_global_parallelism();
+				let accum = if beta == 0.0 {
+					faer::Accum::Replace
+				} else {
+					if beta != 1.0 {
+						*y *= faer::Scale(beta);
+					}
+					faer::Accum::Add
+				};
+				faer::linalg::matmul::matmul(
+					y.as_mut().as_mat_mut(),
+					accum,
+					self.as_ref(),
+					x.as_ref().as_mat(),
+					alpha,
+					par,
+				);
+			}
+
 			#[inline]
 			fn mat_component_mul_assign(&mut self, other: &Self) {
 				faer::zip!(self.as_mut(), other.as_ref()).for_each(|faer::unzip!(s, o)| {
@@ -604,24 +655,10 @@ macro_rules! impl_faer_matrix_ops {
 						par,
 					);
 				} else if beta == 1.0 {
-					faer::linalg::matmul::matmul(
-						self.as_mut(),
-						faer::Accum::Add,
-						a,
-						b,
-						alpha,
-						par,
-					);
+					faer::linalg::matmul::matmul(self.as_mut(), faer::Accum::Add, a, b, alpha, par);
 				} else {
 					*self *= faer::Scale(beta);
-					faer::linalg::matmul::matmul(
-						self.as_mut(),
-						faer::Accum::Add,
-						a,
-						b,
-						alpha,
-						par,
-					);
+					faer::linalg::matmul::matmul(self.as_mut(), faer::Accum::Add, a, b, alpha, par);
 				}
 			}
 
