@@ -99,7 +99,7 @@ impl<T: Scalar> TrustRegion<T> {
 		Self::new(TrustRegionConfig::default())
 	}
 
-	/// Finds the positive root tau such that ||s + tau * p|| = radius.
+	/// Finds the positive root τ such that ‖s + τ·p‖ = radius.
 	fn boundary_intersection<M>(
 		&self,
 		s: &M::TangentVector,
@@ -112,8 +112,6 @@ impl<T: Scalar> TrustRegion<T> {
 	where
 		M: Manifold<T>,
 	{
-		// ||s + tau*p||^2 = radius^2
-		// ||p||^2 tau^2 + 2<s,p> tau + ||s||^2 - radius^2 = 0
 		let a = manifold.inner_product(point, p, p, manifold_ws);
 		let b = <T as Scalar>::from_f64(2.0) * manifold.inner_product(point, s, p, manifold_ws);
 		let c = manifold.inner_product(point, s, s, manifold_ws) - radius * radius;
@@ -121,14 +119,17 @@ impl<T: Scalar> TrustRegion<T> {
 		let discriminant = b * b - <T as Scalar>::from_f64(4.0) * a * c;
 		let sqrt_disc = <T as Float>::sqrt(<T as Float>::max(T::zero(), discriminant));
 
-		// We only care about the positive root since we step forward
 		(-b + sqrt_disc) / (<T as Scalar>::from_f64(2.0) * a)
 	}
 
 	/// Solves the trust region subproblem using Steihaug Truncated-CG (tCG).
 	///
+	/// All inner-loop updates use `axpy_tangent`, eliminating the `temp`
+	/// scratch buffer entirely.  The s-next radius check uses a direct
+	/// axpy + revert pattern instead of copy-into-temp + check + copy-back.
+	///
 	/// # Returns
-	/// A boolean indicating if the trust region boundary was hit.
+	/// `true` if the trust region boundary was hit.
 	fn solve_tcg<M, P>(
 		&self,
 		problem: &P,
@@ -137,11 +138,10 @@ impl<T: Scalar> TrustRegion<T> {
 		gradient: &M::TangentVector,
 		grad_norm: T,
 		radius: T,
-		s: &mut M::TangentVector,    // Step output
-		r: &mut M::TangentVector,    // Residual buffer
-		p: &mut M::TangentVector,    // CG direction buffer
-		hp: &mut M::TangentVector,   // Hessian-vector product buffer
-		temp: &mut M::TangentVector, // Scratch buffer
+		s: &mut M::TangentVector,
+		r: &mut M::TangentVector,
+		p: &mut M::TangentVector,
+		hp: &mut M::TangentVector,
 		prob_ws: &mut P::Workspace,
 		man_ws: &mut M::Workspace,
 	) -> bool
@@ -154,7 +154,6 @@ impl<T: Scalar> TrustRegion<T> {
 			.max_cg_iterations
 			.unwrap_or_else(|| manifold.dimension());
 
-		// Target residual norm: ||r_0|| * min(||r_0||^theta, kappa)
 		let target_norm = grad_norm
 			* <T as Float>::min(
 				<T as Float>::powf(grad_norm, self.config.theta),
@@ -164,43 +163,44 @@ impl<T: Scalar> TrustRegion<T> {
 		// s = 0
 		manifold.scale_tangent(T::zero(), s);
 		// r = grad
-		r.clone_from(gradient);
-		// p = -r
-		p.clone_from(r);
+		manifold.copy_tangent(r, gradient);
+		// p = −r
+		manifold.copy_tangent(p, r);
 		manifold.scale_tangent(-T::one(), p);
 
 		let mut r_norm_sq = manifold.inner_product(point, r, r, man_ws);
 
 		for _ in 0..max_iter {
-			// Hp = Hess(p)
+			// hp = Hess(p)
 			problem.riemannian_hessian_vector_product(manifold, point, p, hp, prob_ws, man_ws);
 
 			let kappa_val = manifold.inner_product(point, p, hp, man_ws);
 
-			// Negative curvature detected: intersect with boundary and stop
+			// Negative curvature: step to boundary and stop.
 			if kappa_val <= T::zero() {
-				let tau = self.boundary_intersection(s, p, radius, manifold, point, man_ws);
-				manifold.axpy_tangent(tau, p, s); // s = s + tau*p
-				return true;
-			}
-
-			let alpha = r_norm_sq / kappa_val;
-
-			// s_next = s + alpha * p
-			temp.clone_from(s);
-			manifold.axpy_tangent(alpha, p, temp);
-
-			// Check if step exceeds trust region radius
-			let s_next_norm = manifold.norm(point, temp, man_ws);
-			if s_next_norm >= radius {
 				let tau = self.boundary_intersection(s, p, radius, manifold, point, man_ws);
 				manifold.axpy_tangent(tau, p, s);
 				return true;
 			}
 
-			s.clone_from(temp);
+			let alpha = r_norm_sq / kappa_val;
 
-			// r_next = r + alpha * Hp
+			// ── s-next radius check ──────────────────────────────────
+			// Tentatively advance: s += α·p
+			manifold.axpy_tangent(alpha, p, s);
+			let s_norm = manifold.norm(point, s, man_ws);
+
+			if s_norm >= radius {
+				// Revert: s -= α·p (restoring original s)
+				manifold.axpy_tangent(-alpha, p, s);
+				// Step to the trust-region boundary from original s
+				let tau = self.boundary_intersection(s, p, radius, manifold, point, man_ws);
+				manifold.axpy_tangent(tau, p, s);
+				return true;
+			}
+			// s is now committed as s_next — no copy needed.
+
+			// r += α·hp
 			manifold.axpy_tangent(alpha, hp, r);
 
 			let r_next_norm_sq = manifold.inner_product(point, r, r, man_ws);
@@ -210,16 +210,14 @@ impl<T: Scalar> TrustRegion<T> {
 
 			let beta = r_next_norm_sq / r_norm_sq;
 
-			// p = -r_next + beta * p
-			temp.clone_from(r);
-			manifold.scale_tangent(-T::one(), temp); // temp = -r
+			// p = −r + β·p
 			manifold.scale_tangent(beta, p);
-			manifold.add_tangents(p, temp); // p = -r + beta * p
+			manifold.axpy_tangent(-T::one(), r, p);
 
 			r_norm_sq = r_next_norm_sq;
 		}
 
-		false // Reached max iterations without hitting boundary
+		false
 	}
 }
 
@@ -250,11 +248,10 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 		let mut gradient = manifold.allocate_tangent();
 		let mut step_s = manifold.allocate_tangent();
 
-		// tCG Buffers
+		// tCG buffers (no separate temp — axpy_tangent eliminates it)
 		let mut cg_r = manifold.allocate_tangent();
 		let mut cg_p = manifold.allocate_tangent();
 		let mut cg_hp = manifold.allocate_tangent();
-		let mut cg_temp = manifold.allocate_tangent();
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
 		let mut man_ws = manifold.create_workspace(&current_point);
@@ -295,10 +292,9 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 		}
 
 		// ════════════════════════════════════════════════════════════════════
-		// 3. Optimization Loop (Hot Path - Zero Allocation)
+		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iteration < max_iter {
-			// Check minimum trust region radius
 			if trust_radius < self.config.min_radius {
 				termination = TerminationReason::Converged;
 				break;
@@ -316,36 +312,33 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 				&mut cg_r,
 				&mut cg_p,
 				&mut cg_hp,
-				&mut cg_temp,
 				&mut prob_ws,
 				&mut man_ws,
 			);
 
-			// -- B. Compute Predicted Reduction --
-			// m(0) - m(s) = - (<g, s> + 0.5 <s, Hs>)
-			// We need Hs, so we do one final HVP
+			// -- B. Predicted Reduction --
+			// m(0) − m(s) = −(⟨g, s⟩ + ½⟨s, Hs⟩)
 			problem.riemannian_hessian_vector_product(
 				manifold,
 				&current_point,
 				&step_s,
-				&mut cg_hp, // Use cg_hp to store Hs
+				&mut cg_hp,
 				&mut prob_ws,
 				&mut man_ws,
 			);
 
 			let g_dot_s = manifold.inner_product(&current_point, &gradient, &step_s, &mut man_ws);
-			let s_dot_hs = manifold.inner_product(&current_point, &step_s, &mut cg_hp, &mut man_ws);
+			let s_dot_hs = manifold.inner_product(&current_point, &step_s, &cg_hp, &mut man_ws);
 			let predicted_reduction = -(g_dot_s + <T as Scalar>::from_f64(0.5) * s_dot_hs);
 
-			// -- C. Evaluate Actual Reduction --
+			// -- C. Actual Reduction --
 			manifold.retract(&current_point, &step_s, &mut candidate_point, &mut man_ws);
 			let trial_cost = problem.cost(&candidate_point);
 			fn_evals += 1;
 
 			let actual_reduction = current_cost - trial_cost;
 
-			// -- D. Compute Ratio (rho) --
-			// Small regularization to avoid division by zero or numerical artifacts
+			// -- D. Ratio ρ --
 			let reg = <T as Float>::max(T::one(), <T as Float>::abs(current_cost))
 				* T::epsilon()
 				* <T as Scalar>::from_f64(1e3);
@@ -353,19 +346,17 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 			let rho = if <T as Float>::abs(predicted_reduction) > reg {
 				actual_reduction / predicted_reduction
 			} else if actual_reduction >= T::zero() {
-				// Near convergence, both reductions ~ 0. Accept step to avoid getting stuck.
 				<T as Scalar>::from_f64(0.75)
 			} else {
 				T::zero()
 			};
 
-			// -- E. Accept or Reject Step --
+			// -- E. Accept or Reject --
 			if rho >= self.config.acceptance_ratio {
-				// Step accepted
-				current_point.clone_from(&candidate_point);
+				// Accept step: O(1) swap instead of memcpy.
+				std::mem::swap(&mut current_point, &mut candidate_point);
 				current_cost = trial_cost;
 
-				// We only need to compute gradient if step is accepted
 				let _ = problem.cost_and_gradient(
 					manifold,
 					&current_point,
@@ -376,13 +367,13 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 				grad_evals += 1;
 				grad_norm = manifold.norm(&current_point, &gradient, &mut man_ws);
 			}
+			// Rejected: current_point unchanged, candidate_point will be
+			// overwritten by retract on the next iteration.
 
 			// -- F. Update Trust Region Radius --
 			if rho < self.config.decrease_threshold {
-				// Poor model prediction: shrink trust region
 				trust_radius = trust_radius * self.config.decrease_factor;
 			} else if rho > self.config.increase_threshold && boundary_hit {
-				// Excellent prediction & hit boundary: expand trust region
 				trust_radius =
 					<T as Float>::min(trust_radius * self.config.increase_factor, max_radius);
 			}

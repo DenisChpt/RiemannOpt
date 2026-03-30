@@ -83,6 +83,10 @@ impl<T: Scalar> LBFGS<T> {
 	}
 
 	/// Computes the L-BFGS search direction using the two-loop recursion.
+	///
+	/// Uses `axpy_tangent` (fused y ← y + α·x) to avoid all temporary
+	/// copies in the inner loops.  The only remaining copy is the final
+	/// project_tangent call (which needs distinct input/output buffers).
 	fn compute_direction<M>(
 		&self,
 		manifold: &M,
@@ -90,8 +94,7 @@ impl<T: Scalar> LBFGS<T> {
 		gradient: &M::TangentVector,
 		history: &VecDeque<LBFGSHistoryEntry<T, M::TangentVector>>,
 		direction: &mut M::TangentVector,
-		scratch0: &mut M::TangentVector,
-		scratch1: &mut M::TangentVector,
+		scratch: &mut M::TangentVector,
 		alphas: &mut [T],
 		manifold_ws: &mut M::Workspace,
 	) where
@@ -100,32 +103,28 @@ impl<T: Scalar> LBFGS<T> {
 		let m = history.len();
 
 		if m == 0 {
-			direction.clone_from(gradient);
+			manifold.copy_tangent(direction, gradient);
 			manifold.scale_tangent(-T::one(), direction);
 			return;
 		}
 
-		// q lives in `direction` initially
-		direction.clone_from(gradient);
+		// q ← gradient  (direction serves as q)
+		manifold.copy_tangent(direction, gradient);
 
-		// First loop (backward)
+		// ── First loop (backward) ────────────────────────────────────────
+		// q = q − α_i · y_i   →   axpy_tangent(-α_i, &y_i, &mut q)
 		for i in (0..m).rev() {
 			let entry = &history[i];
 			let s_dot_q = manifold.inner_product(current_point, &entry.s, direction, manifold_ws);
 			alphas[i] = entry.rho * s_dot_q;
-
-			// q = q - α_i * y_i
-			scratch0.clone_from(&entry.y);
-			manifold.scale_tangent(-alphas[i], scratch0);
-			manifold.add_tangents(direction, scratch0); // direction += scratch0
+			manifold.axpy_tangent(-alphas[i], &entry.y, direction);
 		}
 
-		// r = H_0 * q
-		let last_entry = &history[m - 1];
-		let s_dot_y =
-			manifold.inner_product(current_point, &last_entry.s, &last_entry.y, manifold_ws);
-		let y_dot_y =
-			manifold.inner_product(current_point, &last_entry.y, &last_entry.y, manifold_ws);
+		// ── Initial Hessian scaling ──────────────────────────────────────
+		// r = γ · q   where γ = s^T y / y^T y
+		let last = &history[m - 1];
+		let s_dot_y = manifold.inner_product(current_point, &last.s, &last.y, manifold_ws);
+		let y_dot_y = manifold.inner_product(current_point, &last.y, &last.y, manifold_ws);
 
 		let gamma = if y_dot_y > T::EPSILON {
 			s_dot_y / y_dot_y
@@ -134,25 +133,21 @@ impl<T: Scalar> LBFGS<T> {
 		};
 		manifold.scale_tangent(gamma, direction);
 
-		// Second loop (forward)
+		// ── Second loop (forward) ────────────────────────────────────────
+		// r = r + (α_i − β) · s_i   →   axpy_tangent(coeff, &s_i, &mut r)
 		for i in 0..m {
 			let entry = &history[i];
 			let y_dot_r = manifold.inner_product(current_point, &entry.y, direction, manifold_ws);
 			let beta = entry.rho * y_dot_r;
-			let coeff = alphas[i] - beta;
-
-			// r = r + (α_i - β) * s_i
-			scratch1.clone_from(&entry.s);
-			manifold.scale_tangent(coeff, scratch1);
-			manifold.add_tangents(direction, scratch1); // direction += scratch1
+			manifold.axpy_tangent(alphas[i] - beta, &entry.s, direction);
 		}
 
-		// Return -r
+		// direction = −r
 		manifold.scale_tangent(-T::one(), direction);
 
-		// Project to tangent space for numerical safety
-		scratch0.clone_from(direction);
-		manifold.project_tangent(current_point, scratch0, direction, manifold_ws);
+		// Re-project for numerical safety (needs distinct src / dst)
+		manifold.copy_tangent(scratch, direction);
+		manifold.project_tangent(current_point, scratch, direction, manifold_ws);
 	}
 }
 
@@ -184,8 +179,7 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 		let mut old_gradient = manifold.allocate_tangent();
 		let mut direction = manifold.allocate_tangent();
 
-		let mut scratch0 = manifold.allocate_tangent();
-		let mut scratch1 = manifold.allocate_tangent();
+		let mut scratch = manifold.allocate_tangent();
 		let mut s_k = manifold.allocate_tangent();
 		let mut y_k = manifold.allocate_tangent();
 
@@ -194,7 +188,7 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 
 		let mut history: VecDeque<LBFGSHistoryEntry<T, M::TangentVector>> =
 			VecDeque::with_capacity(self.config.memory_size);
-		let mut alphas = vec![T::zero(); self.config.memory_size]; // Pre-allocated alpha buffer
+		let mut alphas = vec![T::zero(); self.config.memory_size];
 
 		// ════════════════════════════════════════════════════════════════════
 		// 2. Initialization
@@ -223,18 +217,19 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 		}
 
 		// ════════════════════════════════════════════════════════════════════
-		// 3. Optimization Loop (Hot Path - Zero Allocation)
+		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iter < max_iter {
-			// -- A. Compute Direction --
+			// -- A. Compute Direction (two-loop recursion) --
+			// Note: compute_direction now only needs one scratch buffer
+			// since axpy_tangent eliminated the second one.
 			self.compute_direction(
 				manifold,
 				&current_point,
 				&gradient,
 				&history,
 				&mut direction,
-				&mut scratch0,
-				&mut scratch1,
+				&mut scratch,
 				&mut alphas,
 				&mut man_ws,
 			);
@@ -243,9 +238,9 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 			let dir_deriv =
 				manifold.inner_product(&current_point, &gradient, &direction, &mut man_ws);
 			let dir_deriv = if dir_deriv >= T::zero() {
-				// Fallback to Steepest Descent if not a descent direction
+				// Fallback to steepest descent
 				history.clear();
-				direction.clone_from(&gradient);
+				manifold.copy_tangent(&mut direction, &gradient);
 				manifold.scale_tangent(-T::one(), &mut direction);
 				-(grad_norm * grad_norm)
 			} else {
@@ -253,18 +248,15 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 			};
 
 			// -- B. Line Search (Armijo Backtracking) --
+			// We scale a scratch copy of direction so that the original is
+			// preserved exactly (no cumulative scale/unscale drift).
 			let mut alpha = self.config.initial_step_size;
 			let mut ls_success = false;
 
 			while alpha > T::MIN_STEP_SIZE {
-				manifold.scale_tangent(alpha, &mut direction);
-				manifold.retract(
-					&current_point,
-					&direction,
-					&mut candidate_point,
-					&mut man_ws,
-				);
-				manifold.scale_tangent(T::one() / alpha, &mut direction); // restore
+				manifold.copy_tangent(&mut scratch, &direction);
+				manifold.scale_tangent(alpha, &mut scratch);
+				manifold.retract(&current_point, &scratch, &mut candidate_point, &mut man_ws);
 
 				let candidate_cost = problem.cost(&candidate_point);
 				fn_evals += 1;
@@ -282,42 +274,44 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 				break;
 			}
 
-			// -- C. Compute s_k and transport history --
-			manifold.scale_tangent(alpha, &mut direction);
-			s_k.clone_from(&direction); // s_k lives at current_point
+			// -- C. Compute s_k = alpha · direction (at current_point) --
+			manifold.copy_tangent(&mut s_k, &direction);
+			manifold.scale_tangent(alpha, &mut s_k);
 
-			// Transport all history vectors from current_point to candidate_point
+			// -- D. Transport history vectors to candidate_point --
+			// Uses swap to move the transported result into the entry
+			// without a redundant memcpy.
 			for entry in history.iter_mut() {
 				manifold.parallel_transport(
 					&current_point,
 					&candidate_point,
 					&entry.s,
-					&mut scratch0,
+					&mut scratch,
 					&mut man_ws,
 				);
-				entry.s.clone_from(&scratch0);
+				std::mem::swap(&mut entry.s, &mut scratch);
 
 				manifold.parallel_transport(
 					&current_point,
 					&candidate_point,
 					&entry.y,
-					&mut scratch0,
+					&mut scratch,
 					&mut man_ws,
 				);
-				entry.y.clone_from(&scratch0);
+				std::mem::swap(&mut entry.y, &mut scratch);
 			}
 
-			// Transport s_k itself to candidate_point
+			// Transport s_k to candidate_point
 			manifold.parallel_transport(
 				&current_point,
 				&candidate_point,
 				&s_k,
-				&mut scratch0,
+				&mut scratch,
 				&mut man_ws,
 			);
-			s_k.clone_from(&scratch0);
+			std::mem::swap(&mut s_k, &mut scratch);
 
-			// Transport old gradient to compute y_k
+			// Transport current gradient to candidate_point → old_gradient
 			manifold.parallel_transport(
 				&current_point,
 				&candidate_point,
@@ -326,11 +320,12 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 				&mut man_ws,
 			);
 
-			// Update position
-			current_point.clone_from(&candidate_point);
+			// -- E. Move to candidate_point --
+			// O(1) pointer swap instead of O(n·p) memcpy.
+			std::mem::swap(&mut current_point, &mut candidate_point);
 
-			// -- D. Compute New Gradient --
-			let _new_cost_verify = problem.cost_and_gradient(
+			// -- F. Compute New Gradient --
+			let _new_cost = problem.cost_and_gradient(
 				manifold,
 				&current_point,
 				&mut gradient,
@@ -340,11 +335,9 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 			grad_evals += 1;
 			grad_norm = manifold.norm(&current_point, &gradient, &mut man_ws);
 
-			// -- E. Compute y_k and Update History --
-			// y_k = g_{k+1} - τ(g_k)
-			y_k.clone_from(&gradient);
-			manifold.scale_tangent(-T::one(), &mut old_gradient);
-			manifold.add_tangents(&mut y_k, &old_gradient);
+			// -- G. Compute y_k = g_{k+1} − τ(g_k) and Update History --
+			manifold.copy_tangent(&mut y_k, &gradient);
+			manifold.axpy_tangent(-T::one(), &old_gradient, &mut y_k);
 
 			let s_dot_y = manifold.inner_product(&current_point, &s_k, &y_k, &mut man_ws);
 			let s_norm_sq = manifold.inner_product(&current_point, &s_k, &s_k, &mut man_ws);
@@ -357,7 +350,6 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 			};
 
 			if accepted {
-				// Normalize s and y to prevent numerical overflow in the history
 				let s_norm = s_norm_sq.sqrt();
 				if s_norm > T::EPSILON {
 					let inv_s = T::one() / s_norm;
@@ -366,22 +358,33 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 
 					let normalized_s_dot_y =
 						manifold.inner_product(&current_point, &s_k, &y_k, &mut man_ws);
+
 					if normalized_s_dot_y > T::EPSILON {
+						let rho = T::one() / normalized_s_dot_y;
+
 						if history.len() >= self.config.memory_size {
-							history.pop_front();
+							// Recycle the oldest entry: swap its buffers
+							// with s_k/y_k instead of allocating new ones.
+							let mut old = history.pop_front().unwrap();
+							std::mem::swap(&mut old.s, &mut s_k);
+							std::mem::swap(&mut old.y, &mut y_k);
+							old.rho = rho;
+							history.push_back(old);
+						} else {
+							// History still growing — must allocate.
+							history.push_back(LBFGSHistoryEntry {
+								s: s_k.clone(),
+								y: y_k.clone(),
+								rho,
+							});
 						}
-						history.push_back(LBFGSHistoryEntry {
-							s: s_k.clone(),
-							y: y_k.clone(),
-							rho: T::one() / normalized_s_dot_y,
-						});
 					}
 				}
 			}
 
 			iter += 1;
 
-			// -- F. Stopping Criteria --
+			// -- H. Stopping Criteria --
 			if grad_norm <= grad_tol {
 				termination = TerminationReason::Converged;
 			} else if let Some(max_time) = stopping_criterion.max_time {
