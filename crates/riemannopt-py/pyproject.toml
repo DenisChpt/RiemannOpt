@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "riemannopt"
+version = "0.1.0"
+description = "High-performance Riemannian optimization"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["numpy>=1.24"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "riemannopt._native"

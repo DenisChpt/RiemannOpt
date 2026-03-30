@@ -3,6 +3,7 @@ members = [
 	"crates/riemannopt-core",
 	"crates/riemannopt-autodiff",
 	"crates/riemannopt",
+	"crates/riemannopt-py",
 ]
 resolver = "2"
 
@@ -48,6 +49,10 @@ wide = "1.2"
 # GPU support
 cust = { version = "0.3" }
 cudarc = { version = "0.19" }
+
+# Python bindings
+pyo3 = "0.28"
+numpy = "0.28"
 
 # Testing
 proptest = "1.11"
