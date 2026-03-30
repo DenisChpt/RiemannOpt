@@ -193,13 +193,14 @@ impl<T: Scalar> Solver<T> for SGD<T> {
 		// ════════════════════════════════════════════════════════════════════
 		let mut current_point = initial_point.clone();
 		let mut previous_point = manifold.allocate_point();
-		let mut candidate_point = manifold.allocate_point();
+		// No candidate_point — we retract directly into current_point
+		// after swapping it into previous_point.
 
 		let mut gradient = manifold.allocate_tangent();
 		let mut momentum = manifold.allocate_tangent();
 		let mut direction = manifold.allocate_tangent();
-
-		let mut scratch0 = manifold.allocate_tangent();
+		// No scratch0 — `direction` doubles as the transport scratch
+		// buffer (it is written before being read in every branch).
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
 		let mut man_ws = manifold.create_workspace(&current_point);
@@ -230,11 +231,11 @@ impl<T: Scalar> Solver<T> for SGD<T> {
 			termination = TerminationReason::Converged;
 		}
 
-		// Initialize momentum = 0
+		// Zero-initialize momentum
 		manifold.scale_tangent(T::zero(), &mut momentum);
 
 		// ════════════════════════════════════════════════════════════════════
-		// 3. Optimization Loop (Hot Path - Zero Allocation)
+		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iteration < max_iter {
 			// -- A. Gradient Clipping --
@@ -246,25 +247,26 @@ impl<T: Scalar> Solver<T> for SGD<T> {
 			}
 
 			// -- B. Compute Search Direction (with Momentum) --
-			let _has_momentum = match self.config.momentum {
+			match self.config.momentum {
 				MomentumMethod::None => {
-					direction.clone_from(&gradient);
-					false
+					manifold.copy_tangent(&mut direction, &gradient);
 				}
 				MomentumMethod::Classical { coefficient } => {
 					if iteration > 0 {
-						// Transport momentum: Γ(v_{t-1}) -> scratch0
+						// Transport momentum to current tangent space.
+						// `direction` is used as the transport scratch buffer —
+						// it will be overwritten with the final direction below.
 						manifold.parallel_transport(
 							&previous_point,
 							&current_point,
 							&momentum,
-							&mut scratch0,
+							&mut direction,
 							&mut man_ws,
 						);
-						// Ensure numerical safety by projecting
+						// Re-project for numerical safety
 						manifold.project_tangent(
 							&current_point,
-							&scratch0,
+							&direction,
 							&mut momentum,
 							&mut man_ws,
 						);
@@ -272,25 +274,26 @@ impl<T: Scalar> Solver<T> for SGD<T> {
 						manifold.scale_tangent(T::zero(), &mut momentum);
 					}
 
-					// v_t = β v_{t-1} + g_t
+					// v_t = β · v_{t-1} + g_t
 					manifold.scale_tangent(coefficient, &mut momentum);
 					manifold.add_tangents(&mut momentum, &gradient);
 
-					direction.clone_from(&momentum);
-					true
+					// direction = v_t
+					manifold.copy_tangent(&mut direction, &momentum);
 				}
 				MomentumMethod::Nesterov { coefficient } => {
 					if iteration > 0 {
+						// Transport momentum (using direction as scratch)
 						manifold.parallel_transport(
 							&previous_point,
 							&current_point,
 							&momentum,
-							&mut scratch0,
+							&mut direction,
 							&mut man_ws,
 						);
 						manifold.project_tangent(
 							&current_point,
-							&scratch0,
+							&direction,
 							&mut momentum,
 							&mut man_ws,
 						);
@@ -298,37 +301,26 @@ impl<T: Scalar> Solver<T> for SGD<T> {
 						manifold.scale_tangent(T::zero(), &mut momentum);
 					}
 
-					// v_t = β v_{t-1} + g_t
+					// v_t = β · v_{t-1} + g_t
 					manifold.scale_tangent(coefficient, &mut momentum);
 					manifold.add_tangents(&mut momentum, &gradient);
 
-					// d_t = g_t + β v_t  (Nesterov trick computed at current point)
-					direction.clone_from(&momentum);
-					manifold.scale_tangent(coefficient, &mut direction);
-					manifold.add_tangents(&mut direction, &gradient);
-
-					true
+					// d_t = g_t + β · v_t   (Nesterov lookahead)
+					manifold.copy_tangent(&mut direction, &gradient);
+					manifold.axpy_tangent(coefficient, &momentum, &mut direction);
 				}
 			};
 
 			// -- C. Retract (Update Position) --
-			// Get step size schedule
 			let step_size = self.config.step_size.get_step_size(iteration);
-
-			// direction = -step_size * direction
 			manifold.scale_tangent(-step_size, &mut direction);
 
-			previous_point.clone_from(&current_point);
-			manifold.retract(
-				&current_point,
-				&direction,
-				&mut candidate_point,
-				&mut man_ws,
-			);
+			// Swap current → previous (O(1)), then retract directly
+			// into current_point.  Eliminates candidate_point.
+			std::mem::swap(&mut previous_point, &mut current_point);
+			manifold.retract(&previous_point, &direction, &mut current_point, &mut man_ws);
 
-			// -- D. Update State --
-			std::mem::swap(&mut current_point, &mut candidate_point);
-
+			// -- D. Evaluate New State --
 			let prev_cost = current_cost;
 			current_cost = problem.cost_and_gradient(
 				manifold,

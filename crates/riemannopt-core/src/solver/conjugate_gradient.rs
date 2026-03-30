@@ -189,7 +189,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 		let mut prev_grad_norm_sq = T::zero();
 
 		// ════════════════════════════════════════════════════════════════════
-		// 3. Optimization Loop (Hot Path - Zero Allocation)
+		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iter < max_iter {
 			let grad_norm_sq = grad_norm * grad_norm;
@@ -201,12 +201,13 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				|| (self.config.restart_period > 0
 					&& iterations_since_restart >= self.config.restart_period)
 			{
-				// Restart: direction = -gradient
-				direction.clone_from(&gradient);
+				// Restart: direction = −gradient
+				manifold.copy_tangent(&mut direction, &gradient);
 				manifold.scale_tangent(-T::one(), &mut direction);
 				restarted = true;
 			} else {
-				// 1. Parallel transport previous gradient and direction to current tangent space
+				// 1. Transport previous gradient and direction to current
+				//    tangent space.  Swap avoids a memcpy after each transport.
 				manifold.parallel_transport(
 					&previous_point,
 					&current_point,
@@ -214,7 +215,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 					&mut scratch,
 					&mut man_ws,
 				);
-				prev_gradient.clone_from(&scratch);
+				std::mem::swap(&mut prev_gradient, &mut scratch);
 
 				manifold.parallel_transport(
 					&previous_point,
@@ -223,13 +224,13 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 					&mut scratch,
 					&mut man_ws,
 				);
-				prev_direction.clone_from(&scratch);
+				std::mem::swap(&mut prev_direction, &mut scratch);
 
-				// 2. Compute difference: scratch = g_k - τ(g_{k-1})
-				scratch.clone_from(&gradient);
+				// 2. scratch = g_k − τ(g_{k-1})
+				manifold.copy_tangent(&mut scratch, &gradient);
 				manifold.axpy_tangent(-T::one(), &prev_gradient, &mut scratch);
 
-				// 3. Compute Beta
+				// 3. Compute β
 				let mut beta = match self.config.method {
 					ConjugateGradientMethod::FletcherReeves => {
 						grad_norm_sq / prev_grad_norm_sq.max(T::epsilon())
@@ -280,7 +281,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 							T::zero()
 						}
 					}
-					_ => T::zero(), // Fallback for simplicity, HZ and LS can be added similarly
+					_ => T::zero(),
 				};
 
 				// Apply constraints
@@ -291,17 +292,17 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 					beta = beta.min(max_b);
 				}
 
-				// 4. Update direction: d_k = -g_k + β τ(d_{k-1})
-				direction.clone_from(&prev_direction);
+				// 4. d_k = β · τ(d_{k-1}) − g_k
+				manifold.copy_tangent(&mut direction, &prev_direction);
 				manifold.scale_tangent(beta, &mut direction);
 				manifold.axpy_tangent(-T::one(), &gradient, &mut direction);
 			}
 
-			// Ensure it's a descent direction (⟨g, d⟩ < 0)
+			// Ensure descent direction (⟨g, d⟩ < 0)
 			let mut dir_deriv =
 				manifold.inner_product(&current_point, &gradient, &direction, &mut man_ws);
 			if dir_deriv >= T::zero() {
-				direction.clone_from(&gradient);
+				manifold.copy_tangent(&mut direction, &gradient);
 				manifold.scale_tangent(-T::one(), &mut direction);
 				dir_deriv = -grad_norm_sq;
 				restarted = true;
@@ -311,8 +312,9 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				iterations_since_restart = 0;
 			}
 
-			// -- B. Adaptive Line Search (Armijo Backtracking) --
-			// For CG, we guess the initial step size based on the previous step
+			// -- B. Armijo Line Search --
+			// Scale a scratch copy so that `direction` is preserved exactly
+			// (no cumulative scale / unscale drift).
 			let mut alpha = if iter == 0 {
 				T::one() / grad_norm
 			} else {
@@ -321,15 +323,9 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 
 			let mut ls_success = false;
 			while alpha > T::MIN_STEP_SIZE {
-				// candidate = R_x(alpha * d)
-				manifold.scale_tangent(alpha, &mut direction);
-				manifold.retract(
-					&current_point,
-					&direction,
-					&mut candidate_point,
-					&mut man_ws,
-				);
-				manifold.scale_tangent(T::one() / alpha, &mut direction); // restore direction
+				manifold.copy_tangent(&mut scratch, &direction);
+				manifold.scale_tangent(alpha, &mut scratch);
+				manifold.retract(&current_point, &scratch, &mut candidate_point, &mut man_ws);
 
 				let candidate_cost = problem.cost(&candidate_point);
 				fn_evals += 1;
@@ -350,11 +346,15 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 			last_step_size = alpha;
 
 			// -- C. State Update --
-			previous_point.clone_from(&current_point);
-			current_point.clone_from(&candidate_point);
+			// Rotate point buffers: previous ← current ← candidate.
+			// Two O(1) swaps instead of two O(n·p) memcpy.
+			std::mem::swap(&mut previous_point, &mut current_point);
+			std::mem::swap(&mut current_point, &mut candidate_point);
 
-			prev_gradient.clone_from(&gradient);
-			prev_direction.clone_from(&direction);
+			// gradient and direction will be fully overwritten, so swap
+			// is safe and O(1) — the destination buffers are recycled.
+			std::mem::swap(&mut prev_gradient, &mut gradient);
+			std::mem::swap(&mut prev_direction, &mut direction);
 			prev_grad_norm_sq = grad_norm_sq;
 
 			let _new_cost = problem.cost_and_gradient(

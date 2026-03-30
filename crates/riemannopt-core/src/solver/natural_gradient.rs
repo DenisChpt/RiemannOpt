@@ -63,7 +63,7 @@ impl<T: Scalar> Default for NaturalGradientConfig<T> {
 	fn default() -> Self {
 		Self {
 			learning_rate: <T as Scalar>::from_f64(0.01),
-			fisher_approximation: FisherApproximation::Identity, // Safe default until F is implemented in Problem
+			fisher_approximation: FisherApproximation::Identity,
 			damping: <T as Scalar>::from_f64(1e-4),
 			fisher_update_freq: 10,
 			fisher_num_samples: 100,
@@ -112,7 +112,10 @@ impl<T: Scalar> NaturalGradient<T> {
 		Self::new(NaturalGradientConfig::default())
 	}
 
-	/// Apply Fisher information matrix inverse to gradient: result = (F + λI)^{-1} grad
+	/// Apply Fisher information matrix inverse to gradient:
+	///   result = (F + λI)⁻¹ grad
+	///
+	/// Writes directly into `result` without intermediate buffers.
 	fn apply_fisher_inverse<M: Manifold<T>>(
 		&self,
 		manifold: &M,
@@ -122,23 +125,23 @@ impl<T: Scalar> NaturalGradient<T> {
 	) {
 		match self.config.fisher_approximation {
 			FisherApproximation::Identity => {
-				// F = I, so (I + λI)^{-1} g = (1 / (1 + λ)) g
+				// F = I  →  (I + λI)⁻¹ g = g / (1 + λ)
 				let scale = T::one() / (T::one() + self.config.damping);
-				result.clone_from(gradient);
+				manifold.copy_tangent(result, gradient);
 				manifold.scale_tangent(scale, result);
 			}
 			FisherApproximation::Diagonal => {
 				// TODO: Requires Problem trait to expose Fisher diagonal.
 				// Fallback to damped identity.
 				let scale = T::one() / (T::one() + self.config.damping);
-				result.clone_from(gradient);
+				manifold.copy_tangent(result, gradient);
 				manifold.scale_tangent(scale, result);
 			}
 			FisherApproximation::Full | FisherApproximation::Empirical => {
-				// TODO: Requires Problem trait to solve Fisher system (like a Hessian-Vector Product).
+				// TODO: Requires Problem trait to solve Fisher system.
 				// Fallback to damped identity.
 				let scale = T::one() / (T::one() + self.config.damping);
-				result.clone_from(gradient);
+				manifold.copy_tangent(result, gradient);
 				manifold.scale_tangent(scale, result);
 			}
 		}
@@ -170,7 +173,9 @@ impl<T: Scalar> Solver<T> for NaturalGradient<T> {
 		let mut candidate_point = manifold.allocate_point();
 
 		let mut gradient = manifold.allocate_tangent();
-		let mut natural_gradient = manifold.allocate_tangent();
+		// `direction` doubles as the natural gradient output buffer.
+		// apply_fisher_inverse writes (F+λI)⁻¹g into it, then we scale
+		// by −lr in place.  The former `natural_gradient` is eliminated.
 		let mut direction = manifold.allocate_tangent();
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
@@ -203,31 +208,25 @@ impl<T: Scalar> Solver<T> for NaturalGradient<T> {
 		}
 
 		// ════════════════════════════════════════════════════════════════════
-		// 3. Optimization Loop (Hot Path - Zero Allocation)
+		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iteration < max_iter {
-			// -- A. Compute Natural Gradient --
-			// η_k = (F_k + λI)^{-1} g_k
-			self.apply_fisher_inverse(manifold, &current_point, &gradient, &mut natural_gradient);
-
-			// -- B. Compute Search Direction --
-			// d_k = -α_k η_k
-			direction.clone_from(&natural_gradient);
+			// -- A. Natural Gradient Direction --
+			// direction = (F + λI)⁻¹ g   (written directly into direction)
+			self.apply_fisher_inverse(manifold, &current_point, &gradient, &mut direction);
+			// direction = −lr · (F + λI)⁻¹ g
 			manifold.scale_tangent(-self.config.learning_rate, &mut direction);
 
-			// -- C. Retract to new point --
-			// x_{k+1} = R_{x_k}(d_k)
+			// -- B. Retract --
 			manifold.retract(
 				&current_point,
 				&direction,
 				&mut candidate_point,
 				&mut man_ws,
 			);
-
-			// Swap points
 			std::mem::swap(&mut current_point, &mut candidate_point);
 
-			// -- D. Evaluate New State --
+			// -- C. Evaluate New State --
 			let prev_cost = current_cost;
 			current_cost = problem.cost_and_gradient(
 				manifold,
@@ -241,7 +240,7 @@ impl<T: Scalar> Solver<T> for NaturalGradient<T> {
 			grad_norm = manifold.norm(&current_point, &gradient, &mut man_ws);
 			iteration += 1;
 
-			// -- E. Stopping Criteria Check --
+			// -- D. Stopping Criteria Check --
 			if grad_norm <= grad_tol {
 				termination = TerminationReason::Converged;
 			} else if let Some(val_tol) = stopping_criterion.function_tolerance {

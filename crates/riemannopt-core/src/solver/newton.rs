@@ -44,8 +44,8 @@ impl<T: Scalar> Default for NewtonConfig<T> {
 	fn default() -> Self {
 		Self {
 			hessian_regularization: <T as Scalar>::from_f64(1e-8),
-			max_cg_iterations: 100, // Usually the manifold dimension, or bounded to ~100
-			cg_tolerance_factor: <T as Scalar>::from_f64(0.1), // Typical tCG relative tolerance
+			max_cg_iterations: 100,
+			cg_tolerance_factor: <T as Scalar>::from_f64(0.1),
 			armijo_c: <T as Scalar>::from_f64(1e-4),
 			backtrack_rho: <T as Scalar>::from_f64(0.5),
 		}
@@ -84,7 +84,11 @@ impl<T: Scalar> Newton<T> {
 		Self::new(NewtonConfig::default())
 	}
 
-	/// Solves the Newton system Hess_f(x)[d] = -grad_f(x) using Truncated Conjugate Gradient (tCG).
+	/// Solves the Newton system Hess_f(x)[d] = −grad_f(x) using Truncated
+	/// Conjugate Gradient (tCG).
+	///
+	/// All inner-loop updates use `axpy_tangent` (y ← y + α·x) so no
+	/// temporary buffer is needed — the former `cg_temp` is eliminated.
 	///
 	/// # Returns
 	/// Whether the returned direction is guaranteed to be a descent direction.
@@ -99,7 +103,6 @@ impl<T: Scalar> Newton<T> {
 		cg_r: &mut M::TangentVector,
 		cg_p: &mut M::TangentVector,
 		cg_hp: &mut M::TangentVector,
-		cg_temp: &mut M::TangentVector,
 		prob_ws: &mut P::Workspace,
 		man_ws: &mut M::Workspace,
 	) -> bool
@@ -113,62 +116,60 @@ impl<T: Scalar> Newton<T> {
 			grad_norm * grad_norm,
 		);
 
-		// Initialize: d = 0, r = -gradient, p = r
-		manifold.scale_tangent(T::zero(), direction); // d = 0
-		cg_r.clone_from(gradient);
-		manifold.scale_tangent(-T::one(), cg_r); // r = -grad
-		cg_p.clone_from(cg_r); // p = r
+		// d = 0
+		manifold.scale_tangent(T::zero(), direction);
 
-		let mut rr_inner = manifold.inner_product(point, cg_r, cg_r, man_ws);
+		// r = −grad
+		manifold.copy_tangent(cg_r, gradient);
+		manifold.scale_tangent(-T::one(), cg_r);
 
-		for _cg_iter in 0..self.config.max_cg_iterations {
-			// hp = Hess(p)
+		// p = r
+		manifold.copy_tangent(cg_p, cg_r);
+
+		let mut rr = manifold.inner_product(point, cg_r, cg_r, man_ws);
+
+		let reg = self.config.hessian_regularization;
+
+		for cg_iter in 0..self.config.max_cg_iterations {
+			// hp = Hess(p) + reg · p
 			problem
 				.riemannian_hessian_vector_product(manifold, point, cg_p, cg_hp, prob_ws, man_ws);
+			manifold.axpy_tangent(reg, cg_p, cg_hp);
 
-			// hp = hp + reg * p (Regularization)
-			cg_temp.clone_from(cg_p);
-			manifold.scale_tangent(self.config.hessian_regularization, cg_temp);
-			manifold.add_tangents(cg_hp, cg_temp);
+			let php = manifold.inner_product(point, cg_p, cg_hp, man_ws);
 
-			let php_inner = manifold.inner_product(point, cg_p, cg_hp, man_ws);
-
-			// If negative curvature is detected, we must stop.
-			if php_inner <= T::zero() {
-				// If it's the first iteration, p is -grad. We take it (Steepest Descent step).
-				// Otherwise, the current `direction` is already a valid descent direction, we keep it.
-				if _cg_iter == 0 {
-					direction.clone_from(cg_p);
+			// Negative curvature → stop
+			if php <= T::zero() {
+				if cg_iter == 0 {
+					// p is −grad; take it as steepest-descent fallback.
+					manifold.copy_tangent(direction, cg_p);
 				}
-				return true; // We safely stopped on a descent direction
+				// else: current `direction` is already a valid descent direction
+				return true;
 			}
 
-			let alpha = rr_inner / php_inner;
+			let alpha = rr / php;
 
-			// d = d + alpha * p
-			cg_temp.clone_from(cg_p);
-			manifold.scale_tangent(alpha, cg_temp);
-			manifold.add_tangents(direction, cg_temp);
+			// d ← d + α · p
+			manifold.axpy_tangent(alpha, cg_p, direction);
 
-			// r = r - alpha * hp
-			cg_temp.clone_from(cg_hp);
-			manifold.scale_tangent(-alpha, cg_temp);
-			manifold.add_tangents(cg_r, cg_temp);
+			// r ← r − α · hp
+			manifold.axpy_tangent(-alpha, cg_hp, cg_r);
 
-			let new_rr_inner = manifold.inner_product(point, cg_r, cg_r, man_ws);
+			let new_rr = manifold.inner_product(point, cg_r, cg_r, man_ws);
 
-			// Check CG convergence
-			if new_rr_inner.sqrt() <= target_res_norm {
+			// Convergence check
+			if new_rr.sqrt() <= target_res_norm {
 				break;
 			}
 
-			let beta = new_rr_inner / rr_inner;
+			let beta = new_rr / rr;
 
-			// p = r + beta * p
+			// p ← r + β · p   (= β·p then p += r)
 			manifold.scale_tangent(beta, cg_p);
 			manifold.add_tangents(cg_p, cg_r);
 
-			rr_inner = new_rr_inner;
+			rr = new_rr;
 		}
 
 		true
@@ -201,13 +202,12 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 
 		let mut gradient = manifold.allocate_tangent();
 		let mut direction = manifold.allocate_tangent();
-		let mut scaled_direction = manifold.allocate_tangent();
 
-		// tCG Buffers
+		// tCG buffers.  After tCG returns, cg_r is reused as the
+		// line-search scratch buffer (avoiding a separate allocation).
 		let mut cg_r = manifold.allocate_tangent();
 		let mut cg_p = manifold.allocate_tangent();
 		let mut cg_hp = manifold.allocate_tangent();
-		let mut cg_temp = manifold.allocate_tangent();
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
 		let mut man_ws = manifold.create_workspace(&current_point);
@@ -239,10 +239,10 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 		}
 
 		// ════════════════════════════════════════════════════════════════════
-		// 3. Optimization Loop (Hot Path - Zero Allocation)
+		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iteration < max_iter {
-			// -- A. Solve Newton System for Direction --
+			// -- A. Solve Newton System --
 			self.solve_newton_system(
 				problem,
 				manifold,
@@ -253,34 +253,29 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 				&mut cg_r,
 				&mut cg_p,
 				&mut cg_hp,
-				&mut cg_temp,
 				&mut prob_ws,
 				&mut man_ws,
 			);
 
-			// Ensure descent direction (fallback to -grad if tCG failed completely)
+			// Fallback to steepest descent if tCG produced a non-descent direction
 			let mut dir_deriv =
 				manifold.inner_product(&current_point, &gradient, &direction, &mut man_ws);
 			if dir_deriv >= T::zero() {
-				direction.clone_from(&gradient);
+				manifold.copy_tangent(&mut direction, &gradient);
 				manifold.scale_tangent(-T::one(), &mut direction);
 				dir_deriv = -(grad_norm * grad_norm);
 			}
 
 			// -- B. Line Search (Armijo Backtracking) --
-			// Newton step length is ideally 1.0 (quadratic convergence zone)
+			// Reuse cg_r as scratch for the scaled direction (tCG is done).
+			let scratch = &mut cg_r;
 			let mut alpha = T::one();
 			let mut ls_success = false;
 
 			while alpha > T::MIN_STEP_SIZE {
-				scaled_direction.clone_from(&direction);
-				manifold.scale_tangent(alpha, &mut scaled_direction);
-				manifold.retract(
-					&current_point,
-					&scaled_direction,
-					&mut candidate_point,
-					&mut man_ws,
-				);
+				manifold.copy_tangent(scratch, &direction);
+				manifold.scale_tangent(alpha, scratch);
+				manifold.retract(&current_point, scratch, &mut candidate_point, &mut man_ws);
 
 				let candidate_cost = problem.cost(&candidate_point);
 				fn_evals += 1;
@@ -299,7 +294,8 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 			}
 
 			// -- C. State Update --
-			current_point.clone_from(&candidate_point);
+			// O(1) swap instead of O(n·p) memcpy.
+			std::mem::swap(&mut current_point, &mut candidate_point);
 
 			let prev_cost = current_cost;
 			current_cost = problem.cost_and_gradient(

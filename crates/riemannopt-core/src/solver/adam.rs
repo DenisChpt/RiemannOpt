@@ -142,16 +142,17 @@ impl<T: Scalar> Solver<T> for Adam<T> {
 		// ════════════════════════════════════════════════════════════════════
 		let mut current_point = initial_point.clone();
 		let mut previous_point = manifold.allocate_point();
-		let mut candidate_point = manifold.allocate_point();
+		// No candidate_point needed — we retract directly into
+		// current_point after swapping it into previous_point.
 
 		let mut gradient = manifold.allocate_tangent();
 		let mut m = manifold.allocate_tangent();
 		let mut v = manifold.allocate_tangent();
-		let mut v_max = manifold.allocate_tangent(); // Used only if amsgrad=true
+		let mut v_max = manifold.allocate_tangent();
 		let mut direction = manifold.allocate_tangent();
 
-		// Scratch buffers to avoid any allocation during math operations
-		let mut scratch0 = manifold.allocate_tangent();
+		// Single scratch buffer for parallel transport outputs.
+		let mut scratch = manifold.allocate_tangent();
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
 		let mut man_ws = manifold.create_workspace(&current_point);
@@ -182,10 +183,10 @@ impl<T: Scalar> Solver<T> for Adam<T> {
 			termination = TerminationReason::Converged;
 		}
 
-		let mut v_max_norm_sq = T::zero(); // Track v_max scalar norm efficiently
+		let mut v_max_norm_sq = T::zero();
 
 		// ════════════════════════════════════════════════════════════════════
-		// 3. Optimization Loop (Hot Path - Zero Allocation)
+		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iteration < max_iter {
 			// -- A. Gradient Clipping --
@@ -193,61 +194,64 @@ impl<T: Scalar> Solver<T> for Adam<T> {
 				if grad_norm > threshold {
 					let scale = threshold / grad_norm;
 					manifold.scale_tangent(scale, &mut gradient);
-					grad_norm = threshold; // update norm to reflect clipping
+					grad_norm = threshold;
 				}
 			}
 
 			let grad_norm_sq = grad_norm * grad_norm;
 			let t = (iteration + 1) as f64;
 
-			// -- B. Transport Moments from previous point (if iteration > 0) --
+			let beta1 = self.config.beta1;
+			let beta2 = self.config.beta2;
+
+			// -- B. Transport Moments / Initialize --
 			if iteration > 0 {
+				// Transport m from previous tangent space to current.
+				// swap avoids a redundant memcpy after transport.
 				manifold.parallel_transport(
 					&previous_point,
 					&current_point,
 					&m,
-					&mut scratch0,
+					&mut scratch,
 					&mut man_ws,
 				);
-				m.clone_from(&scratch0);
+				std::mem::swap(&mut m, &mut scratch);
 
 				manifold.parallel_transport(
 					&previous_point,
 					&current_point,
 					&v,
-					&mut scratch0,
+					&mut scratch,
 					&mut man_ws,
 				);
-				v.clone_from(&scratch0);
+				std::mem::swap(&mut v, &mut scratch);
 
 				if self.config.use_amsgrad {
 					manifold.parallel_transport(
 						&previous_point,
 						&current_point,
 						&v_max,
-						&mut scratch0,
+						&mut scratch,
 						&mut man_ws,
 					);
-					v_max.clone_from(&scratch0);
+					std::mem::swap(&mut v_max, &mut scratch);
 				}
 			} else {
-				// Initialize moments on first step
-				m.clone_from(&gradient);
-				v.clone_from(&gradient);
+				// First iteration: initialize moments from gradient.
+				manifold.copy_tangent(&mut m, &gradient);
+				manifold.copy_tangent(&mut v, &gradient);
 				if self.config.use_amsgrad {
-					v_max.clone_from(&gradient);
+					manifold.copy_tangent(&mut v_max, &gradient);
 					v_max_norm_sq = grad_norm_sq;
 				}
 			}
 
 			// -- C. Update Moments --
-			let beta1 = self.config.beta1;
-			let beta2 = self.config.beta2;
-
 			if iteration == 0 {
-				// Iteration 0 initialization scaling
+				// m₀ = (1−β₁) · g₀
 				manifold.scale_tangent(T::one() - beta1, &mut m);
 
+				// v₀ = √(1−β₂) · g₀  (so that ‖v₀‖² = (1−β₂)·‖g₀‖²)
 				let scale = if grad_norm > T::zero() {
 					<T as Float>::sqrt((T::one() - beta2) * grad_norm_sq) / grad_norm
 				} else {
@@ -255,29 +259,28 @@ impl<T: Scalar> Solver<T> for Adam<T> {
 				};
 				manifold.scale_tangent(scale, &mut v);
 			} else {
-				// m_t = β₁ * m_{t-1} + (1-β₁) * g_t
+				// m_t = β₁ · τ(m_{t-1}) + (1−β₁) · g_t
+				// Fused: scale m in place, then axpy the gradient in.
 				manifold.scale_tangent(beta1, &mut m);
-				scratch0.clone_from(&gradient);
-				manifold.scale_tangent(T::one() - beta1, &mut scratch0);
-				manifold.add_tangents(&mut m, &scratch0);
+				manifold.axpy_tangent(T::one() - beta1, &gradient, &mut m);
 
-				// Update second moment norm tracking
+				// Second moment: track ‖v_t‖ by rescaling the direction
+				// vector to match the target norm.
 				let v_norm_sq = manifold.inner_product(&current_point, &v, &v, &mut man_ws);
 				let new_v_norm_sq = beta2 * v_norm_sq + (T::one() - beta2) * grad_norm_sq;
 				let new_v_norm = <T as Float>::sqrt(new_v_norm_sq);
 				let current_v_norm = <T as Float>::sqrt(v_norm_sq);
 
 				if current_v_norm > T::zero() {
-					let scale = new_v_norm / current_v_norm;
-					manifold.scale_tangent(scale, &mut v);
+					manifold.scale_tangent(new_v_norm / current_v_norm, &mut v);
 				} else if grad_norm > T::zero() {
-					v.clone_from(&gradient);
+					manifold.copy_tangent(&mut v, &gradient);
 					manifold.scale_tangent(new_v_norm / grad_norm, &mut v);
 				}
 
-				// AMSGrad variant update
+				// AMSGrad: keep running maximum of ‖v‖²
 				if self.config.use_amsgrad && new_v_norm_sq > v_max_norm_sq {
-					v_max.clone_from(&v);
+					manifold.copy_tangent(&mut v_max, &v);
 					v_max_norm_sq = new_v_norm_sq;
 				}
 			}
@@ -294,22 +297,18 @@ impl<T: Scalar> Solver<T> for Adam<T> {
 			let m_hat_scale = T::one() / bias1;
 			let step_scale = T::one() / (v_hat_norm + self.config.epsilon);
 
-			// direction = (m / bias1) / (v_hat_norm + epsilon)
-			direction.clone_from(&m);
-			manifold.scale_tangent(m_hat_scale * step_scale, &mut direction);
+			// direction = −lr · (m / bias1) / (‖v̂‖ + ε)
+			manifold.copy_tangent(&mut direction, &m);
+			manifold.scale_tangent(
+				-self.config.learning_rate * m_hat_scale * step_scale,
+				&mut direction,
+			);
 
 			// -- E. Retraction (Update Position) --
-			// step = -learning_rate * direction
-			manifold.scale_tangent(-self.config.learning_rate, &mut direction);
-
-			previous_point.clone_from(&current_point);
-			manifold.retract(
-				&current_point,
-				&direction,
-				&mut candidate_point,
-				&mut man_ws,
-			);
-			current_point.clone_from(&candidate_point);
+			// Swap current → previous (O(1)), then retract directly
+			// into current_point.  Eliminates candidate_point entirely.
+			std::mem::swap(&mut previous_point, &mut current_point);
+			manifold.retract(&previous_point, &direction, &mut current_point, &mut man_ws);
 
 			// -- F. Evaluate New State --
 			let prev_cost = current_cost;
