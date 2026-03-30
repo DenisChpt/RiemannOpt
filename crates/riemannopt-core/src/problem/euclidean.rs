@@ -96,10 +96,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for RosenbrockWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RosenbrockWorkspace<T, B> where B::Vector: Send
-{}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RosenbrockWorkspace<T, B> where B::Vector: Sync
-{}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RosenbrockWorkspace<T, B> where B::Vector: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RosenbrockWorkspace<T, B> where B::Vector: Sync {}
 
 impl<T, B, M> Problem<T, M> for Rosenbrock<T, B>
 where
@@ -152,8 +150,7 @@ where
 			let xi1 = point.get(i + 1);
 			let diff = xi1 - xi * xi;
 
-			*egrad.get_mut(i) =
-				*egrad.get_mut(i) - four * self.a * xi * diff - two * (self.b - xi);
+			*egrad.get_mut(i) = *egrad.get_mut(i) - four * self.a * xi * diff - two * (self.b - xi);
 			*egrad.get_mut(i + 1) = *egrad.get_mut(i + 1) + two * self.a * diff;
 		}
 
@@ -212,8 +209,7 @@ where
 			let xi = point.get(i);
 			let xi1 = point.get(i + 1);
 			let diff = xi1 - xi * xi;
-			*egrad.get_mut(i) =
-				*egrad.get_mut(i) - four * self.a * xi * diff - two * (self.b - xi);
+			*egrad.get_mut(i) = *egrad.get_mut(i) - four * self.a * xi * diff - two * (self.b - xi);
 			*egrad.get_mut(i + 1) = *egrad.get_mut(i + 1) + two * self.a * diff;
 		}
 
@@ -226,8 +222,8 @@ where
 			let vi = vector.get(i);
 			let vi1 = vector.get(i + 1);
 
-			*result.get_mut(i) = *result.get_mut(i)
-				+ (-four * self.a * diff + twelve * self.a * xi * xi + two) * vi;
+			*result.get_mut(i) =
+				*result.get_mut(i) + (-four * self.a * diff + twelve * self.a * xi * xi + two) * vi;
 			*result.get_mut(i) = *result.get_mut(i) - four * self.a * xi * vi1;
 			*result.get_mut(i + 1) = *result.get_mut(i + 1) - four * self.a * xi * vi;
 			*result.get_mut(i + 1) = *result.get_mut(i + 1) + two * self.a * vi1;
@@ -319,10 +315,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for RastriginWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RastriginWorkspace<T, B> where B::Vector: Send
-{}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RastriginWorkspace<T, B> where B::Vector: Sync
-{}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RastriginWorkspace<T, B> where B::Vector: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RastriginWorkspace<T, B> where B::Vector: Sync {}
 
 impl<T, B, M> Problem<T, M> for Rastrigin<T, B>
 where
@@ -525,14 +519,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for RidgeRegressionWorkspace<T, B> 
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RidgeRegressionWorkspace<T, B>
-where
-	B::Vector: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for RidgeRegressionWorkspace<T, B> where
+	B::Vector: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RidgeRegressionWorkspace<T, B>
-where
-	B::Vector: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for RidgeRegressionWorkspace<T, B> where
+	B::Vector: Sync
 {
 }
 
@@ -721,14 +713,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for LogisticRegressionWorkspace<T, 
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for LogisticRegressionWorkspace<T, B>
-where
-	B::Vector: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for LogisticRegressionWorkspace<T, B> where
+	B::Vector: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for LogisticRegressionWorkspace<T, B>
-where
-	B::Vector: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for LogisticRegressionWorkspace<T, B> where
+	B::Vector: Sync
 {
 }
 

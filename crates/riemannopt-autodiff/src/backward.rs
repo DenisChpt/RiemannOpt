@@ -306,14 +306,17 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 			// grad_a += grad_out^T
 			let go = grad.matrix(MVar(out));
 			let (go_r, go_c) = (go.nrows(), go.ncols());
-			let go_slice: Vec<T> = go.as_slice().to_vec();
+			// Copy go into a temp buffer to avoid aliasing issues
+			let mut go_copy = B::Matrix::zeros(go_r, go_c);
+			go_copy.copy_from(go);
 			let ga = grad.matrix_mut(MVar(a));
-			let ga_s = ga.as_mut_slice();
 			// go is go_r × go_c, ga is go_c × go_r
 			// ga[j,i] += go[i,j]
 			for j in 0..go_c {
 				for i in 0..go_r {
-					ga_s[i * go_c + j] = ga_s[i * go_c + j] + go_slice[j * go_r + i];
+					let val = MatrixView::get(&go_copy, i, j);
+					let cur = MatrixView::get(ga, j, i);
+					*MatrixOps::get_mut(ga, j, i) = cur + val;
 				}
 			}
 		}
@@ -345,12 +348,12 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 					let (left, right) = grad.vectors.split_at_mut(oi);
 					let go = &right[0];
 					let gv = &mut left[vi];
-					mat_t_vec_axpy::<T, B>(val_m, go, T::one(), gv);
+					val_m.mat_t_vec_axpy(T::one(), go, T::one(), gv);
 				} else {
 					let (left, right) = grad.vectors.split_at_mut(vi);
 					let go = &left[oi];
 					let gv = &mut right[0];
-					mat_t_vec_axpy::<T, B>(val_m, go, T::one(), gv);
+					val_m.mat_t_vec_axpy(T::one(), go, T::one(), gv);
 				}
 			}
 			// grad_m += grad_out ⊗ val(v)^T
@@ -358,7 +361,7 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 			{
 				let go = &grad.vectors[out as usize];
 				let gm = &mut grad.matrices[m as usize];
-				outer_product_axpy::<T, B>(go, val_v, T::one(), gm);
+				gm.ger(T::one(), go, val_v);
 			}
 		}
 
@@ -406,19 +409,19 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 					let (left, right) = grad.vectors.split_at_mut(oi);
 					let go = &right[0];
 					let gx = &mut left[xi];
-					mat_t_vec_axpy::<T, B>(val_a, go, T::one(), gx);
+					val_a.mat_t_vec_axpy(T::one(), go, T::one(), gx);
 				} else {
 					let (left, right) = grad.vectors.split_at_mut(xi);
 					let go = &left[oi];
 					let gx = &mut right[0];
-					mat_t_vec_axpy::<T, B>(val_a, go, T::one(), gx);
+					val_a.mat_t_vec_axpy(T::one(), go, T::one(), gx);
 				}
 			}
 			// grad_A += grad_out ⊗ val(x)^T (cross-arena: vectors read, matrices write)
 			{
 				let go = &grad.vectors[out as usize];
 				let ga = &mut grad.matrices[a as usize];
-				outer_product_axpy::<T, B>(go, val_x, T::one(), ga);
+				ga.ger(T::one(), go, val_x);
 			}
 		}
 		Op::QuadForm { x, a, ax, out } => {
@@ -432,64 +435,8 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 			grad.vector_mut(VVar(x)).axpy(two * go, val_ax, T::one());
 
 			// grad_A += go · (x ⊗ x^T)  (symmetric: x·x^T)
-			outer_product_axpy::<T, B>(val_x, val_x, go, grad.matrix_mut(MVar(a)));
+			grad.matrix_mut(MVar(a)).ger(go, val_x, val_x);
 		}
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  Allocation-free helpers  (backend-agnostic via as_slice / as_mut_slice)
-// ═══════════════════════════════════════════════════════════════════════
-
-/// Computes `y += alpha · M^T · x` without allocation.
-///
-/// Uses column-major slice access to perform the transpose-matvec.
-#[inline]
-fn mat_t_vec_axpy<T: RealScalar, B: LinAlgBackend<T>>(
-	m: &B::Matrix,
-	x: &B::Vector,
-	alpha: T,
-	y: &mut B::Vector,
-) {
-	let nrows = m.nrows();
-	let ncols = m.ncols();
-	let m_s = m.as_slice();
-	let x_s = x.as_slice();
-	let y_s = y.as_mut_slice();
-	debug_assert_eq!(x_s.len(), nrows);
-	debug_assert_eq!(y_s.len(), ncols);
-	for (j, yj) in y_s.iter_mut().enumerate() {
-		let col_start = j * nrows;
-		let mut dot = T::zero();
-		for i in 0..nrows {
-			dot = dot + m_s[col_start + i] * x_s[i];
-		}
-		*yj = *yj + alpha * dot;
-	}
-}
-
-/// Computes `R += alpha · x · y^T` (rank-1 update) without allocation.
-///
-/// Uses column-major slice access.
-#[inline]
-fn outer_product_axpy<T: RealScalar, B: LinAlgBackend<T>>(
-	x: &B::Vector,
-	y: &B::Vector,
-	alpha: T,
-	r: &mut B::Matrix,
-) {
-	let nrows = r.nrows();
-	let ncols = r.ncols();
-	let x_s = x.as_slice();
-	let y_s = y.as_slice();
-	let r_s = r.as_mut_slice();
-	debug_assert_eq!(x_s.len(), nrows);
-	debug_assert_eq!(y_s.len(), ncols);
-	for (j, &yj) in y_s.iter().enumerate() {
-		let col_start = j * nrows;
-		let ayj = alpha * yj;
-		for i in 0..nrows {
-			r_s[col_start + i] = r_s[col_start + i] + ayj * x_s[i];
-		}
-	}
-}

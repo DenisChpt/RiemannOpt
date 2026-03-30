@@ -514,6 +514,36 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	fn mat_vec_into(&self, x: &Self::Col, y: &mut Self::Col) {
 		self.mat_vec_axpy(T::one(), x, T::zero(), y);
 	}
+
+	/// Computes y = alpha * selfᵀ * x + beta * y in-place.
+	///
+	/// Zero-allocation transpose-matvec via `gemm_at` on column views.
+	fn mat_t_vec_axpy(&self, alpha: T, x: &Self::Col, beta: T, y: &mut Self::Col) {
+		let m = self.nrows();
+		let n = self.ncols();
+		debug_assert_eq!(x.as_slice().len(), m);
+		debug_assert_eq!(y.as_slice().len(), n);
+		// Wrap vectors as n×1 matrix views and delegate to gemm_at.
+		// C(n×1) = alpha * A(m×n)^T * B(m×1) + beta * C(n×1)
+		let x_view = Self::view_from_column_slice(m, 1, x.as_slice());
+		let mut c = Self::from_column_slice(n, 1, y.as_slice());
+		c.gemm_at(alpha, self.as_view(), x_view, beta);
+		y.as_mut_slice().copy_from_slice(c.as_slice());
+	}
+
+	/// Rank-1 update: self += alpha * x * yᵀ  (BLAS `ger`).
+	///
+	/// Zero-allocation via `gemm` on column views.
+	fn ger(&mut self, alpha: T, x: &Self::Col, y: &Self::Col) {
+		let m = self.nrows();
+		let n = self.ncols();
+		debug_assert_eq!(x.as_slice().len(), m);
+		debug_assert_eq!(y.as_slice().len(), n);
+		// self(m×n) += alpha * x(m×1) * y(1×n)
+		let x_view = Self::view_from_column_slice(m, 1, x.as_slice());
+		let y_view = Self::view_from_column_slice(1, n, y.as_slice());
+		self.gemm(alpha, x_view, y_view, T::one());
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

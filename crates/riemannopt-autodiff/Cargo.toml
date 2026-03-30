@@ -21,4 +21,11 @@ std = ["riemannopt-core/std"]
 [dev-dependencies]
 proptest = { workspace = true }
 approx = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+criterion = { workspace = true }
 riemannopt-core = { path = "../riemannopt-core", version = "0.1.0", features = ["test-utils"] }
+
+[[bench]]
+name = "autodiff_bench"
+harness = false

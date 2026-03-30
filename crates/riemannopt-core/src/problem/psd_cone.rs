@@ -93,14 +93,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for NearestCorrelationWorkspace<T, 
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for NearestCorrelationWorkspace<T, B>
-where
-	B::Vector: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for NearestCorrelationWorkspace<T, B> where
+	B::Vector: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for NearestCorrelationWorkspace<T, B>
-where
-	B::Vector: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for NearestCorrelationWorkspace<T, B> where
+	B::Vector: Sync
 {
 }
 
@@ -228,16 +226,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for MaxCutSDPWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for MaxCutSDPWorkspace<T, B>
-where
-	B::Vector: Send,
-{
-}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for MaxCutSDPWorkspace<T, B>
-where
-	B::Vector: Sync,
-{
-}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for MaxCutSDPWorkspace<T, B> where B::Vector: Send {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for MaxCutSDPWorkspace<T, B> where B::Vector: Sync {}
 
 impl<T, B, M> Problem<T, M> for MaxCutSDP<T, B>
 where

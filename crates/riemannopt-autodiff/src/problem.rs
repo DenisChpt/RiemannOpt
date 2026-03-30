@@ -101,7 +101,7 @@ where
 	T: Scalar,
 	B: LinAlgBackend<T>,
 	M: Manifold<T, Point = B::Vector, TangentVector = B::Vector>,
-	F: Fn(&mut AdSession<T, B>, VVar) -> SVar + Send + Sync + Debug,
+	F: Fn(&mut AdSession<T, B>, VVar) -> SVar + Send + Sync,
 {
 	type Workspace = AutoDiffWorkspace<T, B>;
 
@@ -269,7 +269,7 @@ where
 	T: Scalar,
 	B: LinAlgBackend<T>,
 	M: Manifold<T, Point = B::Matrix, TangentVector = B::Matrix>,
-	F: Fn(&mut AdSession<T, B>, MVar) -> SVar + Send + Sync + Debug,
+	F: Fn(&mut AdSession<T, B>, MVar) -> SVar + Send + Sync,
 {
 	type Workspace = AutoDiffMatWorkspace<T, B>;
 

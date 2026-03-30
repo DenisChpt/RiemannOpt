@@ -306,14 +306,12 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for HyperbolicLRWorkspace<T, B> {
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for HyperbolicLRWorkspace<T, B>
-where
-	B::Vector: Send,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for HyperbolicLRWorkspace<T, B> where
+	B::Vector: Send
 {
 }
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for HyperbolicLRWorkspace<T, B>
-where
-	B::Vector: Sync,
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for HyperbolicLRWorkspace<T, B> where
+	B::Vector: Sync
 {
 }
 

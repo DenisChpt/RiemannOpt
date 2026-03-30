@@ -16,7 +16,6 @@
 //! 5. **Shared workspace** — intermediate buffers live in `Problem::Workspace`,
 //!    allocated once by the solver and reused every iteration.
 
-
 pub mod euclidean;
 pub mod fixed_rank;
 pub mod grassmann;
@@ -24,8 +23,8 @@ pub mod hyperbolic;
 pub mod oblique;
 pub mod product;
 pub mod psd_cone;
-pub mod sphere;
 pub mod spd;
+pub mod sphere;
 pub mod stiefel;
 
 use crate::{manifold::Manifold, types::Scalar};
@@ -216,8 +215,14 @@ where
 		manifold_ws: &mut M::Workspace,
 	) {
 		self.hessian_count.fetch_add(1, Ordering::Relaxed);
-		self.inner
-			.riemannian_hessian_vector_product(manifold, point, vector, result, ws, manifold_ws);
+		self.inner.riemannian_hessian_vector_product(
+			manifold,
+			point,
+			vector,
+			result,
+			ws,
+			manifold_ws,
+		);
 	}
 }
 
@@ -387,12 +392,7 @@ impl DerivativeChecker {
 	/// Checks the directional derivative along a random tangent vector.
 	///
 	/// Returns `(passes, relative_error)`.
-	pub fn check_gradient<T, M, P>(
-		problem: &P,
-		manifold: &M,
-		point: &M::Point,
-		tol: T,
-	) -> (bool, T)
+	pub fn check_gradient<T, M, P>(problem: &P, manifold: &M, point: &M::Point, tol: T) -> (bool, T)
 	where
 		T: Scalar + num_traits::Float,
 		M: Manifold<T>,
