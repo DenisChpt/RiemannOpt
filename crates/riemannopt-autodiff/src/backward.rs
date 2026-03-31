@@ -1,394 +1,449 @@
-//! Backward pass implementation for automatic differentiation.
+//! Reverse-mode backward pass — VJP accumulation.
 //!
-//! This module implements the backpropagation algorithm to compute
-//! gradients through the computation graph.
+//! The core routine [`backward_pass`] traverses the tape in reverse,
+//! reading forward values from `pool` (immutable) and accumulating
+//! gradients into `grad` (mutable).  Because these are **separate**
+//! [`BufferPool`]s, the borrow checker is happy with no unsafe code.
+//!
+//! # Allocation guarantee
+//!
+//! After the first call (which may grow the gradient pool), every
+//! subsequent `backward_pass` with the same graph topology is
+//! **zero-allocation**.
 
-use crate::graph::{Graph, NodeId, Tensor};
-use std::collections::HashMap;
+use riemannopt_core::linalg::{
+	LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
+};
 
-/// Type alias for gradient storage.
-pub type GradientMap = HashMap<NodeId, Tensor>;
+use crate::pool::BufferPool;
+use crate::tape::Op;
+use crate::var::{MVar, SVar, VVar};
 
-/// Performs backward pass (backpropagation) through the graph.
+// ═══════════════════════════════════════════════════════════════════════
+//  Main entry point
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Traverses the tape in reverse, accumulating VJPs into `grad`.
 ///
-/// # Arguments
-/// * `graph` - The computation graph
-/// * `output_node` - The node to compute gradients from
-/// * `grad_output` - The initial gradient (usually ones for scalar loss)
-///
-/// # Returns
-/// A map from node IDs to their gradients
-pub fn backward(
-    graph: &Graph,
-    output_node: NodeId,
-    grad_output: Option<Tensor>,
-) -> GradientMap {
-    let mut gradients = GradientMap::new();
-    
-    // Initialize output gradient
-    let initial_grad = grad_output.unwrap_or_else(|| {
-        // Default to gradient of 1.0 for scalar outputs
-        if let Some(output_value) = graph.get_value(output_node) {
-            if output_value.nrows() == 1 && output_value.ncols() == 1 {
-                Tensor::from_element(1, 1, 1.0)
-            } else {
-                // For non-scalar outputs, default to identity-like gradient
-                Tensor::from_element(output_value.nrows(), output_value.ncols(), 1.0)
-            }
-        } else {
-            Tensor::from_element(1, 1, 1.0)
-        }
-    });
-    
-    gradients.insert(output_node, initial_grad);
-    
-    // Get nodes in reverse topological order
-    let topo_order = graph.topological_order();
-    
-    // Process ALL nodes in reverse topological order
-    for &node_id in topo_order.iter().rev() {
-        // Skip if no gradient for this node
-        let node_grad = match gradients.get(&node_id) {
-            Some(grad) => grad.clone(),
-            None => {
-                // No gradient for this node yet
-                continue;
-            }
-        };
-        
-        // Get the node
-        let node_rc = match graph.get_node(node_id) {
-            Some(n) => n,
-            None => continue,
-        };
-        
-        let node = node_rc.borrow();
-        
-        // Skip leaf nodes (they don't compute gradients for inputs)
-        if node.is_leaf() {
-            continue;
-        }
-        
-        // Skip nodes that don't require gradient
-        if !node.requires_grad {
-            continue;
-        }
-        
-        // Get the operation
-        let op = match &node.op {
-            Some(op) => op,
-            None => continue,
-        };
-        
-        // Collect input values
-        let input_values: Vec<Tensor> = node.inputs
-            .iter()
-            .filter_map(|&input_id| graph.get_value(input_id))
-            .collect();
-        
-        // Skip if we don't have all input values
-        if input_values.len() != node.inputs.len() {
-            continue;
-        }
-        
-        // Get output value
-        let output_value = match &node.value {
-            Some(val) => val,
-            None => continue,
-        };
-        
-        // Compute gradients for inputs
-        let input_grads = op.backward(&node_grad, &input_values, output_value);
-        
-        // Accumulate gradients for input nodes
-        for (i, &input_id) in node.inputs.iter().enumerate() {
-            if i < input_grads.len() {
-                let grad = &input_grads[i];
-                // Only accumulate if the input node requires gradient
-                if let Some(input_node) = graph.get_node(input_id) {
-                    if input_node.borrow().requires_grad {
-                        gradients
-                            .entry(input_id)
-                            .and_modify(|g| *g = &*g + grad)
-                            .or_insert_with(|| grad.clone());
-                    }
-                }
-            }
-        }
-    }
-    
-    gradients
+/// `pool` holds the forward values (read-only), `grad` holds the
+/// gradient accumulators (read-write).  The caller must have already
+/// seeded the output gradient (typically `grad.scalar_mut(loss) = 1`).
+pub fn backward_pass<T: RealScalar, B: LinAlgBackend<T>>(
+	pool: &BufferPool<T, B>,
+	grad: &mut BufferPool<T, B>,
+	ops: &[Op],
+) {
+	for &op in ops.iter().rev() {
+		backward_op::<T, B>(pool, grad, op);
+	}
 }
 
-/// Computes the gradient of a scalar output with respect to specified inputs.
-///
-/// # Arguments
-/// * `graph` - The computation graph
-/// * `output_node` - The scalar output node
-/// * `input_nodes` - The input nodes to compute gradients for
-///
-/// # Returns
-/// A map containing gradients for the requested input nodes
-pub fn grad(
-    graph: &Graph,
-    output_node: NodeId,
-    input_nodes: &[NodeId],
-) -> GradientMap {
-    let all_grads = backward(graph, output_node, None);
-    
-    let mut result = GradientMap::new();
-    for &input_id in input_nodes {
-        if let Some(grad) = all_grads.get(&input_id) {
-            result.insert(input_id, grad.clone());
-        }
-    }
-    
-    result
-}
+// ═══════════════════════════════════════════════════════════════════════
+//  Per-operation VJP dispatch
+// ═══════════════════════════════════════════════════════════════════════
 
-/// Checks gradients using finite differences.
-///
-/// This is useful for verifying the correctness of backward implementations.
-///
-/// # Arguments
-/// * `graph` - The computation graph
-/// * `output_node` - The output node
-/// * `input_node` - The input node to check gradient for
-/// * `epsilon` - Small value for finite differences
-///
-/// # Returns
-/// The maximum relative error between analytical and numerical gradients
-pub fn check_gradients(
-    graph: &Graph,
-    output_node: NodeId,
-    input_node: NodeId,
-    epsilon: f64,
-) -> f64 {
-    // Get analytical gradient
-    let analytical_grads = grad(graph, output_node, &[input_node]);
-    let analytical_grad = analytical_grads
-        .get(&input_node)
-        .expect("No gradient computed for input node");
-    
-    // Get original input value
-    let original_value = graph
-        .get_value(input_node)
-        .expect("No value for input node");
-    
-    let mut max_error: f64 = 0.0;
-    
-    // Check each element
-    for i in 0..original_value.nrows() {
-        for j in 0..original_value.ncols() {
-            // Perturb forward
-            let mut perturbed = original_value.clone();
-            perturbed[(i, j)] += epsilon;
-            graph.set_value(input_node, perturbed);
-            let f_plus = graph.forward(output_node).unwrap()[(0, 0)];
-            
-            // Perturb backward
-            let mut perturbed = original_value.clone();
-            perturbed[(i, j)] -= epsilon;
-            graph.set_value(input_node, perturbed);
-            let f_minus = graph.forward(output_node).unwrap()[(0, 0)];
-            
-            // Restore original value
-            graph.set_value(input_node, original_value.clone());
-            graph.forward(output_node); // Recompute with original value
-            
-            // Compute numerical gradient
-            let numerical_grad = (f_plus - f_minus) / (2.0 * epsilon);
-            let analytical_grad_elem = analytical_grad[(i, j)];
-            
-            // Compute relative error
-            let abs_error = (numerical_grad - analytical_grad_elem).abs();
-            let denom = numerical_grad.abs().max(analytical_grad_elem.abs()).max(1e-8);
-            let error = abs_error / denom;
-            
-            max_error = max_error.max(error);
-        }
-    }
-    
-    max_error
-}
+#[inline]
+fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
+	pool: &BufferPool<T, B>,
+	grad: &mut BufferPool<T, B>,
+	op: Op,
+) {
+	match op {
+		// ── Scalar ← Scalar × Scalar ─────────────────────────────────
+		Op::AddS { a, b, out } => {
+			let go = grad.scalar(SVar(out));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb += go;
+		}
+		Op::SubS { a, b, out } => {
+			let go = grad.scalar(SVar(out));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb -= go;
+		}
+		Op::MulS { a, b, out } => {
+			let go = grad.scalar(SVar(out));
+			let va = pool.scalar(SVar(a));
+			let vb = pool.scalar(SVar(b));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * vb;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb += go * va;
+		}
+		Op::DivS { a, b, out } => {
+			let go = grad.scalar(SVar(out));
+			let va = pool.scalar(SVar(a));
+			let vb = pool.scalar(SVar(b));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go / vb;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb -= go * va / (vb * vb);
+		}
+		Op::PowS { base, exp, out } => {
+			let go = grad.scalar(SVar(out));
+			let vb = pool.scalar(SVar(base));
+			let ve = pool.scalar(SVar(exp));
+			let out_val = pool.scalar(SVar(out));
+			let gb = grad.scalar_mut(SVar(base));
+			*gb += go * ve * vb.powf(ve - T::one());
+			let ge = grad.scalar_mut(SVar(exp));
+			*ge += go * out_val * vb.ln();
+		}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ops::{Add, Multiply, Sum, ReLU};
+		// ── Scalar ← Scalar (unary) ──────────────────────────────────
+		Op::NegS { a, out } => {
+			let go = grad.scalar(SVar(out));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga -= go;
+		}
+		Op::ExpS { a, out } => {
+			let go = grad.scalar(SVar(out));
+			let out_val = pool.scalar(SVar(out));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * out_val;
+		}
+		Op::LogS { a, out } => {
+			let go = grad.scalar(SVar(out));
+			let va = pool.scalar(SVar(a));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go / va;
+		}
+		Op::SqrtS { a, out } => {
+			let go = grad.scalar(SVar(out));
+			let out_val = pool.scalar(SVar(out));
+			let two = T::one() + T::one();
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go / (two * out_val);
+		}
+		Op::SinS { a, out } => {
+			let go = grad.scalar(SVar(out));
+			let va = pool.scalar(SVar(a));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * va.cos();
+		}
+		Op::CosS { a, out } => {
+			let go = grad.scalar(SVar(out));
+			let va = pool.scalar(SVar(a));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga -= go * va.sin();
+		}
+		Op::AbsS { a, out } => {
+			let go = grad.scalar(SVar(out));
+			let va = pool.scalar(SVar(a));
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * va.signum();
+		}
 
-    #[test]
-    fn test_backward_single_node() {
-        let graph = Graph::new();
-        let x = graph.variable(Tensor::from_element(2, 2, 3.0));
-        
-        let grads = backward(&graph, x.id, None);
-        
-        // Gradient of a variable with respect to itself is identity
-        assert_eq!(grads.len(), 1);
-        assert!(grads.contains_key(&x.id));
-        assert_eq!(grads[&x.id][(0, 0)], 1.0);
-    }
+		// ── Vector ← Vector × Vector ─────────────────────────────────
+		Op::AddV { a, b, out } => {
+			// grad_a += grad_out, grad_b += grad_out
+			if a == b {
+				let two = T::one() + T::one();
+				let (ga, go) = grad.vectors_mut_pair(a, out);
+				ga.axpy(two, go, T::one());
+			} else {
+				{
+					let (ga, go) = grad.vectors_mut_pair(a, out);
+					ga.add_assign(go);
+				}
+				{
+					let (gb, go) = grad.vectors_mut_pair(b, out);
+					gb.add_assign(go);
+				}
+			}
+		}
+		Op::SubV { a, b, out } => {
+			if a == b {
+				// grad_a += grad_out - grad_out = 0 → noop
+			} else {
+				{
+					let (ga, go) = grad.vectors_mut_pair(a, out);
+					ga.add_assign(go);
+				}
+				{
+					let (gb, go) = grad.vectors_mut_pair(b, out);
+					gb.sub_assign(go);
+				}
+			}
+		}
+		Op::ComponentMulV { a, b, out } => {
+			// grad_a += grad_out ⊙ val(b)
+			// grad_b += grad_out ⊙ val(a)
+			let vb_slice = pool.vector(VVar(b)).as_slice();
+			{
+				let (ga, go) = grad.vectors_mut_pair(a, out);
+				let ga_s = ga.as_mut_slice();
+				let go_s = go.as_slice();
+				for i in 0..ga_s.len() {
+					ga_s[i] += go_s[i] * vb_slice[i];
+				}
+			}
+			let va_slice = pool.vector(VVar(a)).as_slice();
+			if b != a {
+				let (gb, go) = grad.vectors_mut_pair(b, out);
+				let gb_s = gb.as_mut_slice();
+				let go_s = go.as_slice();
+				for i in 0..gb_s.len() {
+					gb_s[i] += go_s[i] * va_slice[i];
+				}
+			} else {
+				// a == b:  grad_a += grad_out ⊙ val(a) already done above,
+				// and grad_b is the same slot, so repeat
+				let (ga, go) = grad.vectors_mut_pair(a, out);
+				let ga_s = ga.as_mut_slice();
+				let go_s = go.as_slice();
+				for i in 0..ga_s.len() {
+					ga_s[i] += go_s[i] * va_slice[i];
+				}
+			}
+		}
+		Op::NegV { a, out } => {
+			let (ga, go) = grad.vectors_mut_pair(a, out);
+			ga.sub_assign(go);
+		}
 
-    #[test]
-    fn test_backward_add() {
-        let graph = Graph::new();
-        
-        // Create x + y
-        let x = graph.variable(Tensor::from_element(2, 2, 2.0));
-        let y = graph.variable(Tensor::from_element(2, 2, 3.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Backward pass
-        let grads = backward(&graph, z, None);
-        
-        // Check gradients
-        assert_eq!(grads[&x.id], Tensor::from_element(2, 2, 1.0));
-        assert_eq!(grads[&y.id], Tensor::from_element(2, 2, 1.0));
-    }
+		// ── Vector ← Scalar × Vector ─────────────────────────────────
+		Op::ScaleV { s, v, out } => {
+			let go = grad.vector(VVar(out));
+			let val_v = pool.vector(VVar(v));
+			let dot_val = go.dot(val_v);
+			let gs = grad.scalar_mut(SVar(s));
+			*gs += dot_val;
+			let val_s = pool.scalar(SVar(s));
+			let (gv, go) = grad.vectors_mut_pair(v, out);
+			gv.axpy(val_s, go, T::one());
+		}
 
-    #[test]
-    fn test_backward_multiply() {
-        let graph = Graph::new();
-        
-        // Create x * y
-        let x = graph.variable(Tensor::from_element(1, 1, 2.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let z = graph.apply_op(Box::new(Multiply), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Backward pass
-        let grads = backward(&graph, z, None);
-        
-        // d/dx (x * y) = y = 3
-        // d/dy (x * y) = x = 2
-        assert_eq!(grads[&x.id][(0, 0)], 3.0);
-        assert_eq!(grads[&y.id][(0, 0)], 2.0);
-    }
+		// ── Scalar ← Vector (reductions) ─────────────────────────────
+		Op::DotV { a, b, out } => {
+			let go = grad.scalar(SVar(out));
+			// grad_a += go * val(b)
+			let val_b = pool.vector(VVar(b));
+			grad.vector_mut(VVar(a)).axpy(go, val_b, T::one());
+			// grad_b += go * val(a)
+			if b != a {
+				let val_a = pool.vector(VVar(a));
+				grad.vector_mut(VVar(b)).axpy(go, val_a, T::one());
+			} else {
+				// a == b → grad_a already got both contributions
+				// Actually no: dot(a, a) → d/da = 2*go*a, first axpy gave go*a,
+				// need another go*a.
+				let val_a = pool.vector(VVar(a));
+				grad.vector_mut(VVar(a)).axpy(go, val_a, T::one());
+			}
+		}
+		Op::NormV { v, out } => {
+			// d/dv ||v|| = v / ||v||
+			let go = grad.scalar(SVar(out));
+			let norm_val = pool.scalar(SVar(out));
+			if norm_val > T::zero() {
+				let scale = go / norm_val;
+				let val_v = pool.vector(VVar(v));
+				grad.vector_mut(VVar(v)).axpy(scale, val_v, T::one());
+			}
+		}
+		Op::NormSqV { v, out } => {
+			// d/dv ||v||² = 2v
+			let go = grad.scalar(SVar(out));
+			let two = T::one() + T::one();
+			let scale = two * go;
+			let val_v = pool.vector(VVar(v));
+			grad.vector_mut(VVar(v)).axpy(scale, val_v, T::one());
+		}
+		Op::SumV { v, out } => {
+			// d/dv sum(v) = ones
+			let go = grad.scalar(SVar(out));
+			let gv = grad.vector_mut(VVar(v));
+			let s = gv.as_mut_slice();
+			for val in s.iter_mut() {
+				*val += go;
+			}
+		}
 
-    #[test]
-    fn test_backward_chain() {
-        let graph = Graph::new();
-        
-        // Create (x + y) * 2
-        let x = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 4.0));
-        let two = graph.variable(Tensor::from_element(1, 1, 2.0));
-        
-        let sum = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        let prod = graph.apply_op(Box::new(Multiply), &[sum, two.id]);
-        
-        // Forward pass
-        let result = graph.forward(prod).unwrap();
-        assert_eq!(result[(0, 0)], 14.0); // (3 + 4) * 2 = 14
-        
-        // Backward pass
-        let grads = backward(&graph, prod, None);
-        
-        
-        // d/dx ((x + y) * 2) = 2
-        // d/dy ((x + y) * 2) = 2
-        assert!(grads.contains_key(&x.id), "Missing gradient for x");
-        assert!(grads.contains_key(&y.id), "Missing gradient for y");
-        assert_eq!(grads[&x.id][(0, 0)], 2.0);
-        assert_eq!(grads[&y.id][(0, 0)], 2.0);
-    }
+		// ── Matrix ← Matrix × Matrix ─────────────────────────────────
+		Op::AddM { a, b, out } => {
+			if a == b {
+				let two = T::one() + T::one();
+				let (ga, go) = grad.matrices_mut_pair(a, out);
+				ga.mat_axpy(two, go, T::one());
+			} else {
+				{
+					let (ga, go) = grad.matrices_mut_pair(a, out);
+					ga.add_assign(go);
+				}
+				{
+					let (gb, go) = grad.matrices_mut_pair(b, out);
+					gb.add_assign(go);
+				}
+			}
+		}
+		Op::SubM { a, b, out } => {
+			if a == b {
+				// noop
+			} else {
+				{
+					let (ga, go) = grad.matrices_mut_pair(a, out);
+					ga.add_assign(go);
+				}
+				{
+					let (gb, go) = grad.matrices_mut_pair(b, out);
+					gb.sub_assign(go);
+				}
+			}
+		}
+		Op::MatMul { a, b, out } => {
+			// grad_a += grad_out · val(b)^T
+			// grad_b += val(a)^T · grad_out
+			let val_a = pool.matrix(MVar(a));
+			let val_b = pool.matrix(MVar(b));
+			{
+				let (ga, go) = grad.matrices_mut_pair(a, out);
+				ga.gemm_bt(T::one(), go.as_view(), val_b.as_view(), T::one());
+			}
+			{
+				let (gb, go) = grad.matrices_mut_pair(b, out);
+				gb.gemm_at(T::one(), val_a.as_view(), go.as_view(), T::one());
+			}
+		}
 
-    #[test]
-    fn test_backward_sum() {
-        let graph = Graph::new();
-        
-        // Create sum(x)
-        let x = graph.variable(Tensor::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]));
-        let sum_node = graph.apply_op(Box::new(Sum::all()), &[x.id]);
-        
-        // Forward pass
-        let result = graph.forward(sum_node).unwrap();
-        assert_eq!(result[(0, 0)], 10.0);
-        
-        // Backward pass
-        let grads = backward(&graph, sum_node, None);
-        
-        // Gradient of sum is all ones
-        assert_eq!(grads[&x.id], Tensor::from_element(2, 2, 1.0));
-    }
+		// ── Matrix (unary) ───────────────────────────────────────────
+		Op::NegM { a, out } => {
+			let (ga, go) = grad.matrices_mut_pair(a, out);
+			ga.sub_assign(go);
+		}
+		Op::TransposeM { a, out } => {
+			let (ai, oi) = (a as usize, out as usize);
+			debug_assert_ne!(ai, oi);
+			if ai < oi {
+				let (left, right) = grad.matrices.split_at_mut(oi);
+				let go = &right[0];
+				let ga = &mut left[ai];
+				ga.add_transpose_of(T::one(), go);
+			} else {
+				let (left, right) = grad.matrices.split_at_mut(ai);
+				let go = &left[oi];
+				let ga = &mut right[0];
+				ga.add_transpose_of(T::one(), go);
+			}
+		}
 
-    #[test]
-    fn test_backward_relu() {
-        let graph = Graph::new();
-        
-        // Create ReLU(x)
-        let x = graph.variable(Tensor::from_row_slice(2, 2, &[-1.0, 2.0, -3.0, 4.0]));
-        let relu_node = graph.apply_op(Box::new(ReLU), &[x.id]);
-        
-        // Forward pass
-        graph.forward(relu_node);
-        
-        // Backward pass with custom gradient
-        let grad_output = Tensor::from_element(2, 2, 1.0);
-        let grads = backward(&graph, relu_node, Some(grad_output));
-        
-        // Gradient is 1 where x > 0, else 0
-        let expected = Tensor::from_row_slice(2, 2, &[0.0, 1.0, 0.0, 1.0]);
-        assert_eq!(grads[&x.id], expected);
-    }
+		// ── Matrix ← Scalar × Matrix ─────────────────────────────────
+		Op::ScaleM { s, m, out } => {
+			let go = grad.matrix(MVar(out));
+			let val_m = pool.matrix(MVar(m));
+			let dot_val = go.frobenius_dot(val_m);
+			let gs = grad.scalar_mut(SVar(s));
+			*gs += dot_val;
+			let val_s = pool.scalar(SVar(s));
+			let (gm, go) = grad.matrices_mut_pair(m, out);
+			gm.mat_axpy(val_s, go, T::one());
+		}
 
-    #[test]
-    fn test_grad_function() {
-        let graph = Graph::new();
-        
-        // Create x + y
-        let x = graph.variable(Tensor::from_element(1, 1, 2.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Get gradient only for x
-        let grads = grad(&graph, z, &[x.id]);
-        
-        assert_eq!(grads.len(), 1);
-        assert!(grads.contains_key(&x.id));
-        assert!(!grads.contains_key(&y.id));
-    }
+		// ── Vector ← Matrix × Vector ─────────────────────────────────
+		Op::MatVec { m, v, out } => {
+			let val_m = pool.matrix(MVar(m));
+			let val_v = pool.vector(VVar(v));
 
-    #[test]
-    fn test_gradient_accumulation() {
-        let graph = Graph::new();
-        
-        // Create x + x (same input used twice)
-        let x = graph.variable(Tensor::from_element(1, 1, 5.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, x.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Backward pass
-        let grads = backward(&graph, z, None);
-        
-        // Gradient should be accumulated: 1 + 1 = 2
-        assert_eq!(grads[&x.id][(0, 0)], 2.0);
-    }
+			// grad_v += M^T · grad_out
+			// Borrow grad.vectors for both go and gv via split_at_mut.
+			{
+				debug_assert_ne!(v, out);
+				let (vi, oi) = (v as usize, out as usize);
+				if vi < oi {
+					let (left, right) = grad.vectors.split_at_mut(oi);
+					let go = &right[0];
+					let gv = &mut left[vi];
+					val_m.mat_t_vec_axpy(T::one(), go, T::one(), gv);
+				} else {
+					let (left, right) = grad.vectors.split_at_mut(vi);
+					let go = &left[oi];
+					let gv = &mut right[0];
+					val_m.mat_t_vec_axpy(T::one(), go, T::one(), gv);
+				}
+			}
+			// grad_m += grad_out ⊗ val(v)^T
+			// Borrow grad.vectors (immutable) and grad.matrices (mutable) independently.
+			{
+				let go = &grad.vectors[out as usize];
+				let gm = &mut grad.matrices[m as usize];
+				gm.ger(T::one(), go, val_v);
+			}
+		}
 
-    #[test]
-    fn test_check_gradients_add() {
-        let graph = Graph::new();
-        
-        let x = graph.variable(Tensor::from_element(1, 1, 2.0));
-        let y = graph.variable(Tensor::from_element(1, 1, 3.0));
-        let z = graph.apply_op(Box::new(Add), &[x.id, y.id]);
-        
-        // Forward pass
-        graph.forward(z);
-        
-        // Check gradients using a separate test to debug
-        // For now, skip this test as there seems to be an issue with the gradient checking function
-        // The backward pass itself works correctly as shown by other tests
-    }
+		// ── Scalar ← Matrix (reductions) ─────────────────────────────
+		Op::TraceM { m, out } => {
+			// d/dm tr(M) = I  →  gm[i,i] += go
+			let go = grad.scalar(SVar(out));
+			let gm = grad.matrix_mut(MVar(m));
+			let n = gm.nrows().min(gm.ncols());
+			for i in 0..n {
+				*gm.get_mut(i, i) = *gm.get_mut(i, i) + go;
+			}
+		}
+		Op::FrobDotM { a, b, out } => {
+			let go = grad.scalar(SVar(out));
+			// grad_a += go * val(b)
+			let val_b = pool.matrix(MVar(b));
+			grad.matrix_mut(MVar(a)).mat_axpy(go, val_b, T::one());
+			// grad_b += go * val(a)
+			if b != a {
+				let val_a = pool.matrix(MVar(a));
+				grad.matrix_mut(MVar(b)).mat_axpy(go, val_a, T::one());
+			} else {
+				let val_a = pool.matrix(MVar(a));
+				grad.matrix_mut(MVar(a)).mat_axpy(go, val_a, T::one());
+			}
+		}
+
+		// ── Fused operators ──────────────────────────────────────────
+		Op::LinearLayer { a, x, b, out } => {
+			// out = A·x + b
+			let val_a = pool.matrix(MVar(a));
+			let val_x = pool.vector(VVar(x));
+
+			// grad_b += grad_out
+			{
+				let (gb, go) = grad.vectors_mut_pair(b, out);
+				gb.add_assign(go);
+			}
+			// grad_x += A^T · grad_out (both in vectors arena)
+			{
+				debug_assert_ne!(x, out);
+				let (xi, oi) = (x as usize, out as usize);
+				if xi < oi {
+					let (left, right) = grad.vectors.split_at_mut(oi);
+					let go = &right[0];
+					let gx = &mut left[xi];
+					val_a.mat_t_vec_axpy(T::one(), go, T::one(), gx);
+				} else {
+					let (left, right) = grad.vectors.split_at_mut(xi);
+					let go = &left[oi];
+					let gx = &mut right[0];
+					val_a.mat_t_vec_axpy(T::one(), go, T::one(), gx);
+				}
+			}
+			// grad_A += grad_out ⊗ val(x)^T (cross-arena: vectors read, matrices write)
+			{
+				let go = &grad.vectors[out as usize];
+				let ga = &mut grad.matrices[a as usize];
+				ga.ger(T::one(), go, val_x);
+			}
+		}
+		Op::QuadForm { x, a, ax, out } => {
+			// out = x^T · A · x, ax = A·x (saved scratch)
+			let go = grad.scalar(SVar(out));
+			let val_x = pool.vector(VVar(x));
+			let val_ax = pool.vector(VVar(ax));
+			let two = T::one() + T::one();
+
+			// grad_x += 2·go · A·x
+			grad.vector_mut(VVar(x)).axpy(two * go, val_ax, T::one());
+
+			// grad_A += go · (x ⊗ x^T)  (symmetric: x·x^T)
+			grad.matrix_mut(MVar(a)).ger(go, val_x, val_x);
+		}
+	}
 }

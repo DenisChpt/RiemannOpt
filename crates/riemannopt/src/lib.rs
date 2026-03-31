@@ -1,14 +1,31 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! # RiemannOpt
+//!
+//! High-performance Riemannian optimization in Rust.
+//!
+//! This crate is the main facade that re-exports all sub-crates for convenience.
+//!
+//! ## Quick start
+//!
+//! ```rust,no_run
+//! use riemannopt::prelude::*;
+//! ```
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// Re-export sub-crates
+pub use riemannopt_core as core;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+#[cfg(feature = "autodiff")]
+pub use riemannopt_autodiff as autodiff;
+
+// Re-export nalgebra for user convenience
+pub use nalgebra;
+
+/// Prelude module — import everything you need with `use riemannopt::prelude::*`.
+pub mod prelude {
+	pub use riemannopt_core::prelude::*;
+
+	// Autodiff (optional)
+	#[cfg(feature = "autodiff")]
+	pub use riemannopt_autodiff::{
+		AdSession, AutoDiffMatProblem, AutoDiffProblem, Dual, MVar, SVar, Tape, VVar,
+	};
 }

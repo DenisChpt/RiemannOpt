@@ -1,8 +1,6 @@
 [workspace]
 members = [
 	"crates/riemannopt-core",
-	"crates/riemannopt-manifolds", 
-	"crates/riemannopt-optim",
 	"crates/riemannopt-autodiff",
 	"crates/riemannopt",
 	"crates/riemannopt-py",
@@ -13,7 +11,7 @@ resolver = "2"
 version = "0.1.0"
 authors = ["Denis Chaput <denis.chaput77@gmail.com>"]
 edition = "2021"
-rust-version = "1.87.0"
+rust-version = "1.94.0"
 license = "MIT"
 repository = "https://github.com/DenisChpt/RiemannOpt"
 homepage = "https://github.com/DenisChpt/RiemannOpt"
@@ -25,7 +23,7 @@ categories = ["mathematics", "science", "algorithms"]
 [workspace.dependencies]
 
 # Core mathematical library
-nalgebra = { version = "0.33", features = ["serde-serialize"] }
+nalgebra = { version = "0.34", features = ["serde-serialize"] }
 
 # Error handling
 thiserror = "2.0"
@@ -35,26 +33,30 @@ num-traits = "0.2"
 approx = "0.5"
 
 # Random number generation
-rand = { version = "0.8", features = ["small_rng"] }
-rand_distr = "0.4"
+rand = "0.10"
+rand_distr = "0.6"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Parallel computing
-rayon = { version = "1.10" }
+rayon = "1.11"
 
 # SIMD support
-wide = { version = "0.7" }
+wide = "1.2"
 
 # GPU support
 cust = { version = "0.3" }
-cudarc = { version = "0.12" }
+cudarc = { version = "0.19" }
+
+# Python bindings
+pyo3 = "0.28"
+numpy = "0.28"
 
 # Testing
-proptest = "1.5"
-criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.11"
+criterion = { version = "0.8", features = ["html_reports"] }
 pretty_assertions = "1.4"
 
 

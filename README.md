@@ -1,84 +1,101 @@
 # RiemannOpt
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Build Status](https://github.com/DenisChpt/RiemannOpt/workflows/CI/badge.svg)](https://github.com/DenisChpt/RiemannOpt/actions)
 
-**Note: This library is currently in beta and under active development. The API may change and not all planned features are fully implemented.**
+**RiemannOpt** is a Riemannian optimization library written in Rust with first-class Python bindings. It provides manifold implementations, solvers, and a reverse-mode automatic differentiation engine — all designed around a zero-allocation hot path.
 
-RiemannOpt is a Riemannian optimization library written in Rust with Python bindings. It provides algorithms for optimization on smooth manifolds, addressing problems where the optimization domain is a curved geometric space rather than flat Euclidean space.
+## Overview
 
-## What is Riemannian Optimization?
+### Manifolds
 
-Many computational problems involve optimization over spaces with geometric constraints. Rather than treating these constraints as obstacles to work around, Riemannian optimization exploits the underlying geometric structure of these spaces. The library implements optimization algorithms that move naturally along the curved surface of these manifolds, respecting their intrinsic geometry.
+| Manifold | Description |
+|----------|-------------|
+| **Euclidean** | Standard R^n |
+| **Sphere** | Unit sphere S^{n-1} |
+| **Stiefel** | Orthonormal matrices St(n, p) |
+| **Grassmann** | Subspaces Gr(n, p) |
+| **SPD** | Symmetric positive-definite matrices (affine-invariant, log-Euclidean metrics) |
+| **Hyperbolic** | Poincaré ball model with configurable curvature |
+| **Oblique** | Product of unit spheres |
+| **FixedRank** | Fixed-rank matrices |
+| **PSD Cone** | Positive semi-definite cone |
+| **Product** | Cartesian product of any two manifolds |
 
-### Problem Domains
+Each manifold implements: projection onto the tangent space, Riemannian metric, exponential map (retraction), logarithmic map, geodesic distance, and parallel transport. All operations write into pre-allocated buffers via the `Workspace` pattern — no heap allocation during optimization.
 
-Riemannian optimization is relevant for problems involving:
+### Solvers
 
-- **Orthogonality constraints**: Matrices whose columns must remain orthonormal, appearing in principal component analysis, dimensionality reduction, and neural network architectures
-- **Rotation and orientation**: 3D rotations in computer vision, robotics, and graphics applications
-- **Positive definiteness**: Covariance matrices and metric learning where matrices must remain symmetric and positive definite
-- **Low-rank structures**: Matrix factorization and completion problems with fixed-rank constraints
-- **Hyperbolic geometry**: Hierarchical data representation and graph embeddings that naturally live in hyperbolic space
-- **Unit norm constraints**: Directions and normalized representations in various machine learning contexts
+| Solver | Type |
+|--------|------|
+| **SGD** | First-order (momentum, Nesterov) |
+| **Adam** | Adaptive first-order |
+| **Conjugate Gradient** | First-order |
+| **L-BFGS** | Quasi-Newton |
+| **Trust Region** | Second-order |
+| **Newton** | Second-order (truncated CG, requires Hessian-vector products) |
+| **Natural Gradient** | Fisher information-based (full, diagonal, identity, empirical) |
 
-Traditional optimization approaches handle these constraints through projections or penalty methods, which can be computationally expensive or numerically unstable. Riemannian methods work directly on the constraint manifold.
+Solvers expose configurable stopping criteria (max iterations, wall-clock time, gradient tolerance, target cost value) and return structured results with termination reason and evaluation counts.
+
+### Automatic Differentiation
+
+A reverse-mode AD engine (`riemannopt-autodiff`) records a flat instruction tape during the first forward pass, then replays it for all subsequent iterations with zero allocation. Supported operations:
+
+- **Scalars**: arithmetic, `exp`, `log`, `sqrt`, `sin`, `cos`, `abs`, `pow`
+- **Vectors**: arithmetic, component-wise multiply, dot product, norms
+- **Matrices**: arithmetic, matmul, matvec, transpose, trace, Frobenius inner product
+- **Fused**: linear layers, quadratic forms
+
+Forward-over-reverse composition provides Hessian-vector products via dual numbers.
+
+### Linear Algebra Backends
+
+Two compile-time backends, selectable via Cargo features:
+
+- **faer** (default) — pure Rust, SIMD-optimized
+- **nalgebra** — drop-in alternative
+
+All manifold and solver code is generic over `LinAlgBackend<T>`, so switching backends requires no code changes.
+
+### Pre-built Problems
+
+22 ready-to-use optimization problems:
+
+| Domain | Problems |
+|--------|----------|
+| Sphere | Rayleigh quotient, MaxCut relaxation, spherical k-means |
+| Stiefel | Ordered Brockett, orthogonal Procrustes, orthogonal ICA |
+| Grassmann | Brockett cost, robust PCA |
+| SPD | Fréchet mean, Gaussian mixture covariance, metric learning |
+| Hyperbolic | Poincaré embedding, hyperbolic logistic regression |
+| Oblique | Dictionary learning, ICA, phase retrieval |
+| Fixed Rank | Matrix completion, matrix sensing |
+| PSD Cone | MaxCut SDP, nearest correlation |
+| Product | Coupled factorization, pose estimation |
+| Euclidean | Rosenbrock, Rastrigin, ridge regression, logistic regression |
 
 ## Architecture
 
-The library follows a modular design with separate components:
-
-- **riemannopt-core**: Foundational traits defining manifolds, cost functions, and optimization interfaces
-- **riemannopt-manifolds**: Concrete implementations of geometric spaces (sphere, Stiefel, Grassmann, SPD, hyperbolic, and others)
-- **riemannopt-optim**: Optimization algorithms adapted to Riemannian geometry (gradient descent, Adam, L-BFGS, trust region, conjugate gradient, Newton methods)
-- **riemannopt-autodiff**: Automatic differentiation capabilities (in development)
-- **riemannopt-py**: Python bindings enabling use from Python with NumPy integration
-
-### Technical Approach
-
-The implementation emphasizes:
-
-- **Type safety**: Rust's type system ensures geometric constraints are respected at compile time
-- **Memory efficiency**: Workspace-based memory management minimizes allocations in optimization loops
-- **Performance**: SIMD vectorization and parallel computing for batch operations where beneficial
-- **Correctness**: Multiple retraction methods (exponential map, QR-based, polar decomposition) with different accuracy/performance tradeoffs
-- **Numerical stability**: Built-in validation and stability checking throughout geometric computations
-
-### Implemented Manifolds
-
-Current manifold implementations include:
-
-- **Sphere**: Unit sphere S^(n-1) in n-dimensional space
-- **Stiefel**: Manifold of orthonormal n×p matrices
-- **Grassmann**: Space of p-dimensional subspaces in n-dimensional space
-- **SPD**: Symmetric positive definite matrices
-- **Hyperbolic**: Hyperbolic space with configurable curvature
-- **Oblique**: Product of unit spheres
-- **Product**: Cartesian products of manifolds for composite constraint structures
-- **Fixed-rank**: Matrices constrained to specific rank
-- **PSD Cone**: Positive semidefinite matrices
-
-### Optimization Algorithms
-
-Available optimizers include:
-
-- **Riemannian Gradient Descent**: First-order method with momentum variants
-- **Riemannian Adam**: Adaptive learning rate method
-- **L-BFGS**: Limited-memory quasi-Newton method
-- **Trust Region**: Second-order method with adaptive step sizing
-- **Conjugate Gradient**: Various conjugate gradient variants
-- **Riemannian Newton**: Newton method with conjugate gradient solver
-- **Natural Gradient**: Fisher information-based optimization
-
-Each optimizer supports configurable line search strategies, step size scheduling, and callback mechanisms for monitoring convergence.
+```
+crates/
+├── riemannopt-core      # Manifolds, solvers, linalg backends, problem trait
+├── riemannopt-autodiff  # Reverse-mode AD (tape, buffer pool, VJP)
+├── riemannopt-py        # Python bindings (PyO3 + rust-numpy)
+└── riemannopt           # Facade crate (re-exports core + optional autodiff)
+```
 
 ## License
 
-RiemannOpt is licensed under the MIT License.
+MIT — see [LICENSE](LICENSE).
 
-## Contact
+## Citation
 
-- Author: Denis Chaput
-- Email: denis.chaput@pm.me
-- GitHub: [@DenisChpt](https://github.com/DenisChpt)
-
-For bug reports and feature requests, please use [GitHub Issues](https://github.com/DenisChpt/RiemannOpt/issues).
+```bibtex
+@software{riemannopt2025,
+  author = {Chaput, Denis},
+  title = {RiemannOpt: Riemannian Optimization in Rust},
+  year = {2025},
+  url = {https://github.com/DenisChpt/RiemannOpt}
+}
+```

@@ -5,7 +5,6 @@ authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-repository.workspace = true
 description = "Python bindings for RiemannOpt"
 
 [lib]
@@ -13,15 +12,24 @@ name = "riemannopt"
 crate-type = ["cdylib"]
 
 [dependencies]
-riemannopt = { path = "../riemannopt", version = "0.1.0", features = ["full"] }
-riemannopt-core = { path = "../riemannopt-core", version = "0.1.0" }
-riemannopt-manifolds = { path = "../riemannopt-manifolds", version = "0.1.0" }
-riemannopt-optim = { path = "../riemannopt-optim", version = "0.1.0" }
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
-numpy = "0.22"
-nalgebra = { workspace = true }
-rand = "0.8"
-rand_distr = "0.4"
+riemannopt-core = { path = "../riemannopt-core", features = ["faer-backend"] }
+riemannopt-autodiff = { path = "../riemannopt-autodiff" }
+pyo3 = { workspace = true, features = ["extension-module"] }
+numpy = { workspace = true }
 
-[features]
-default = ["pyo3/extension-module"]
+[lints.rust]
+# Python bindings require unsafe for PyArray::as_array_mut etc.
+unsafe_code = "allow"
+missing_docs = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# PyO3 generates code that triggers these
+needless_pass_by_value = "allow"
+unused_self = "allow"
+too_many_arguments = "allow"
