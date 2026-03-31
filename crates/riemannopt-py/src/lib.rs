@@ -9,8 +9,23 @@ mod result;
 mod solver;
 mod stopping;
 
+/// Force all internal linear algebra to run on a single thread.
+#[pyfunction]
+fn disable_parallelism() {
+	riemannopt_core::linalg::parallel_policy::Policy::disable_parallelism();
+}
+
+/// Re-enable adaptive multi-threading (the default).
+#[pyfunction]
+fn enable_parallelism() {
+	riemannopt_core::linalg::parallel_policy::Policy::enable_parallelism();
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+	riemannopt_core::linalg::parallel_policy::Policy::init_with_calibration();
+	m.add_function(wrap_pyfunction!(disable_parallelism, m)?)?;
+	m.add_function(wrap_pyfunction!(enable_parallelism, m)?)?;
 	// Manifold
 	m.add_class::<manifold::PyManifold>()?;
 	m.add_function(wrap_pyfunction!(manifold::sphere, m)?)?;

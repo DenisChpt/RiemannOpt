@@ -35,6 +35,9 @@ pub mod types;
 pub mod nalgebra_backend;
 
 #[cfg(feature = "faer-backend")]
+pub mod parallel_policy;
+
+#[cfg(feature = "faer-backend")]
 pub mod faer_backend;
 
 // ── Re-exports ───────────────────────────────────────────────────────────
