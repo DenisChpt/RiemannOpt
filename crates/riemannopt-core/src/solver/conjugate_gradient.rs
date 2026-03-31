@@ -327,7 +327,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				manifold.scale_tangent(alpha, &mut scratch);
 				manifold.retract(&current_point, &scratch, &mut candidate_point, &mut man_ws);
 
-				let candidate_cost = problem.cost(&candidate_point);
+				let candidate_cost = problem.cost(&candidate_point, &mut prob_ws, &mut man_ws);
 				fn_evals += 1;
 
 				if candidate_cost <= current_cost + self.config.armijo_c * alpha * dir_deriv {

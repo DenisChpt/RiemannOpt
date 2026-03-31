@@ -22,33 +22,10 @@ use crate::{
 
 /// The Rosenbrock function (generalized to n dimensions).
 ///
-/// ## Mathematical Definition
-///
-/// ```text
-/// f(x) = Σᵢ₌₁ⁿ⁻¹ [ a·(xᵢ₊₁ − xᵢ²)² + (b − xᵢ)² ]
-/// ```
-///
-/// Classic parameters: a = 100, b = 1. Global minimum at x* = (b, b², …).
-///
-/// ## Gradient
-///
-/// ```text
-/// ∂f/∂xᵢ = −4a·xᵢ·(xᵢ₊₁ − xᵢ²) − 2(b − xᵢ)     (first term, i < n−1)
-///         +  2a·(xᵢ − xᵢ₋₁²)                        (second term, i > 0)
-/// ```
-///
-/// ## Hessian-vector product
-///
-/// ```text
-/// [H·v]ᵢ = (−4a·(xᵢ₊₁ − xᵢ²) + 12a·xᵢ² + 2)·vᵢ
-///         − 4a·xᵢ·vᵢ₊₁                               (i < n−1)
-///         − 4a·xᵢ₋₁·vᵢ₋₁ + 2a·vᵢ                     (i > 0)
-/// ```
+/// f(x) = Σᵢ [ a·(xᵢ₊₁ − xᵢ²)² + (b − xᵢ)² ]
 #[derive(Debug, Clone)]
 pub struct Rosenbrock<T: Scalar, B: LinAlgBackend<T>> {
-	/// Coefficient of the quadratic valley term (default: 100).
 	pub a: T,
-	/// Center of the quadratic penalty term (default: 1).
 	pub b: T,
 	_phantom: PhantomData<B>,
 }
@@ -64,12 +41,10 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for Rosenbrock<T, B> {
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> Rosenbrock<T, B> {
-	/// Creates a Rosenbrock function with classic parameters (a=100, b=1).
 	pub fn new() -> Self {
 		Self::default()
 	}
 
-	/// Creates a Rosenbrock function with custom parameters.
 	pub fn with_parameters(a: T, b: T) -> Self {
 		Self {
 			a,
@@ -79,7 +54,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> Rosenbrock<T, B> {
 	}
 }
 
-/// Workspace for [`Rosenbrock`]: buffer for Euclidean gradient.
 pub struct RosenbrockWorkspace<T: Scalar, B: LinAlgBackend<T>> {
 	egrad: B::Vector,
 	ehvp: B::Vector,
@@ -117,7 +91,12 @@ where
 	}
 
 	#[inline]
-	fn cost(&self, point: &M::Point) -> T {
+	fn cost(
+		&self,
+		point: &M::Point,
+		_ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
 		let n = VectorView::len(point);
 		debug_assert!(n >= 2, "Rosenbrock requires n ≥ 2");
 		let mut f = T::zero();
@@ -149,7 +128,6 @@ where
 			let xi = point.get(i);
 			let xi1 = point.get(i + 1);
 			let diff = xi1 - xi * xi;
-
 			*egrad.get_mut(i) = *egrad.get_mut(i) - four * self.a * xi * diff - two * (self.b - xi);
 			*egrad.get_mut(i + 1) = *egrad.get_mut(i + 1) + two * self.a * diff;
 		}
@@ -177,9 +155,7 @@ where
 			let xi1 = point.get(i + 1);
 			let diff = xi1 - xi * xi;
 			let ridge = self.b - xi;
-
 			f = f + self.a * diff * diff + ridge * ridge;
-
 			*egrad.get_mut(i) = *egrad.get_mut(i) - four * self.a * xi * diff - two * ridge;
 			*egrad.get_mut(i + 1) = *egrad.get_mut(i + 1) + two * self.a * diff;
 		}
@@ -202,7 +178,6 @@ where
 		let four = <T as Scalar>::from_f64(4.0);
 		let twelve = <T as Scalar>::from_f64(12.0);
 
-		// Euclidean gradient for curvature correction
 		let egrad = &mut ws.egrad;
 		egrad.fill(T::zero());
 		for i in 0..n - 1 {
@@ -213,7 +188,6 @@ where
 			*egrad.get_mut(i + 1) = *egrad.get_mut(i + 1) + two * self.a * diff;
 		}
 
-		// Euclidean HVP directly into result
 		result.fill(T::zero());
 		for i in 0..n - 1 {
 			let xi = point.get(i);
@@ -221,7 +195,6 @@ where
 			let diff = xi1 - xi * xi;
 			let vi = vector.get(i);
 			let vi1 = vector.get(i + 1);
-
 			*result.get_mut(i) =
 				*result.get_mut(i) + (-four * self.a * diff + twelve * self.a * xi * xi + two) * vi;
 			*result.get_mut(i) = *result.get_mut(i) - four * self.a * xi * vi1;
@@ -247,29 +220,9 @@ where
 
 /// The Rastrigin function (n-dimensional).
 ///
-/// ## Mathematical Definition
-///
-/// ```text
-/// f(x) = An + Σᵢ₌₁ⁿ [xᵢ² − A·cos(2πxᵢ)]
-/// ```
-///
-/// Default A = 10. Global minimum at x* = 0 with f(0) = 0.
-/// Highly multimodal: ~10ⁿ local minima.
-///
-/// ## Gradient
-///
-/// ```text
-/// ∂f/∂xᵢ = 2xᵢ + 2πA·sin(2πxᵢ)
-/// ```
-///
-/// ## Hessian-vector product
-///
-/// ```text
-/// [H·v]ᵢ = (2 + 4π²A·cos(2πxᵢ))·vᵢ
-/// ```
+/// f(x) = An + Σᵢ [xᵢ² − A·cos(2πxᵢ)]
 #[derive(Debug, Clone)]
 pub struct Rastrigin<T: Scalar, B: LinAlgBackend<T>> {
-	/// Amplitude parameter (default: 10).
 	pub amplitude: T,
 	_phantom: PhantomData<B>,
 }
@@ -284,12 +237,10 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for Rastrigin<T, B> {
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> Rastrigin<T, B> {
-	/// Creates a Rastrigin function with default amplitude A=10.
 	pub fn new() -> Self {
 		Self::default()
 	}
 
-	/// Creates a Rastrigin function with custom amplitude.
 	pub fn with_amplitude(amplitude: T) -> Self {
 		Self {
 			amplitude,
@@ -298,7 +249,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> Rastrigin<T, B> {
 	}
 }
 
-/// Workspace for [`Rastrigin`].
 pub struct RastriginWorkspace<T: Scalar, B: LinAlgBackend<T>> {
 	egrad: B::Vector,
 	ehvp: B::Vector,
@@ -336,7 +286,12 @@ where
 	}
 
 	#[inline]
-	fn cost(&self, point: &M::Point) -> T {
+	fn cost(
+		&self,
+		point: &M::Point,
+		_ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
 		let n = VectorView::len(point);
 		let two_pi = T::PI + T::PI;
 		let mut f = self.amplitude * <T as RealScalar>::from_usize(n);
@@ -432,47 +387,21 @@ where
 //  Ridge Regression
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Linear regression with ℓ₂ regularization (Ridge Regression).
+/// Linear regression with ℓ₂ regularization.
 ///
-/// ## Mathematical Definition
-///
-/// ```text
 /// f(w) = (1/2m) ‖Xw − y‖² + (λ/2) ‖w‖²
-/// ```
-///
-/// where X ∈ ℝᵐˣⁿ (data), y ∈ ℝᵐ (targets), λ ≥ 0 (regularization).
-///
-/// ## Gradient
-///
-/// ```text
-/// ∇f(w) = (1/m) Xᵀ(Xw − y) + λw
-/// ```
-///
-/// ## Hessian-vector product
-///
-/// ```text
-/// ∇²f · v = (1/m) Xᵀ X v + λv
-/// ```
 #[derive(Debug, Clone)]
 pub struct RidgeRegression<T: Scalar, B: LinAlgBackend<T>> {
-	/// Data matrix X ∈ ℝᵐˣⁿ.
 	pub x: B::Matrix,
-	/// Precomputed XᵀX ∈ ℝⁿˣⁿ.
 	xtx: B::Matrix,
-	/// Precomputed Xᵀy ∈ ℝⁿ.
 	xty: B::Vector,
-	/// Precomputed ½‖y‖².
 	half_y_sq: T,
-	/// Target vector y ∈ ℝᵐ.
 	pub y: B::Vector,
-	/// Regularization parameter λ ≥ 0.
 	pub lambda: T,
-	/// Precomputed 1/m.
 	inv_m: T,
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> RidgeRegression<T, B> {
-	/// Creates a ridge regression problem.
 	pub fn new(x: B::Matrix, y: B::Vector, lambda: T) -> Self {
 		debug_assert!(lambda >= T::zero());
 		let m = MatrixView::nrows(&x);
@@ -480,7 +409,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> RidgeRegression<T, B> {
 		let inv_m = T::one() / <T as RealScalar>::from_usize(m);
 		let half = <T as Scalar>::from_f64(0.5);
 
-		// Precompute XᵀX, Xᵀy
 		let n = MatrixView::ncols(&x);
 		let mut xtx = B::Matrix::zeros(n, n);
 		xtx.gemm_at(T::one(), x.as_view(), x.as_view(), T::zero());
@@ -500,11 +428,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> RidgeRegression<T, B> {
 	}
 }
 
-/// Workspace for [`RidgeRegression`].
 pub struct RidgeRegressionWorkspace<T: Scalar, B: LinAlgBackend<T>> {
-	/// Buffer for Euclidean gradient (length n).
 	egrad: B::Vector,
-	/// Buffer for XᵀXw (length n).
 	xtxw: B::Vector,
 	_phantom: PhantomData<T>,
 }
@@ -545,11 +470,16 @@ where
 		}
 	}
 
-	fn cost(&self, point: &M::Point) -> T {
-		// f = (1/2m) (w^T XᵀX w − 2 w^T Xᵀy + ‖y‖²) + (λ/2) ‖w‖²
+	/// **Zero allocation** — uses ws.xtxw buffer for XᵀXw.
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
 		let half = <T as Scalar>::from_f64(0.5);
-		let xtxw = self.xtx.mat_vec(point);
-		let quad = half * self.inv_m * point.dot(&xtxw);
+		self.xtx.mat_vec_into(point, &mut ws.xtxw);
+		let quad = half * self.inv_m * point.dot(&ws.xtxw);
 		let lin = self.inv_m * point.dot(&self.xty);
 		quad - lin + self.inv_m * self.half_y_sq + half * self.lambda * point.norm_squared()
 	}
@@ -562,7 +492,6 @@ where
 		ws: &mut Self::Workspace,
 		manifold_ws: &mut M::Workspace,
 	) {
-		// ∇f = (1/m)(XᵀXw − Xᵀy) + λw
 		self.xtx.mat_vec_into(point, &mut ws.egrad);
 		ws.egrad.sub_assign(&self.xty);
 		ws.egrad.scale_mut(self.inv_m);
@@ -580,14 +509,12 @@ where
 	) -> T {
 		let half = <T as Scalar>::from_f64(0.5);
 
-		// XᵀXw → xtxw
 		self.xtx.mat_vec_into(point, &mut ws.xtxw);
 		let quad = half * self.inv_m * point.dot(&ws.xtxw);
 		let lin = self.inv_m * point.dot(&self.xty);
 		let cost =
 			quad - lin + self.inv_m * self.half_y_sq + half * self.lambda * point.norm_squared();
 
-		// ∇f = (1/m)(XᵀXw − Xᵀy) + λw
 		ws.egrad.copy_from(&ws.xtxw);
 		ws.egrad.sub_assign(&self.xty);
 		ws.egrad.scale_mut(self.inv_m);
@@ -605,12 +532,10 @@ where
 		ws: &mut Self::Workspace,
 		manifold_ws: &mut M::Workspace,
 	) {
-		// ehvp = (1/m) XᵀXv + λv
 		self.xtx.mat_vec_into(vector, &mut ws.xtxw);
 		ws.xtxw.scale_mut(self.inv_m);
 		ws.xtxw.axpy(self.lambda, vector, T::one());
 
-		// egrad for curvature correction
 		self.xtx.mat_vec_into(point, &mut ws.egrad);
 		ws.egrad.sub_assign(&self.xty);
 		ws.egrad.scale_mut(self.inv_m);
@@ -633,45 +558,17 @@ where
 
 /// Binary logistic regression with ℓ₂ regularization.
 ///
-/// ## Mathematical Definition
-///
-/// ```text
 /// f(w) = (1/m) Σᵢ log(1 + exp(−yᵢ · xᵢᵀw)) + (λ/2) ‖w‖²
-/// ```
-///
-/// where X ∈ ℝᵐˣⁿ, y ∈ {−1, +1}ᵐ, λ ≥ 0.
-///
-/// ## Gradient
-///
-/// ```text
-/// ∇f(w) = −(1/m) Xᵀ (y ⊙ σ(−y ⊙ Xw)) + λw
-/// ```
-///
-/// ## Hessian-vector product
-///
-/// ```text
-/// ∇²f · v = (1/m) Xᵀ diag(σᵢ(1−σᵢ)) X v + λv
-/// ```
-///
-/// ## Numerical Stability
-///
-/// Uses log-sum-exp trick: log(1 + exp(t)) = max(t,0) + log(1 + exp(−|t|))
 #[derive(Debug, Clone)]
 pub struct LogisticRegression<T: Scalar, B: LinAlgBackend<T>> {
-	/// Data matrix X ∈ ℝᵐˣⁿ.
 	pub x: B::Matrix,
-	/// Precomputed Xᵀ ∈ ℝⁿˣᵐ.
 	xt: B::Matrix,
-	/// Label vector y ∈ {−1, +1}ᵐ.
 	pub y: B::Vector,
-	/// Regularization parameter λ ≥ 0.
 	pub lambda: T,
-	/// Precomputed 1/m.
 	inv_m: T,
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> LogisticRegression<T, B> {
-	/// Creates a logistic regression problem.
 	pub fn new(x: B::Matrix, y: B::Vector, lambda: T) -> Self {
 		debug_assert!(lambda >= T::zero());
 		let m = MatrixView::nrows(&x);
@@ -688,15 +585,10 @@ impl<T: Scalar, B: LinAlgBackend<T>> LogisticRegression<T, B> {
 	}
 }
 
-/// Workspace for [`LogisticRegression`].
 pub struct LogisticRegressionWorkspace<T: Scalar, B: LinAlgBackend<T>> {
-	/// Buffer for margins z = Xw (length m).
 	margins: B::Vector,
-	/// Buffer for weights (length m) — reused for σ, weighted residuals.
 	weights: B::Vector,
-	/// Buffer for Euclidean gradient (length n).
 	egrad: B::Vector,
-	/// Buffer for Euclidean Hessian-vector product (length n).
 	ehvp: B::Vector,
 	_phantom: PhantomData<T>,
 }
@@ -722,14 +614,12 @@ unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for LogisticRegressionWorkspace
 {
 }
 
-/// Numerically stable log(1 + exp(t)).
 #[inline]
 fn softplus<T: Scalar>(t: T) -> T {
 	let abs_t = t.abs();
 	abs_t.max(T::zero()) + (T::one() + (-abs_t).exp()).ln()
 }
 
-/// Logistic sigmoid σ(t) = 1/(1 + exp(−t)), numerically stable.
 #[inline]
 fn sigmoid<T: Scalar>(t: T) -> T {
 	if t >= T::zero() {
@@ -760,14 +650,19 @@ where
 		}
 	}
 
-	fn cost(&self, point: &M::Point) -> T {
+	/// **Zero allocation** — uses ws.margins for Xw.
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
 		let m = MatrixView::nrows(&self.x);
 		let half = <T as Scalar>::from_f64(0.5);
-		// Xw → margins
-		let xw = self.x.mat_vec(point);
+		self.x.mat_vec_into(point, &mut ws.margins);
 		let mut loss = T::zero();
 		for i in 0..m {
-			let zi = self.y.get(i) * xw.get(i);
+			let zi = self.y.get(i) * ws.margins.get(i);
 			loss = loss + softplus(-zi);
 		}
 		self.inv_m * loss + half * self.lambda * point.norm_squared()
@@ -782,22 +677,15 @@ where
 		manifold_ws: &mut M::Workspace,
 	) {
 		let m = MatrixView::nrows(&self.x);
-
-		// Xw → margins
 		self.x.mat_vec_into(point, &mut ws.margins);
-
-		// weights = −y ⊙ σ(−y ⊙ Xw)
 		for i in 0..m {
 			let yi = self.y.get(i);
 			let zi = yi * ws.margins.get(i);
 			*ws.weights.get_mut(i) = -yi * sigmoid(-zi);
 		}
-
-		// egrad = (1/m) Xᵀ weights + λw
 		self.xt.mat_vec_into(&ws.weights, &mut ws.egrad);
 		ws.egrad.scale_mut(self.inv_m);
 		ws.egrad.axpy(self.lambda, point, T::one());
-
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, result, manifold_ws);
 	}
 
@@ -826,7 +714,6 @@ where
 		self.xt.mat_vec_into(&ws.weights, &mut ws.egrad);
 		ws.egrad.scale_mut(self.inv_m);
 		ws.egrad.axpy(self.lambda, point, T::one());
-
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, gradient, manifold_ws);
 		cost
 	}
@@ -842,28 +729,22 @@ where
 	) {
 		let m = MatrixView::nrows(&self.x);
 
-		// Compute σ_i = σ(y_i x_i^T w)
 		self.x.mat_vec_into(point, &mut ws.margins);
 		for i in 0..m {
 			let zi = self.y.get(i) * ws.margins.get(i);
 			*ws.weights.get_mut(i) = sigmoid(zi);
 		}
 
-		// Xv → margins (reuse)
 		self.x.mat_vec_into(vector, &mut ws.margins);
-
-		// d_i = σ_i (1 − σ_i) (Xv)_i
 		for i in 0..m {
 			let si = ws.weights.get(i);
 			*ws.margins.get_mut(i) = si * (T::one() - si) * ws.margins.get(i);
 		}
 
-		// ehvp = (1/m) Xᵀ d + λv
 		self.xt.mat_vec_into(&ws.margins, &mut ws.ehvp);
 		ws.ehvp.scale_mut(self.inv_m);
 		ws.ehvp.axpy(self.lambda, vector, T::one());
 
-		// egrad for curvature correction
 		self.x.mat_vec_into(point, &mut ws.margins);
 		for i in 0..m {
 			let yi = self.y.get(i);

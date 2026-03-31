@@ -333,7 +333,7 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 
 			// -- C. Actual Reduction --
 			manifold.retract(&current_point, &step_s, &mut candidate_point, &mut man_ws);
-			let trial_cost = problem.cost(&candidate_point);
+			let trial_cost = problem.cost(&candidate_point, &mut prob_ws, &mut man_ws);
 			fn_evals += 1;
 
 			let actual_reduction = current_cost - trial_cost;
