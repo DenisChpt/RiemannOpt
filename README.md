@@ -1,7 +1,5 @@
 # RiemannOpt
 
-[![Crates.io](https://img.shields.io/crates/v/riemannopt)](https://crates.io/crates/riemannopt)
-[![Documentation](https://docs.rs/riemannopt/badge.svg)](https://docs.rs/riemannopt)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/DenisChpt/RiemannOpt/workflows/CI/badge.svg)](https://github.com/DenisChpt/RiemannOpt/actions)
 
