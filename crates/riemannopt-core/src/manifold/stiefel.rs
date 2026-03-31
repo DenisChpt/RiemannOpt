@@ -9,7 +9,7 @@ use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 
 use crate::{
-	linalg::{DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
+	linalg::{DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -50,6 +50,7 @@ impl<T: Scalar, B: LinAlgBackend<T>> Stiefel<T, B> {
 		self.p
 	}
 
+	/// Symmetrize a p×p matrix in-place: A ← (A + Aᵀ)/2.
 	#[inline]
 	fn symmetrize_in_place(mat: &mut B::Matrix, size: usize) {
 		let half = <T as Scalar>::from_f64(0.5);
@@ -64,7 +65,7 @@ impl<T: Scalar, B: LinAlgBackend<T>> Stiefel<T, B> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Helpers
+//  Helpers (column-safe — no as_slice / as_mut_slice on matrices)
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Fix QR sign ambiguity: flip column j of Q if R_{jj} < 0.
@@ -72,14 +73,26 @@ impl<T: Scalar, B: LinAlgBackend<T>> Stiefel<T, B> {
 fn fix_qr_signs<T: Scalar + Float, B: LinAlgBackend<T>>(
 	q: &mut B::Matrix,
 	r: &B::Matrix,
-	n: usize,
 	p: usize,
 ) {
 	for j in 0..p.min(r.ncols()) {
 		if r.get(j, j) < T::zero() {
-			for i in 0..n {
-				*q.get_mut(i, j) = T::zero() - q.get(i, j);
+			let col = q.column_as_mut_slice(j);
+			for val in col.iter_mut() {
+				*val = T::zero() - *val;
 			}
+		}
+	}
+}
+
+/// Fill a matrix with random standard-normal entries (column-safe).
+fn fill_random<T: Scalar, B: LinAlgBackend<T>>(mat: &mut B::Matrix, nrows: usize, ncols: usize) {
+	let mut rng = rand::rng();
+	let normal = StandardNormal;
+	for j in 0..ncols {
+		let col = mat.column_as_mut_slice(j);
+		for i in 0..nrows {
+			col[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
 		}
 	}
 }
@@ -196,8 +209,6 @@ where
 		let mut vt = B::Matrix::zeros(k, k);
 
 		point.svd(&mut u, &mut s, &mut vt);
-
-		// result = U Vᵀ  (polar factor, ignores Σ)
 		result.gemm(T::one(), u.as_view(), vt.as_view(), T::zero());
 	}
 
@@ -247,16 +258,11 @@ where
 		result: &mut Self::Point,
 		ws: &mut Self::Workspace,
 	) {
-		// 1. np_mat = X + Z
 		ws.np_mat.copy_from(point);
 		ws.np_mat.add_assign(tangent);
-
-		// 2. QR: np_mat destroyed → result = Q (n×p), pp_mat = R (p×p)
 		ws.np_mat
 			.qr(result, &mut ws.pp_mat, &mut ws.qr_h, &mut ws.decomp_scratch);
-
-		// 3. Fix sign ambiguity
-		fix_qr_signs::<T, B>(result, &ws.pp_mat, self.n, self.p);
+		fix_qr_signs::<T, B>(result, &ws.pp_mat, self.p);
 	}
 
 	#[inline]
@@ -267,10 +273,8 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// log_X(Y) ≈ P_X(Y − X)
 		result.copy_from(other);
 		result.sub_assign(point);
-
 		ws.pp_mat
 			.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
 		Self::symmetrize_in_place(&mut ws.pp_mat, self.p);
@@ -298,7 +302,6 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// Hess f(X)[ξ] = P_X(∇²f[ξ]) − ξ sym(Xᵀ∇f)
 		self.project_tangent(point, euclidean_hvp, result, ws);
 		ws.pp_mat.gemm_at(
 			T::one(),
@@ -315,6 +318,7 @@ where
 		);
 	}
 
+	/// Transport by projection: τ_{X→Y}(Z) = P_Y(Z).
 	#[inline]
 	fn parallel_transport(
 		&self,
@@ -327,17 +331,9 @@ where
 		self.project_tangent(to, vector, result, ws);
 	}
 
-	/// Cold path — allocates temporary QR buffers.
 	fn random_point(&self, result: &mut Self::Point) {
-		let mut rng = rand::rng();
-		let normal = StandardNormal;
-
 		let mut a: B::Matrix = MatrixOps::zeros(self.n, self.p);
-		for i in 0..self.n {
-			for j in 0..self.p {
-				*a.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
-			}
-		}
+		fill_random::<T, B>(&mut a, self.n, self.p);
 
 		let (bs, k) = B::Matrix::qr_h_factor_shape(self.n, self.p);
 		let mut r = B::Matrix::zeros(self.p, self.p);
@@ -345,18 +341,11 @@ where
 		let mut scratch = B::Matrix::create_qr_scratch(self.n, self.p);
 
 		a.qr(result, &mut r, &mut h, &mut scratch);
-		fix_qr_signs::<T, B>(result, &r, self.n, self.p);
+		fix_qr_signs::<T, B>(result, &r, self.p);
 	}
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) {
-		let mut rng = rand::rng();
-		let normal = StandardNormal;
-
-		for i in 0..self.n {
-			for j in 0..self.p {
-				*result.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
-			}
-		}
+		fill_random::<T, B>(result, self.n, self.p);
 
 		let z = result.clone();
 		let mut ws = self.create_workspace(point);
@@ -368,16 +357,23 @@ where
 		}
 	}
 
-	#[inline]
+	/// Chordal distance: d(X, Y) = ‖X − Y‖_F.
+	///
+	/// Uses `frobenius_dot` to avoid column-stride issues.
+	/// Equivalent to computing the embedding distance directly.
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> T {
-		let mut diff_sq = T::zero();
-		for i in 0..self.n {
-			for j in 0..self.p {
-				let diff = x.get(i, j) - y.get(i, j);
-				diff_sq = diff_sq + diff * diff;
-			}
+		// ‖X − Y‖²_F = ‖X‖²_F + ‖Y‖²_F − 2⟨X,Y⟩_F
+		//             = p + p − 2⟨X,Y⟩_F          (since XᵀX = Iₚ)
+		//             = 2(p − ⟨X,Y⟩_F)
+		let inner = x.frobenius_dot(y);
+		let p_t = <T as Scalar>::from_f64(self.p as f64);
+		let two = T::one() + T::one();
+		let arg = two * (p_t - inner);
+		if arg <= T::zero() {
+			T::zero()
+		} else {
+			<T as Float>::sqrt(arg)
 		}
-		<T as Float>::sqrt(diff_sq)
 	}
 
 	#[inline]
