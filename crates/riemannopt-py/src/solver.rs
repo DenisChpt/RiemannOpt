@@ -18,7 +18,7 @@ pub(crate) enum DynSolver {
 	TrustRegion(TrustRegion<f64>),
 }
 
-/// Dispatch on DynSolver. Calls $body with $s bound to the concrete solver.
+/// Dispatch on `DynSolver`. Calls $body with $s bound to the concrete solver.
 macro_rules! with_solver {
 	($dyn:expr, |$s:ident| $body:expr) => {
 		match $dyn {
@@ -37,7 +37,7 @@ pub(crate) use with_solver;
 //  Python class
 // ════════════════════════════════════════════════════════════════════════
 
-/// Wrapper around DynSolver, used as parameter to solve().
+/// Wrapper around `DynSolver`, used as parameter to `solve()`.
 #[pyclass(name = "Solver")]
 pub struct PySolver {
 	pub(crate) inner: DynSolver,

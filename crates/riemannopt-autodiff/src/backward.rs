@@ -178,7 +178,7 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 				let ga_s = ga.as_mut_slice();
 				let go_s = go.as_slice();
 				for i in 0..ga_s.len() {
-					ga_s[i] = ga_s[i] + go_s[i] * vb_slice[i];
+					ga_s[i] += go_s[i] * vb_slice[i];
 				}
 			}
 			let va_slice = pool.vector(VVar(a)).as_slice();
@@ -187,7 +187,7 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 				let gb_s = gb.as_mut_slice();
 				let go_s = go.as_slice();
 				for i in 0..gb_s.len() {
-					gb_s[i] = gb_s[i] + go_s[i] * va_slice[i];
+					gb_s[i] += go_s[i] * va_slice[i];
 				}
 			} else {
 				// a == b:  grad_a += grad_out ⊙ val(a) already done above,
@@ -196,7 +196,7 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 				let ga_s = ga.as_mut_slice();
 				let go_s = go.as_slice();
 				for i in 0..ga_s.len() {
-					ga_s[i] = ga_s[i] + go_s[i] * va_slice[i];
+					ga_s[i] += go_s[i] * va_slice[i];
 				}
 			}
 		}

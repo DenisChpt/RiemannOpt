@@ -255,9 +255,9 @@ where
 				for r in 0..self.n {
 					let mut row_sum = T::zero();
 					for c in 0..self.n {
-						row_sum = row_sum + mat_v.get(r, c) * eigenvectors.get(c, i);
+						row_sum += mat_v.get(r, c) * eigenvectors.get(c, i);
 					}
-					v_t_v_v = v_t_v_v + eigenvectors.get(r, i) * row_sum;
+					v_t_v_v += eigenvectors.get(r, i) * row_sum;
 				}
 				if v_t_v_v < -tol {
 					return false;

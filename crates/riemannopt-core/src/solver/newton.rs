@@ -285,7 +285,7 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 					ls_success = true;
 					break;
 				}
-				alpha = alpha * self.config.backtrack_rho;
+				alpha *= self.config.backtrack_rho;
 			}
 
 			if !ls_success {

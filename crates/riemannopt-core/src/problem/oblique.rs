@@ -228,7 +228,7 @@ where
 		let mut total = T::zero();
 		for k in 0..p {
 			for j in 0..m {
-				total = total + self.contrast.g(ws.wtx.get(k, j));
+				total += self.contrast.g(ws.wtx.get(k, j));
 			}
 		}
 		-self.inv_m * total
@@ -277,7 +277,7 @@ where
 		for k in 0..p {
 			for j in 0..m {
 				let s = ws.wtx.get(k, j);
-				total = total + self.contrast.g(s);
+				total += self.contrast.g(s);
 				*ws.wtx.get_mut(k, j) = self.contrast.g_prime(s);
 			}
 		}
@@ -383,7 +383,7 @@ where
 			for i in 0..m {
 				let aix = ws.ax.get(i, j);
 				let residual = aix * aix - self.intensities.get(i);
-				cost = cost + residual * residual;
+				cost += residual * residual;
 			}
 		}
 		quarter_inv_m * cost
@@ -424,7 +424,7 @@ where
 				let aix = ws.ax.get(i, j);
 				let intensity = aix * aix;
 				let residual = intensity - self.intensities.get(i);
-				cost = cost + residual * residual;
+				cost += residual * residual;
 				*ws.ax.get_mut(i, j) = residual * aix;
 			}
 		}

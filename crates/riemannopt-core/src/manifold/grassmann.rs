@@ -161,7 +161,7 @@ where
 		for i in 0..self.p {
 			for j in 0..self.p {
 				let diff = yty.get(i, j) - if i == j { T::one() } else { T::zero() };
-				err_sq = err_sq + diff * diff;
+				err_sq += diff * diff;
 			}
 		}
 		<T as Float>::sqrt(err_sq) <= tol

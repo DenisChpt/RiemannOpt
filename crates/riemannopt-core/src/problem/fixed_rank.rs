@@ -54,7 +54,7 @@ impl<T: Scalar> MatrixCompletion<T> {
 		let rank = VectorView::len(&point.s);
 		let mut val = T::zero();
 		for k in 0..rank {
-			val = val + point.u.get(i, k) * point.s.get(k) * point.v.get(j, k);
+			val += point.u.get(i, k) * point.s.get(k) * point.v.get(j, k);
 		}
 		val
 	}
@@ -128,7 +128,7 @@ where
 		for idx in 0..self.rows.len() {
 			let residual = self.reconstruct_entry::<B>(point, self.rows[idx], self.cols[idx])
 				- self.values[idx];
-			cost = cost + residual * residual;
+			cost += residual * residual;
 		}
 		half * cost
 	}
@@ -150,7 +150,7 @@ where
 				let i = self.rows[idx];
 				let j = self.cols[idx];
 				let residual = self.reconstruct_entry::<B>(point, i, j) - self.values[idx];
-				val = val + point.u.get(i, kk) * residual * point.v.get(j, kk);
+				val += point.u.get(i, kk) * residual * point.v.get(j, kk);
 			}
 			*result.s_dot.get_mut(kk) = val;
 		}
@@ -213,10 +213,10 @@ impl<T: Scalar, B: LinAlgBackend<T>> MatrixSensing<T, B> {
 			let mut dot = T::zero();
 			for i in 0..a.nrows() {
 				for j in 0..a.ncols() {
-					dot = dot + a.get(i, j) * point.u.get(i, k) * point.v.get(j, k);
+					dot += a.get(i, j) * point.u.get(i, k) * point.v.get(j, k);
 				}
 			}
-			result = result + point.s.get(k) * dot;
+			result += point.s.get(k) * dot;
 		}
 		result
 	}
@@ -289,7 +289,7 @@ where
 		let mut cost = T::zero();
 		for (a, &b) in self.measurements.iter().zip(&self.observations) {
 			let r = self.measure(a, point) - b;
-			cost = cost + r * r;
+			cost += r * r;
 		}
 		half * cost
 	}

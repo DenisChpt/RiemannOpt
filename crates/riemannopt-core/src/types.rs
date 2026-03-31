@@ -124,7 +124,7 @@ impl Scalar for f32 {
 	const E: Self = std::f32::consts::E;
 	const GOLDEN_RATIO: Self = 1.618_033_9;
 	// max(1e-5, 50·√(f32::EPSILON)) = max(1e-5, 50·3.45e-4) ≈ 1.73e-2
-	const SMALL_ANGLE_THRESHOLD: Self = 1.7263349e-2;
+	const SMALL_ANGLE_THRESHOLD: Self = 1.726_335e-2;
 }
 
 impl Scalar for f64 {

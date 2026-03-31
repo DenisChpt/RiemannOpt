@@ -1,4 +1,4 @@
-//! AutoDiff graph recording and replay for Python.
+//! `AutoDiff` graph recording and replay for Python.
 //!
 //! Python users build a computation graph via `PyAdSession` method calls.
 //! Each call appends a `GraphOp` to a `RecordedGraph`. At `build_problem()`,
@@ -87,7 +87,7 @@ enum HandleKind {
 	Matrix,
 }
 
-/// A recorded graph that can be replayed on any AdSession.
+/// A recorded graph that can be replayed on any `AdSession`.
 #[derive(Clone)]
 pub(crate) struct RecordedGraph {
 	pub(crate) ops: Vec<GraphOp>,
@@ -109,19 +109,19 @@ impl RecordedGraph {
 	}
 
 	fn push_scalar_handle(&mut self) -> u32 {
-		let h = self.handle_kinds.len() as u32;
+		let h = u32::try_from(self.handle_kinds.len()).expect("too many elements");
 		self.handle_kinds.push(HandleKind::Scalar);
 		h
 	}
 
 	fn push_vector_handle(&mut self) -> u32 {
-		let h = self.handle_kinds.len() as u32;
+		let h = u32::try_from(self.handle_kinds.len()).expect("too many elements");
 		self.handle_kinds.push(HandleKind::Vector);
 		h
 	}
 
 	fn push_matrix_handle(&mut self) -> u32 {
-		let h = self.handle_kinds.len() as u32;
+		let h = u32::try_from(self.handle_kinds.len()).expect("too many elements");
 		self.handle_kinds.push(HandleKind::Matrix);
 		h
 	}
@@ -208,7 +208,7 @@ fn replay_op(
 	}
 }
 
-/// Replay for vector-point problems. The first InputVector op uses the
+/// Replay for vector-point problems. The first `InputVector` op uses the
 /// pre-registered `input_vvar` (created by `AutoDiffProblem`).
 pub(crate) fn replay_vec(
 	graph: &RecordedGraph,
@@ -242,7 +242,7 @@ pub(crate) fn replay_vec(
 	last_scalar.expect("graph must produce at least one scalar (the loss)")
 }
 
-/// Replay for matrix-point problems. The first InputMatrix op uses the
+/// Replay for matrix-point problems. The first `InputMatrix` op uses the
 /// pre-registered `input_mvar`.
 pub(crate) fn replay_mat(
 	graph: &RecordedGraph,

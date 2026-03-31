@@ -157,7 +157,7 @@ where
 			for i in 0..self.n {
 				let val = point.get(i, j) + tangent.get(i, j);
 				res_j_slice[i] = val;
-				norm_sq = norm_sq + val * val;
+				norm_sq += val * val;
 			}
 			let norm = norm_sq.sqrt();
 			let inv_norm = if norm > T::EPSILON {
@@ -166,7 +166,7 @@ where
 				T::one()
 			};
 			for i in 0..self.n {
-				res_j_slice[i] = res_j_slice[i] * inv_norm;
+				res_j_slice[i] *= inv_norm;
 			}
 		}
 	}
@@ -300,11 +300,11 @@ where
 			for i in 0..self.n {
 				let v = <T as Scalar>::from_f64(normal.sample(&mut rng));
 				res_j[i] = v;
-				norm_sq = norm_sq + v * v;
+				norm_sq += v * v;
 			}
 			let inv = T::one() / norm_sq.sqrt();
 			for i in 0..self.n {
-				res_j[i] = res_j[i] * inv;
+				res_j[i] *= inv;
 			}
 		}
 	}
@@ -320,12 +320,12 @@ where
 			for i in 0..self.n {
 				let v = <T as Scalar>::from_f64(normal.sample(&mut rng));
 				res_j[i] = v;
-				inner = inner + point.get(i, j) * v;
+				inner += point.get(i, j) * v;
 			}
 
 			// Projection tangentielle : v_j = v_j - <x_j, v_j> x_j
 			for i in 0..self.n {
-				res_j[i] = res_j[i] - inner * point.get(i, j);
+				res_j[i] -= inner * point.get(i, j);
 			}
 		}
 
@@ -342,7 +342,7 @@ where
 			let inner = x.column(j).dot(&y.column(j));
 			let clamped = inner.min(T::one()).max(-T::one());
 			let theta = clamped.acos();
-			dist_sq = dist_sq + theta * theta;
+			dist_sq += theta * theta;
 		}
 		dist_sq.sqrt()
 	}

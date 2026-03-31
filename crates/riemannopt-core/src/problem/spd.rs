@@ -147,7 +147,7 @@ where
 				&mut ws.tmp,
 				&mut ws.log_result,
 			);
-			cost = cost + wi * ws.log_result.frobenius_dot(&ws.log_result);
+			cost += wi * ws.log_result.frobenius_dot(&ws.log_result);
 		}
 		cost
 	}
@@ -279,7 +279,7 @@ where
 			for d in &self.dissimilar_diffs {
 				point.mat_vec_into(d, &mut ws.md);
 				let quad = d.dot(&ws.md);
-				cost = cost - self.alpha * quad.max(T::EPSILON).ln();
+				cost -= self.alpha * quad.max(T::EPSILON).ln();
 			}
 		}
 		cost
@@ -340,7 +340,7 @@ impl<T: Scalar, B: LinAlgBackend<T>> GaussianMixtureCovariance<T, B> {
 		let mut n_eff = T::zero();
 		for j in 0..m {
 			let gamma = responsibilities[j];
-			n_eff = n_eff + gamma;
+			n_eff += gamma;
 			for r in 0..n {
 				let dr = data.get(r, j) - mean.get(r);
 				for c in 0..n {
@@ -424,7 +424,7 @@ where
 		DecompositionOps::symmetric_eigen(point, &mut ws.eigenvalues, &mut ws.eigenvectors);
 		let mut log_det = T::zero();
 		for i in 0..n {
-			log_det = log_det + ws.eigenvalues.get(i).max(T::EPSILON).ln();
+			log_det += ws.eigenvalues.get(i).max(T::EPSILON).ln();
 		}
 
 		point.inverse(&mut ws.sigma_inv);

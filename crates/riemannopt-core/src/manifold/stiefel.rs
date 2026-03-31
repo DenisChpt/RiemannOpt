@@ -172,7 +172,7 @@ where
 		for i in 0..self.p {
 			for j in 0..self.p {
 				let diff = xtx.get(i, j) - if i == j { T::one() } else { T::zero() };
-				err_sq = err_sq + diff * diff;
+				err_sq += diff * diff;
 			}
 		}
 		<T as Float>::sqrt(err_sq) <= tol
@@ -193,7 +193,7 @@ where
 		for i in 0..self.p {
 			for j in 0..self.p {
 				let s = xtz.get(i, j) + xtz.get(j, i);
-				skew_sq = skew_sq + s * s;
+				skew_sq += s * s;
 			}
 		}
 		<T as Float>::sqrt(skew_sq) <= tol

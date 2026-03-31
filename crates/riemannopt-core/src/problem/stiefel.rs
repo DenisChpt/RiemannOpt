@@ -258,7 +258,7 @@ where
 		let mut total = T::zero();
 		for k in 0..p {
 			for j in 0..m {
-				total = total + self.contrast.g(ws.wtx.get(k, j));
+				total += self.contrast.g(ws.wtx.get(k, j));
 			}
 		}
 		-self.inv_m * total
@@ -292,7 +292,7 @@ where
 		for k in 0..p {
 			for j in 0..m {
 				let s = ws.wtx.get(k, j);
-				total = total + self.contrast.g(s);
+				total += self.contrast.g(s);
 				*ws.wtx.get_mut(k, j) = self.contrast.g_prime(s);
 			}
 		}
@@ -417,7 +417,7 @@ where
 			.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
 		let mut cost = T::zero();
 		for k in 0..p {
-			cost = cost - self.weights.get(k) * point.column_dot(k, &ws.ax, k);
+			cost -= self.weights.get(k) * point.column_dot(k, &ws.ax, k);
 		}
 		cost
 	}
@@ -450,7 +450,7 @@ where
 			.gemm(T::one(), self.a.as_view(), point.as_view(), T::zero());
 		let mut cost = T::zero();
 		for k in 0..p {
-			cost = cost - self.weights.get(k) * point.column_dot(k, &ws.ax, k);
+			cost -= self.weights.get(k) * point.column_dot(k, &ws.ax, k);
 		}
 		ws.egrad.scale_columns(&ws.ax, &self.weights);
 		ws.egrad.scale_mut(<T as Scalar>::from_f64(-2.0));
