@@ -11,7 +11,6 @@ use num_traits::Float;
 use super::traits::{
 	DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, RealScalar, VectorOps, VectorView,
 };
-use super::types::{CholeskyResult, EigenResult, QrResult, SvdResult};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Backend marker type
@@ -461,48 +460,83 @@ impl<T> DecompositionOps<T> for DMatrix<T>
 where
 	T: RealScalar + NalgebraScalar + RealField,
 {
-	fn svd(&self) -> SvdResult<T, Self> {
-		let svd = self.clone().svd(true, true);
-		SvdResult {
-			u: svd.u,
-			singular_values: svd.singular_values,
-			vt: svd.v_t,
+	/// nalgebra n'a pas besoin de scratch aligné.
+	type ScratchBuffer = ();
+
+	fn qr_h_factor_shape(nrows: usize, ncols: usize) -> (usize, usize) {
+		// nalgebra ne requiert pas de buffer Householder externe.
+		// On retourne (1, min(m,n)) pour que le workspace puisse
+		// allouer un buffer minimal sans cas spécial.
+		(1, nrows.min(ncols))
+	}
+
+	fn create_qr_scratch(_nrows: usize, _ncols: usize) -> Self::ScratchBuffer {
+		()
+	}
+
+	#[inline]
+	fn qr(
+		&mut self,
+		q: &mut Self,
+		r: &mut Self,
+		_h_factor: &mut Self,
+		_scratch: &mut Self::ScratchBuffer,
+	) {
+		let decomp = self.clone().qr();
+		q.copy_from(&decomp.q());
+		r.copy_from(&decomp.r());
+	}
+
+	#[inline]
+	fn svd(&self, u: &mut Self, s: &mut DVector<T>, vt: &mut Self) {
+		let decomp = self.clone().svd(true, true);
+		if let Some(ref u_mat) = decomp.u {
+			u.copy_from(u_mat);
+		}
+		s.copy_from(&decomp.singular_values);
+		if let Some(ref vt_mat) = decomp.v_t {
+			vt.copy_from(vt_mat);
 		}
 	}
 
-	fn qr(&self) -> QrResult<T, Self> {
-		let qr = self.clone().qr();
-		QrResult::new(qr.q(), qr.r())
+	#[inline]
+	fn symmetric_eigen(&self, eigenvalues: &mut DVector<T>, eigenvectors: &mut Self) {
+		let decomp = nalgebra::SymmetricEigen::new(self.clone());
+		eigenvalues.copy_from(&decomp.eigenvalues);
+		eigenvectors.copy_from(&decomp.eigenvectors);
 	}
 
-	fn symmetric_eigen(&self) -> EigenResult<T, Self> {
-		let eigen = nalgebra::SymmetricEigen::new(self.clone());
-		EigenResult {
-			eigenvalues: eigen.eigenvalues,
-			eigenvectors: eigen.eigenvectors,
+	#[inline]
+	fn cholesky(&self, l: &mut Self) -> bool {
+		match nalgebra::linalg::Cholesky::new(self.clone()) {
+			Some(chol) => {
+				l.copy_from(&chol.l());
+				true
+			}
+			None => false,
 		}
 	}
 
-	fn cholesky(&self) -> Option<CholeskyResult<T, Self>> {
-		nalgebra::linalg::Cholesky::new(self.clone()).map(|c| CholeskyResult::new(c.l()))
-	}
-
+	#[inline]
 	fn inverse(&self, result: &mut Self) -> bool {
-		if let Some(inv) = nalgebra::DMatrix::try_inverse(self.clone()) {
-			result.copy_from(&inv);
-			true
-		} else {
-			false
+		match self.clone().try_inverse() {
+			Some(inv) => {
+				result.copy_from(&inv);
+				true
+			}
+			None => false,
 		}
 	}
 
+	#[inline]
 	fn cholesky_solve(&self, rhs: &Self, result: &mut Self) -> bool {
-		if let Some(chol) = nalgebra::linalg::Cholesky::new(self.clone()) {
-			let sol = chol.solve(rhs);
-			result.copy_from(&sol);
-			true
-		} else {
-			false
+		match nalgebra::linalg::Cholesky::new(self.clone()) {
+			Some(chol) => {
+				let sol = chol.solve(rhs);
+				result.copy_from(&sol);
+				true
+			}
+			None => false,
 		}
 	}
 }
@@ -580,29 +614,32 @@ mod tests {
 	#[test]
 	fn test_svd() {
 		let m = <DMatrix<f64> as MatrixOps<f64>>::identity(3);
-		let svd = DecompositionOps::svd(&m);
-		assert!(svd.u.is_some());
-		assert!(svd.vt.is_some());
+		let mut u = DMatrix::<f64>::zeros(3, 3);
+		let mut s = DVector::<f64>::zeros(3);
+		let mut vt = DMatrix::<f64>::zeros(3, 3);
+		DecompositionOps::svd(&m, &mut u, &mut s, &mut vt);
 		for i in 0..3 {
-			assert_relative_eq!(
-				VectorView::get(&svd.singular_values, i),
-				1.0,
-				epsilon = 1e-10
-			);
+			assert_relative_eq!(VectorView::get(&s, i), 1.0, epsilon = 1e-10);
 		}
 	}
 
 	#[test]
 	fn test_qr() {
-		let m =
+		let mut m =
 			<DMatrix<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| if i == j { 1.0 } else { 0.0 });
-		let qr = DecompositionOps::qr(&m);
-		let reconstructed = MatrixOps::mat_mul(qr.q(), qr.r());
+		let m_orig = m.clone();
+		let mut q = DMatrix::<f64>::zeros(3, 2);
+		let mut r = DMatrix::<f64>::zeros(2, 2);
+		let (bs, k) = <DMatrix<f64> as DecompositionOps<f64>>::qr_h_factor_shape(3, 2);
+		let mut h = DMatrix::<f64>::zeros(bs, k);
+		let mut scratch = <DMatrix<f64> as DecompositionOps<f64>>::create_qr_scratch(3, 2);
+		DecompositionOps::qr(&mut m, &mut q, &mut r, &mut h, &mut scratch);
+		let reconstructed = MatrixOps::mat_mul(&q, &r);
 		for i in 0..3 {
 			for j in 0..2 {
 				assert_relative_eq!(
 					MatrixView::get(&reconstructed, i, j),
-					MatrixView::get(&m, i, j),
+					MatrixView::get(&m_orig, i, j),
 					epsilon = 1e-10
 				);
 			}
@@ -613,8 +650,10 @@ mod tests {
 	fn test_symmetric_eigen() {
 		let diag = <DVector<f64> as VectorOps<f64>>::from_slice(&[3.0, 1.0, 2.0]);
 		let m = <DMatrix<f64> as MatrixOps<f64>>::from_diagonal(&diag);
-		let eigen = DecompositionOps::symmetric_eigen(&m);
-		let mut eigs: Vec<f64> = VectorView::iter(&eigen.eigenvalues).collect();
+		let mut eigenvalues = DVector::<f64>::zeros(3);
+		let mut eigenvectors = DMatrix::<f64>::zeros(3, 3);
+		DecompositionOps::symmetric_eigen(&m, &mut eigenvalues, &mut eigenvectors);
+		let mut eigs: Vec<f64> = VectorView::iter(&eigenvalues).collect();
 		eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 		assert_relative_eq!(eigs[0], 1.0, epsilon = 1e-10);
 		assert_relative_eq!(eigs[1], 2.0, epsilon = 1e-10);
@@ -625,9 +664,8 @@ mod tests {
 	fn test_cholesky() {
 		let m =
 			<DMatrix<f64> as MatrixOps<f64>>::from_fn(2, 2, |i, j| [[4.0, 2.0], [2.0, 3.0]][i][j]);
-		let result = DecompositionOps::cholesky(&m);
-		assert!(result.is_some());
-		let l = result.unwrap().l().clone();
+		let mut l = DMatrix::<f64>::zeros(2, 2);
+		assert!(DecompositionOps::cholesky(&m, &mut l));
 		let reconstructed = MatrixOps::mat_mul(&l, &MatrixOps::transpose_to_owned(&l));
 		for i in 0..2 {
 			for j in 0..2 {

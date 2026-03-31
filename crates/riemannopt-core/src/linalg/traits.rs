@@ -26,8 +26,6 @@
 use num_traits::Float;
 use std::fmt::Debug;
 
-use crate::linalg::types::{CholeskyResult, EigenResult, QrResult, SvdResult};
-
 /// A scalar type suitable for linear algebra operations.
 ///
 /// This is deliberately minimal — backend-specific bounds (e.g. nalgebra's
@@ -552,30 +550,58 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 
 /// Matrix decomposition operations.
 pub trait DecompositionOps<T: RealScalar>: MatrixOps<T> {
-	/// Singular Value Decomposition: self = U Σ Vᵀ.
-	fn svd(&self) -> SvdResult<T, Self>;
+	/// Aligned scratch bytes for decomposition temporaries.
+	/// faer: `MemBuffer`.  nalgebra: `()`.
+	///
+	/// One instance per workspace, reusable across all decompositions.
+	type ScratchBuffer: Send + Sync;
 
-	/// QR decomposition: self = Q R.
-	fn qr(&self) -> QrResult<T, Self>;
+	// ── QR ───────────────────────────────────────────────────────────
+
+	/// Returns (block_size, k) — required shape of the `h_factor` buffer
+	/// for QR decomposition of an m×n matrix.
+	fn qr_h_factor_shape(nrows: usize, ncols: usize) -> (usize, usize);
+
+	/// Creates a scratch buffer sized for QR of an m×n matrix.
+	/// Call once at workspace creation.
+	fn create_qr_scratch(nrows: usize, ncols: usize) -> Self::ScratchBuffer;
+
+	/// Thin QR: self = Q R.  **Zero heap allocation.**
+	///
+	/// `self` is destroyed (overwritten with Householder representation).
+	/// - `q`:        m × k  output  (k = min(m,n))
+	/// - `r`:        k × n  output  (upper triangular)
+	/// - `h_factor`: block_size × k  (from `qr_h_factor_shape`)
+	/// - `scratch`:  pre-allocated byte buffer (from `create_qr_scratch`)
+	fn qr(
+		&mut self,
+		q: &mut Self,
+		r: &mut Self,
+		h_factor: &mut Self,
+		scratch: &mut Self::ScratchBuffer,
+	);
+
+	// ── SVD ──────────────────────────────────────────────────────────
+
+	/// Thin SVD: self = U Σ Vᵀ.
+	fn svd(&self, u: &mut Self, s: &mut Self::Col, vt: &mut Self);
+
+	// ── Symmetric Eigen ──────────────────────────────────────────────
 
 	/// Symmetric eigendecomposition: self = V diag(λ) Vᵀ.
-	/// Eigenvalues are sorted in ascending order.
-	fn symmetric_eigen(&self) -> EigenResult<T, Self>;
+	fn symmetric_eigen(&self, eigenvalues: &mut Self::Col, eigenvectors: &mut Self);
 
-	/// Cholesky decomposition: self = L Lᵀ.
-	/// Returns `None` if the matrix is not positive definite.
-	fn cholesky(&self) -> Option<CholeskyResult<T, Self>>;
+	// ── Cholesky ─────────────────────────────────────────────────────
 
-	/// Compute matrix inverse into pre-allocated `result`.
-	///
-	/// Returns `false` if singular (result is unchanged).
+	/// Cholesky: self = L Lᵀ.  Returns `false` if not positive definite.
+	fn cholesky(&self, l: &mut Self) -> bool;
+
+	// ── Inverse / Solve ──────────────────────────────────────────────
+
+	/// Matrix inverse into pre-allocated `result`.
 	fn inverse(&self, result: &mut Self) -> bool;
 
-	/// Solve the system A x = rhs via Cholesky decomposition (A = L Lᵀ),
-	/// writing into pre-allocated `result`.
-	///
-	/// Copies `rhs` into `result`, then solves in-place.
-	/// Returns `false` if A is not positive definite (result is unchanged).
+	/// Solve A x = rhs via Cholesky into pre-allocated `result`.
 	fn cholesky_solve(&self, rhs: &Self, result: &mut Self) -> bool;
 }
 

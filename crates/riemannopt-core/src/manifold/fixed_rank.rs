@@ -80,14 +80,18 @@ impl<T: Scalar, B: LinAlgBackend<T>> FixedRank<T, B> {
 
 /// Pre-allocated buffers for fixed-rank operations.
 pub struct FixedRankWorkspace<T: Scalar, B: LinAlgBackend<T>> {
-	/// m×k buffer
+	/// m×k buffer (scratch for U QR — destroyed)
 	pub tmp_mk: B::Matrix,
-	/// n×k buffer
+	/// n×k buffer (scratch for V QR — destroyed)
 	pub tmp_nk: B::Matrix,
-	/// k×k buffer
+	/// k×k buffer (receives R from QR, reused)
 	pub tmp_kk: B::Matrix,
 	/// k-vector buffer
 	pub tmp_vec_k: B::Vector,
+	/// Householder factor buffer, max(bs_u, bs_v) × k
+	pub qr_h: B::Matrix,
+	/// Aligned scratch bytes for QR (shared for U and V)
+	pub decomp_scratch: <B::Matrix as DecompositionOps<T>>::ScratchBuffer,
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> Default for FixedRankWorkspace<T, B> {
@@ -97,6 +101,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for FixedRankWorkspace<T, B> {
 			tmp_nk: B::Matrix::zeros(0, 0),
 			tmp_kk: B::Matrix::zeros(0, 0),
 			tmp_vec_k: B::Vector::zeros(0),
+			qr_h: B::Matrix::zeros(0, 0),
+			decomp_scratch: B::Matrix::create_qr_scratch(0, 0),
 		}
 	}
 }
@@ -105,13 +111,28 @@ unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for FixedRankWorkspace<T, B>
 where
 	B::Matrix: Send,
 	B::Vector: Send,
+	<B::Matrix as DecompositionOps<T>>::ScratchBuffer: Send,
 {
 }
 unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for FixedRankWorkspace<T, B>
 where
 	B::Matrix: Sync,
 	B::Vector: Sync,
+	<B::Matrix as DecompositionOps<T>>::ScratchBuffer: Sync,
 {
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Clamp singular values to ε.
+fn clamp_singular_values<T: Scalar + Float, B: LinAlgBackend<T>>(s: &mut B::Vector, k: usize) {
+	for i in 0..k {
+		if s.get(i) < T::EPSILON {
+			*s.get_mut(i) = T::EPSILON;
+		}
+	}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -128,11 +149,21 @@ where
 	type Workspace = FixedRankWorkspace<T, B>;
 
 	fn create_workspace(&self, _proto: &Self::Point) -> Self::Workspace {
+		let (bs_u, _) = B::Matrix::qr_h_factor_shape(self.m, self.k);
+		let (bs_v, _) = B::Matrix::qr_h_factor_shape(self.n, self.k);
+		let bs_max = bs_u.max(bs_v);
+
+		// Scratch sized for the larger of the two QRs (m×k vs n×k).
+		let dim_max = self.m.max(self.n);
+		let decomp_scratch = B::Matrix::create_qr_scratch(dim_max, self.k);
+
 		Self::Workspace {
 			tmp_mk: B::Matrix::zeros(self.m, self.k),
 			tmp_nk: B::Matrix::zeros(self.n, self.k),
 			tmp_kk: B::Matrix::zeros(self.k, self.k),
 			tmp_vec_k: B::Vector::zeros(self.k),
+			qr_h: B::Matrix::zeros(bs_max, self.k),
+			decomp_scratch,
 		}
 	}
 
@@ -167,19 +198,32 @@ where
 			&& vector.v_perp_n.ncols() == self.n - self.k
 	}
 
+	/// Re-orthogonalize U and V via QR, clamp singular values.
+	///
+	/// Cold path — allocates temporary buffers internally (no workspace param).
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		// Re-orthogonalize U and V via QR
-		let qr_u = point.u.qr();
-		result.u.copy_from(qr_u.q());
-		let qr_v = point.v.qr();
-		result.v.copy_from(qr_v.q());
-		result.s.copy_from(&point.s);
-		// Clamp singular values to positive
-		for i in 0..self.k {
-			if result.s.get(i) < T::EPSILON {
-				*result.s.get_mut(i) = T::EPSILON;
-			}
+		let k = self.k;
+
+		// ── QR for U (m×k) ───────────────────────────────────────
+		let (bs_u, kk) = B::Matrix::qr_h_factor_shape(self.m, k);
+		let mut u_tmp = point.u.clone();
+		let mut r_tmp = B::Matrix::zeros(k, k);
+		let mut h_tmp = B::Matrix::zeros(bs_u, kk);
+		let mut scratch = B::Matrix::create_qr_scratch(self.m, k);
+		u_tmp.qr(&mut result.u, &mut r_tmp, &mut h_tmp, &mut scratch);
+
+		// ── QR for V (n×k) ───────────────────────────────────────
+		let (bs_v, _) = B::Matrix::qr_h_factor_shape(self.n, k);
+		let mut v_tmp = point.v.clone();
+		if bs_v > bs_u {
+			h_tmp = B::Matrix::zeros(bs_v, kk);
+			scratch = B::Matrix::create_qr_scratch(self.n, k);
 		}
+		v_tmp.qr(&mut result.v, &mut r_tmp, &mut h_tmp, &mut scratch);
+
+		// ── Singular values ──────────────────────────────────────
+		result.s.copy_from(&point.s);
+		clamp_singular_values::<T, B>(&mut result.s, k);
 	}
 
 	#[inline]
@@ -209,45 +253,39 @@ where
 		ip_m + ip_s + ip_n
 	}
 
-	/// Simplified retraction: Σ_new = Σ + Ṡ, then re-project U/V via QR.
-	///
-	/// This is a first-order retraction that respects the manifold constraint.
-	/// The full orthographic retraction (with U_⊥ M Σ⁻¹ terms) is more accurate
-	/// but requires computing orthogonal complements.
+	/// Simplified retraction with QR re-orthogonalization. **Zero allocation.**
 	fn retract(
 		&self,
 		point: &Self::Point,
 		tangent: &Self::TangentVector,
 		result: &mut Self::Point,
-		_ws: &mut Self::Workspace,
+		ws: &mut Self::Workspace,
 	) {
-		// Σ_new = Σ + Ṡ
+		// ── Σ_new = Σ + Ṡ ────────────────────────────────────────
 		result.s.copy_from(&point.s);
 		result.s.add_assign(&tangent.s_dot);
+		clamp_singular_values::<T, B>(&mut result.s, self.k);
 
-		// U_new ≈ U (with Ṡ perturbation absorbed), V_new ≈ V
-		// For a proper retraction we'd need U_⊥, but this simplified version
-		// copies and re-orthogonalizes, which is first-order correct.
-		result.u.copy_from(&point.u);
-		result.v.copy_from(&point.v);
+		// ── QR for U: tmp_mk ← point.u, destroyed → result.u = Q
+		ws.tmp_mk.copy_from(&point.u);
+		ws.tmp_mk.qr(
+			&mut result.u,
+			&mut ws.tmp_kk,
+			&mut ws.qr_h,
+			&mut ws.decomp_scratch,
+		);
 
-		// Re-orthogonalize
-		let qr_u = result.u.qr();
-		result.u.copy_from(qr_u.q());
-		let qr_v = result.v.qr();
-		result.v.copy_from(qr_v.q());
-
-		// Clamp singular values
-		for i in 0..self.k {
-			if result.s.get(i) < T::EPSILON {
-				*result.s.get_mut(i) = T::EPSILON;
-			}
-		}
+		// ── QR for V: tmp_nk ← point.v, destroyed → result.v = Q
+		ws.tmp_nk.copy_from(&point.v);
+		ws.tmp_nk.qr(
+			&mut result.v,
+			&mut ws.tmp_kk, // R reused, we don't need it
+			&mut ws.qr_h,   // h_factor reused (sized for max)
+			&mut ws.decomp_scratch,
+		);
 	}
 
-	/// Approximate inverse retraction: project ambient difference onto tangent space.
-	///
-	/// Not zero-alloc (reconstructs full m×n matrices) — not on the hot path.
+	/// Approximate inverse retraction.
 	fn inverse_retract(
 		&self,
 		point: &Self::Point,
@@ -255,16 +293,13 @@ where
 		result: &mut Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) {
-		// Ṡ = diag(Uᵀ (Y−X) V) ≈ other.s − point.s (simplified)
 		result.s_dot.copy_from(&other.s);
 		result.s_dot.sub_assign(&point.s);
-
-		// M and N set to zero (simplified — full version needs orthogonal complements)
 		result.u_perp_m.fill(T::zero());
 		result.v_perp_n.fill(T::zero());
 	}
 
-	/// Simplified transport: copy components (approximation for smooth curves).
+	/// Simplified transport: copy components.
 	#[inline]
 	fn parallel_transport(
 		&self,
@@ -279,11 +314,12 @@ where
 		result.v_perp_n.copy_from(&vector.v_perp_n);
 	}
 
+	/// Cold path — allocates temporary QR buffers internally.
 	fn random_point(&self, result: &mut Self::Point) {
 		let mut rng = rand::rng();
 		let normal = StandardNormal;
 
-		// Random U, V then QR-orthogonalize
+		// Fill U, V with random entries
 		for j in 0..self.k {
 			for i in 0..self.m {
 				*result.u.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
@@ -292,10 +328,24 @@ where
 				*result.v.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
 			}
 		}
-		let qr_u = result.u.qr();
-		result.u.copy_from(qr_u.q());
-		let qr_v = result.v.qr();
-		result.v.copy_from(qr_v.q());
+
+		// QR-orthogonalize U
+		let k = self.k;
+		let (bs_u, kk) = B::Matrix::qr_h_factor_shape(self.m, k);
+		let mut r_tmp = B::Matrix::zeros(k, k);
+		let mut h_tmp = B::Matrix::zeros(bs_u, kk);
+		let mut scratch = B::Matrix::create_qr_scratch(self.m, k);
+		let mut u_copy = result.u.clone();
+		u_copy.qr(&mut result.u, &mut r_tmp, &mut h_tmp, &mut scratch);
+
+		// QR-orthogonalize V
+		let (bs_v, _) = B::Matrix::qr_h_factor_shape(self.n, k);
+		if bs_v > bs_u {
+			h_tmp = B::Matrix::zeros(bs_v, kk);
+			scratch = B::Matrix::create_qr_scratch(self.n, k);
+		}
+		let mut v_copy = result.v.clone();
+		v_copy.qr(&mut result.v, &mut r_tmp, &mut h_tmp, &mut scratch);
 
 		// Random positive singular values
 		for i in 0..self.k {
@@ -318,7 +368,6 @@ where
 			}
 		}
 
-		// Normalize to unit norm — compute ‖ξ‖² directly (no workspace needed)
 		let norm_sq = MatrixView::frobenius_dot(&result.u_perp_m, &result.u_perp_m)
 			+ result.s_dot.dot(&result.s_dot)
 			+ MatrixView::frobenius_dot(&result.v_perp_n, &result.v_perp_n);
@@ -328,11 +377,6 @@ where
 		}
 	}
 
-	/// Optimization proxy: d(X, Y) ≈ ‖Σ_X − Σ_Y‖₂.
-	///
-	/// **Not** the true Riemannian distance (which also depends on subspace
-	/// alignment of U and V), but an O(k) convergence criterion that avoids
-	/// reconstructing full m×n matrices. Sufficient for stopping criteria.
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> T {
 		let mut dist_sq = T::zero();
 		for i in 0..self.k {
@@ -341,10 +385,6 @@ where
 		}
 		Float::sqrt(dist_sq)
 	}
-
-	// ════════════════════════════════════════════════════════════════════════
-	// Vector ops — component-wise, in-place
-	// ════════════════════════════════════════════════════════════════════════
 
 	#[inline]
 	fn scale_tangent(&self, scalar: T, v: &mut Self::TangentVector) {

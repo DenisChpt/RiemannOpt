@@ -1,15 +1,7 @@
 //! # Stiefel Manifold St(n,p)
 //!
-//! The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = I_p} is the set of all
-//! n×p matrices with orthonormal columns. It generalizes both the sphere (p=1)
-//! and the orthogonal group (n=p), making it fundamental for problems involving
-//! orthogonality constraints.
-//!
-//! ## Mathematical Definition
-//!
-//! ```text
-//! St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = I_p}
-//! ```
+//! The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : XᵀX = Iₚ} is the set of all
+//! n×p matrices with orthonormal columns.
 
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
@@ -17,14 +9,12 @@ use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 
 use crate::{
-	linalg::{DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorView},
+	linalg::{DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
 	manifold::Manifold,
 	types::Scalar,
 };
 
-/// The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : X^T X = I_p}.
-///
-/// Generic over scalar type `T` and linear algebra backend `B`.
+/// The Stiefel manifold St(n,p) = {X ∈ ℝⁿˣᵖ : XᵀX = Iₚ}.
 #[derive(Clone)]
 pub struct Stiefel<T: Scalar = f64, B: LinAlgBackend<T> = crate::linalg::DefaultBackend> {
 	n: usize,
@@ -39,11 +29,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> Debug for Stiefel<T, B> {
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> Stiefel<T, B> {
-	/// Creates a new Stiefel manifold St(n,p).
-	///
-	/// # Panics
-	///
-	/// Panics if `p == 0` or `n < p`.
 	#[inline]
 	pub fn new(n: usize, p: usize) -> Self {
 		assert!(p > 0, "Stiefel manifold requires p ≥ 1");
@@ -65,7 +50,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> Stiefel<T, B> {
 		self.p
 	}
 
-	/// Helper function to symmetrize a square matrix in-place: A = (A + A^T) / 2
 	#[inline]
 	fn symmetrize_in_place(mat: &mut B::Matrix, size: usize) {
 		let half = <T as Scalar>::from_f64(0.5);
@@ -80,17 +64,42 @@ impl<T: Scalar, B: LinAlgBackend<T>> Stiefel<T, B> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Workspace Definition (Zero-Allocation Strategy)
+//  Helpers
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Pre-allocated memory buffers for Stiefel operations.
+/// Fix QR sign ambiguity: flip column j of Q if R_{jj} < 0.
+#[inline]
+fn fix_qr_signs<T: Scalar + Float, B: LinAlgBackend<T>>(
+	q: &mut B::Matrix,
+	r: &B::Matrix,
+	n: usize,
+	p: usize,
+) {
+	for j in 0..p.min(r.ncols()) {
+		if r.get(j, j) < T::zero() {
+			for i in 0..n {
+				*q.get_mut(i, j) = T::zero() - q.get(i, j);
+			}
+		}
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Workspace
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Pre-allocated buffers for Stiefel operations.
 pub struct StiefelWorkspace<T: Scalar, B: LinAlgBackend<T>> {
-	/// A small p×p buffer for X^T Z, skew-symmetric factors, etc.
+	/// p×p buffer (receives R from QR, also XᵀZ products)
 	pub pp_mat: B::Matrix,
-	/// A secondary p×p buffer for additional matrix ops
+	/// p×p secondary buffer
 	pub pp_mat2: B::Matrix,
-	/// A buffer for X + Z (size n×p)
+	/// n×p buffer (QR input — destroyed by retract)
 	pub np_mat: B::Matrix,
+	/// Householder factor buffer (blocksize × p)
+	pub qr_h: B::Matrix,
+	/// Aligned scratch bytes (shared across decompositions)
+	pub decomp_scratch: <B::Matrix as DecompositionOps<T>>::ScratchBuffer,
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> Default for StiefelWorkspace<T, B> {
@@ -99,12 +108,14 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for StiefelWorkspace<T, B> {
 			pp_mat: B::Matrix::zeros(0, 0),
 			pp_mat2: B::Matrix::zeros(0, 0),
 			np_mat: B::Matrix::zeros(0, 0),
+			qr_h: B::Matrix::zeros(0, 0),
+			decomp_scratch: B::Matrix::create_qr_scratch(0, 0),
 		}
 	}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Manifold trait implementation
+//  Manifold impl
 // ════════════════════════════════════════════════════════════════════════════
 
 impl<T, B> Manifold<T> for Stiefel<T, B>
@@ -118,10 +129,13 @@ where
 
 	#[inline]
 	fn create_workspace(&self, _proto_point: &Self::Point) -> Self::Workspace {
+		let (bs, _) = B::Matrix::qr_h_factor_shape(self.n, self.p);
 		Self::Workspace {
 			pp_mat: B::Matrix::zeros(self.p, self.p),
 			pp_mat2: B::Matrix::zeros(self.p, self.p),
 			np_mat: B::Matrix::zeros(self.n, self.p),
+			qr_h: B::Matrix::zeros(bs, self.p),
+			decomp_scratch: B::Matrix::create_qr_scratch(self.n, self.p),
 		}
 	}
 
@@ -135,16 +149,12 @@ where
 		self.n * self.p - self.p * (self.p + 1) / 2
 	}
 
-	#[inline]
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
 		if point.nrows() != self.n || point.ncols() != self.p {
 			return false;
 		}
-
-		// Check X^T X = I_p
 		let mut xtx = B::Matrix::zeros(self.p, self.p);
 		xtx.gemm_at(T::one(), point.as_view(), point.as_view(), T::zero());
-
 		let mut err_sq = T::zero();
 		for i in 0..self.p {
 			for j in 0..self.p {
@@ -155,7 +165,6 @@ where
 		<T as Float>::sqrt(err_sq) <= tol
 	}
 
-	#[inline]
 	fn is_vector_in_tangent_space(
 		&self,
 		point: &Self::Point,
@@ -165,11 +174,8 @@ where
 		if vector.nrows() != self.n || vector.ncols() != self.p {
 			return false;
 		}
-
-		// Skew-symmetry constraint: X^T Z + Z^T X = 0
 		let mut xtz = B::Matrix::zeros(self.p, self.p);
 		xtz.gemm_at(T::one(), point.as_view(), vector.as_view(), T::zero());
-
 		let mut skew_sq = T::zero();
 		for i in 0..self.p {
 			for j in 0..self.p {
@@ -180,33 +186,19 @@ where
 		<T as Float>::sqrt(skew_sq) <= tol
 	}
 
-	#[inline]
+	/// Closest-point projection via SVD: X = UΣVᵀ → UVᵀ.
+	///
+	/// Cold path — allocates temporary SVD buffers.
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		// Use SVD for exact closest-point projection: X = UΣV^T → UV^T
-		let svd = point.svd();
-		if let (Some(u), Some(vt)) = (svd.u, svd.vt) {
-			let u_trunc = if u.ncols() > self.p {
-				u.columns(0, self.p)
-			} else {
-				u.as_view()
-			};
-			let vt_trunc = if vt.nrows() > self.p {
-				vt.rows(0, self.p)
-			} else {
-				vt.as_view()
-			};
-			result.gemm(T::one(), u_trunc, vt_trunc, T::zero());
-		} else {
-			// Fallback to QR
-			let qr = point.qr();
-			let q = qr.q();
-			if q.ncols() > self.p {
-				let q_trunc = q.columns_to_owned(0, self.p);
-				result.copy_from(&q_trunc);
-			} else {
-				result.copy_from(&q);
-			}
-		}
+		let k = self.p;
+		let mut u = B::Matrix::zeros(self.n, k);
+		let mut s = B::Vector::zeros(k);
+		let mut vt = B::Matrix::zeros(k, k);
+
+		point.svd(&mut u, &mut s, &mut vt);
+
+		// result = U Vᵀ  (polar factor, ignores Σ)
+		result.gemm(T::one(), u.as_view(), vt.as_view(), T::zero());
 	}
 
 	#[inline]
@@ -217,16 +209,10 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// Stiefel projection: P_X(Z) = Z - X · sym(X^T Z)
-
-		// 1. ws.pp_mat = X^T Z
+		// P_X(Z) = Z − X sym(XᵀZ)
 		ws.pp_mat
 			.gemm_at(T::one(), point.as_view(), vector.as_view(), T::zero());
-
-		// 2. sym(X^T Z) in-place
 		Self::symmetrize_in_place(&mut ws.pp_mat, self.p);
-
-		// 3. result = Z - X * ws.pp_mat
 		result.copy_from(vector);
 		result.gemm(-T::one(), point.as_view(), ws.pp_mat.as_view(), T::one());
 	}
@@ -239,7 +225,6 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) -> T {
-		// Canonical metric: tr(U^T V) = ⟨U, V⟩_F
 		let mut inner = T::zero();
 		for j in 0..self.p {
 			inner = inner + MatrixView::column(u, j).dot(&MatrixView::column(v, j));
@@ -257,6 +242,7 @@ where
 		<T as Float>::sqrt(self.inner_product(point, vector, vector, ws))
 	}
 
+	/// QR retraction: R_X(Z) = qf(X + Z).  **Zero allocation.**
 	#[inline]
 	fn retract(
 		&self,
@@ -265,29 +251,16 @@ where
 		result: &mut Self::Point,
 		ws: &mut Self::Workspace,
 	) {
-		// QR retraction: R_X(Z) = qf(X + Z)
+		// 1. np_mat = X + Z
 		ws.np_mat.copy_from(point);
 		ws.np_mat.add_assign(tangent);
 
-		let qr = ws.np_mat.qr();
-		let q = qr.q();
+		// 2. QR: np_mat destroyed → result = Q (n×p), pp_mat = R (p×p)
+		ws.np_mat
+			.qr(result, &mut ws.pp_mat, &mut ws.qr_h, &mut ws.decomp_scratch);
 
-		if q.ncols() > self.p {
-			let q_trunc = q.columns_to_owned(0, self.p);
-			result.copy_from(&q_trunc);
-		} else {
-			result.copy_from(&q);
-		}
-
-		// Fix signs to ensure continuity (R has positive diagonal)
-		let r = qr.r();
-		for j in 0..self.p.min(r.ncols()) {
-			if r.get(j, j) < T::zero() {
-				for i in 0..self.n {
-					*result.get_mut(i, j) = T::zero() - result.get(i, j);
-				}
-			}
-		}
+		// 3. Fix sign ambiguity
+		fix_qr_signs::<T, B>(result, &ws.pp_mat, self.n, self.p);
 	}
 
 	#[inline]
@@ -298,13 +271,14 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// Approximate inverse retraction: log_X(Y) ≈ P_X(Y - X)
+		// log_X(Y) ≈ P_X(Y − X)
 		result.copy_from(other);
 		result.sub_assign(point);
 
 		ws.pp_mat
 			.gemm_at(T::one(), point.as_view(), result.as_view(), T::zero());
 		Self::symmetrize_in_place(&mut ws.pp_mat, self.p);
+		result.gemm(-T::one(), point.as_view(), ws.pp_mat.as_view(), T::one());
 	}
 
 	#[inline]
@@ -315,7 +289,6 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// grad f = P_X(∇f) = ∇f - X sym(X^T ∇f)
 		self.project_tangent(point, euclidean_grad, result, ws);
 	}
 
@@ -329,24 +302,15 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// Weingarten Map for Stiefel:
-		// Hess f(X)[ξ] = P_X(∇²f[ξ]) - ξ · sym(X^T ∇f)
-
-		// 1. result = P_X(∇²f[ξ])
+		// Hess f(X)[ξ] = P_X(∇²f[ξ]) − ξ sym(Xᵀ∇f)
 		self.project_tangent(point, euclidean_hvp, result, ws);
-
-		// 2. ws.pp_mat = X^T ∇f
 		ws.pp_mat.gemm_at(
 			T::one(),
 			point.as_view(),
 			euclidean_grad.as_view(),
 			T::zero(),
 		);
-
-		// 3. Symmetrize in place: ws.pp_mat = sym(X^T ∇f)
 		Self::symmetrize_in_place(&mut ws.pp_mat, self.p);
-
-		// 4. result -= ξ * ws.pp_mat
 		result.gemm(
 			-T::one(),
 			tangent_vector.as_view(),
@@ -364,10 +328,10 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// Projection-based vector transport: τ_{X→Y}(V) = P_Y(V)
 		self.project_tangent(to, vector, result, ws);
 	}
 
+	/// Cold path — allocates temporary QR buffers.
 	fn random_point(&self, result: &mut Self::Point) {
 		let mut rng = rand::rng();
 		let normal = StandardNormal;
@@ -379,15 +343,13 @@ where
 			}
 		}
 
-		let qr = a.qr();
-		let q = qr.q();
+		let (bs, k) = B::Matrix::qr_h_factor_shape(self.n, self.p);
+		let mut r = B::Matrix::zeros(self.p, self.p);
+		let mut h = B::Matrix::zeros(bs, k);
+		let mut scratch = B::Matrix::create_qr_scratch(self.n, self.p);
 
-		if q.ncols() > self.p {
-			let q_trunc = q.columns_to_owned(0, self.p);
-			result.copy_from(&q_trunc);
-		} else {
-			result.copy_from(&q);
-		}
+		a.qr(result, &mut r, &mut h, &mut scratch);
+		fix_qr_signs::<T, B>(result, &r, self.n, self.p);
 	}
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) {
@@ -400,8 +362,8 @@ where
 			}
 		}
 
-		let mut ws = self.create_workspace(point);
 		let z = result.clone();
+		let mut ws = self.create_workspace(point);
 		self.project_tangent(point, &z, result, &mut ws);
 
 		let norm = self.norm(point, result, &mut ws);
@@ -412,8 +374,6 @@ where
 
 	#[inline]
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> T {
-		// Approximation using Frobenius distance: ||X - Y||_F
-		// (Exact Stiefel distance requires complex matrix logarithms)
 		let mut diff_sq = T::zero();
 		for i in 0..self.n {
 			for j in 0..self.p {
@@ -433,10 +393,6 @@ where
 	fn is_flat(&self) -> bool {
 		false
 	}
-
-	// ════════════════════════════════════════════════════════════════════════
-	// Matrix ops
-	// ════════════════════════════════════════════════════════════════════════
 
 	#[inline]
 	fn scale_tangent(&self, scalar: T, v: &mut Self::TangentVector) {
