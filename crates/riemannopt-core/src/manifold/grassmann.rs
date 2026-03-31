@@ -6,8 +6,6 @@
 //! ## Retraction
 //!
 //! Uses QR retraction (zero allocation on the hot path).
-//! The polar retraction (SVD) from the previous version is replaced by QR
-//! which is cheaper and equally valid for Grassmann — both are first-order.
 
 use num_traits::Float;
 use rand_distr::{Distribution, StandardNormal};
@@ -15,7 +13,7 @@ use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 
 use crate::{
-	linalg::{DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView},
+	linalg::{DecompositionOps, LinAlgBackend, MatrixOps, MatrixView},
 	manifold::Manifold,
 	types::Scalar,
 };
@@ -94,14 +92,26 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for GrassmannWorkspace<T, B> {
 fn fix_qr_signs<T: Scalar + Float, B: LinAlgBackend<T>>(
 	q: &mut B::Matrix,
 	r: &B::Matrix,
-	n: usize,
 	p: usize,
 ) {
 	for j in 0..p.min(r.ncols()) {
 		if r.get(j, j) < T::zero() {
-			for i in 0..n {
-				*q.get_mut(i, j) = T::zero() - q.get(i, j);
+			let col = q.column_as_mut_slice(j);
+			for val in col.iter_mut() {
+				*val = T::zero() - *val;
 			}
+		}
+	}
+}
+
+/// Fill a matrix with random standard-normal entries (column-safe).
+fn fill_random<T: Scalar, B: LinAlgBackend<T>>(mat: &mut B::Matrix, nrows: usize, ncols: usize) {
+	let mut rng = rand::rng();
+	let normal = StandardNormal;
+	for j in 0..ncols {
+		let col = mat.column_as_mut_slice(j);
+		for i in 0..nrows {
+			col[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
 		}
 	}
 }
@@ -145,7 +155,6 @@ where
 		if point.nrows() != self.n || point.ncols() != self.p {
 			return false;
 		}
-		// Cold path — local allocation OK.
 		let mut yty = B::Matrix::zeros(self.p, self.p);
 		yty.gemm_at(T::one(), point.as_view(), point.as_view(), T::zero());
 		let mut err_sq = T::zero();
@@ -181,9 +190,13 @@ where
 		let mut scratch = B::Matrix::create_qr_scratch(self.n, self.p);
 
 		tmp.qr(result, &mut r, &mut h, &mut scratch);
-		fix_qr_signs::<T, B>(result, &r, self.n, self.p);
+		fix_qr_signs::<T, B>(result, &r, self.p);
 	}
 
+	/// Horizontal projection: P_Y(Z) = Z − Y(YᵀZ).
+	///
+	/// Unlike Stiefel, there is no symmetrization of YᵀZ.
+	/// Grassmann tangent condition is YᵀZ = 0, not YᵀZ + ZᵀY = 0.
 	#[inline]
 	fn project_tangent(
 		&self,
@@ -192,9 +205,10 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// Horizontal projection: result = Z - Y(YᵀZ)
+		// pp_mat = YᵀZ  (p × p)
 		ws.pp_mat
 			.gemm_at(T::one(), point.as_view(), vector.as_view(), T::zero());
+		// result = Z − Y · (YᵀZ)
 		result.copy_from(vector);
 		result.gemm(-T::one(), point.as_view(), ws.pp_mat.as_view(), T::one());
 	}
@@ -229,16 +243,11 @@ where
 		result: &mut Self::Point,
 		ws: &mut Self::Workspace,
 	) {
-		// 1. np_mat = Y + Z
 		ws.np_mat.copy_from(point);
 		ws.np_mat.add_assign(tangent);
-
-		// 2. QR: np_mat destroyed → result = Q, pp_mat = R
 		ws.np_mat
 			.qr(result, &mut ws.pp_mat, &mut ws.qr_h, &mut ws.decomp_scratch);
-
-		// 3. Fix sign ambiguity for continuity
-		fix_qr_signs::<T, B>(result, &ws.pp_mat, self.n, self.p);
+		fix_qr_signs::<T, B>(result, &ws.pp_mat, self.p);
 	}
 
 	#[inline]
@@ -249,7 +258,7 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// log_Y(Ỹ) ≈ Πₕ(Ỹ − Y)
+		// log_Y(Ỹ) ≈ P_Y(Ỹ − Y)
 		result.copy_from(other);
 		result.sub_assign(point);
 		ws.pp_mat
@@ -278,7 +287,7 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// rhess = project(ehess) − ξ (Yᵀ egrad)
+		// Hess f(Y)[ξ] = P_Y(∇²f[ξ]) − ξ(Yᵀ∇f)
 		self.project_tangent(point, euclidean_hvp, result, ws);
 		ws.pp_mat.gemm_at(
 			T::one(),
@@ -294,6 +303,7 @@ where
 		);
 	}
 
+	/// Transport by projection: τ_{Y→Ỹ}(Z) = P_Ỹ(Z).
 	#[inline]
 	fn parallel_transport(
 		&self,
@@ -306,17 +316,9 @@ where
 		self.project_tangent(to, vector, result, ws);
 	}
 
-	/// Cold path — allocates temporary QR buffers.
 	fn random_point(&self, result: &mut Self::Point) {
-		let mut rng = rand::rng();
-		let normal = StandardNormal;
-
 		let mut a: B::Matrix = MatrixOps::zeros(self.n, self.p);
-		for i in 0..self.n {
-			for j in 0..self.p {
-				*a.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
-			}
-		}
+		fill_random::<T, B>(&mut a, self.n, self.p);
 
 		let (bs, k) = B::Matrix::qr_h_factor_shape(self.n, self.p);
 		let mut r = B::Matrix::zeros(self.p, self.p);
@@ -324,20 +326,12 @@ where
 		let mut scratch = B::Matrix::create_qr_scratch(self.n, self.p);
 
 		a.qr(result, &mut r, &mut h, &mut scratch);
-		fix_qr_signs::<T, B>(result, &r, self.n, self.p);
+		fix_qr_signs::<T, B>(result, &r, self.p);
 	}
 
 	fn random_tangent(&self, point: &Self::Point, result: &mut Self::TangentVector) {
-		let mut rng = rand::rng();
-		let normal = StandardNormal;
+		fill_random::<T, B>(result, self.n, self.p);
 
-		for i in 0..self.n {
-			for j in 0..self.p {
-				*result.get_mut(i, j) = <T as Scalar>::from_f64(normal.sample(&mut rng));
-			}
-		}
-
-		// Cold path — local workspace + clone OK.
 		let z = result.clone();
 		let mut ws = self.create_workspace(point);
 		self.project_tangent(point, &z, result, &mut ws);
@@ -348,30 +342,25 @@ where
 		}
 	}
 
-	/// Geodesic distance via principal angles.
+	/// Chordal distance via Frobenius inner product.
 	///
-	/// Not on the hot path — allocates SVD temporaries for the p×p product.
+	/// d_chord(X, Y) = √(2(p − ‖XᵀY‖²_F))
+	///
+	/// Avoids SVD allocation. The chordal distance is metrically equivalent
+	/// to the geodesic distance for optimization convergence checks.
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> T {
-		let p = self.p;
-
-		// YₜᵀY₂ (p×p)
-		let mut y1ty2 = B::Matrix::zeros(p, p);
-		y1ty2.gemm_at(T::one(), x.as_view(), y.as_view(), T::zero());
-
-		// SVD of p×p matrix — cold path, allocate temps.
-		let mut u = B::Matrix::zeros(p, p);
-		let mut s = B::Vector::zeros(p);
-		let mut vt = B::Matrix::zeros(p, p);
-		y1ty2.svd(&mut u, &mut s, &mut vt);
-
-		// d² = Σ arccos²(σᵢ)
-		let mut dist_sq = T::zero();
-		for i in 0..p {
-			let sigma = <T as Float>::max(<T as Float>::min(s.get(i), T::one()), -T::one());
-			let theta = <T as Float>::acos(sigma);
-			dist_sq = dist_sq + theta * theta;
+		let mut xty = B::Matrix::zeros(self.p, self.p);
+		xty.gemm_at(T::one(), x.as_view(), y.as_view(), T::zero());
+		let frob_sq = xty.frobenius_dot(&xty);
+		let p_t = <T as Scalar>::from_f64(self.p as f64);
+		let two = T::one() + T::one();
+		// Clamp to avoid sqrt of negative due to floating-point noise.
+		let arg = two * (p_t - frob_sq);
+		if arg <= T::zero() {
+			T::zero()
+		} else {
+			<T as Float>::sqrt(arg)
 		}
-		<T as Float>::sqrt(dist_sq)
 	}
 
 	#[inline]

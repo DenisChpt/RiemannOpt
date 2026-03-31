@@ -112,7 +112,6 @@ impl<T: Scalar> LBFGS<T> {
 		manifold.copy_tangent(direction, gradient);
 
 		// ── First loop (backward) ────────────────────────────────────────
-		// q = q − α_i · y_i   →   axpy_tangent(-α_i, &y_i, &mut q)
 		for i in (0..m).rev() {
 			let entry = &history[i];
 			let s_dot_q = manifold.inner_product(current_point, &entry.s, direction, manifold_ws);
@@ -121,7 +120,6 @@ impl<T: Scalar> LBFGS<T> {
 		}
 
 		// ── Initial Hessian scaling ──────────────────────────────────────
-		// r = γ · q   where γ = s^T y / y^T y
 		let last = &history[m - 1];
 		let s_dot_y = manifold.inner_product(current_point, &last.s, &last.y, manifold_ws);
 		let y_dot_y = manifold.inner_product(current_point, &last.y, &last.y, manifold_ws);
@@ -134,7 +132,6 @@ impl<T: Scalar> LBFGS<T> {
 		manifold.scale_tangent(gamma, direction);
 
 		// ── Second loop (forward) ────────────────────────────────────────
-		// r = r + (α_i − β) · s_i   →   axpy_tangent(coeff, &s_i, &mut r)
 		for i in 0..m {
 			let entry = &history[i];
 			let y_dot_r = manifold.inner_product(current_point, &entry.y, direction, manifold_ws);
@@ -221,8 +218,6 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iter < max_iter {
 			// -- A. Compute Direction (two-loop recursion) --
-			// Note: compute_direction now only needs one scratch buffer
-			// since axpy_tangent eliminated the second one.
 			self.compute_direction(
 				manifold,
 				&current_point,
@@ -248,15 +243,20 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 			};
 
 			// -- B. Line Search (Armijo Backtracking) --
-			// We scale a scratch copy of direction so that the original is
-			// preserved exactly (no cumulative scale/unscale drift).
+			// Scale direction in-place rather than copy+scale each trial.
+			// After the loop, direction = alpha_final · d_original.
 			let mut alpha = self.config.initial_step_size;
 			let mut ls_success = false;
 
+			manifold.scale_tangent(alpha, &mut direction);
+
 			while alpha > T::MIN_STEP_SIZE {
-				manifold.copy_tangent(&mut scratch, &direction);
-				manifold.scale_tangent(alpha, &mut scratch);
-				manifold.retract(&current_point, &scratch, &mut candidate_point, &mut man_ws);
+				manifold.retract(
+					&current_point,
+					&direction,
+					&mut candidate_point,
+					&mut man_ws,
+				);
 
 				let candidate_cost = problem.cost(&candidate_point, &mut prob_ws, &mut man_ws);
 				fn_evals += 1;
@@ -266,6 +266,9 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 					ls_success = true;
 					break;
 				}
+
+				// Shrink direction in-place: direction *= ρ
+				manifold.scale_tangent(self.config.backtrack_rho, &mut direction);
 				alpha = alpha * self.config.backtrack_rho;
 			}
 
@@ -276,7 +279,6 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 
 			// -- C. Compute s_k = alpha · direction (at current_point) --
 			manifold.copy_tangent(&mut s_k, &direction);
-			manifold.scale_tangent(alpha, &mut s_k);
 
 			// -- D. Transport history vectors to candidate_point --
 			// Uses swap to move the transported result into the entry
@@ -321,7 +323,6 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 			);
 
 			// -- E. Move to candidate_point --
-			// O(1) pointer swap instead of O(n·p) memcpy.
 			std::mem::swap(&mut current_point, &mut candidate_point);
 
 			// -- F. Compute New Gradient --
@@ -363,15 +364,12 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 						let rho = T::one() / normalized_s_dot_y;
 
 						if history.len() >= self.config.memory_size {
-							// Recycle the oldest entry: swap its buffers
-							// with s_k/y_k instead of allocating new ones.
 							let mut old = history.pop_front().unwrap();
 							std::mem::swap(&mut old.s, &mut s_k);
 							std::mem::swap(&mut old.y, &mut y_k);
 							old.rho = rho;
 							history.push_back(old);
 						} else {
-							// History still growing — must allocate.
 							history.push_back(LBFGSHistoryEntry {
 								s: s_k.clone(),
 								y: y_k.clone(),
@@ -387,6 +385,10 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 			// -- H. Stopping Criteria --
 			if grad_norm <= grad_tol {
 				termination = TerminationReason::Converged;
+			} else if let Some(val_tol) = stopping_criterion.function_tolerance {
+				if <T as num_traits::Float>::abs(current_cost - _new_cost) < val_tol {
+					termination = TerminationReason::Converged;
+				}
 			} else if let Some(max_time) = stopping_criterion.max_time {
 				if start_time.elapsed() >= max_time {
 					termination = TerminationReason::MaxTime;
