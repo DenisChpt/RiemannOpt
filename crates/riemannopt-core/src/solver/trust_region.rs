@@ -372,7 +372,7 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 
 			// -- F. Update Trust Region Radius --
 			if rho < self.config.decrease_threshold {
-				trust_radius = trust_radius * self.config.decrease_factor;
+				trust_radius *= self.config.decrease_factor;
 			} else if rho > self.config.increase_threshold && boundary_hit {
 				trust_radius =
 					<T as Float>::min(trust_radius * self.config.increase_factor, max_radius);

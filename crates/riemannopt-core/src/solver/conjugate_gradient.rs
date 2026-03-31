@@ -448,7 +448,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 
 				// Shrink in-place
 				manifold.scale_tangent(self.config.contraction_factor, &mut scratch);
-				alpha = alpha * self.config.contraction_factor;
+				alpha *= self.config.contraction_factor;
 			}
 
 			// If no decrease found at all, reject step.

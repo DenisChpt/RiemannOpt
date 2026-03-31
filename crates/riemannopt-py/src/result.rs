@@ -63,7 +63,7 @@ impl PySolverResult {
 #[pymethods]
 impl PySolverResult {
 	#[getter]
-	fn point<'py>(&self, py: Python<'py>) -> Py<PyAny> {
+	fn point(&self, py: Python<'_>) -> Py<PyAny> {
 		match &self.point {
 			PointData::Vector(v) => col_to_numpy_1d(py, v).into_any().unbind(),
 			PointData::Matrix(m) => mat_to_numpy_2d(py, m).into_any().unbind(),

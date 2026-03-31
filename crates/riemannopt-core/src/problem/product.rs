@@ -125,9 +125,9 @@ where
 			let mut sq = T::zero();
 			for i in 0..3 {
 				let residual = ws.rp.get(i, j) + t.get(i) - self.targets.get(i, j);
-				sq = sq + residual * residual;
+				sq += residual * residual;
 			}
-			cost = cost + w * sq;
+			cost += w * sq;
 		}
 		half * cost
 	}
@@ -204,9 +204,9 @@ where
 			for i in 0..3 {
 				let res = ws.rp.get(i, j) + t.get(i) - self.targets.get(i, j);
 				*ws.residuals.get_mut(i, j) = w * res;
-				sq = sq + res * res;
+				sq += res * res;
 			}
-			cost = cost + w * sq;
+			cost += w * sq;
 		}
 
 		ws.egrad_r.gemm_bt(

@@ -70,7 +70,7 @@ impl DynManifold {
 //  Macro to reduce boilerplate for delegating to concrete manifolds
 // ════════════════════════════════════════════════════════════════════════
 
-/// Dispatch on DynManifold for vector-point manifolds.
+/// Dispatch on `DynManifold` for vector-point manifolds.
 /// Calls $body with $m bound to the concrete manifold.
 
 // ════════════════════════════════════════════════════════════════════════
@@ -94,8 +94,8 @@ impl PyManifold {
 		self.inner.name()
 	}
 
-	/// Generate a random point on the manifold (returned as NumPy array).
-	fn random_point<'py>(&self, py: Python<'py>) -> Py<PyAny> {
+	/// Generate a random point on the manifold (returned as `NumPy` array).
+	fn random_point(&self, py: Python<'_>) -> Py<PyAny> {
 		match &self.inner {
 			DynManifold::Euclidean(m) => {
 				let mut p = m.allocate_point();

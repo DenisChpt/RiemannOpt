@@ -269,7 +269,7 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 
 				// Shrink direction in-place: direction *= ρ
 				manifold.scale_tangent(self.config.backtrack_rho, &mut direction);
-				alpha = alpha * self.config.backtrack_rho;
+				alpha *= self.config.backtrack_rho;
 			}
 
 			if !ls_success {

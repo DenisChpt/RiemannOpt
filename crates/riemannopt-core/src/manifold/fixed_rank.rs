@@ -381,7 +381,7 @@ where
 		let mut dist_sq = T::zero();
 		for i in 0..self.k {
 			let d = x.s.get(i) - y.s.get(i);
-			dist_sq = dist_sq + d * d;
+			dist_sq += d * d;
 		}
 		Float::sqrt(dist_sq)
 	}

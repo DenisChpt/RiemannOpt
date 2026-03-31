@@ -663,7 +663,7 @@ where
 		let mut loss = T::zero();
 		for i in 0..m {
 			let zi = self.y.get(i) * ws.margins.get(i);
-			loss = loss + softplus(-zi);
+			loss += softplus(-zi);
 		}
 		self.inv_m * loss + half * self.lambda * point.norm_squared()
 	}
@@ -706,7 +706,7 @@ where
 		for i in 0..m {
 			let yi = self.y.get(i);
 			let zi = yi * ws.margins.get(i);
-			loss = loss + softplus(-zi);
+			loss += softplus(-zi);
 			*ws.weights.get_mut(i) = -yi * sigmoid(-zi);
 		}
 		let cost = self.inv_m * loss + half * self.lambda * point.norm_squared();

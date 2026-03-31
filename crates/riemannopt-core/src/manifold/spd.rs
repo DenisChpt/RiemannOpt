@@ -185,7 +185,7 @@ where
 		for i in 0..self.n {
 			for j in 0..self.n {
 				let diff = point.get(i, j) - point.get(j, i);
-				sym_err = sym_err + diff * diff;
+				sym_err += diff * diff;
 			}
 		}
 		if sym_err.sqrt() > tol {
@@ -219,7 +219,7 @@ where
 		for i in 0..self.n {
 			for j in 0..self.n {
 				let diff = vector.get(i, j) - vector.get(j, i);
-				sym_err = sym_err + diff * diff;
+				sym_err += diff * diff;
 			}
 		}
 		sym_err.sqrt() <= tol
@@ -443,7 +443,7 @@ where
 		for i in 0..self.n {
 			for j in 0..self.n {
 				let diff = x.get(i, j) - y.get(i, j);
-				diff_sq = diff_sq + diff * diff;
+				diff_sq += diff * diff;
 			}
 		}
 		diff_sq.sqrt()

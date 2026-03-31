@@ -272,9 +272,9 @@ where
 		let r_slice = ws.residual.as_slice();
 		for k in 0..n * m {
 			let rk = r_slice[k];
-			frobenius_sq = frobenius_sq + rk * rk;
+			frobenius_sq += rk * rk;
 			if self.mu > T::zero() {
-				l1_cost = l1_cost + huber(rk, self.huber_delta);
+				l1_cost += huber(rk, self.huber_delta);
 			}
 		}
 
@@ -312,9 +312,9 @@ where
 		let r_slice = ws.residual.as_slice();
 		for k in 0..n * m {
 			let rk = r_slice[k];
-			frobenius_sq = frobenius_sq + rk * rk;
+			frobenius_sq += rk * rk;
 			if self.mu > T::zero() {
-				l1_cost = l1_cost + huber(rk, self.huber_delta);
+				l1_cost += huber(rk, self.huber_delta);
 			}
 		}
 		let cost = half * frobenius_sq + self.mu * l1_cost;

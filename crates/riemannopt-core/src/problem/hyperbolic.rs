@@ -47,7 +47,7 @@ impl<T: Scalar, B: LinAlgBackend<T>> PoincareEmbedding<T, B> {
 		let mut diff_sq = T::zero();
 		for i in 0..n {
 			let d = u.get(i) - v.get(i);
-			diff_sq = diff_sq + d * d;
+			diff_sq += d * d;
 		}
 		let u_sq = u.norm_squared();
 		let v_sq = v.norm_squared();
@@ -70,7 +70,7 @@ impl<T: Scalar, B: LinAlgBackend<T>> PoincareEmbedding<T, B> {
 		let mut diff_sq = T::zero();
 		for i in 0..n {
 			let d = u.get(i) - v.get(i);
-			diff_sq = diff_sq + d * d;
+			diff_sq += d * d;
 		}
 
 		let denom = alpha_u * alpha_v;
@@ -139,13 +139,13 @@ where
 		let mut cost = T::zero();
 		for v in &self.positive_targets {
 			let d = self.poincare_distance(point, v);
-			cost = cost + d * d;
+			cost += d * d;
 		}
 		if self.alpha > T::zero() {
 			for v in &self.negative_targets {
 				let d = self.poincare_distance(point, v);
 				let d_sq = d * d;
-				cost = cost - self.alpha * ((-d_sq).exp() + T::EPSILON).ln();
+				cost -= self.alpha * ((-d_sq).exp() + T::EPSILON).ln();
 			}
 		}
 		cost
@@ -273,9 +273,9 @@ where
 		for (xi, &yi) in self.data.iter().zip(&self.labels) {
 			let mut score = T::zero();
 			for k in 0..n {
-				score = score + (xi.get(k) - point.get(k)) * self.normal.get(k);
+				score += (xi.get(k) - point.get(k)) * self.normal.get(k);
 			}
-			loss = loss + softplus(-yi * score);
+			loss += softplus(-yi * score);
 		}
 		self.inv_m * loss + half * self.lambda * point.norm_squared()
 	}
@@ -293,7 +293,7 @@ where
 		for (xi, &yi) in self.data.iter().zip(&self.labels) {
 			let mut score = T::zero();
 			for k in 0..n {
-				score = score + (xi.get(k) - point.get(k)) * self.normal.get(k);
+				score += (xi.get(k) - point.get(k)) * self.normal.get(k);
 			}
 			let weight = -yi * sigmoid(-yi * score);
 			ws.egrad.axpy(self.inv_m * weight, &self.normal, T::one());

@@ -1,4 +1,4 @@
-//! NumPy <-> faer zero-copy bridge.
+//! `NumPy` <-> faer zero-copy bridge.
 //!
 //! Two copies per `solve()` call: input (numpy -> faer) and output (faer -> numpy).
 //! The hot loop runs entirely in Rust with no Python objects.
@@ -15,7 +15,7 @@ pub type B = riemannopt_core::linalg::DefaultBackend;
 pub type Vec64 = <B as riemannopt_core::linalg::LinAlgBackend<T>>::Vector;
 pub type Mat64 = <B as riemannopt_core::linalg::LinAlgBackend<T>>::Matrix;
 
-/// Copy a 1D NumPy array into a faer Col<f64>.
+/// Copy a 1D `NumPy` array into a faer Col<f64>.
 pub fn numpy_1d_to_col(arr: PyReadonlyArray1<'_, f64>) -> Vec64 {
 	let slice = arr
 		.as_slice()
@@ -23,12 +23,12 @@ pub fn numpy_1d_to_col(arr: PyReadonlyArray1<'_, f64>) -> Vec64 {
 	Vec64::from_slice(slice)
 }
 
-/// Copy a faer Col<f64> into a new 1D NumPy array.
+/// Copy a faer Col<f64> into a new 1D `NumPy` array.
 pub fn col_to_numpy_1d<'py>(py: Python<'py>, col: &Vec64) -> Bound<'py, PyArray1<f64>> {
 	PyArray1::from_slice(py, col.as_slice())
 }
 
-/// Copy a 2D NumPy array into a faer Mat<f64>.
+/// Copy a 2D `NumPy` array into a faer Mat<f64>.
 ///
 /// Handles both C-contiguous (row-major) and F-contiguous (column-major) layouts.
 /// Falls back to element-wise copy for strided arrays.
@@ -52,7 +52,7 @@ pub fn numpy_2d_to_mat(arr: PyReadonlyArray2<'_, f64>) -> Mat64 {
 	Mat64::from_fn(nrows, ncols, |i, j| arr_ref[[i, j]])
 }
 
-/// Copy a faer Mat<f64> into a new 2D NumPy array (row-major / C order).
+/// Copy a faer Mat<f64> into a new 2D `NumPy` array (row-major / C order).
 pub fn mat_to_numpy_2d<'py>(py: Python<'py>, mat: &Mat64) -> Bound<'py, PyArray2<f64>> {
 	let nrows = mat.nrows();
 	let ncols = mat.ncols();

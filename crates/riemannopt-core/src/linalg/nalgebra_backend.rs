@@ -220,8 +220,8 @@ where
 		nalgebra::Matrix::component_div_assign(self, other);
 	}
 
-	fn map(&self, mut f: impl FnMut(T) -> T) -> Self {
-		nalgebra::Matrix::map(self, |x| f(x))
+	fn map(&self, f: impl FnMut(T) -> T) -> Self {
+		nalgebra::Matrix::map(self, f)
 	}
 }
 
@@ -261,7 +261,7 @@ where
 	fn norm(&self) -> T {
 		let mut sum = T::zero();
 		for v in nalgebra::Matrix::iter(self) {
-			sum = sum + *v * *v;
+			sum += *v * *v;
 		}
 		Float::sqrt(sum)
 	}
@@ -270,7 +270,7 @@ where
 		let n = nalgebra::Matrix::nrows(self).min(nalgebra::Matrix::ncols(self));
 		let mut t = T::zero();
 		for i in 0..n {
-			t = t + self[(i, i)];
+			t += self[(i, i)];
 		}
 		t
 	}
@@ -320,7 +320,7 @@ where
 	fn norm(&self) -> T {
 		let mut sum = T::zero();
 		for v in nalgebra::Matrix::iter(self) {
-			sum = sum + *v * *v;
+			sum += *v * *v;
 		}
 		Float::sqrt(sum)
 	}
@@ -329,7 +329,7 @@ where
 		let n = nalgebra::Matrix::nrows(self).min(nalgebra::Matrix::ncols(self));
 		let mut t = T::zero();
 		for i in 0..n {
-			t = t + self[(i, i)];
+			t += self[(i, i)];
 		}
 		t
 	}
@@ -365,8 +365,8 @@ where
 	}
 
 	#[inline]
-	fn from_fn(nrows: usize, ncols: usize, mut f: impl FnMut(usize, usize) -> T) -> Self {
-		DMatrix::from_fn(nrows, ncols, |i, j| f(i, j))
+	fn from_fn(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> T) -> Self {
+		DMatrix::from_fn(nrows, ncols, f)
 	}
 
 	#[inline]
@@ -580,9 +580,7 @@ where
 		(1, nrows.min(ncols))
 	}
 
-	fn create_qr_scratch(_nrows: usize, _ncols: usize) -> Self::ScratchBuffer {
-		()
-	}
+	fn create_qr_scratch(_nrows: usize, _ncols: usize) -> Self::ScratchBuffer {}
 
 	#[inline]
 	fn qr(
