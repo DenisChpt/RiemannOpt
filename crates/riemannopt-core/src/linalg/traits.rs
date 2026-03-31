@@ -94,9 +94,7 @@ pub trait VectorView<T: RealScalar>: Sized + Clone + Debug {
 	fn len(&self) -> usize;
 
 	/// Whether the vector is empty.
-	fn is_empty(&self) -> bool {
-		self.len() == 0
-	}
+	fn is_empty(&self) -> bool;
 
 	/// Get element at index `i`.
 	fn get(&self, i: usize) -> T;
@@ -105,14 +103,10 @@ pub trait VectorView<T: RealScalar>: Sized + Clone + Debug {
 	fn dot(&self, other: &Self) -> T;
 
 	/// Euclidean norm ‖self‖₂.
-	fn norm(&self) -> T {
-		Float::sqrt(self.norm_squared())
-	}
+	fn norm(&self) -> T;
 
 	/// Squared Euclidean norm ‖self‖₂².
-	fn norm_squared(&self) -> T {
-		self.dot(self)
-	}
+	fn norm_squared(&self) -> T;
 
 	/// Iterate over elements (by value).
 	fn iter(&self) -> impl Iterator<Item = T> + '_;
@@ -163,71 +157,37 @@ pub trait VectorOps<T: RealScalar>: VectorView<T> + Send + Sync {
 	fn scale_mut(&mut self, alpha: T);
 
 	/// self /= alpha.
-	fn div_scalar_mut(&mut self, alpha: T) {
-		if alpha != T::zero() {
-			self.scale_mut(T::one() / alpha);
-		}
-	}
+	fn div_scalar_mut(&mut self, alpha: T);
 
 	// ── Arithmetic (new allocation) ──────────────────────────────────
 
 	/// self + other.
-	fn add(&self, other: &Self) -> Self {
-		let mut result = self.clone();
-		result.add_assign(other);
-		result
-	}
+	fn add(&self, other: &Self) -> Self;
 
 	/// self - other.
-	fn sub(&self, other: &Self) -> Self {
-		let mut result = self.clone();
-		result.sub_assign(other);
-		result
-	}
+	fn sub(&self, other: &Self) -> Self;
 
 	/// -self.
-	fn neg(&self) -> Self {
-		let mut result = self.clone();
-		result.scale_mut(T::zero() - T::one());
-		result
-	}
+	fn neg(&self) -> Self;
 
 	/// Element-wise multiplication (Hadamard product).
-	fn component_mul(&self, other: &Self) -> Self {
-		Self::from_fn(self.len(), |i| self.get(i) * other.get(i))
-	}
+	fn component_mul(&self, other: &Self) -> Self;
 
 	// ── In-place mutations (cont.) ───────────────────────────────────
 
 	/// self += other.
-	fn add_assign(&mut self, other: &Self) {
-		self.axpy(T::one(), other, T::one());
-	}
+	fn add_assign(&mut self, other: &Self);
 
 	/// self -= other.
-	fn sub_assign(&mut self, other: &Self) {
-		self.axpy(T::zero() - T::one(), other, T::one());
-	}
+	fn sub_assign(&mut self, other: &Self);
 
 	// ── In-place element-wise ─────────────────────────────────────────
 
 	/// Element-wise multiply in-place (Hadamard): `self[i] *= other[i]`.
-	fn component_mul_assign(&mut self, other: &Self) {
-		let dst = self.as_mut_slice();
-		let src = other.as_slice();
-		for (d, &s) in dst.iter_mut().zip(src) {
-			*d = *d * s;
-		}
-	}
+	fn component_mul_assign(&mut self, other: &Self);
 
 	/// Element-wise divide in-place: `self[i] /= other[i]`.
-	fn component_div_assign(&mut self, other: &Self) {
-		let dst = self.as_mut_slice();
-		let src = other.as_slice();
-		for (d, &s) in dst.iter_mut().zip(src) {
-			*d = *d / s;
-		}
-	}
+	fn component_div_assign(&mut self, other: &Self);
 
 	/// Apply a function to each element in-place: `self[i] = f(self[i])`.
 	fn map_mut(&mut self, mut f: impl FnMut(T) -> T) {
@@ -273,31 +233,13 @@ pub trait MatrixView<T: RealScalar>: Sized + Clone + Debug {
 	fn trace(&self) -> T;
 
 	/// Dot product between column `j` of self and column `k` of other.
-	fn column_dot(&self, j: usize, other: &Self, k: usize) -> T {
-		let n = self.nrows();
-		let mut sum = T::zero();
-		for i in 0..n {
-			sum = sum + self.get(i, j) * other.get(i, k);
-		}
-		sum
-	}
+	fn column_dot(&self, j: usize, other: &Self, k: usize) -> T;
 
 	/// Frobenius inner product: ⟨A, B⟩_F = tr(Aᵀ B) = Σᵢⱼ Aᵢⱼ Bᵢⱼ.
 	///
 	/// Default implementation iterates element-wise. Backends should override
 	/// with SIMD-optimized kernels (e.g. faer `zip!`).
-	fn frobenius_dot(&self, other: &Self) -> T {
-		let (rows, cols) = (self.nrows(), self.ncols());
-		debug_assert_eq!((rows, cols), (other.nrows(), other.ncols()));
-		let mut sum = T::zero();
-		// Column-major iteration for cache friendliness
-		for j in 0..cols {
-			for i in 0..rows {
-				sum = sum + self.get(i, j) * other.get(i, j);
-			}
-		}
-		sum
-	}
+	fn frobenius_dot(&self, other: &Self) -> T;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -336,9 +278,7 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	fn from_diagonal(diag: &Self::Col) -> Self;
 
 	/// Create a matrix from column-major slice data.
-	fn from_column_slice(nrows: usize, ncols: usize, data: &[T]) -> Self {
-		Self::from_fn(nrows, ncols, |i, j| data[j * nrows + i])
-	}
+	fn from_column_slice(nrows: usize, ncols: usize, data: &[T]) -> Self;
 
 	// ── View accessors (zero-allocation) ─────────────────────────────
 
@@ -357,33 +297,16 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	// ── Owned conversions (explicit allocation) ──────────────────────
 
 	/// Extract column `j` as an owned vector (allocates).
-	fn column_to_owned(&self, j: usize) -> Self::Col {
-		let v = self.column(j);
-		Self::Col::from_fn(VectorView::len(&v), |i| VectorView::get(&v, i))
-	}
+	fn column_to_owned(&self, j: usize) -> Self::Col;
 
 	/// Transpose into a new owned matrix (allocates).
 	fn transpose_to_owned(&self) -> Self;
 
 	/// Extract columns [start..start+count) as an owned matrix (allocates).
-	fn columns_to_owned(&self, start: usize, count: usize) -> Self {
-		let view = self.columns(start, count);
-		Self::from_fn(
-			MatrixView::nrows(&view),
-			MatrixView::ncols(&view),
-			|i, j| MatrixView::get(&view, i, j),
-		)
-	}
+	fn columns_to_owned(&self, start: usize, count: usize) -> Self;
 
 	/// Extract rows [start..start+count) as an owned matrix (allocates).
-	fn rows_to_owned(&self, start: usize, count: usize) -> Self {
-		let view = self.rows(start, count);
-		Self::from_fn(
-			MatrixView::nrows(&view),
-			MatrixView::ncols(&view),
-			|i, j| MatrixView::get(&view, i, j),
-		)
-	}
+	fn rows_to_owned(&self, start: usize, count: usize) -> Self;
 
 	// ── Element access ────────────────────────────────────────────────
 
@@ -402,11 +325,7 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	fn as_mut_slice(&mut self) -> &mut [T];
 
 	/// Get a mutable slice of column `j` data (column-major layout guarantees contiguity).
-	fn column_as_mut_slice(&mut self, j: usize) -> &mut [T] {
-		let nrows = self.nrows();
-		let data = self.as_mut_slice();
-		&mut data[j * nrows..(j + 1) * nrows]
-	}
+	fn column_as_mut_slice(&mut self, j: usize) -> &mut [T];
 
 	// ── In-place mutations ────────────────────────────────────────────
 
@@ -418,16 +337,7 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	///
 	/// Computes `self = source * diag(diag)` without allocating a diagonal matrix.
 	/// Each column j of the result is column j of source scaled by diag[j].
-	fn scale_columns(&mut self, source: &Self, diag: &Self::Col) {
-		let n = source.nrows();
-		let p = source.ncols();
-		for j in 0..p {
-			let s = diag.get(j);
-			for i in 0..n {
-				*self.get_mut(i, j) = source.get(i, j) * s;
-			}
-		}
-	}
+	fn scale_columns(&mut self, source: &Self, diag: &Self::Col);
 
 	// ── Arithmetic (new allocation) ───────────────────────────────────
 
@@ -449,32 +359,10 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	// ── In-place element-wise ─────────────────────────────────────────
 
 	/// self = alpha * x + beta * self  (element-wise AXPY for matrices).
-	fn mat_axpy(&mut self, alpha: T, x: &Self, beta: T) {
-		let dst = self.as_mut_slice();
-		let src = x.as_slice();
-		if beta == T::zero() {
-			for (d, &s) in dst.iter_mut().zip(src) {
-				*d = alpha * s;
-			}
-		} else if beta == T::one() {
-			for (d, &s) in dst.iter_mut().zip(src) {
-				*d = *d + alpha * s;
-			}
-		} else {
-			for (d, &s) in dst.iter_mut().zip(src) {
-				*d = beta * *d + alpha * s;
-			}
-		}
-	}
+	fn mat_axpy(&mut self, alpha: T, x: &Self, beta: T);
 
 	/// Element-wise multiply in-place (Hadamard): `self[i,j] *= other[i,j]`.
-	fn mat_component_mul_assign(&mut self, other: &Self) {
-		let dst = self.as_mut_slice();
-		let src = other.as_slice();
-		for (d, &s) in dst.iter_mut().zip(src) {
-			*d = *d * s;
-		}
-	}
+	fn mat_component_mul_assign(&mut self, other: &Self);
 
 	// ── In-place BLAS-like ────────────────────────────────────────────
 
@@ -508,40 +396,29 @@ pub trait MatrixOps<T: RealScalar>: MatrixView<T> + Send + Sync {
 	/// Computes y = self * x in-place.
 	///
 	/// This is the zero-allocation equivalent of `mat_vec`.
-	#[inline]
-	fn mat_vec_into(&self, x: &Self::Col, y: &mut Self::Col) {
-		self.mat_vec_axpy(T::one(), x, T::zero(), y);
-	}
+	fn mat_vec_into(&self, x: &Self::Col, y: &mut Self::Col);
 
 	/// Computes y = alpha * selfᵀ * x + beta * y in-place.
 	///
 	/// Zero-allocation transpose-matvec via `gemm_at` on column views.
-	fn mat_t_vec_axpy(&self, alpha: T, x: &Self::Col, beta: T, y: &mut Self::Col) {
-		let m = self.nrows();
-		let n = self.ncols();
-		debug_assert_eq!(x.as_slice().len(), m);
-		debug_assert_eq!(y.as_slice().len(), n);
-		// Wrap vectors as n×1 matrix views and delegate to gemm_at.
-		// C(n×1) = alpha * A(m×n)^T * B(m×1) + beta * C(n×1)
-		let x_view = Self::view_from_column_slice(m, 1, x.as_slice());
-		let mut c = Self::from_column_slice(n, 1, y.as_slice());
-		c.gemm_at(alpha, self.as_view(), x_view, beta);
-		y.as_mut_slice().copy_from_slice(c.as_slice());
-	}
+	fn mat_t_vec_axpy(&self, alpha: T, x: &Self::Col, beta: T, y: &mut Self::Col);
+
+	/// Accumulates the transpose of `src` into `self`: self[j,i] += alpha * src[i,j].
+	///
+	/// Zero-allocation. Default loops element-wise; backends override with
+	/// SIMD (e.g. faer `zip!` on transposed view).
+	fn add_transpose_of(&mut self, alpha: T, src: &Self);
+
+	/// Writes the transpose of `self` into `dst`: dst[j,i] = self[i,j].
+	///
+	/// Zero-allocation (dst must be pre-allocated with shape (ncols, nrows)).
+	/// Default loops element-wise; backends override with optimized kernels.
+	fn transpose_into(&self, dst: &mut Self);
 
 	/// Rank-1 update: self += alpha * x * yᵀ  (BLAS `ger`).
 	///
 	/// Zero-allocation via `gemm` on column views.
-	fn ger(&mut self, alpha: T, x: &Self::Col, y: &Self::Col) {
-		let m = self.nrows();
-		let n = self.ncols();
-		debug_assert_eq!(x.as_slice().len(), m);
-		debug_assert_eq!(y.as_slice().len(), n);
-		// self(m×n) += alpha * x(m×1) * y(1×n)
-		let x_view = Self::view_from_column_slice(m, 1, x.as_slice());
-		let y_view = Self::view_from_column_slice(1, n, y.as_slice());
-		self.gemm(alpha, x_view, y_view, T::one());
-	}
+	fn ger(&mut self, alpha: T, x: &Self::Col, y: &Self::Col);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

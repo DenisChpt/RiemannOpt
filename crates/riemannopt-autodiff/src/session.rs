@@ -295,11 +295,8 @@ impl<T: RealScalar, B: LinAlgBackend<T>> AdSession<T, B> {
 		let out = self.pool.alloc_vector(len);
 		{
 			let (src, dst) = self.pool.vec_ref_mut(a.0, out);
-			dst.copy_from(src);
+			dst.axpy(T::zero() - T::one(), src, T::zero());
 		}
-		self.pool
-			.vector_mut(VVar(out))
-			.scale_mut(T::zero() - T::one());
 		self.tape.push(Op::NegV { a: a.0, out });
 		VVar(out)
 	}
@@ -428,11 +425,8 @@ impl<T: RealScalar, B: LinAlgBackend<T>> AdSession<T, B> {
 		let out = self.pool.alloc_matrix(r, c);
 		{
 			let (src, dst) = self.pool.mat_ref_mut(a.0, out);
-			dst.copy_from(src);
+			dst.mat_axpy(T::zero() - T::one(), src, T::zero());
 		}
-		self.pool
-			.matrix_mut(MVar(out))
-			.scale_mut(T::zero() - T::one());
 		self.tape.push(Op::NegM { a: a.0, out });
 		MVar(out)
 	}
@@ -496,11 +490,7 @@ impl<T: RealScalar, B: LinAlgBackend<T>> AdSession<T, B> {
 		let out = self.pool.alloc_matrix(c, r);
 		{
 			let (src, dst) = self.pool.mat_ref_mut(a.0, out);
-			for j in 0..c {
-				for i in 0..r {
-					*MatrixOps::get_mut(dst, j, i) = MatrixView::get(src, i, j);
-				}
-			}
+			src.transpose_into(dst);
 		}
 		self.tape.push(Op::TransposeM { a: a.0, out });
 		MVar(out)

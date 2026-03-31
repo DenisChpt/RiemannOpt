@@ -139,11 +139,7 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut (),
 	) -> T {
-		let mut total = T::zero();
-		for j in 0..self.p {
-			total = total + u.column(j).dot(&v.column(j));
-		}
-		total
+		u.frobenius_dot(v)
 	}
 
 	#[inline]

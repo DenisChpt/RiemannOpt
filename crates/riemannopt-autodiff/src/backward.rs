@@ -52,76 +52,89 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 		// ── Scalar ← Scalar × Scalar ─────────────────────────────────
 		Op::AddS { a, b, out } => {
 			let go = grad.scalar(SVar(out));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go;
-			*grad.scalar_mut(SVar(b)) = *grad.scalar_mut(SVar(b)) + go;
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb += go;
 		}
 		Op::SubS { a, b, out } => {
 			let go = grad.scalar(SVar(out));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go;
-			*grad.scalar_mut(SVar(b)) = *grad.scalar_mut(SVar(b)) - go;
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb -= go;
 		}
 		Op::MulS { a, b, out } => {
 			let go = grad.scalar(SVar(out));
 			let va = pool.scalar(SVar(a));
 			let vb = pool.scalar(SVar(b));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go * vb;
-			*grad.scalar_mut(SVar(b)) = *grad.scalar_mut(SVar(b)) + go * va;
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * vb;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb += go * va;
 		}
 		Op::DivS { a, b, out } => {
 			let go = grad.scalar(SVar(out));
 			let va = pool.scalar(SVar(a));
 			let vb = pool.scalar(SVar(b));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go / vb;
-			*grad.scalar_mut(SVar(b)) = *grad.scalar_mut(SVar(b)) - go * va / (vb * vb);
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go / vb;
+			let gb = grad.scalar_mut(SVar(b));
+			*gb -= go * va / (vb * vb);
 		}
 		Op::PowS { base, exp, out } => {
 			let go = grad.scalar(SVar(out));
 			let vb = pool.scalar(SVar(base));
 			let ve = pool.scalar(SVar(exp));
-			// d/d(base) = exp * base^(exp-1)
-			*grad.scalar_mut(SVar(base)) =
-				*grad.scalar_mut(SVar(base)) + go * ve * vb.powf(ve - T::one());
-			// d/d(exp) = base^exp * ln(base)
-			*grad.scalar_mut(SVar(exp)) =
-				*grad.scalar_mut(SVar(exp)) + go * pool.scalar(SVar(out)) * vb.ln();
+			let out_val = pool.scalar(SVar(out));
+			let gb = grad.scalar_mut(SVar(base));
+			*gb += go * ve * vb.powf(ve - T::one());
+			let ge = grad.scalar_mut(SVar(exp));
+			*ge += go * out_val * vb.ln();
 		}
 
 		// ── Scalar ← Scalar (unary) ──────────────────────────────────
 		Op::NegS { a, out } => {
 			let go = grad.scalar(SVar(out));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) - go;
+			let ga = grad.scalar_mut(SVar(a));
+			*ga -= go;
 		}
 		Op::ExpS { a, out } => {
-			// d/da exp(a) = exp(a) = out_val
 			let go = grad.scalar(SVar(out));
 			let out_val = pool.scalar(SVar(out));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go * out_val;
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * out_val;
 		}
 		Op::LogS { a, out } => {
 			let go = grad.scalar(SVar(out));
 			let va = pool.scalar(SVar(a));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go / va;
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go / va;
 		}
 		Op::SqrtS { a, out } => {
 			let go = grad.scalar(SVar(out));
 			let out_val = pool.scalar(SVar(out));
 			let two = T::one() + T::one();
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go / (two * out_val);
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go / (two * out_val);
 		}
 		Op::SinS { a, out } => {
 			let go = grad.scalar(SVar(out));
 			let va = pool.scalar(SVar(a));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go * va.cos();
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * va.cos();
 		}
 		Op::CosS { a, out } => {
 			let go = grad.scalar(SVar(out));
 			let va = pool.scalar(SVar(a));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) - go * va.sin();
+			let ga = grad.scalar_mut(SVar(a));
+			*ga -= go * va.sin();
 		}
 		Op::AbsS { a, out } => {
 			let go = grad.scalar(SVar(out));
 			let va = pool.scalar(SVar(a));
-			*grad.scalar_mut(SVar(a)) = *grad.scalar_mut(SVar(a)) + go * va.signum();
+			let ga = grad.scalar_mut(SVar(a));
+			*ga += go * va.signum();
 		}
 
 		// ── Vector ← Vector × Vector ─────────────────────────────────
@@ -194,12 +207,11 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 
 		// ── Vector ← Scalar × Vector ─────────────────────────────────
 		Op::ScaleV { s, v, out } => {
-			// gs += dot(grad_out, val(v))
 			let go = grad.vector(VVar(out));
 			let val_v = pool.vector(VVar(v));
 			let dot_val = go.dot(val_v);
-			*grad.scalar_mut(SVar(s)) = *grad.scalar_mut(SVar(s)) + dot_val;
-			// gv += val(s) * grad_out
+			let gs = grad.scalar_mut(SVar(s));
+			*gs += dot_val;
 			let val_s = pool.scalar(SVar(s));
 			let (gv, go) = grad.vectors_mut_pair(v, out);
 			gv.axpy(val_s, go, T::one());
@@ -247,7 +259,7 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 			let gv = grad.vector_mut(VVar(v));
 			let s = gv.as_mut_slice();
 			for val in s.iter_mut() {
-				*val = *val + go;
+				*val += go;
 			}
 		}
 
@@ -303,32 +315,28 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 			ga.sub_assign(go);
 		}
 		Op::TransposeM { a, out } => {
-			// grad_a += grad_out^T
-			let go = grad.matrix(MVar(out));
-			let (go_r, go_c) = (go.nrows(), go.ncols());
-			// Copy go into a temp buffer to avoid aliasing issues
-			let mut go_copy = B::Matrix::zeros(go_r, go_c);
-			go_copy.copy_from(go);
-			let ga = grad.matrix_mut(MVar(a));
-			// go is go_r × go_c, ga is go_c × go_r
-			// ga[j,i] += go[i,j]
-			for j in 0..go_c {
-				for i in 0..go_r {
-					let val = MatrixView::get(&go_copy, i, j);
-					let cur = MatrixView::get(ga, j, i);
-					*MatrixOps::get_mut(ga, j, i) = cur + val;
-				}
+			let (ai, oi) = (a as usize, out as usize);
+			debug_assert_ne!(ai, oi);
+			if ai < oi {
+				let (left, right) = grad.matrices.split_at_mut(oi);
+				let go = &right[0];
+				let ga = &mut left[ai];
+				ga.add_transpose_of(T::one(), go);
+			} else {
+				let (left, right) = grad.matrices.split_at_mut(ai);
+				let go = &left[oi];
+				let ga = &mut right[0];
+				ga.add_transpose_of(T::one(), go);
 			}
 		}
 
 		// ── Matrix ← Scalar × Matrix ─────────────────────────────────
 		Op::ScaleM { s, m, out } => {
-			// gs += frob_dot(grad_out, val(m))
 			let go = grad.matrix(MVar(out));
 			let val_m = pool.matrix(MVar(m));
 			let dot_val = go.frobenius_dot(val_m);
-			*grad.scalar_mut(SVar(s)) = *grad.scalar_mut(SVar(s)) + dot_val;
-			// gm += val(s) * grad_out
+			let gs = grad.scalar_mut(SVar(s));
+			*gs += dot_val;
 			let val_s = pool.scalar(SVar(s));
 			let (gm, go) = grad.matrices_mut_pair(m, out);
 			gm.mat_axpy(val_s, go, T::one());
@@ -439,4 +447,3 @@ fn backward_op<T: RealScalar, B: LinAlgBackend<T>>(
 		}
 	}
 }
-
