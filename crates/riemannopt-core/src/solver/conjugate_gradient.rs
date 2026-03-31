@@ -2,9 +2,23 @@
 //!
 //! Conjugate gradient methods are a class of optimization algorithms that use
 //! conjugate directions to achieve faster convergence than steepest descent.
-//! This implementation extends classical CG methods to Riemannian manifolds using
-//! parallel transport.
+//! This implementation extends classical CG methods to Riemannian manifolds
+//! using parallel transport.
+//!
+//! # Line Search
+//!
+//! Uses an adaptive line search inspired by Manopt/Pymanopt:
+//! - The initial step size is normalized by `‖d‖` (direction-invariant).
+//! - After the first iteration, the previous accepted step is reused.
+//! - If accepted on first try or after many backtracks, the initial step
+//!   is doubled for the next iteration (stay aggressive).
+//! - If accepted after exactly one backtrack, the initial step is kept
+//!   (we're in the right ballpark).
+//! - The sufficient decrease parameter defaults to 0.5 (stronger than
+//!   the standard Armijo 1e-4), which ensures high-quality steps that
+//!   preserve conjugacy.
 
+use num_traits::Float;
 use std::fmt::Debug;
 use std::time::Instant;
 
@@ -34,9 +48,21 @@ pub struct CGConfig<T: Scalar> {
 	pub use_pr_plus: bool,
 	pub min_beta: Option<T>,
 	pub max_beta: Option<T>,
+
+	// ── Line search parameters ───────────────────────────────────────
+	/// Sufficient decrease parameter (Armijo c₁).
+	///
+	/// Default: 0.5 (matches Pymanopt's AdaptiveLineSearcher).
+	/// This is more restrictive than the standard 1e-4, which forces
+	/// higher-quality steps that preserve CG conjugacy.
+	/// Use 1e-4 for L-BFGS or steepest descent.
+	pub sufficient_decrease: T,
+	/// Step size contraction factor (ρ).
+	pub contraction_factor: T,
+	/// Maximum number of line search evaluations per iteration.
+	pub ls_max_iterations: usize,
+	/// Initial step size for the first iteration (before adaptation).
 	pub initial_step_size: T,
-	pub backtrack_rho: T,
-	pub armijo_c: T,
 }
 
 impl<T: Scalar> Default for CGConfig<T> {
@@ -47,9 +73,10 @@ impl<T: Scalar> Default for CGConfig<T> {
 			use_pr_plus: true,
 			min_beta: None,
 			max_beta: None,
+			sufficient_decrease: <T as Scalar>::from_f64(0.5),
+			contraction_factor: <T as Scalar>::from_f64(0.5),
+			ls_max_iterations: 10,
 			initial_step_size: T::one(),
-			backtrack_rho: <T as Scalar>::from_f64(0.5),
-			armijo_c: <T as Scalar>::from_f64(1e-4),
 		}
 	}
 }
@@ -90,6 +117,18 @@ impl<T: Scalar> CGConfig<T> {
 	}
 	pub fn with_max_beta(mut self, max_beta: T) -> Self {
 		self.max_beta = Some(max_beta);
+		self
+	}
+	pub fn with_sufficient_decrease(mut self, c: T) -> Self {
+		self.sufficient_decrease = c;
+		self
+	}
+	pub fn with_contraction_factor(mut self, rho: T) -> Self {
+		self.contraction_factor = rho;
+		self
+	}
+	pub fn with_ls_max_iterations(mut self, max: usize) -> Self {
+		self.ls_max_iterations = max;
 		self
 	}
 }
@@ -175,7 +214,6 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 		let mut grad_evals = 1;
 		let mut termination = TerminationReason::MaxIterations;
 		let mut iterations_since_restart = 0;
-		let mut last_step_size = self.config.initial_step_size;
 
 		let grad_tol = stopping_criterion
 			.gradient_tolerance
@@ -187,6 +225,11 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 		}
 
 		let mut prev_grad_norm_sq = T::zero();
+
+		// ── Adaptive line search state ───────────────────────────────────
+		// Tracks the previous accepted α to reuse as the next initial guess.
+		// `None` means first iteration (use 1/‖d‖ as initial step).
+		let mut ls_prev_alpha: Option<T> = None;
 
 		// ════════════════════════════════════════════════════════════════════
 		// 3. Optimization Loop (Hot Path — Zero Allocation)
@@ -207,7 +250,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				restarted = true;
 			} else {
 				// 1. Transport previous gradient and direction to current
-				//    tangent space.  Swap avoids a memcpy after each transport.
+				//    tangent space. Swap avoids a memcpy after each transport.
 				manifold.parallel_transport(
 					&previous_point,
 					&current_point,
@@ -281,7 +324,58 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 							T::zero()
 						}
 					}
-					_ => T::zero(),
+					ConjugateGradientMethod::HagerZhang => {
+						let diff_dot_d = manifold.inner_product(
+							&current_point,
+							&scratch,
+							&prev_direction,
+							&mut man_ws,
+						);
+						if diff_dot_d.abs() <= T::epsilon() {
+							T::zero()
+						} else {
+							let diff_norm_sq = manifold.inner_product(
+								&current_point,
+								&scratch,
+								&scratch,
+								&mut man_ws,
+							);
+							let grad_dot_d = manifold.inner_product(
+								&current_point,
+								&gradient,
+								&prev_direction,
+								&mut man_ws,
+							);
+							let grad_dot_diff = manifold.inner_product(
+								&current_point,
+								&gradient,
+								&scratch,
+								&mut man_ws,
+							);
+							let two = T::one() + T::one();
+							let num = grad_dot_diff - two * diff_norm_sq * grad_dot_d / diff_dot_d;
+							num / diff_dot_d
+						}
+					}
+					ConjugateGradientMethod::LiuStorey => {
+						let num = manifold.inner_product(
+							&current_point,
+							&gradient,
+							&scratch,
+							&mut man_ws,
+						);
+						let den = -manifold.inner_product(
+							&previous_point,
+							&prev_gradient,
+							&prev_direction,
+							&mut man_ws,
+						);
+						if den.abs() > T::epsilon() {
+							T::zero().max(num / den)
+						} else {
+							T::zero()
+						}
+					}
 				};
 
 				// Apply constraints
@@ -312,47 +406,75 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				iterations_since_restart = 0;
 			}
 
-			// -- B. Armijo Line Search --
-			// Scale a scratch copy so that `direction` is preserved exactly
-			// (no cumulative scale / unscale drift).
-			let mut alpha = if iter == 0 {
-				T::one() / grad_norm
-			} else {
-				last_step_size * <T as Scalar>::from_f64(2.0)
+			// ══════════════════════════════════════════════════════════════
+			// B. Adaptive Line Search
+			// ══════════════════════════════════════════════════════════════
+			// Compute ‖d‖ for direction-invariant step sizing.
+			let dir_norm = manifold.norm(&current_point, &direction, &mut man_ws);
+
+			// Initial step: reuse previous α, or 1/‖d‖ on first iteration.
+			let mut alpha = match ls_prev_alpha {
+				Some(prev) => prev,
+				None => {
+					if dir_norm > T::epsilon() {
+						self.config.initial_step_size / dir_norm
+					} else {
+						self.config.initial_step_size
+					}
+				}
 			};
 
-			let mut ls_success = false;
-			while alpha > T::MIN_STEP_SIZE {
-				manifold.copy_tangent(&mut scratch, &direction);
-				manifold.scale_tangent(alpha, &mut scratch);
-				manifold.retract(&current_point, &scratch, &mut candidate_point, &mut man_ws);
+			// Scale+shrink: scale direction once, shrink in-place per trial.
+			// One copy instead of one per trial.
+			manifold.copy_tangent(&mut scratch, &direction);
+			manifold.scale_tangent(alpha, &mut scratch);
 
+			let mut ls_success = false;
+			let mut ls_evals: usize = 0;
+
+			while ls_evals < self.config.ls_max_iterations {
+				manifold.retract(&current_point, &scratch, &mut candidate_point, &mut man_ws);
 				let candidate_cost = problem.cost(&candidate_point, &mut prob_ws, &mut man_ws);
 				fn_evals += 1;
+				ls_evals += 1;
 
-				if candidate_cost <= current_cost + self.config.armijo_c * alpha * dir_deriv {
+				if candidate_cost
+					<= current_cost + self.config.sufficient_decrease * alpha * dir_deriv
+				{
 					current_cost = candidate_cost;
 					ls_success = true;
 					break;
 				}
-				alpha = alpha * self.config.backtrack_rho;
+
+				// Shrink in-place
+				manifold.scale_tangent(self.config.contraction_factor, &mut scratch);
+				alpha = alpha * self.config.contraction_factor;
 			}
 
+			// If no decrease found at all, reject step.
 			if !ls_success {
-				termination = TerminationReason::LineSearchFailed;
-				break;
+				// Check if we at least found SOME decrease (even if not
+				// satisfying the sufficient decrease condition).
+				let last_cost = problem.cost(&candidate_point, &mut prob_ws, &mut man_ws);
+				if last_cost < current_cost {
+					current_cost = last_cost;
+				} else {
+					termination = TerminationReason::LineSearchFailed;
+					break;
+				}
 			}
 
-			last_step_size = alpha;
+			// ── Adapt step size for next iteration ──────────────────────
+			// Strategy from Manopt/Pymanopt:
+			// - 2 evals (exactly 1 backtrack): we're in the right ballpark → keep α.
+			// - 1 eval or 3+ evals: either we were too conservative or α got
+			//   shrunk a lot → double α so we try further next time.
+			ls_prev_alpha = Some(if ls_evals == 2 { alpha } else { alpha + alpha });
 
 			// -- C. State Update --
-			// Rotate point buffers: previous ← current ← candidate.
-			// Two O(1) swaps instead of two O(n·p) memcpy.
 			std::mem::swap(&mut previous_point, &mut current_point);
 			std::mem::swap(&mut current_point, &mut candidate_point);
 
-			// gradient and direction will be fully overwritten, so swap
-			// is safe and O(1) — the destination buffers are recycled.
 			std::mem::swap(&mut prev_gradient, &mut gradient);
 			std::mem::swap(&mut prev_direction, &mut direction);
 			prev_grad_norm_sq = grad_norm_sq;
@@ -373,6 +495,14 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 			// -- D. Stopping Criteria Check --
 			if grad_norm <= grad_tol {
 				termination = TerminationReason::Converged;
+			} else if let Some(val_tol) = stopping_criterion.function_tolerance {
+				if <T as Float>::abs(current_cost - _new_cost) < val_tol {
+					termination = TerminationReason::Converged;
+				}
+			} else if let Some(target) = stopping_criterion.target_value {
+				if current_cost <= target {
+					termination = TerminationReason::TargetReached;
+				}
 			} else if let Some(max_time) = stopping_criterion.max_time {
 				if start_time.elapsed() >= max_time {
 					termination = TerminationReason::MaxTime;
