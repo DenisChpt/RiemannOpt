@@ -73,18 +73,62 @@ impl<T: Scalar, B: LinAlgBackend<T>> SPD<T, B> {
 	pub fn metric_type(&self) -> SPDMetric {
 		self.metric
 	}
+
+	/// Symmetrize a matrix in-place: A ← (A + Aᵀ)/2.
+	#[inline]
+	fn symmetrize(mat: &mut B::Matrix, n: usize) {
+		let half = <T as Scalar>::from_f64(0.5);
+		for i in 0..n {
+			for j in i + 1..n {
+				let avg = half * (mat.get(i, j) + mat.get(j, i));
+				*mat.get_mut(i, j) = avg;
+				*mat.get_mut(j, i) = avg;
+			}
+		}
+	}
+
+	/// Clamp eigenvalues to `min_eigenvalue` then reconstruct Q diag(λ) Qᵀ.
+	///
+	/// - `eigenvalues`: mutated in-place (clamped)
+	/// - `eigenvectors`: read-only basis Q
+	/// - `buf`: scratch for Q·diag(λ)
+	/// - `out`: receives Q diag(λ) Qᵀ (symmetrized)
+	#[inline]
+	fn clamp_and_reconstruct(
+		&self,
+		eigenvalues: &mut B::Vector,
+		eigenvectors: &B::Matrix,
+		buf: &mut B::Matrix,
+		out: &mut B::Matrix,
+	) {
+		let threshold = self.min_eigenvalue + <T as Scalar>::from_f64(1e-8);
+		for i in 0..self.n {
+			if eigenvalues.get(i) <= self.min_eigenvalue {
+				*eigenvalues.get_mut(i) = threshold;
+			}
+		}
+		buf.scale_columns(eigenvectors, eigenvalues);
+		out.gemm_bt(T::one(), buf.as_view(), eigenvectors.as_view(), T::zero());
+		Self::symmetrize(out, self.n);
+	}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Workspace (Zero-Allocation Strategy)
+//  Workspace
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Pre-allocated workspace for SPD manifold operations.
+///
+/// Buffer roles:
+/// - `buf_a`: P⁻¹U (inner_product), Q·diag(λ) (retract eigen)
+/// - `buf_b`: P⁻¹V (inner_product), eigenvectors (retract eigen)
+/// - `buf_c`: (P⁻¹U)(P⁻¹V) (inner_product), inverse fallback
+/// - `eigenvalues`: eigenvalues output
 pub struct SPDWorkspace<T: Scalar, B: LinAlgBackend<T>> {
 	pub buf_a: B::Matrix,
 	pub buf_b: B::Matrix,
 	pub buf_c: B::Matrix,
-	pub vec_a: B::Vector, // For eigenvalues
+	pub eigenvalues: B::Vector,
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> Default for SPDWorkspace<T, B> {
@@ -93,13 +137,13 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for SPDWorkspace<T, B> {
 			buf_a: B::Matrix::zeros(0, 0),
 			buf_b: B::Matrix::zeros(0, 0),
 			buf_c: B::Matrix::zeros(0, 0),
-			vec_a: B::Vector::zeros(0),
+			eigenvalues: B::Vector::zeros(0),
 		}
 	}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Manifold trait implementation
+//  Manifold impl
 // ════════════════════════════════════════════════════════════════════════════
 
 impl<T, B> Manifold<T> for SPD<T, B>
@@ -117,7 +161,7 @@ where
 			buf_a: B::Matrix::zeros(self.n, self.n),
 			buf_b: B::Matrix::zeros(self.n, self.n),
 			buf_c: B::Matrix::zeros(self.n, self.n),
-			vec_a: B::Vector::zeros(self.n),
+			eigenvalues: B::Vector::zeros(self.n),
 		}
 	}
 
@@ -131,7 +175,7 @@ where
 		self.n * (self.n + 1) / 2
 	}
 
-	#[inline]
+	/// Cold path — allocates temporary eigen buffers.
 	fn is_point_on_manifold(&self, point: &Self::Point, tol: T) -> bool {
 		if point.nrows() != self.n || point.ncols() != self.n {
 			return false;
@@ -148,16 +192,20 @@ where
 			return false;
 		}
 
-		let eigen = point.symmetric_eigen();
-		let min_eval = VectorView::iter(&eigen.eigenvalues)
-			.fold(<T as Scalar>::from_f64(f64::INFINITY), |min, val| {
-				min.min(val)
-			});
+		let mut eigenvalues = B::Vector::zeros(self.n);
+		let mut eigenvectors = B::Matrix::zeros(self.n, self.n);
+		point.symmetric_eigen(&mut eigenvalues, &mut eigenvectors);
 
+		let mut min_eval = <T as Scalar>::from_f64(f64::INFINITY);
+		for i in 0..self.n {
+			let ev = eigenvalues.get(i);
+			if ev < min_eval {
+				min_eval = ev;
+			}
+		}
 		min_eval > self.min_eigenvalue
 	}
 
-	#[inline]
 	fn is_vector_in_tangent_space(
 		&self,
 		_point: &Self::Point,
@@ -167,7 +215,6 @@ where
 		if vector.nrows() != self.n || vector.ncols() != self.n {
 			return false;
 		}
-
 		let mut sym_err = T::zero();
 		for i in 0..self.n {
 			for j in 0..self.n {
@@ -178,7 +225,7 @@ where
 		sym_err.sqrt() <= tol
 	}
 
-	#[inline]
+	/// Cold path — allocates temporary buffers.
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
 		// Symmetrize
 		let half = <T as Scalar>::from_f64(0.5);
@@ -190,34 +237,14 @@ where
 			}
 		}
 
-		// Clamp eigenvalues
-		let mut eigen = result.symmetric_eigen();
-		for i in 0..self.n {
-			let ev = eigen.eigenvalues.get(i);
-			if ev <= self.min_eigenvalue {
-				*eigen.eigenvalues.get_mut(i) = self.min_eigenvalue + <T as Scalar>::from_f64(1e-8);
-			}
-		}
+		// Eigen of the symmetrized result
+		let mut eigenvalues = B::Vector::zeros(self.n);
+		let mut eigenvectors = B::Matrix::zeros(self.n, self.n);
+		result.symmetric_eigen(&mut eigenvalues, &mut eigenvectors);
 
-		// Reconstruct: P = V diag(λ) V^T
-		// Here we allocate locally because `project_point` is generally not on the hot path
+		// Clamp & reconstruct
 		let mut buf = B::Matrix::zeros(self.n, self.n);
-		buf.scale_columns(&eigen.eigenvectors, &eigen.eigenvalues);
-		result.gemm_bt(
-			T::one(),
-			buf.as_view(),
-			eigen.eigenvectors.as_view(),
-			T::zero(),
-		);
-
-		// Enforce symmetry perfectly
-		for i in 0..self.n {
-			for j in i + 1..self.n {
-				let avg = half * (result.get(i, j) + result.get(j, i));
-				*result.get_mut(i, j) = avg;
-				*result.get_mut(j, i) = avg;
-			}
-		}
+		self.clamp_and_reconstruct(&mut eigenvalues, &eigenvectors, &mut buf, result);
 	}
 
 	#[inline]
@@ -248,29 +275,23 @@ where
 	) -> T {
 		match self.metric {
 			SPDMetric::AffineInvariant => {
-				// <U,V>_P = tr(P⁻¹U P⁻¹V)
-				// 1. Solve P A = U -> ws.buf_a
+				// ⟨U,V⟩_P = tr(P⁻¹U P⁻¹V)
 				if !point.cholesky_solve(u, &mut ws.buf_a) {
 					point.inverse(&mut ws.buf_c);
 					ws.buf_a
 						.gemm(T::one(), ws.buf_c.as_view(), u.as_view(), T::zero());
 				}
-				// 2. Solve P B = V -> ws.buf_b
 				if !point.cholesky_solve(v, &mut ws.buf_b) {
 					point.inverse(&mut ws.buf_c);
 					ws.buf_b
 						.gemm(T::one(), ws.buf_c.as_view(), v.as_view(), T::zero());
 				}
-				// 3. tr(A B) = frobenius_dot(A^T, B). Since A is P^-1 U, we just do a GEMM into C and trace.
 				ws.buf_c
 					.gemm(T::one(), ws.buf_a.as_view(), ws.buf_b.as_view(), T::zero());
 				ws.buf_c.trace()
 			}
 			SPDMetric::LogEuclidean => u.frobenius_dot(v),
-			SPDMetric::BuresWasserstein => {
-				// Approximation for BW if exact is too slow
-				u.frobenius_dot(v)
-			}
+			SPDMetric::BuresWasserstein => u.frobenius_dot(v),
 		}
 	}
 
@@ -284,6 +305,7 @@ where
 		self.inner_product(point, vector, vector, ws).sqrt()
 	}
 
+	/// **Zero allocation** for all metric variants.
 	#[inline]
 	fn retract(
 		&self,
@@ -294,7 +316,7 @@ where
 	) {
 		match self.metric {
 			SPDMetric::AffineInvariant => {
-				// Approximate Retraction: P + V + 0.5 V P⁻¹ V
+				// R_P(V) = P + V + ½ V P⁻¹ V
 				if !point.cholesky_solve(tangent, &mut ws.buf_a) {
 					point.inverse(&mut ws.buf_c);
 					ws.buf_a
@@ -309,58 +331,19 @@ where
 					ws.buf_a.as_view(),
 					T::one(),
 				);
-
-				let half = <T as Scalar>::from_f64(0.5);
-				for i in 0..self.n {
-					for j in i + 1..self.n {
-						let avg = half * (result.get(i, j) + result.get(j, i));
-						*result.get_mut(i, j) = avg;
-						*result.get_mut(j, i) = avg;
-					}
-				}
+				Self::symmetrize(result, self.n);
 			}
 			_ => {
+				// Euclidean step + eigenvalue clamping
 				result.copy_from(point);
 				result.add_assign(tangent);
-				let half = <T as Scalar>::from_f64(0.5);
+				Self::symmetrize(result, self.n);
 
-				// Symmetrize in place
-				for i in 0..self.n {
-					for j in i..self.n {
-						let avg = half * (result.get(i, j) + result.get(j, i));
-						*result.get_mut(i, j) = avg;
-						*result.get_mut(j, i) = avg;
-					}
-				}
+				// Eigen: result read as &self → eigenvalues in ws, eigenvectors in buf_b
+				result.symmetric_eigen(&mut ws.eigenvalues, &mut ws.buf_b);
 
-				// Eigen-decomposition of the symmetrized matrix
-				let mut eigen = result.symmetric_eigen();
-				for i in 0..self.n {
-					let ev = eigen.eigenvalues.get(i);
-					if ev <= self.min_eigenvalue {
-						*eigen.eigenvalues.get_mut(i) =
-							self.min_eigenvalue + <T as Scalar>::from_f64(1e-8);
-					}
-				}
-
-				// Reconstruct result = V diag(λ) V^T using workspace
-				ws.buf_a
-					.scale_columns(&eigen.eigenvectors, &eigen.eigenvalues);
-				result.gemm_bt(
-					T::one(),
-					ws.buf_a.as_view(),
-					eigen.eigenvectors.as_view(),
-					T::zero(),
-				);
-
-				// Enforce symmetry again
-				for i in 0..self.n {
-					for j in i + 1..self.n {
-						let avg = half * (result.get(i, j) + result.get(j, i));
-						*result.get_mut(i, j) = avg;
-						*result.get_mut(j, i) = avg;
-					}
-				}
+				// Clamp & reconstruct: buf_a = Q·diag(λ), result = buf_a·Qᵀ
+				self.clamp_and_reconstruct(&mut ws.eigenvalues, &ws.buf_b, &mut ws.buf_a, result);
 			}
 		}
 	}
@@ -373,17 +356,9 @@ where
 		result: &mut Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) {
-		// Approximate: project(other - point)
 		result.copy_from(other);
 		result.sub_assign(point);
-		let half = <T as Scalar>::from_f64(0.5);
-		for i in 0..self.n {
-			for j in i + 1..self.n {
-				let avg = half * (result.get(i, j) + result.get(j, i));
-				*result.get_mut(i, j) = avg;
-				*result.get_mut(j, i) = avg;
-			}
-		}
+		Self::symmetrize(result, self.n);
 	}
 
 	#[inline]
@@ -396,7 +371,7 @@ where
 	) {
 		match self.metric {
 			SPDMetric::AffineInvariant => {
-				// grad = P ∇f(P) P
+				// grad = P ∇f P
 				ws.buf_a
 					.gemm(T::one(), point.as_view(), egrad.as_view(), T::zero());
 				result.gemm(T::one(), ws.buf_a.as_view(), point.as_view(), T::zero());
@@ -410,16 +385,7 @@ where
 				result.copy_from(egrad);
 			}
 		}
-
-		// Enforce symmetry
-		let half = <T as Scalar>::from_f64(0.5);
-		for i in 0..self.n {
-			for j in i + 1..self.n {
-				let avg = half * (result.get(i, j) + result.get(j, i));
-				*result.get_mut(i, j) = avg;
-				*result.get_mut(j, i) = avg;
-			}
-		}
+		Self::symmetrize(result, self.n);
 	}
 
 	#[inline]
@@ -431,7 +397,6 @@ where
 		result: &mut Self::TangentVector,
 		ws: &mut Self::Workspace,
 	) {
-		// Approximation by projection (identity for SPD, just symmetrize)
 		self.project_tangent(to, vector, result, ws);
 	}
 
@@ -474,7 +439,6 @@ where
 
 	#[inline]
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> T {
-		// Approximation: Frobenius distance for speed
 		let mut diff_sq = T::zero();
 		for i in 0..self.n {
 			for j in 0..self.n {
@@ -494,10 +458,6 @@ where
 	fn is_flat(&self) -> bool {
 		false
 	}
-
-	// ════════════════════════════════════════════════════════════════════════
-	// Vector ops
-	// ════════════════════════════════════════════════════════════════════════
 
 	#[inline]
 	fn scale_tangent(&self, scalar: T, v: &mut Self::TangentVector) {

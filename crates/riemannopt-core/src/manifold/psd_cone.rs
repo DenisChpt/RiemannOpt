@@ -15,12 +15,20 @@ use crate::{
 	types::Scalar,
 };
 
+// ════════════════════════════════════════════════════════════════════════════
+//  Workspace
+// ════════════════════════════════════════════════════════════════════════════
+
 /// Pre-allocated workspace for PSD Cone operations.
 pub struct PSDConeWorkspace<T: Scalar, B: LinAlgBackend<T>> {
-	/// n×n matrix buffer for eigendecomposition
+	/// n×n buffer — holds unpacked symmetric matrix, then receives Q Λ Qᵀ
 	pub mat_a: B::Matrix,
-	/// Second n×n matrix buffer
+	/// n×n buffer — intermediate Q diag(λ)
 	pub mat_b: B::Matrix,
+	/// n×n buffer — eigenvectors from symmetric_eigen
+	pub eigenvectors: B::Matrix,
+	/// n-vector — eigenvalues from symmetric_eigen
+	pub eigenvalues: B::Vector,
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> Default for PSDConeWorkspace<T, B> {
@@ -28,9 +36,15 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for PSDConeWorkspace<T, B> {
 		Self {
 			mat_a: B::Matrix::zeros(0, 0),
 			mat_b: B::Matrix::zeros(0, 0),
+			eigenvectors: B::Matrix::zeros(0, 0),
+			eigenvalues: B::Vector::zeros(0),
 		}
 	}
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+//  PSDCone struct
+// ════════════════════════════════════════════════════════════════════════════
 
 /// The positive semi-definite cone S⁺(n).
 #[derive(Clone)]
@@ -49,7 +63,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> Debug for PSDCone<T, B> {
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> PSDCone<T, B> {
-	/// Creates a new PSD cone manifold S⁺(n).
 	pub fn new(n: usize) -> Self {
 		assert!(n > 0, "PSD cone requires n ≥ 1");
 		Self {
@@ -61,7 +74,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> PSDCone<T, B> {
 		}
 	}
 
-	/// Creates a PSD cone with custom parameters.
 	pub fn with_parameters(n: usize, tolerance: T, strict: bool) -> Self {
 		assert!(n > 0, "PSD cone requires n ≥ 1");
 		assert!(
@@ -82,10 +94,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> PSDCone<T, B> {
 		self.n
 	}
 
-	// ── Vector/Matrix Conversions ────────────────────────────────────────
-
-	/// Unpack vector of size n(n+1)/2 to n×n symmetric matrix.
-	/// Reverses the √2 scaling on off-diagonals.
 	#[inline]
 	fn vec_to_mat(&self, vec: &B::Vector, mat: &mut B::Matrix) {
 		let inv_sqrt2 = T::one() / <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
@@ -105,8 +113,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> PSDCone<T, B> {
 		}
 	}
 
-	/// Pack n×n symmetric matrix to vector of size n(n+1)/2.
-	/// Applies √2 scaling on off-diagonals to preserve inner product.
 	#[inline]
 	fn mat_to_vec(&self, mat: &B::Matrix, vec: &mut B::Vector) {
 		let sqrt2 = <T as Scalar>::from_f64(std::f64::consts::SQRT_2);
@@ -123,7 +129,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> PSDCone<T, B> {
 		}
 	}
 
-	/// Symmetrize matrix in-place
 	#[inline]
 	fn symmetrize(mat: &mut B::Matrix, n: usize) {
 		let half = <T as Scalar>::from_f64(0.5);
@@ -135,10 +140,39 @@ impl<T: Scalar, B: LinAlgBackend<T>> PSDCone<T, B> {
 			}
 		}
 	}
+
+	/// Clamp eigenvalues and reconstruct Q max(0,Λ) Qᵀ into `mat_out`.
+	///
+	/// Uses `mat_tmp` as scratch for Q·diag(λ).
+	#[inline]
+	fn clamp_and_reconstruct(
+		&self,
+		eigenvalues: &mut B::Vector,
+		eigenvectors: &B::Matrix,
+		mat_tmp: &mut B::Matrix,
+		mat_out: &mut B::Matrix,
+	) {
+		let threshold = if self.strict { T::EPSILON } else { T::zero() };
+		for i in 0..self.n {
+			if eigenvalues.get(i) < threshold {
+				*eigenvalues.get_mut(i) = threshold;
+			}
+		}
+		// mat_tmp = Q · diag(λ)
+		mat_tmp.scale_columns(eigenvectors, eigenvalues);
+		// mat_out = mat_tmp · Qᵀ
+		mat_out.gemm_bt(
+			T::one(),
+			mat_tmp.as_view(),
+			eigenvectors.as_view(),
+			T::zero(),
+		);
+		Self::symmetrize(mat_out, self.n);
+	}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Manifold trait implementation
+//  Manifold impl
 // ════════════════════════════════════════════════════════════════════════════
 
 impl<T, B> Manifold<T> for PSDCone<T, B>
@@ -155,6 +189,8 @@ where
 		PSDConeWorkspace {
 			mat_a: B::Matrix::zeros(self.n, self.n),
 			mat_b: B::Matrix::zeros(self.n, self.n),
+			eigenvectors: B::Matrix::zeros(self.n, self.n),
+			eigenvalues: B::Vector::zeros(self.n),
 		}
 	}
 
@@ -168,28 +204,27 @@ where
 		self.dim
 	}
 
-	#[inline]
+	/// Cold path — allocates temporary eigen buffers.
 	fn is_point_on_manifold(&self, point: &Self::Point, _tol: T) -> bool {
 		if point.len() != self.dim {
 			return false;
 		}
-
-		// Convert to matrix (allocates locally since we don't have workspace here)
 		let mut mat = B::Matrix::zeros(self.n, self.n);
 		self.vec_to_mat(point, &mut mat);
 
-		let eigen = mat.symmetric_eigen();
+		let mut eigenvalues = B::Vector::zeros(self.n);
+		let mut eigenvectors = B::Matrix::zeros(self.n, self.n);
+		mat.symmetric_eigen(&mut eigenvalues, &mut eigenvectors);
+
 		let threshold = if self.strict {
 			self.tolerance
 		} else {
 			-self.tolerance
 		};
-
-		let is_psd = eigen.eigenvalues.iter().all(|lambda| lambda >= threshold);
-		is_psd
+		(0..self.n).all(|i| eigenvalues.get(i) >= threshold)
 	}
 
-	#[inline]
+	/// Cold path — allocates temporary eigen buffers.
 	fn is_vector_in_tangent_space(
 		&self,
 		point: &Self::Point,
@@ -201,27 +236,28 @@ where
 		}
 		if self.strict {
 			return true;
-		} // Interior: tangent space is all symmetric matrices
+		}
 
-		// For boundary points, we need v^T V v >= 0 for v in ker(X).
-		// Convert point to matrix to find kernel
 		let mut mat_x = B::Matrix::zeros(self.n, self.n);
 		self.vec_to_mat(point, &mut mat_x);
-		let eigen = mat_x.symmetric_eigen();
+
+		let mut eigenvalues = B::Vector::zeros(self.n);
+		let mut eigenvectors = B::Matrix::zeros(self.n, self.n);
+		mat_x.symmetric_eigen(&mut eigenvalues, &mut eigenvectors);
 
 		let mut mat_v = B::Matrix::zeros(self.n, self.n);
 		self.vec_to_mat(vector, &mut mat_v);
 
-		// Find eigenvalues near zero (kernel)
 		for i in 0..self.n {
-			if eigen.eigenvalues.get(i).abs() < self.tolerance {
+			if eigenvalues.get(i).abs() < self.tolerance {
+				// Check vᵀ V v ≥ 0 for kernel eigenvector v
 				let mut v_t_v_v = T::zero();
 				for r in 0..self.n {
 					let mut row_sum = T::zero();
 					for c in 0..self.n {
-						row_sum = row_sum + mat_v.get(r, c) * eigen.eigenvectors.get(c, i);
+						row_sum = row_sum + mat_v.get(r, c) * eigenvectors.get(c, i);
 					}
-					v_t_v_v = v_t_v_v + eigen.eigenvectors.get(r, i) * row_sum;
+					v_t_v_v = v_t_v_v + eigenvectors.get(r, i) * row_sum;
 				}
 				if v_t_v_v < -tol {
 					return false;
@@ -231,58 +267,31 @@ where
 		true
 	}
 
-	#[inline]
+	/// Cold path — allocates temporary eigen buffers.
 	fn project_point(&self, point: &Self::Point, result: &mut Self::Point) {
-		// Allocate temporary workspace if none provided
 		let mut mat = B::Matrix::zeros(self.n, self.n);
 		self.vec_to_mat(point, &mut mat);
 
-		let mut eigen = mat.symmetric_eigen();
+		let mut eigenvalues = B::Vector::zeros(self.n);
+		let mut eigenvectors = B::Matrix::zeros(self.n, self.n);
+		mat.symmetric_eigen(&mut eigenvalues, &mut eigenvectors);
 
-		// Threshold eigenvalues: max(0, λ)
-		let threshold = if self.strict { T::EPSILON } else { T::zero() };
-		for i in 0..self.n {
-			if eigen.eigenvalues.get(i) < threshold {
-				*eigen.eigenvalues.get_mut(i) = threshold;
-			}
-		}
-
-		// Reconstruct: Q max(0, Λ) Q^T
 		let mut temp = B::Matrix::zeros(self.n, self.n);
-		temp.scale_columns(&eigen.eigenvectors, &eigen.eigenvalues);
-		mat.gemm_bt(
-			T::one(),
-			temp.as_view(),
-			eigen.eigenvectors.as_view(),
-			T::zero(),
-		);
-
-		Self::symmetrize(&mut mat, self.n);
+		self.clamp_and_reconstruct(&mut eigenvalues, &eigenvectors, &mut temp, &mut mat);
 		self.mat_to_vec(&mat, result);
 	}
 
 	#[inline]
 	fn project_tangent(
 		&self,
-		point: &Self::Point,
+		_point: &Self::Point,
 		vector: &Self::TangentVector,
 		result: &mut Self::TangentVector,
-		ws: &mut Self::Workspace,
+		_ws: &mut Self::Workspace,
 	) {
-		if self.strict {
-			result.copy_from(vector);
-			return;
-		}
-
-		// Boundary projection logic (simplified version, exact projection is an SDP)
-		// Here we just copy the vector. A true rigorous projection onto the tangent cone
-		// at the boundary is highly non-trivial and often solved iteratively.
-		// We assume the caller handles active set methods or interior point methods.
+		// Interior: tangent space is all symmetric matrices → identity projection.
+		// Boundary projection is an SDP — out of scope here.
 		result.copy_from(vector);
-
-		// To avoid unused parameter warnings while acknowledging boundary logic
-		let _ = point;
-		let _ = ws;
 	}
 
 	#[inline]
@@ -293,8 +302,6 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) -> T {
-		// Because of the sqrt(2) scaling during vec packing, the standard Euclidean
-		// dot product exactly matches the Frobenius inner product of the matrices.
 		u.dot(v)
 	}
 
@@ -305,9 +312,12 @@ where
 		vector: &Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) -> T {
-		vector.norm() // Equal to Frobenius norm of the matrix
+		vector.norm()
 	}
 
+	/// Metric projection retraction.  **Zero allocation.**
+	///
+	/// X + V → unpack → eigen → clamp λ ≥ 0 → Q max(0,Λ) Qᵀ → repack.
 	#[inline]
 	fn retract(
 		&self,
@@ -316,40 +326,26 @@ where
 		result: &mut Self::Point,
 		ws: &mut Self::Workspace,
 	) {
-		// Simple metric projection retraction
-		// X + V is symmetric. Just need to clamp eigenvalues to 0.
-
-		// 1. Vector addition (Euclidean space)
+		// 1. result = point + tangent (vector addition)
 		result.copy_from(point);
 		result.add_assign(tangent);
 
-		// 2. Unpack to matrix in workspace
+		// 2. Unpack into symmetric matrix
 		self.vec_to_mat(result, &mut ws.mat_a);
 
-		// 3. Eigendecomposition
-		let mut eigen = ws.mat_a.symmetric_eigen();
+		// 3. Eigendecomposition (mat_a is &self, not destroyed)
+		ws.mat_a
+			.symmetric_eigen(&mut ws.eigenvalues, &mut ws.eigenvectors);
 
-		// 4. Threshold eigenvalues
-		let threshold = if self.strict { T::EPSILON } else { T::zero() };
-		for i in 0..self.n {
-			if eigen.eigenvalues.get(i) < threshold {
-				*eigen.eigenvalues.get_mut(i) = threshold;
-			}
-		}
-
-		// 5. Reconstruct: Q max(0, Λ) Q^T
-		ws.mat_b
-			.scale_columns(&eigen.eigenvectors, &eigen.eigenvalues);
-		ws.mat_a.gemm_bt(
-			T::one(),
-			ws.mat_b.as_view(),
-			eigen.eigenvectors.as_view(),
-			T::zero(),
+		// 4. Clamp & reconstruct: mat_b = Q·diag(λ), mat_a = mat_b·Qᵀ
+		self.clamp_and_reconstruct(
+			&mut ws.eigenvalues,
+			&ws.eigenvectors,
+			&mut ws.mat_b,
+			&mut ws.mat_a,
 		);
 
-		Self::symmetrize(&mut ws.mat_a, self.n);
-
-		// 6. Repack to vector
+		// 5. Repack to vector
 		self.mat_to_vec(&ws.mat_a, result);
 	}
 
@@ -361,7 +357,6 @@ where
 		result: &mut Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) {
-		// In the Euclidean metric, inverse retraction is just subtraction
 		result.copy_from(other);
 		result.sub_assign(point);
 	}
@@ -403,7 +398,6 @@ where
 		let mut psd = B::Matrix::zeros(self.n, self.n);
 		psd.gemm_at(T::one(), a.as_view(), a.as_view(), T::zero());
 
-		// Ensure strictly inside cone if requested
 		if self.strict {
 			for i in 0..self.n {
 				*psd.get_mut(i, i) = psd.get(i, i) + <T as Scalar>::from_f64(1e-3);
@@ -433,8 +427,6 @@ where
 
 	#[inline]
 	fn distance(&self, x: &Self::Point, y: &Self::Point) -> T {
-		// Since we scale off-diagonals by sqrt(2), Euclidean distance of packed vectors
-		// equals Frobenius distance of the corresponding matrices.
 		let mut diff = y.clone();
 		diff.sub_assign(x);
 		diff.norm()
@@ -449,10 +441,6 @@ where
 	fn is_flat(&self) -> bool {
 		true
 	}
-
-	// ════════════════════════════════════════════════════════════════════════
-	// Vector ops
-	// ════════════════════════════════════════════════════════════════════════
 
 	#[inline]
 	fn scale_tangent(&self, scalar: T, v: &mut Self::TangentVector) {

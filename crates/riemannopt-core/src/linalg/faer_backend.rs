@@ -21,8 +21,11 @@ use faer::{Col, ColRef, Conj, Mat, MatRef, Side};
 use super::traits::{
 	DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView,
 };
-use super::types::{CholeskyResult, EigenResult, QrResult, SvdResult};
-
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
+use faer::linalg::householder;
+use faer::linalg::qr::no_pivoting::factor;
+use faer::reborrow::*;
+use faer::Par;
 // ═══════════════════════════════════════════════════════════════════════════
 //  Backend marker type
 // ═══════════════════════════════════════════════════════════════════════════
@@ -784,53 +787,139 @@ impl_faer_matrix_ops!(f64);
 macro_rules! impl_faer_decomposition_ops {
 	($t:ty) => {
 		impl DecompositionOps<$t> for Mat<$t> {
-			#[inline]
-			fn svd(&self) -> SvdResult<$t, Self> {
-				let svd = self.thin_svd().expect("SVD failed");
-				let u_mat = svd.U().to_owned();
-				let singular_values = svd.S().column_vector().to_owned();
-				let vt = svd.V().transpose().to_owned();
+			type ScratchBuffer = MemBuffer;
 
-				SvdResult {
-					u: Some(u_mat),
-					singular_values,
-					vt: Some(vt),
+			// ── QR helpers ───────────────────────────────────────────
+
+			fn qr_h_factor_shape(nrows: usize, ncols: usize) -> (usize, usize) {
+				let k = nrows.min(ncols);
+				let block_size = factor::recommended_block_size::<$t>(nrows, ncols);
+				(block_size, k)
+			}
+
+			fn create_qr_scratch(nrows: usize, ncols: usize) -> MemBuffer {
+				let k = nrows.min(ncols);
+				let block_size = factor::recommended_block_size::<$t>(nrows, ncols);
+
+				let qr_req = factor::qr_in_place_scratch::<$t>(
+					nrows,
+					ncols,
+					block_size,
+					Par::Seq,
+					Default::default(),
+				);
+				let apply_req =
+					householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<$t>(
+						nrows, block_size, k,
+					);
+
+				MemBuffer::new(StackReq::any_of(&[qr_req, apply_req]))
+			}
+
+			// ── QR ─────────────────────────────────
+			#[inline]
+			fn qr(
+				&mut self,
+				q: &mut Self,
+				r: &mut Self,
+				h_factor: &mut Self,
+				scratch: &mut MemBuffer,
+			) {
+				let m = self.nrows();
+				let n = self.ncols();
+				let k = m.min(n);
+
+				debug_assert_eq!((q.nrows(), q.ncols()), (m, k));
+				debug_assert_eq!((r.nrows(), r.ncols()), (k, n));
+				debug_assert_eq!(h_factor.ncols(), k);
+
+				let mut stack = MemStack::new(scratch);
+
+				// 1. Factorize in-place: R in upper triangle,
+				//    Householder vectors in strict lower triangle,
+				//    block-reflector coefficients in h_factor.
+				factor::qr_in_place(
+					self.as_mut(),
+					h_factor.as_mut(),
+					Par::Seq,
+					stack.rb_mut(),
+					Default::default(),
+				);
+
+				// 2. Extract R (upper triangle of first k rows).
+				r.fill(0.0 as $t);
+				for j in 0..n {
+					let i_end = (j + 1).min(k);
+					for i in 0..i_end {
+						r[(i, j)] = self[(i, j)];
+					}
 				}
+
+				// 3. Reconstruct thin Q: identity → apply H₁H₂…Hₖ.
+				q.fill(0.0 as $t);
+				for i in 0..k {
+					q[(i, i)] = 1.0 as $t;
+				}
+
+				householder::apply_block_householder_sequence_on_the_left_in_place_with_conj(
+					self.as_ref().subcols(0, k),
+					h_factor.as_ref(),
+					Conj::No,
+					q.as_mut(),
+					Par::Seq,
+					stack.rb_mut(),
+				);
 			}
 
+			// ── SVD ──────────────────────────────────────────────────
 			#[inline]
-			fn qr(&self) -> QrResult<$t, Self> {
-				let qr = self.qr();
-				let q = qr.compute_thin_Q();
-				let r = qr.thin_R().to_owned();
-				QrResult::new(q, r)
+			fn svd(&self, u: &mut Self, s: &mut Col<$t>, vt: &mut Self) {
+				let m = self.nrows();
+				let n = self.ncols();
+				let k = m.min(n);
+
+				debug_assert_eq!((u.nrows(), u.ncols()), (m, k));
+				debug_assert_eq!(s.nrows(), k);
+				debug_assert_eq!((vt.nrows(), vt.ncols()), (k, n));
+
+				let decomp = self.thin_svd().expect("SVD failed");
+				u.as_mut().copy_from(decomp.U());
+				s.as_mut().copy_from(decomp.S().column_vector());
+				vt.as_mut().copy_from(decomp.V().transpose());
 			}
 
+			// ── Symmetric Eigen ──────────────────────────────────────
 			#[inline]
-			fn symmetric_eigen(&self) -> EigenResult<$t, Self> {
-				let eigen = self
+			fn symmetric_eigen(&self, eigenvalues: &mut Col<$t>, eigenvectors: &mut Self) {
+				let n = self.nrows();
+				debug_assert_eq!(self.ncols(), n);
+				debug_assert_eq!(eigenvalues.nrows(), n);
+				debug_assert_eq!((eigenvectors.nrows(), eigenvectors.ncols()), (n, n));
+
+				let decomp = self
 					.self_adjoint_eigen(Side::Lower)
 					.expect("Eigendecomposition failed");
-				let eigenvectors = eigen.U().to_owned();
-				let eigenvalues = eigen.S().column_vector().to_owned();
-
-				EigenResult {
-					eigenvalues,
-					eigenvectors,
-				}
+				eigenvalues.as_mut().copy_from(decomp.S().column_vector());
+				eigenvectors.as_mut().copy_from(decomp.U());
 			}
 
+			// ── Cholesky ─────────────────────────────────────────────
 			#[inline]
-			fn cholesky(&self) -> Option<CholeskyResult<$t, Self>> {
+			fn cholesky(&self, l: &mut Self) -> bool {
+				let n = self.nrows();
+				debug_assert_eq!(self.ncols(), n);
+				debug_assert_eq!((l.nrows(), l.ncols()), (n, n));
+
 				match self.llt(Side::Lower) {
 					Ok(llt) => {
-						let l = llt.L().to_owned();
-						Some(CholeskyResult::new(l))
+						l.as_mut().copy_from(llt.L());
+						true
 					}
-					Err(_) => None,
+					Err(_) => false,
 				}
 			}
 
+			// ── Inverse ──────────────────────────────────────────────
 			#[inline]
 			fn inverse(&self, result: &mut Self) -> bool {
 				let n = self.nrows();
@@ -850,6 +939,7 @@ macro_rules! impl_faer_decomposition_ops {
 				}
 			}
 
+			// ── Cholesky Solve ───────────────────────────────────────
 			#[inline]
 			fn cholesky_solve(&self, rhs: &Self, result: &mut Self) -> bool {
 				match self.llt(Side::Lower) {
@@ -960,10 +1050,12 @@ mod tests {
 	#[test]
 	fn test_svd() {
 		let m = <Mat<f64> as MatrixOps<f64>>::identity(3);
-		let svd = DecompositionOps::svd(&m);
-		assert!(svd.u.is_some());
+		let mut u = Mat::<f64>::zeros(3, 3);
+		let mut s = Col::<f64>::zeros(3);
+		let mut vt = Mat::<f64>::zeros(3, 3);
+		DecompositionOps::svd(&m, &mut u, &mut s, &mut vt);
 		for i in 0..3 {
-			assert!((VectorView::get(&svd.singular_values, i) - 1.0).abs() < 1e-10);
+			assert!((VectorView::get(&s, i) - 1.0).abs() < 1e-10);
 		}
 	}
 
@@ -971,8 +1063,10 @@ mod tests {
 	fn test_symmetric_eigen() {
 		let diag = <Col<f64> as VectorOps<f64>>::from_slice(&[3.0, 1.0, 2.0]);
 		let m = <Mat<f64> as MatrixOps<f64>>::from_diagonal(&diag);
-		let eigen = DecompositionOps::symmetric_eigen(&m);
-		let mut eigs: Vec<f64> = VectorView::iter(&eigen.eigenvalues).collect();
+		let mut eigenvalues = Col::<f64>::zeros(3);
+		let mut eigenvectors = Mat::<f64>::zeros(3, 3);
+		DecompositionOps::symmetric_eigen(&m, &mut eigenvalues, &mut eigenvectors);
+		let mut eigs: Vec<f64> = VectorView::iter(&eigenvalues).collect();
 		eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 		assert!((eigs[0] - 1.0).abs() < 1e-10);
 		assert!((eigs[1] - 2.0).abs() < 1e-10);
