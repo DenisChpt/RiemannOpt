@@ -1,48 +1,39 @@
-//! Automatic differentiation for Riemannian optimization.
+//! Zero-allocation reverse-mode automatic differentiation for
+//! Riemannian optimization.
 //!
-//! This crate provides a minimal autodiff engine tailored for Riemannian
-//! optimization. It supports forward and reverse mode differentiation with
-//! special handling for manifold operations.
-//!
-//! # Features
-//!
-//! - **Computation graphs**: Dynamic graph construction for flexible models
-//! - **Reverse mode AD**: Efficient gradient computation via backpropagation
-//! - **Manifold awareness**: Special operations for Riemannian manifolds
-//! - **Memory efficiency**: Gradient checkpointing and graph optimization
+//! This crate provides a typed buffer pool, flat instruction tape, and
+//! in-place VJP backward pass that integrates with the [`Problem`] trait
+//! from `riemannopt-core`.  After the first forward pass the entire
+//! forward–backward cycle runs without heap allocation.
 //!
 //! # Architecture
 //!
-//! The autodiff engine is built around three core components:
+//! * **[`BufferPool`]** — three typed arenas (scalars, vectors, matrices)
+//!   with O(1) cursor-based allocation and zero-cost reset.
+//! * **[`Tape`]** — a flat `Vec<Op>` of enum instructions.  No data,
+//!   no `dyn Trait`, no `Box`.
+//! * **[`AdSession`]** — user-facing API that owns pool + tape + grad pool.
+//!   Eagerly computes forward values and records ops for the backward pass.
+//! * **[`AutoDiffProblem`] / [`AutoDiffMatProblem`]** — implement
+//!   `Problem<T, M>` so any solver can optimise an AD-defined cost.
+//! * **[`Dual`]** — dual numbers for forward-mode AD (Hessian-vector
+//!   products via forward-over-reverse).
 //!
-//! 1. **Graph**: Manages the computation graph structure
-//! 2. **Operations**: Defines forward and backward operations
-//! 3. **Backward**: Implements the backpropagation algorithm
+//! [`Problem`]: riemannopt_core::problem::Problem
 
-pub mod graph;
-pub mod ops;
 pub mod backward;
-pub mod manifold_ops;
-pub mod broadcast;
-pub mod integration;
+pub mod dual;
+pub mod pool;
+pub mod problem;
+pub mod session;
+pub mod tape;
+pub mod var;
 
-// Re-export key types
-pub use graph::{Graph, Node, NodeId, Tensor, Variable};
-pub use ops::{Op, OpType};
-pub use backward::{backward, GradientMap};
-pub use manifold_ops::{
-    TangentProjection, StiefelProjection, SphereProjection,
-    SphereTangentProjection, ManifoldInnerProduct, ExponentialMap, LogarithmicMap,
-};
-pub use broadcast::{BroadcastAdd, BroadcastMultiply, broadcast_binary, unbroadcast};
-pub use integration::{ManifoldGraph, ManifoldFunction, ManifoldOptimizationProblem};
+// ── Public re-exports ────────────────────────────────────────────────
 
-/// Prelude module for convenient imports.
-pub mod prelude {
-    pub use crate::graph::{Graph, Node, NodeId, Tensor, Variable};
-    pub use crate::ops::{Op, OpType};
-    pub use crate::backward::{backward, GradientMap};
-    pub use crate::manifold_ops::*;
-    pub use crate::broadcast::{BroadcastAdd, BroadcastMultiply};
-    pub use crate::integration::{ManifoldGraph, ManifoldFunction, ManifoldOptimizationProblem};
-}
+pub use dual::Dual;
+pub use pool::BufferPool;
+pub use problem::{AutoDiffMatProblem, AutoDiffProblem};
+pub use session::AdSession;
+pub use tape::{Op, Tape};
+pub use var::{MVar, SVar, VVar};

@@ -15,8 +15,6 @@ description = "High-performance Riemannian optimization in Rust"
 
 [dependencies]
 riemannopt-core = { path = "../riemannopt-core", version = "0.1.0" }
-riemannopt-manifolds = { path = "../riemannopt-manifolds", version = "0.1.0" }
-riemannopt-optim = { path = "../riemannopt-optim", version = "0.1.0" }
 riemannopt-autodiff = { path = "../riemannopt-autodiff", version = "0.1.0", optional = true }
 
 # Re-export key dependencies
@@ -24,10 +22,10 @@ nalgebra = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["riemannopt-core/std", "riemannopt-manifolds/std", "riemannopt-optim/std"]
-parallel = ["riemannopt-manifolds/parallel", "riemannopt-optim/parallel"]
+std = ["riemannopt-core/std"]
+parallel = ["riemannopt-core/parallel"]
 autodiff = ["riemannopt-autodiff"]
-serde = ["riemannopt-core/serde", "riemannopt-manifolds/serde", "riemannopt-optim/serde"]
+serde = ["riemannopt-core/serde"]
 full = ["std", "parallel", "autodiff", "serde"]
 
 [dev-dependencies]
