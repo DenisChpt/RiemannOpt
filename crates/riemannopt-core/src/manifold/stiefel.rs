@@ -91,8 +91,8 @@ fn fill_random<T: Scalar, B: LinAlgBackend<T>>(mat: &mut B::Matrix, nrows: usize
 	let normal = StandardNormal;
 	for j in 0..ncols {
 		let col = mat.column_as_mut_slice(j);
-		for i in 0..nrows {
-			col[i] = <T as Scalar>::from_f64(normal.sample(&mut rng));
+		for val in &mut col[..nrows] {
+			*val = <T as Scalar>::from_f64(normal.sample(&mut rng));
 		}
 	}
 }

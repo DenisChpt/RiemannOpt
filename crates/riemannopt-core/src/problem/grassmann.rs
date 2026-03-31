@@ -270,8 +270,7 @@ where
 		let mut l1_cost = T::zero();
 
 		let r_slice = ws.residual.as_slice();
-		for k in 0..n * m {
-			let rk = r_slice[k];
+		for &rk in &r_slice[..n * m] {
 			frobenius_sq += rk * rk;
 			if self.mu > T::zero() {
 				l1_cost += huber(rk, self.huber_delta);
@@ -310,8 +309,7 @@ where
 		let mut frobenius_sq = T::zero();
 		let mut l1_cost = T::zero();
 		let r_slice = ws.residual.as_slice();
-		for k in 0..n * m {
-			let rk = r_slice[k];
+		for &rk in &r_slice[..n * m] {
 			frobenius_sq += rk * rk;
 			if self.mu > T::zero() {
 				l1_cost += huber(rk, self.huber_delta);
@@ -344,8 +342,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> RobustPCA<T, B> {
 			let m = self.data.ncols();
 
 			let r_slice = ws.residual.as_mut_slice();
-			for k in 0..n * m {
-				r_slice[k] = huber_deriv(r_slice[k], self.huber_delta);
+			for val in &mut r_slice[..n * m] {
+				*val = huber_deriv(*val, self.huber_delta);
 			}
 
 			ws.tmp_np

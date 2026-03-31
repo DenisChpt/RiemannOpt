@@ -338,8 +338,7 @@ impl<T: Scalar, B: LinAlgBackend<T>> GaussianMixtureCovariance<T, B> {
 		debug_assert_eq!(responsibilities.len(), m);
 		let mut scatter = B::Matrix::zeros(n, n);
 		let mut n_eff = T::zero();
-		for j in 0..m {
-			let gamma = responsibilities[j];
+		for (j, &gamma) in responsibilities[..m].iter().enumerate() {
 			n_eff += gamma;
 			for r in 0..n {
 				let dr = data.get(r, j) - mean.get(r);

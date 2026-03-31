@@ -101,11 +101,11 @@ pub fn adam(learning_rate: f64, beta1: f64, beta2: f64, epsilon: f64) -> PySolve
 #[pyfunction]
 #[pyo3(signature = (memory=10))]
 pub fn lbfgs(memory: usize) -> PySolver {
-	let mut config = LBFGSConfig::default();
-	config.memory_size = memory;
-
 	PySolver {
-		inner: DynSolver::LBFGS(LBFGS::new(config)),
+		inner: DynSolver::LBFGS(LBFGS::new(LBFGSConfig {
+			memory_size: memory,
+			..LBFGSConfig::default()
+		})),
 	}
 }
 

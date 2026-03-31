@@ -101,8 +101,8 @@ where
 			let res_j = result.column_as_mut_slice(j);
 			if norm > T::EPSILON {
 				let inv_norm = T::one() / norm;
-				for i in 0..self.n {
-					res_j[i] = point.get(i, j) * inv_norm;
+				for (i, val) in res_j[..self.n].iter_mut().enumerate() {
+					*val = point.get(i, j) * inv_norm;
 				}
 			} else {
 				res_j.fill(T::zero());
@@ -125,8 +125,8 @@ where
 			let inner = x_j.dot(&v_j);
 
 			let res_j = result.column_as_mut_slice(j);
-			for i in 0..self.n {
-				res_j[i] = vector.get(i, j) - inner * point.get(i, j);
+			for (i, val) in res_j[..self.n].iter_mut().enumerate() {
+				*val = vector.get(i, j) - inner * point.get(i, j);
 			}
 		}
 	}
@@ -154,10 +154,10 @@ where
 		for j in 0..self.p {
 			let res_j_slice = result.column_as_mut_slice(j);
 			let mut norm_sq = T::zero();
-			for i in 0..self.n {
-				let val = point.get(i, j) + tangent.get(i, j);
-				res_j_slice[i] = val;
-				norm_sq += val * val;
+			for (i, dst) in res_j_slice[..self.n].iter_mut().enumerate() {
+				let v = point.get(i, j) + tangent.get(i, j);
+				*dst = v;
+				norm_sq += v * v;
 			}
 			let norm = norm_sq.sqrt();
 			let inv_norm = if norm > T::EPSILON {
@@ -165,8 +165,8 @@ where
 			} else {
 				T::one()
 			};
-			for i in 0..self.n {
-				res_j_slice[i] *= inv_norm;
+			for dst in &mut res_j_slice[..self.n] {
+				*dst *= inv_norm;
 			}
 		}
 	}
@@ -202,9 +202,9 @@ where
 			let inner_hvp = x_j.dot(&ehvp_j);
 
 			let res_j = result.column_as_mut_slice(j);
-			for i in 0..self.n {
+			for (i, val) in res_j[..self.n].iter_mut().enumerate() {
 				let proj_hvp = ehvp.get(i, j) - inner_hvp * point.get(i, j);
-				res_j[i] = proj_hvp - inner_eg * xi.get(i, j);
+				*val = proj_hvp - inner_eg * xi.get(i, j);
 			}
 		}
 	}
@@ -257,13 +257,13 @@ where
 			if theta < T::SMALL_ANGLE_THRESHOLD {
 				// Taylor: θ/sin(θ) ≈ 1 + θ²/6
 				let scale = T::one() + theta * theta * <T as Scalar>::from_f64(1.0 / 6.0);
-				for i in 0..self.n {
-					res_j[i] = scale * (other.get(i, j) - inner * point.get(i, j));
+				for (i, val) in res_j[..self.n].iter_mut().enumerate() {
+					*val = scale * (other.get(i, j) - inner * point.get(i, j));
 				}
 			} else {
 				let scale = theta / theta.sin();
-				for i in 0..self.n {
-					res_j[i] = scale * (other.get(i, j) - inner * point.get(i, j));
+				for (i, val) in res_j[..self.n].iter_mut().enumerate() {
+					*val = scale * (other.get(i, j) - inner * point.get(i, j));
 				}
 			}
 		}
@@ -285,8 +285,8 @@ where
 			let v_j = vector.column(j);
 			let inner = y_j.dot(&v_j);
 			let res_j = result.column_as_mut_slice(j);
-			for i in 0..self.n {
-				res_j[i] = vector.get(i, j) - inner * to.get(i, j);
+			for (i, val) in res_j[..self.n].iter_mut().enumerate() {
+				*val = vector.get(i, j) - inner * to.get(i, j);
 			}
 		}
 	}
@@ -297,14 +297,14 @@ where
 		for j in 0..self.p {
 			let res_j = result.column_as_mut_slice(j);
 			let mut norm_sq = T::zero();
-			for i in 0..self.n {
+			for val in &mut res_j[..self.n] {
 				let v = <T as Scalar>::from_f64(normal.sample(&mut rng));
-				res_j[i] = v;
+				*val = v;
 				norm_sq += v * v;
 			}
 			let inv = T::one() / norm_sq.sqrt();
-			for i in 0..self.n {
-				res_j[i] *= inv;
+			for val in &mut res_j[..self.n] {
+				*val *= inv;
 			}
 		}
 	}
@@ -317,15 +317,15 @@ where
 			let res_j = result.column_as_mut_slice(j);
 			let mut inner = T::zero();
 
-			for i in 0..self.n {
+			for (i, val) in res_j[..self.n].iter_mut().enumerate() {
 				let v = <T as Scalar>::from_f64(normal.sample(&mut rng));
-				res_j[i] = v;
+				*val = v;
 				inner += point.get(i, j) * v;
 			}
 
 			// Projection tangentielle : v_j = v_j - <x_j, v_j> x_j
-			for i in 0..self.n {
-				res_j[i] -= inner * point.get(i, j);
+			for (i, val) in res_j[..self.n].iter_mut().enumerate() {
+				*val -= inner * point.get(i, j);
 			}
 		}
 
