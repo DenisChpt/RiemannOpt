@@ -57,6 +57,11 @@ macro_rules! impl_faer_vector_view_for_colref {
 			}
 
 			#[inline]
+			fn is_empty(&self) -> bool {
+				self.nrows() == 0
+			}
+
+			#[inline]
 			fn get(&self, i: usize) -> $t {
 				self[i]
 			}
@@ -97,6 +102,11 @@ macro_rules! impl_faer_vector_view_for_col {
 			#[inline]
 			fn len(&self) -> usize {
 				self.nrows()
+			}
+
+			#[inline]
+			fn is_empty(&self) -> bool {
+				self.nrows() == 0
 			}
 
 			#[inline]
@@ -202,6 +212,41 @@ macro_rules! impl_faer_vector_ops {
 			#[inline]
 			fn scale_mut(&mut self, alpha: $t) {
 				*self *= faer::Scale(alpha);
+			}
+
+			#[inline]
+			fn div_scalar_mut(&mut self, alpha: $t) {
+				*self *= faer::Scale(1.0 / alpha);
+			}
+
+			#[inline]
+			fn add(&self, other: &Self) -> Self {
+				self + other
+			}
+
+			#[inline]
+			fn sub(&self, other: &Self) -> Self {
+				self - other
+			}
+
+			#[inline]
+			fn neg(&self) -> Self {
+				-self
+			}
+
+			#[inline]
+			fn component_mul(&self, other: &Self) -> Self {
+				Col::from_fn(self.nrows(), |i| self[i] * other[i])
+			}
+
+			#[inline]
+			fn add_assign(&mut self, other: &Self) {
+				*self += other;
+			}
+
+			#[inline]
+			fn sub_assign(&mut self, other: &Self) {
+				*self -= other;
 			}
 
 			#[inline]
@@ -650,6 +695,19 @@ macro_rules! impl_faer_matrix_ops {
 			}
 
 			#[inline]
+			fn mat_vec_into(&self, x: &Self::Col, y: &mut Self::Col) {
+				let par = faer::get_global_parallelism();
+				faer::linalg::matmul::matmul(
+					y.as_mut().as_mat_mut(),
+					faer::Accum::Replace,
+					self.as_ref(),
+					x.as_ref().as_mat(),
+					1.0 as $t,
+					par,
+				);
+			}
+
+			#[inline]
 			fn ger(&mut self, alpha: $t, x: &Self::Col, y: &Self::Col) {
 				// self += alpha * x * y^T  (rank-1 update)
 				// Uses faer's native matmul with column-as-matrix views.
@@ -679,6 +737,19 @@ macro_rules! impl_faer_matrix_ops {
 			#[inline]
 			fn sub_assign(&mut self, other: &Self) {
 				*self -= other;
+			}
+
+			#[inline]
+			fn add_transpose_of(&mut self, alpha: $t, src: &Self) {
+				let src_t = src.as_ref().transpose();
+				faer::zip!(self.as_mut(), src_t).for_each(|faer::unzip!(d, s)| {
+					*d += alpha * *s;
+				});
+			}
+
+			#[inline]
+			fn transpose_into(&self, dst: &mut Self) {
+				dst.as_mut().copy_from(self.as_ref().transpose());
 			}
 
 			// ── GEMM (view operands) ─────────────────────────────────

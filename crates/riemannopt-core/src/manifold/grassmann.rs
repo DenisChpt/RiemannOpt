@@ -207,11 +207,7 @@ where
 		v: &Self::TangentVector,
 		_ws: &mut Self::Workspace,
 	) -> T {
-		let mut inner = T::zero();
-		for j in 0..self.p {
-			inner = inner + MatrixView::column(u, j).dot(&MatrixView::column(v, j));
-		}
-		inner
+		u.frobenius_dot(v)
 	}
 
 	#[inline]

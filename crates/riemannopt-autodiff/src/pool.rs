@@ -269,9 +269,7 @@ impl<T: RealScalar, B: LinAlgBackend<T>> BufferPool<T, B> {
 
 	/// Ensures the pool has at least `n` scalar slots, all zeroed.
 	pub fn ensure_scalars_zeroed(&mut self, n: usize) {
-		while self.scalars.len() < n {
-			self.scalars.push(T::zero());
-		}
+		self.scalars.resize(n, T::zero());
 		for s in &mut self.scalars[..n] {
 			*s = T::zero();
 		}

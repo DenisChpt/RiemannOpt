@@ -44,6 +44,11 @@ where
 	}
 
 	#[inline]
+	fn is_empty(&self) -> bool {
+		self.nrows() == 0
+	}
+
+	#[inline]
 	fn get(&self, i: usize) -> T {
 		self[i]
 	}
@@ -79,6 +84,11 @@ where
 	#[inline]
 	fn len(&self) -> usize {
 		self.nrows()
+	}
+
+	#[inline]
+	fn is_empty(&self) -> bool {
+		self.nrows() == 0
 	}
 
 	#[inline]
@@ -165,6 +175,51 @@ where
 		*self *= alpha;
 	}
 
+	#[inline]
+	fn div_scalar_mut(&mut self, alpha: T) {
+		*self /= alpha;
+	}
+
+	#[inline]
+	fn add(&self, other: &Self) -> Self {
+		self + other
+	}
+
+	#[inline]
+	fn sub(&self, other: &Self) -> Self {
+		self - other
+	}
+
+	#[inline]
+	fn neg(&self) -> Self {
+		-self
+	}
+
+	#[inline]
+	fn component_mul(&self, other: &Self) -> Self {
+		nalgebra::Matrix::component_mul(self, other)
+	}
+
+	#[inline]
+	fn add_assign(&mut self, other: &Self) {
+		*self += other;
+	}
+
+	#[inline]
+	fn sub_assign(&mut self, other: &Self) {
+		*self -= other;
+	}
+
+	#[inline]
+	fn component_mul_assign(&mut self, other: &Self) {
+		nalgebra::Matrix::component_mul_assign(self, other);
+	}
+
+	#[inline]
+	fn component_div_assign(&mut self, other: &Self) {
+		nalgebra::Matrix::component_div_assign(self, other);
+	}
+
 	fn map(&self, mut f: impl FnMut(T) -> T) -> Self {
 		nalgebra::Matrix::map(self, |x| f(x))
 	}
@@ -219,6 +274,14 @@ where
 		}
 		t
 	}
+
+	fn column_dot(&self, j: usize, other: &Self, k: usize) -> T {
+		nalgebra::Matrix::column(self, j).dot(&nalgebra::Matrix::column(other, k))
+	}
+
+	fn frobenius_dot(&self, other: &Self) -> T {
+		nalgebra::Matrix::dot(self, other)
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -269,6 +332,14 @@ where
 			t = t + self[(i, i)];
 		}
 		t
+	}
+
+	fn column_dot(&self, j: usize, other: &Self, k: usize) -> T {
+		nalgebra::Matrix::column(self, j).dot(&nalgebra::Matrix::column(other, k))
+	}
+
+	fn frobenius_dot(&self, other: &Self) -> T {
+		nalgebra::Matrix::dot(self, other)
 	}
 }
 
@@ -375,6 +446,12 @@ where
 		nalgebra::Matrix::as_mut_slice(self)
 	}
 
+	fn column_as_mut_slice(&mut self, j: usize) -> &mut [T] {
+		let nrows = nalgebra::Matrix::nrows(self);
+		let start = j * nrows;
+		&mut nalgebra::Matrix::as_mut_slice(self)[start..start + nrows]
+	}
+
 	// ── In-place mutations ───────────────────────────────────────────
 
 	#[inline]
@@ -390,6 +467,15 @@ where
 	#[inline]
 	fn scale_mut(&mut self, alpha: T) {
 		*self *= alpha;
+	}
+
+	fn scale_columns(&mut self, source: &Self, diag: &Self::Col) {
+		for j in 0..nalgebra::Matrix::ncols(self) {
+			let d = diag[j];
+			for i in 0..nalgebra::Matrix::nrows(self) {
+				self[(i, j)] = source[(i, j)] * d;
+			}
+		}
 	}
 
 	// ── Allocating arithmetic ────────────────────────────────────────
@@ -432,6 +518,30 @@ where
 
 	fn sub_assign(&mut self, other: &Self) {
 		*self -= other;
+	}
+
+	fn mat_axpy(&mut self, alpha: T, x: &Self, beta: T) {
+		*self *= beta;
+		*self += x * alpha;
+	}
+
+	fn mat_component_mul_assign(&mut self, other: &Self) {
+		nalgebra::Matrix::component_mul_assign(self, other);
+	}
+
+	fn mat_vec_into(&self, x: &Self::Col, y: &mut Self::Col) {
+		y.gemv(T::one(), self, x, T::zero());
+	}
+
+	#[inline]
+	fn add_transpose_of(&mut self, alpha: T, src: &Self) {
+		let src_t = src.transpose();
+		self.zip_apply(&src_t, |d, s| *d += alpha * s);
+	}
+
+	#[inline]
+	fn transpose_into(&self, dst: &mut Self) {
+		dst.copy_from(&self.transpose());
 	}
 
 	// ── GEMM (view operands) ─────────────────────────────────────────
