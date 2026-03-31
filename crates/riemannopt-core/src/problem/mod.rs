@@ -7,12 +7,9 @@
 //! # Design Principles
 //!
 //! 1. **Zero allocation** — all outputs are written into caller-provided `&mut` buffers.
-//! 2. **Infallible** — no `Result`. If the point is off-manifold, that's a solver bug
-//!    caught by `debug_assert!`, not a runtime error on the fast path.
-//! 3. **Riemannian-native** — `riemannian_gradient` returns a vector in T_x ℳ,
-//!    never a raw Euclidean gradient. The projection is the problem's responsibility.
-//! 4. **Backend-agnostic** — generic over `M: Manifold<T>`, inheriting the backend
-//!    from the manifold's associated types.
+//! 2. **Infallible** — no `Result`. If the point is off-manifold, that's a solver bug.
+//! 3. **Riemannian-native** — `riemannian_gradient` returns a vector in T_x ℳ.
+//! 4. **Backend-agnostic** — generic over `M: Manifold<T>`.
 //! 5. **Shared workspace** — intermediate buffers live in `Problem::Workspace`,
 //!    allocated once by the solver and reused every iteration.
 
@@ -42,8 +39,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// * `T` — scalar type (f32 or f64)
 /// * `M` — the manifold on which the problem is defined
 pub trait Problem<T: Scalar, M: Manifold<T>>: Debug {
-	/// Opaque workspace for intermediate computations (e.g. Euclidean
-	/// gradient buffer before projection). Use `()` if none needed.
+	/// Opaque workspace for intermediate computations.
+	/// Use `()` if none needed.
 	type Workspace: Default + Send + Sync;
 
 	/// Allocates a workspace sized for the given prototype point.
@@ -54,14 +51,12 @@ pub trait Problem<T: Scalar, M: Manifold<T>>: Debug {
 		Self::Workspace::default()
 	}
 
-	/// Evaluates the objective function f(x).
-	fn cost(&self, point: &M::Point) -> T;
+	/// Evaluates the objective function f(x). **Zero allocation** when
+	/// workspaces are properly sized.
+	fn cost(&self, point: &M::Point, ws: &mut Self::Workspace, manifold_ws: &mut M::Workspace)
+		-> T;
 
 	/// Computes the Riemannian gradient grad f(x) ∈ T_x ℳ in-place.
-	///
-	/// The result **must** be a valid tangent vector. If the underlying
-	/// computation yields a Euclidean gradient, this method must project
-	/// it via `manifold.euclidean_to_riemannian_gradient`.
 	fn riemannian_gradient(
 		&self,
 		manifold: &M,
@@ -73,8 +68,7 @@ pub trait Problem<T: Scalar, M: Manifold<T>>: Debug {
 
 	/// Evaluates both cost and Riemannian gradient.
 	///
-	/// Override this when cost and gradient share intermediate computations
-	/// (e.g. the matrix-vector product A·x in a quadratic).
+	/// Override when cost and gradient share intermediate computations.
 	#[inline]
 	fn cost_and_gradient(
 		&self,
@@ -84,14 +78,14 @@ pub trait Problem<T: Scalar, M: Manifold<T>>: Debug {
 		ws: &mut Self::Workspace,
 		manifold_ws: &mut M::Workspace,
 	) -> T {
-		let c = self.cost(point);
+		let c = self.cost(point, ws, manifold_ws);
 		self.riemannian_gradient(manifold, point, gradient, ws, manifold_ws);
 		c
 	}
 
 	/// Computes the Riemannian Hessian-vector product Hess f(x)[ξ] in-place.
 	///
-	/// Required only by second-order solvers (trust-region, Newton).
+	/// Required only by second-order solvers.
 	/// Default panics at runtime.
 	#[inline]
 	fn riemannian_hessian_vector_product(
@@ -110,26 +104,19 @@ pub trait Problem<T: Scalar, M: Manifold<T>>: Debug {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Counting wrapper (profiling / debugging)
+//  Counting wrapper
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Transparent wrapper that counts cost, gradient, and Hessian evaluations.
-///
-/// Useful for benchmarking and verifying that solvers don't waste evaluations.
 #[derive(Debug)]
 pub struct CountingProblem<P> {
-	/// The underlying problem.
 	pub inner: P,
-	/// Number of cost evaluations.
 	pub cost_count: AtomicUsize,
-	/// Number of gradient evaluations.
 	pub gradient_count: AtomicUsize,
-	/// Number of Hessian-vector product evaluations.
 	pub hessian_count: AtomicUsize,
 }
 
 impl<P> CountingProblem<P> {
-	/// Wraps an existing problem with evaluation counters.
 	pub fn new(inner: P) -> Self {
 		Self {
 			inner,
@@ -139,14 +126,12 @@ impl<P> CountingProblem<P> {
 		}
 	}
 
-	/// Resets all counters to zero.
 	pub fn reset_counts(&self) {
 		self.cost_count.store(0, Ordering::Relaxed);
 		self.gradient_count.store(0, Ordering::Relaxed);
 		self.hessian_count.store(0, Ordering::Relaxed);
 	}
 
-	/// Returns (cost_evals, gradient_evals, hessian_evals).
 	pub fn counts(&self) -> (usize, usize, usize) {
 		(
 			self.cost_count.load(Ordering::Relaxed),
@@ -170,9 +155,14 @@ where
 	}
 
 	#[inline]
-	fn cost(&self, point: &M::Point) -> T {
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		manifold_ws: &mut M::Workspace,
+	) -> T {
 		self.cost_count.fetch_add(1, Ordering::Relaxed);
-		self.inner.cost(point)
+		self.inner.cost(point, ws, manifold_ws)
 	}
 
 	#[inline]
@@ -227,29 +217,22 @@ where
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Quadratic cost (testing & eigenvalue problems)
+//  Quadratic cost
 // ════════════════════════════════════════════════════════════════════════════
 
 use crate::linalg::{LinAlgBackend, MatrixOps, VectorOps, VectorView};
 use std::marker::PhantomData;
 
-/// Quadratic cost f(x) = ½ x^T A x + b^T x + c.
-///
-/// On the sphere, minimizing this is equivalent to finding the smallest
-/// eigenvector of A (Rayleigh quotient). Generic over the backend.
+/// Quadratic cost f(x) = ½ xᵀAx + bᵀx + c.
 #[derive(Debug, Clone)]
 pub struct QuadraticCost<T: Scalar, B: LinAlgBackend<T>> {
-	/// Symmetric matrix A.
 	pub a: B::Matrix,
-	/// Linear term b.
 	pub b: B::Vector,
-	/// Constant term c.
 	pub c: T,
 	_phantom: PhantomData<B>,
 }
 
 impl<T: Scalar, B: LinAlgBackend<T>> QuadraticCost<T, B> {
-	/// Creates a new quadratic cost f(x) = ½ x^T A x + b^T x + c.
 	pub fn new(a: B::Matrix, b: B::Vector, c: T) -> Self {
 		Self {
 			a,
@@ -260,11 +243,13 @@ impl<T: Scalar, B: LinAlgBackend<T>> QuadraticCost<T, B> {
 	}
 }
 
-/// Workspace for [`QuadraticCost`]: buffers for Euclidean gradient and HVP.
+/// Workspace for [`QuadraticCost`].
 pub struct QuadraticWorkspace<T: Scalar, B: LinAlgBackend<T>> {
+	/// Buffer for A·x (reused by cost and gradient).
+	pub ax: B::Vector,
 	/// Buffer for the Euclidean gradient (A·x + b).
 	pub egrad: B::Vector,
-	/// Buffer for the Euclidean Hessian-vector product (A·ξ).
+	/// Buffer for the Euclidean HVP (A·ξ).
 	pub ehvp: B::Vector,
 	_phantom: PhantomData<T>,
 }
@@ -272,6 +257,7 @@ pub struct QuadraticWorkspace<T: Scalar, B: LinAlgBackend<T>> {
 impl<T: Scalar, B: LinAlgBackend<T>> Default for QuadraticWorkspace<T, B> {
 	fn default() -> Self {
 		Self {
+			ax: <B::Vector as VectorOps<T>>::zeros(0),
 			egrad: <B::Vector as VectorOps<T>>::zeros(0),
 			ehvp: <B::Vector as VectorOps<T>>::zeros(0),
 			_phantom: PhantomData,
@@ -279,7 +265,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for QuadraticWorkspace<T, B> {
 	}
 }
 
-// SAFETY: B::Vector: Send + Sync is guaranteed by VectorOps: Send + Sync
 unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for QuadraticWorkspace<T, B> where B::Vector: Send {}
 unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for QuadraticWorkspace<T, B> where B::Vector: Sync {}
 
@@ -294,6 +279,7 @@ where
 	fn create_workspace(&self, _manifold: &M, proto_point: &M::Point) -> Self::Workspace {
 		let n = VectorView::len(proto_point);
 		QuadraticWorkspace {
+			ax: B::Vector::zeros(n),
 			egrad: B::Vector::zeros(n),
 			ehvp: B::Vector::zeros(n),
 			_phantom: PhantomData,
@@ -301,12 +287,15 @@ where
 	}
 
 	#[inline]
-	fn cost(&self, point: &M::Point) -> T {
-		// f(x) = ½ x^T A x + b^T x + c
-		// Reuse nothing here — cost-only calls are rare in practice.
-		// For the hot path, use cost_and_gradient which shares A·x.
-		let ax = self.a.mat_vec(point);
-		let quad = point.dot(&ax) * <T as Scalar>::from_f64(0.5);
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
+		// A·x → ws.ax  (zero alloc, reusable by cost_and_gradient)
+		self.a.mat_vec_into(point, &mut ws.ax);
+		let quad = point.dot(&ws.ax) * <T as Scalar>::from_f64(0.5);
 		let lin = self.b.dot(point);
 		quad + lin + self.c
 	}
@@ -319,11 +308,9 @@ where
 		ws: &mut Self::Workspace,
 		manifold_ws: &mut M::Workspace,
 	) {
-		// 1. Euclidean gradient: ∇f(x) = A·x + b → ws.egrad  (zero alloc)
+		// ∇f = A·x + b
 		self.a.mat_vec_into(point, &mut ws.egrad);
 		ws.egrad.add_assign(&self.b);
-
-		// 2. Project to tangent space → result
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, result, manifold_ws);
 	}
 
@@ -335,16 +322,14 @@ where
 		ws: &mut Self::Workspace,
 		manifold_ws: &mut M::Workspace,
 	) -> T {
-		// A·x → ws.egrad  (shared between cost and gradient, zero alloc)
+		// A·x → ws.egrad  (shared)
 		self.a.mat_vec_into(point, &mut ws.egrad);
 
-		// Cost: ½ x^T (A·x) + b^T x + c
+		// Cost: ½ xᵀ(A·x) + bᵀx + c
 		let cost = point.dot(&ws.egrad) * <T as Scalar>::from_f64(0.5) + self.b.dot(point) + self.c;
 
-		// Euclidean gradient: A·x + b (in-place on ws.egrad)
+		// Gradient: A·x + b
 		ws.egrad.add_assign(&self.b);
-
-		// Project to tangent space
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, gradient, manifold_ws);
 
 		cost
@@ -359,14 +344,13 @@ where
 		ws: &mut Self::Workspace,
 		manifold_ws: &mut M::Workspace,
 	) {
-		// Euclidean HVP: ∇²f · ξ = A · ξ → ws.ehvp  (zero alloc)
+		// A·ξ → ws.ehvp
 		self.a.mat_vec_into(vector, &mut ws.ehvp);
 
-		// Euclidean gradient (needed for curvature correction) → ws.egrad
+		// Euclidean gradient (for curvature correction)
 		self.a.mat_vec_into(point, &mut ws.egrad);
 		ws.egrad.add_assign(&self.b);
 
-		// Convert to Riemannian HVP (includes Weingarten / curvature correction)
 		manifold.euclidean_to_riemannian_hessian(
 			point,
 			&ws.egrad,
@@ -379,13 +363,10 @@ where
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  Derivative checker (validation utility)
+//  Derivative checker
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Utility for validating gradient implementations against finite differences.
-///
-/// Unlike naive ambient-space FD, this uses retraction along tangent directions
-/// to stay on the manifold: grad f(x) · ξ ≈ (f(R_x(hξ)) − f(R_x(−hξ))) / 2h.
+/// Validates gradient implementations against finite differences on the manifold.
 pub struct DerivativeChecker;
 
 impl DerivativeChecker {
@@ -401,36 +382,31 @@ impl DerivativeChecker {
 	{
 		let h = T::FD_CENTRAL_STEP;
 
-		// Compute analytical gradient
 		let mut grad = manifold.allocate_tangent();
 		let mut ws = problem.create_workspace(manifold, point);
 		let mut mws = manifold.create_workspace(point);
 		problem.riemannian_gradient(manifold, point, &mut grad, &mut ws, &mut mws);
 
-		// Random tangent direction
 		let mut xi = manifold.allocate_tangent();
 		manifold.random_tangent(point, &mut xi);
 
-		// Analytical directional derivative: ⟨grad f, ξ⟩
+		// Analytical: ⟨grad f, ξ⟩
 		let analytical = manifold.inner_product(point, &grad, &xi, &mut mws);
 
-		// Numerical directional derivative via retraction
+		// Numerical: (f(R(hξ)) − f(R(−hξ))) / 2h
 		let mut point_plus = manifold.allocate_point();
 		let mut point_minus = manifold.allocate_point();
 
-		// h·ξ
 		manifold.scale_tangent(h, &mut xi);
 		manifold.retract(point, &xi, &mut point_plus, &mut mws);
 
-		// −h·ξ
 		manifold.scale_tangent(-T::one(), &mut xi);
 		manifold.retract(point, &xi, &mut point_minus, &mut mws);
 
-		let f_plus = problem.cost(&point_plus);
-		let f_minus = problem.cost(&point_minus);
+		let f_plus = problem.cost(&point_plus, &mut ws, &mut mws);
+		let f_minus = problem.cost(&point_minus, &mut ws, &mut mws);
 		let numerical = (f_plus - f_minus) / (h + h);
 
-		// Relative error
 		let denom = T::one().max(analytical.abs().max(numerical.abs()));
 		let error = (analytical - numerical).abs() / denom;
 
@@ -444,11 +420,9 @@ mod tests {
 
 	#[test]
 	fn test_counting_problem_counters() {
-		// Verify counters initialize and reset correctly
 		#[derive(Debug)]
 		struct DummyProblem;
 
-		// CountingProblem wraps any type
 		let counting = CountingProblem::new(DummyProblem);
 		assert_eq!(counting.counts(), (0, 0, 0));
 

@@ -114,11 +114,16 @@ where
 		}
 	}
 
-	fn cost(&self, point: &M::Point) -> T {
-		let mut session = AdSession::<T, B>::new();
-		let x = session.input_vector(point);
-		let loss = (self.f)(&mut session, x);
-		session.scalar_value(loss)
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
+		ws.session.reset();
+		let x = ws.session.input_vector(point);
+		let loss = (self.f)(&mut ws.session, x);
+		ws.session.scalar_value(loss)
 	}
 
 	fn riemannian_gradient(
@@ -282,11 +287,16 @@ where
 		}
 	}
 
-	fn cost(&self, point: &M::Point) -> T {
-		let mut session = AdSession::<T, B>::new();
-		let x = session.input_matrix(point);
-		let loss = (self.f)(&mut session, x);
-		session.scalar_value(loss)
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
+		ws.session.reset();
+		let x = ws.session.input_matrix(point);
+		let loss = (self.f)(&mut ws.session, x);
+		ws.session.scalar_value(loss)
 	}
 
 	fn riemannian_gradient(

@@ -1,10 +1,4 @@
 //! Optimization problems on the SPD manifold S⁺⁺(n).
-//!
-//! # Problems
-//!
-//! - [`FrechetMean`] — Fréchet/Karcher mean of covariance matrices
-//! - [`MetricLearning`] — Mahalanobis distance metric learning
-//! - [`GaussianMixtureCovariance`] — Covariance estimation for GMMs
 
 use std::marker::PhantomData;
 
@@ -21,7 +15,6 @@ use crate::{
 //  Fréchet Mean
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Fréchet / Karcher mean of SPD matrices under the affine-invariant metric.
 #[derive(Debug, Clone)]
 pub struct FrechetMean<T: Scalar, B: LinAlgBackend<T>> {
 	pub matrices: Vec<B::Matrix>,
@@ -33,10 +26,9 @@ impl<T: Scalar, B: LinAlgBackend<T>> FrechetMean<T, B> {
 	pub fn uniform(matrices: Vec<B::Matrix>) -> Self {
 		let k = matrices.len();
 		let w = T::one() / <T as RealScalar>::from_usize(k);
-		let weights = vec![w; k];
 		Self {
 			matrices,
-			weights,
+			weights: vec![w; k],
 			_phantom: PhantomData,
 		}
 	}
@@ -50,14 +42,9 @@ impl<T: Scalar, B: LinAlgBackend<T>> FrechetMean<T, B> {
 		}
 	}
 
-	/// Computes log(A⁻¹B) via eigendecomposition for SPD A, B.
-	///
-	/// Uses pre-allocated buffers from `FrechetMeanWorkspace` to avoid
-	/// heap allocation in the gradient loop.
 	fn log_inv_product(
 		a: &B::Matrix,
 		b: &B::Matrix,
-		// workspace buffers (all n×n + n-vector):
 		a_inv: &mut B::Matrix,
 		product: &mut B::Matrix,
 		eigenvalues: &mut B::Vector,
@@ -66,18 +53,9 @@ impl<T: Scalar, B: LinAlgBackend<T>> FrechetMean<T, B> {
 		result: &mut B::Matrix,
 	) {
 		let n = MatrixView::nrows(a);
-
-		// A⁻¹
 		a.inverse(a_inv);
-
-		// product = A⁻¹ B
 		product.gemm(T::one(), a_inv.as_view(), b.as_view(), T::zero());
-
-		// Eigendecompose product (symmetric since A⁻¹B ~ A^{-1/2}BA^{-1/2})
-		product.symmetric_eigen(eigenvalues, eigenvectors);
-
-		// tmp = Q · diag(log λ)
-		// We build this column by column: tmp[:,i] = log(λᵢ) · eigenvectors[:,i]
+		DecompositionOps::symmetric_eigen(product, eigenvalues, eigenvectors);
 		tmp.fill(T::zero());
 		for i in 0..n {
 			let log_li = eigenvalues.get(i).max(T::EPSILON).ln();
@@ -85,27 +63,17 @@ impl<T: Scalar, B: LinAlgBackend<T>> FrechetMean<T, B> {
 				*tmp.get_mut(r, i) = log_li * eigenvectors.get(r, i);
 			}
 		}
-
-		// result = tmp · Qᵀ = Q diag(log λ) Qᵀ
 		result.gemm_bt(T::one(), tmp.as_view(), eigenvectors.as_view(), T::zero());
 	}
 }
 
-/// Workspace for [`FrechetMean`].
 pub struct FrechetMeanWorkspace<T: Scalar, B: LinAlgBackend<T>> {
-	/// Accumulated gradient (n×n).
 	egrad: B::Matrix,
-	/// A⁻¹ buffer (n×n).
 	a_inv: B::Matrix,
-	/// A⁻¹B product buffer (n×n).
 	product: B::Matrix,
-	/// Eigenvectors buffer (n×n).
 	eigenvectors: B::Matrix,
-	/// Eigenvalues buffer (n).
 	eigenvalues: B::Vector,
-	/// Q·diag(log λ) scratch (n×n).
 	tmp: B::Matrix,
-	/// log(A⁻¹B) result (n×n).
 	log_result: B::Matrix,
 	_phantom: PhantomData<T>,
 }
@@ -160,30 +128,26 @@ where
 		}
 	}
 
-	fn cost(&self, point: &M::Point) -> T {
-		// cost() has no workspace — allocate locally (not on hot path for most solvers).
-		let n = MatrixView::nrows(point);
-		let mut a_inv = B::Matrix::zeros(n, n);
-		let mut product = B::Matrix::zeros(n, n);
-		let mut eigenvalues = B::Vector::zeros(n);
-		let mut eigenvectors = B::Matrix::zeros(n, n);
-		let mut tmp = B::Matrix::zeros(n, n);
-		let mut log_result = B::Matrix::zeros(n, n);
-
+	/// **Zero allocation** — reuses workspace buffers for all k matrices.
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
 		let mut cost = T::zero();
 		for (pi, &wi) in self.matrices.iter().zip(&self.weights) {
 			FrechetMean::<T, B>::log_inv_product(
 				point,
 				pi,
-				&mut a_inv,
-				&mut product,
-				&mut eigenvalues,
-				&mut eigenvectors,
-				&mut tmp,
-				&mut log_result,
+				&mut ws.a_inv,
+				&mut ws.product,
+				&mut ws.eigenvalues,
+				&mut ws.eigenvectors,
+				&mut ws.tmp,
+				&mut ws.log_result,
 			);
-			let norm_sq = log_result.frobenius_dot(&log_result);
-			cost = cost + wi * norm_sq;
+			cost = cost + wi * ws.log_result.frobenius_dot(&ws.log_result);
 		}
 		cost
 	}
@@ -196,7 +160,6 @@ where
 		ws: &mut Self::Workspace,
 		manifold_ws: &mut M::Workspace,
 	) {
-		// grad f(P) = −Σᵢ wᵢ log(P⁻¹ Pᵢ)
 		ws.egrad.fill(T::zero());
 		for (pi, &wi) in self.matrices.iter().zip(&self.weights) {
 			FrechetMean::<T, B>::log_inv_product(
@@ -211,7 +174,6 @@ where
 			);
 			ws.egrad.mat_axpy(-wi, &ws.log_result, T::one());
 		}
-
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, result, manifold_ws);
 	}
 }
@@ -220,7 +182,6 @@ where
 //  Metric Learning
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Mahalanobis distance metric learning on S⁺⁺(n).
 #[derive(Debug, Clone)]
 pub struct MetricLearning<T: Scalar, B: LinAlgBackend<T>> {
 	similar_sum: B::Matrix,
@@ -237,7 +198,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> MetricLearning<T, B> {
 		alpha: T,
 	) -> Self {
 		let n = MatrixView::nrows(data);
-
 		let mut similar_sum = B::Matrix::zeros(n, n);
 		for &(i, j) in similar_pairs {
 			for r in 0..n {
@@ -248,12 +208,10 @@ impl<T: Scalar, B: LinAlgBackend<T>> MetricLearning<T, B> {
 				}
 			}
 		}
-
 		let dissimilar_diffs: Vec<_> = dissimilar_pairs
 			.iter()
 			.map(|&(i, j)| B::Vector::from_fn(n, |r| data.get(r, i) - data.get(r, j)))
 			.collect();
-
 		Self {
 			similar_sum,
 			dissimilar_diffs,
@@ -263,7 +221,6 @@ impl<T: Scalar, B: LinAlgBackend<T>> MetricLearning<T, B> {
 	}
 }
 
-/// Workspace for [`MetricLearning`].
 pub struct MetricLearningWorkspace<T: Scalar, B: LinAlgBackend<T>> {
 	egrad: B::Matrix,
 	md: B::Vector,
@@ -310,13 +267,18 @@ where
 		}
 	}
 
-	fn cost(&self, point: &M::Point) -> T {
+	/// **Zero allocation** — uses ws.md for M·d.
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
 		let mut cost = point.frobenius_dot(&self.similar_sum);
-
 		if self.alpha > T::zero() {
 			for d in &self.dissimilar_diffs {
-				let md = point.mat_vec(d);
-				let quad = d.dot(&md);
+				point.mat_vec_into(d, &mut ws.md);
+				let quad = d.dot(&ws.md);
 				cost = cost - self.alpha * quad.max(T::EPSILON).ln();
 			}
 		}
@@ -332,9 +294,7 @@ where
 		manifold_ws: &mut M::Workspace,
 	) {
 		let n = MatrixView::nrows(point);
-
 		ws.egrad.copy_from(&self.similar_sum);
-
 		if self.alpha > T::zero() {
 			for d in &self.dissimilar_diffs {
 				point.mat_vec_into(d, &mut ws.md);
@@ -347,7 +307,6 @@ where
 				}
 			}
 		}
-
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, result, manifold_ws);
 	}
 }
@@ -356,7 +315,6 @@ where
 //  Gaussian Mixture Model Covariance
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Covariance estimation for Gaussian Mixture Models on S⁺⁺(n).
 #[derive(Debug, Clone)]
 pub struct GaussianMixtureCovariance<T: Scalar, B: LinAlgBackend<T>> {
 	pub scatter: B::Matrix,
@@ -378,10 +336,8 @@ impl<T: Scalar, B: LinAlgBackend<T>> GaussianMixtureCovariance<T, B> {
 		let n = MatrixView::nrows(data);
 		let m = MatrixView::ncols(data);
 		debug_assert_eq!(responsibilities.len(), m);
-
 		let mut scatter = B::Matrix::zeros(n, n);
 		let mut n_eff = T::zero();
-
 		for j in 0..m {
 			let gamma = responsibilities[j];
 			n_eff = n_eff + gamma;
@@ -393,17 +349,17 @@ impl<T: Scalar, B: LinAlgBackend<T>> GaussianMixtureCovariance<T, B> {
 				}
 			}
 		}
-
 		Self::new(scatter, n_eff)
 	}
 }
 
-/// Workspace for [`GaussianMixtureCovariance`].
 pub struct GMMWorkspace<T: Scalar, B: LinAlgBackend<T>> {
 	sigma_inv: B::Matrix,
 	egrad: B::Matrix,
 	inv_scatter: B::Matrix,
 	tmp: B::Matrix,
+	eigenvalues: B::Vector,
+	eigenvectors: B::Matrix,
 	_phantom: PhantomData<T>,
 }
 
@@ -414,13 +370,25 @@ impl<T: Scalar, B: LinAlgBackend<T>> Default for GMMWorkspace<T, B> {
 			egrad: B::Matrix::zeros(0, 0),
 			inv_scatter: B::Matrix::zeros(0, 0),
 			tmp: B::Matrix::zeros(0, 0),
+			eigenvalues: B::Vector::zeros(0),
+			eigenvectors: B::Matrix::zeros(0, 0),
 			_phantom: PhantomData,
 		}
 	}
 }
 
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for GMMWorkspace<T, B> where B::Matrix: Send {}
-unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for GMMWorkspace<T, B> where B::Matrix: Sync {}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Send for GMMWorkspace<T, B>
+where
+	B::Matrix: Send,
+	B::Vector: Send,
+{
+}
+unsafe impl<T: Scalar, B: LinAlgBackend<T>> Sync for GMMWorkspace<T, B>
+where
+	B::Matrix: Sync,
+	B::Vector: Sync,
+{
+}
 
 impl<T, B, M> Problem<T, M> for GaussianMixtureCovariance<T, B>
 where
@@ -437,29 +405,30 @@ where
 			egrad: B::Matrix::zeros(n, n),
 			inv_scatter: B::Matrix::zeros(n, n),
 			tmp: B::Matrix::zeros(n, n),
+			eigenvalues: B::Vector::zeros(n),
+			eigenvectors: B::Matrix::zeros(n, n),
 			_phantom: PhantomData,
 		}
 	}
 
-	/// `cost()` has no workspace — allocates eigenvalue buffers locally.
-	fn cost(&self, point: &M::Point) -> T {
+	/// **Zero allocation** — eigenvalues + inverse via workspace.
+	fn cost(
+		&self,
+		point: &M::Point,
+		ws: &mut Self::Workspace,
+		_manifold_ws: &mut M::Workspace,
+	) -> T {
 		let n = MatrixView::nrows(point);
 		let half = <T as Scalar>::from_f64(0.5);
 
-		// log det(Σ) via eigenvalues
-		let mut eigenvalues = B::Vector::zeros(n);
-		let mut eigenvectors = B::Matrix::zeros(n, n);
-		point.symmetric_eigen(&mut eigenvalues, &mut eigenvectors);
-
+		DecompositionOps::symmetric_eigen(point, &mut ws.eigenvalues, &mut ws.eigenvectors);
 		let mut log_det = T::zero();
 		for i in 0..n {
-			log_det = log_det + eigenvalues.get(i).max(T::EPSILON).ln();
+			log_det = log_det + ws.eigenvalues.get(i).max(T::EPSILON).ln();
 		}
 
-		// tr(Σ⁻¹ S_k) / N_k
-		let mut sigma_inv = B::Matrix::zeros(n, n);
-		point.inverse(&mut sigma_inv);
-		let trace_inv_scatter = sigma_inv.frobenius_dot(&self.scatter);
+		point.inverse(&mut ws.sigma_inv);
+		let trace_inv_scatter = ws.sigma_inv.frobenius_dot(&self.scatter);
 
 		half * log_det + half * trace_inv_scatter / self.n_eff
 	}
@@ -473,20 +442,15 @@ where
 		manifold_ws: &mut M::Workspace,
 	) {
 		let half = <T as Scalar>::from_f64(0.5);
-
 		point.inverse(&mut ws.sigma_inv);
-
 		ws.inv_scatter.gemm(
 			T::one(),
 			ws.sigma_inv.as_view(),
 			self.scatter.as_view(),
 			T::zero(),
 		);
-
-		// ½ Σ⁻¹ − (1/2N_k) Σ⁻¹ S_k Σ⁻¹
 		ws.egrad.copy_from(&ws.sigma_inv);
 		ws.egrad.scale_mut(half);
-
 		ws.tmp.gemm(
 			-half / self.n_eff,
 			ws.inv_scatter.as_view(),
@@ -494,7 +458,6 @@ where
 			T::zero(),
 		);
 		ws.egrad.add_assign(&ws.tmp);
-
 		manifold.euclidean_to_riemannian_gradient(point, &ws.egrad, result, manifold_ws);
 	}
 }
