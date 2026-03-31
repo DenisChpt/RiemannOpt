@@ -25,7 +25,8 @@ use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::householder;
 use faer::linalg::qr::no_pivoting::factor;
 use faer::reborrow::*;
-use faer::Par;
+
+use super::parallel_policy::Policy;
 // ═══════════════════════════════════════════════════════════════════════════
 //  Backend marker type
 // ═══════════════════════════════════════════════════════════════════════════
@@ -652,7 +653,6 @@ macro_rules! impl_faer_matrix_ops {
 			fn mat_vec_axpy(&self, alpha: $t, x: &Self::Col, beta: $t, y: &mut Self::Col) {
 				// y = alpha * A * x + beta * y
 				// Use faer's SIMD-optimized matmul with as_mat() for zero-copy Col→MatRef
-				let par = faer::get_global_parallelism();
 				let accum = if beta == 0.0 {
 					faer::Accum::Replace
 				} else {
@@ -667,7 +667,7 @@ macro_rules! impl_faer_matrix_ops {
 					self.as_ref(),
 					x.as_ref().as_mat(),
 					alpha,
-					par,
+					Policy::get_or_init().gemv(self.nrows(), self.ncols()),
 				);
 			}
 
@@ -675,7 +675,6 @@ macro_rules! impl_faer_matrix_ops {
 			fn mat_t_vec_axpy(&self, alpha: $t, x: &Self::Col, beta: $t, y: &mut Self::Col) {
 				// y = alpha * A^T * x + beta * y
 				// Uses faer's native transpose view (stride swap, zero-alloc).
-				let par = faer::get_global_parallelism();
 				let accum = if beta == 0.0 {
 					faer::Accum::Replace
 				} else {
@@ -690,20 +689,19 @@ macro_rules! impl_faer_matrix_ops {
 					self.as_ref().transpose(),
 					x.as_ref().as_mat(),
 					alpha,
-					par,
+					Policy::get_or_init().gemv(self.ncols(), self.nrows()),
 				);
 			}
 
 			#[inline]
 			fn mat_vec_into(&self, x: &Self::Col, y: &mut Self::Col) {
-				let par = faer::get_global_parallelism();
 				faer::linalg::matmul::matmul(
 					y.as_mut().as_mat_mut(),
 					faer::Accum::Replace,
 					self.as_ref(),
 					x.as_ref().as_mat(),
 					1.0 as $t,
-					par,
+					Policy::get_or_init().gemv(self.nrows(), self.ncols()),
 				);
 			}
 
@@ -711,7 +709,8 @@ macro_rules! impl_faer_matrix_ops {
 			fn ger(&mut self, alpha: $t, x: &Self::Col, y: &Self::Col) {
 				// self += alpha * x * y^T  (rank-1 update)
 				// Uses faer's native matmul with column-as-matrix views.
-				let par = faer::get_global_parallelism();
+				// Rank-1: GEMM(m, n, 1) — always sequential for practical sizes.
+				let par = Policy::get_or_init().gemm(self.nrows(), self.ncols(), 1);
 				faer::linalg::matmul::matmul(
 					self.as_mut(),
 					faer::Accum::Add,
@@ -756,7 +755,7 @@ macro_rules! impl_faer_matrix_ops {
 
 			#[inline]
 			fn gemm(&mut self, alpha: $t, a: Self::View<'_>, b: Self::View<'_>, beta: $t) {
-				let par = faer::get_global_parallelism();
+				let par = Policy::get_or_init().gemm(self.nrows(), self.ncols(), a.ncols());
 				if beta == 0.0 {
 					faer::linalg::matmul::matmul(
 						self.as_mut(),
@@ -767,18 +766,32 @@ macro_rules! impl_faer_matrix_ops {
 						par,
 					);
 				} else if beta == 1.0 {
-					faer::linalg::matmul::matmul(self.as_mut(), faer::Accum::Add, a, b, alpha, par);
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Add,
+						a,
+						b,
+						alpha,
+						par,
+					);
 				} else {
 					*self *= faer::Scale(beta);
-					faer::linalg::matmul::matmul(self.as_mut(), faer::Accum::Add, a, b, alpha, par);
+					faer::linalg::matmul::matmul(
+						self.as_mut(),
+						faer::Accum::Add,
+						a,
+						b,
+						alpha,
+						par,
+					);
 				}
 			}
 
 			#[inline]
 			fn gemm_at(&mut self, alpha: $t, a: Self::View<'_>, b: Self::View<'_>, beta: $t) {
-				let par = faer::get_global_parallelism();
 				// Zero-cost transpose: stride swap on the view, no allocation.
 				let at = a.transpose();
+				let par = Policy::get_or_init().gemm_t(self.nrows(), self.ncols(), a.nrows());
 				if beta == 0.0 {
 					faer::linalg::matmul::matmul(
 						self.as_mut(),
@@ -812,8 +825,8 @@ macro_rules! impl_faer_matrix_ops {
 
 			#[inline]
 			fn gemm_bt(&mut self, alpha: $t, a: Self::View<'_>, b: Self::View<'_>, beta: $t) {
-				let par = faer::get_global_parallelism();
 				let bt = b.transpose();
+				let par = Policy::get_or_init().gemm_t(self.nrows(), self.ncols(), a.ncols());
 				if beta == 0.0 {
 					faer::linalg::matmul::matmul(
 						self.as_mut(),
@@ -872,11 +885,13 @@ macro_rules! impl_faer_decomposition_ops {
 				let k = nrows.min(ncols);
 				let block_size = factor::recommended_block_size::<$t>(nrows, ncols);
 
+				// Allocate scratch for the global parallelism level so the
+				// buffer is large enough when Policy dispatches to Rayon.
 				let qr_req = factor::qr_in_place_scratch::<$t>(
 					nrows,
 					ncols,
 					block_size,
-					Par::Seq,
+					faer::get_global_parallelism(),
 					Default::default(),
 				);
 				let apply_req =
@@ -912,7 +927,7 @@ macro_rules! impl_faer_decomposition_ops {
 				factor::qr_in_place(
 					self.as_mut(),
 					h_factor.as_mut(),
-					Par::Seq,
+					Policy::get_or_init().qr(m, n),
 					stack.rb_mut(),
 					Default::default(),
 				);
@@ -937,7 +952,7 @@ macro_rules! impl_faer_decomposition_ops {
 					h_factor.as_ref(),
 					Conj::No,
 					q.as_mut(),
-					Par::Seq,
+					Policy::get_or_init().householder_apply(m, k, k),
 					stack.rb_mut(),
 				);
 			}
