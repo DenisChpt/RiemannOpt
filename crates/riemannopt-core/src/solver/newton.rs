@@ -13,6 +13,18 @@
 //! ```
 //! The system is solved approximately using a linear Conjugate Gradient (tCG)
 //! method, which only requires Hessian-vector products.
+//!
+//! ## Preconditioning
+//!
+//! The inner tCG solver supports preconditioning via the preconditioned CG
+//! recurrence:
+//! ```text
+//!   z = P⁻¹ r,   β = ⟨r_new, z_new⟩ / ⟨r_old, z_old⟩,   p = z + β·p
+//! ```
+//! Passing [`IdentityPreconditioner`] recovers the original algorithm with
+//! zero overhead.
+//!
+//! [`IdentityPreconditioner`]: crate::preconditioner::IdentityPreconditioner
 
 use num_traits::Float;
 use std::fmt::Debug;
@@ -20,6 +32,7 @@ use std::time::Instant;
 
 use crate::{
 	manifold::Manifold,
+	preconditioner::Preconditioner,
 	problem::Problem,
 	solver::{Solver, SolverResult, StoppingCriterion, TerminationReason},
 	types::Scalar,
@@ -84,15 +97,20 @@ impl<T: Scalar> Newton<T> {
 		Self::new(NewtonConfig::default())
 	}
 
-	/// Solves the Newton system Hess_f(x)[d] = −grad_f(x) using Truncated
-	/// Conjugate Gradient (tCG).
+	/// Solves the Newton system Hess_f(x)[d] = −grad_f(x) using preconditioned
+	/// Truncated Conjugate Gradient (tCG).
 	///
-	/// All inner-loop updates use `axpy_tangent` (y ← y + α·x) so no
-	/// temporary buffer is needed — the former `cg_temp` is eliminated.
+	/// When `use_pre` is `true`, the CG recurrence uses z = P⁻¹r:
+	///   β = ⟨r_new, z_new⟩ / ⟨r_old, z_old⟩,   p = z + β·p
+	///
+	/// When `use_pre` is `false` (IdentityPreconditioner), z is never
+	/// touched and the standard CG recurrence is used. The flag is a
+	/// compile-time constant after monomorphisation.
 	///
 	/// # Returns
 	/// Whether the returned direction is guaranteed to be a descent direction.
-	fn solve_newton_system<M, P>(
+	#[allow(clippy::too_many_arguments)]
+	fn solve_newton_system<M, P, Pre>(
 		&self,
 		problem: &P,
 		manifold: &M,
@@ -101,14 +119,19 @@ impl<T: Scalar> Newton<T> {
 		grad_norm: T,
 		direction: &mut M::TangentVector,
 		cg_r: &mut M::TangentVector,
+		cg_z: &mut M::TangentVector,
 		cg_p: &mut M::TangentVector,
 		cg_hp: &mut M::TangentVector,
+		use_pre: bool,
+		preconditioner: &mut Pre,
+		pre_ws: &mut Pre::Workspace,
 		prob_ws: &mut P::Workspace,
 		man_ws: &mut M::Workspace,
 	) -> bool
 	where
 		M: Manifold<T>,
 		P: Problem<T, M>,
+		Pre: Preconditioner<T, M>,
 	{
 		// Target residual norm
 		let target_res_norm = <T as Float>::min(
@@ -123,10 +146,15 @@ impl<T: Scalar> Newton<T> {
 		manifold.copy_tangent(cg_r, gradient);
 		manifold.scale_tangent(-T::one(), cg_r);
 
-		// p = r
-		manifold.copy_tangent(cg_p, cg_r);
-
-		let mut rr = manifold.inner_product(point, cg_r, cg_r, man_ws);
+		// p = P⁻¹r (or r when unpreconditioned)
+		let mut r_dot_z = if use_pre {
+			preconditioner.apply(manifold, point, cg_r, cg_z, pre_ws, man_ws);
+			manifold.copy_tangent(cg_p, cg_z);
+			manifold.inner_product(point, cg_r, cg_z, man_ws)
+		} else {
+			manifold.copy_tangent(cg_p, cg_r);
+			manifold.inner_product(point, cg_r, cg_r, man_ws)
+		};
 
 		let reg = self.config.hessian_regularization;
 
@@ -141,14 +169,13 @@ impl<T: Scalar> Newton<T> {
 			// Negative curvature → stop
 			if php <= T::zero() {
 				if cg_iter == 0 {
-					// p is −grad; take it as steepest-descent fallback.
+					// p is −P⁻¹grad (or −grad); take it as fallback.
 					manifold.copy_tangent(direction, cg_p);
 				}
-				// else: current `direction` is already a valid descent direction
 				return true;
 			}
 
-			let alpha = rr / php;
+			let alpha = r_dot_z / php;
 
 			// d ← d + α · p
 			manifold.axpy_tangent(alpha, cg_p, direction);
@@ -156,20 +183,32 @@ impl<T: Scalar> Newton<T> {
 			// r ← r − α · hp
 			manifold.axpy_tangent(-alpha, cg_hp, cg_r);
 
-			let new_rr = manifold.inner_product(point, cg_r, cg_r, man_ws);
+			// ── Preconditioned residual & convergence check ──────────
+			let (r_next_norm_sq, r_dot_z_new) = if use_pre {
+				preconditioner.apply(manifold, point, cg_r, cg_z, pre_ws, man_ws);
+				let rr = manifold.inner_product(point, cg_r, cg_r, man_ws);
+				let rz = manifold.inner_product(point, cg_r, cg_z, man_ws);
+				(rr, rz)
+			} else {
+				let rr = manifold.inner_product(point, cg_r, cg_r, man_ws);
+				(rr, rr)
+			};
 
-			// Convergence check
-			if new_rr.sqrt() <= target_res_norm {
+			if r_next_norm_sq.sqrt() <= target_res_norm {
 				break;
 			}
 
-			let beta = new_rr / rr;
+			let beta = r_dot_z_new / r_dot_z;
 
-			// p ← r + β · p   (= β·p then p += r)
+			// p ← z + β·p  (or r + β·p when unpreconditioned)
 			manifold.scale_tangent(beta, cg_p);
-			manifold.add_tangents(cg_p, cg_r);
+			if use_pre {
+				manifold.add_tangents(cg_p, cg_z);
+			} else {
+				manifold.add_tangents(cg_p, cg_r);
+			}
 
-			rr = new_rr;
+			r_dot_z = r_dot_z_new;
 		}
 
 		true
@@ -181,18 +220,21 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 		"Riemannian Newton (tCG)"
 	}
 
-	fn solve<M, P>(
+	fn solve<M, P, Pre>(
 		&mut self,
 		problem: &P,
 		manifold: &M,
 		initial_point: &M::Point,
+		preconditioner: &mut Pre,
 		stopping_criterion: &StoppingCriterion<T>,
 	) -> SolverResult<T, M::Point>
 	where
 		M: Manifold<T>,
 		P: Problem<T, M>,
+		Pre: Preconditioner<T, M>,
 	{
 		let start_time = Instant::now();
+		let use_pre = !preconditioner.is_identity();
 
 		// ════════════════════════════════════════════════════════════════════
 		// 1. Memory Allocation (Cold Path)
@@ -203,14 +245,17 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 		let mut gradient = manifold.allocate_tangent();
 		let mut direction = manifold.allocate_tangent();
 
-		// tCG buffers.  After tCG returns, cg_r is reused as the
-		// line-search scratch buffer (avoiding a separate allocation).
+		// tCG buffers. After tCG returns, cg_r is reused as line-search
+		// scratch and cg_z doubles as old_gradient storage for preconditioner
+		// update — zero extra allocation.
 		let mut cg_r = manifold.allocate_tangent();
+		let mut cg_z = manifold.allocate_tangent();
 		let mut cg_p = manifold.allocate_tangent();
 		let mut cg_hp = manifold.allocate_tangent();
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
 		let mut man_ws = manifold.create_workspace(&current_point);
+		let mut pre_ws = preconditioner.create_workspace(manifold, &current_point);
 
 		// ════════════════════════════════════════════════════════════════════
 		// 2. Initialization
@@ -242,7 +287,7 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 		// 3. Optimization Loop (Hot Path — Zero Allocation)
 		// ════════════════════════════════════════════════════════════════════
 		while termination == TerminationReason::MaxIterations && iteration < max_iter {
-			// -- A. Solve Newton System --
+			// -- A. Solve Newton System (preconditioned tCG) --
 			self.solve_newton_system(
 				problem,
 				manifold,
@@ -251,8 +296,12 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 				grad_norm,
 				&mut direction,
 				&mut cg_r,
+				&mut cg_z,
 				&mut cg_p,
 				&mut cg_hp,
+				use_pre,
+				preconditioner,
+				&mut pre_ws,
 				&mut prob_ws,
 				&mut man_ws,
 			);
@@ -294,7 +343,12 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 			}
 
 			// -- C. State Update --
-			// O(1) swap instead of O(n·p) memcpy.
+			// Save old gradient into cg_z for preconditioner update.
+			if use_pre {
+				manifold.copy_tangent(&mut cg_z, &gradient);
+			}
+
+			// O(1) swap. After swap: candidate_point = old point.
 			std::mem::swap(&mut current_point, &mut candidate_point);
 
 			let prev_cost = current_cost;
@@ -306,8 +360,27 @@ impl<T: Scalar> Solver<T> for Newton<T> {
 				&mut man_ws,
 			);
 			grad_evals += 1;
-
 			grad_norm = manifold.norm(&current_point, &gradient, &mut man_ws);
+
+			// Update preconditioner with new curvature pair.
+			// The actual step is alpha · direction, but direction lives in
+			// T_{old_point}. We use `scratch` (= cg_r) which held the scaled
+			// step (alpha · direction) from the last line-search iteration.
+			if use_pre {
+				// Reconstruct the accepted step: scratch = alpha · direction.
+				// scratch was left at the accepted alpha from the line search.
+				preconditioner.update(
+					manifold,
+					&candidate_point, // x_old (after swap)
+					&current_point,   // x_new
+					scratch,          // step = α·direction ∈ T_{x_old}
+					&cg_z,            // grad_old (saved above)
+					&gradient,        // grad_new
+					&mut pre_ws,
+					&mut man_ws,
+				);
+			}
+
 			iteration += 1;
 
 			// -- D. Stopping Criteria Check --

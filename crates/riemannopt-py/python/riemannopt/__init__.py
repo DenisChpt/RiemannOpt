@@ -29,6 +29,8 @@ from riemannopt._native import (
     rosenbrock,
     brockett_cost,
     procrustes,
+    # Preconditioner
+    Preconditioner,
     # Result + Stopping
     SolverResult,
     StoppingCriterion,
@@ -42,7 +44,7 @@ __all__ = [
     "SGD", "Adam", "LBFGS", "CG", "TrustRegion", "Solver",
     "AdSession", "ScalarVar", "VectorVar", "MatrixVar",
     "Problem", "rayleigh_quotient", "quadratic_cost", "rosenbrock",
-    "brockett_cost", "procrustes",
+    "brockett_cost", "procrustes", "Preconditioner",
     "SolverResult", "StoppingCriterion",
     "solve",
 ]

@@ -15,34 +15,29 @@
 //! - **Retraction maps**: R_x: T_x ℳ → ℳ for moving along tangent directions
 //! - **Vector transport**: Moving tangent vectors between different tangent spaces
 //!
-//! # Optimization Framework
+//! # Preconditioning
 //!
-//! The solving process follows this general structure:
+//! Every solver accepts a preconditioner through the unified [`Solver::solve`]
+//! interface. A preconditioner P ≈ Hess f reduces the condition number of
+//! inner iterative sub-solvers from κ(H) to κ(P⁻¹H).
 //!
-//! 1. **Initialization**: Start with x₀ ∈ ℳ
-//! 2. **Gradient computation**: Compute grad f(xₖ) ∈ T_{xₖ} ℳ
-//! 3. **Search direction**: Determine ηₖ ∈ T_{xₖ} ℳ (e.g., -grad f(xₖ))
-//! 4. **Line search**: Find step size αₖ > 0
-//! 5. **Retraction**: Update xₖ₊₁ = R_{xₖ}(αₖ ηₖ)
-//! 6. **Convergence**: Check stopping criteria
+//! Second-order solvers (Trust Region, Newton-CG, Conjugate Gradient) use
+//! the preconditioner in their inner loops. First-order solvers (SGD, Adam)
+//! are free to ignore it.
 //!
-//! # Key Components
+//! When no preconditioning is desired, pass [`IdentityPreconditioner`] — a
+//! zero-sized type that the compiler eliminates entirely:
 //!
-//! ## Core Abstractions
-//! - **Solver trait**: Universal interface for all optimization algorithms
-//! - **SolverResult**: Complete optimization outcome with metadata
+//! ```ignore
+//! use riemannopt_core::preconditioner::IdentityPreconditioner;
 //!
-//! ## Convergence Control
-//! - **StoppingCriterion**: Mathematical conditions for algorithm termination:
-//!   - **Gradient norm**: ||grad f(x)||_g < ε_grad (first-order optimality)
-//!   - **Function change**: |f(xₖ) - f(xₖ₋₁)| < ε_f (stationarity)
-//!   - **Point change**: d_ℳ(xₖ, xₖ₋₁) < ε_x (convergence in manifold metric)
+//! // No preconditioning:
+//! let result = solver.solve(&prob, &mfld, &x0, &mut IdentityPreconditioner, &stop);
 //!
-//! ## Termination Analysis
-//! - **Converged**: First-order necessary conditions satisfied
-//! - **TargetReached**: Objective value below specified threshold
-//! - **MaxIterations**: Computational budget exhausted
-//! - **LineSearchFailed**: Unable to find adequate step size
+//! // With preconditioning:
+//! let mut pre = LbfgsPreconditioner::new(10);
+//! let result = solver.solve(&prob, &mfld, &x0, &mut pre, &stop);
+//! ```
 
 pub mod adam;
 pub mod conjugate_gradient;
@@ -52,7 +47,6 @@ pub mod newton;
 pub mod sgd;
 pub mod trust_region;
 
-// Re-export solver types
 pub use adam::{Adam, AdamConfig};
 pub use conjugate_gradient::{CGConfig, ConjugateGradient};
 pub use lbfgs::{LBFGSConfig, LBFGS};
@@ -60,16 +54,62 @@ pub use newton::{Newton, NewtonConfig};
 pub use sgd::{MomentumMethod, SGDConfig, SGD};
 pub use trust_region::{TrustRegion, TrustRegionConfig};
 
-use crate::{manifold::Manifold, problem::Problem, types::Scalar};
+use crate::{manifold::Manifold, preconditioner::Preconditioner, problem::Problem, types::Scalar};
 use std::fmt::Debug;
 use std::time::Duration;
 
-/// Comprehensive result of a Riemannian optimization run.
+// ════════════════════════════════════════════════════════════════════════════
+//  Solver trait
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Universal interface for optimization solvers on Riemannian manifolds.
 ///
-/// This structure encapsulates all relevant information from a solver process,
-/// including the solution, convergence diagnostics, and computational statistics.
-/// It provides both the mathematical result and practical metadata needed for
-/// analysis and debugging.
+/// A single [`solve`](Self::solve) method handles both preconditioned and
+/// unpreconditioned optimization. Solvers that benefit from preconditioning
+/// use `Pre` in their inner loops; solvers that do not simply ignore it.
+///
+/// Passing [`IdentityPreconditioner`] produces zero overhead — the compiler
+/// monomorphises the ZST away entirely. Solvers may additionally check
+/// [`pre.is_identity()`](Preconditioner::is_identity) to skip buffer
+/// allocation when no preconditioning is active.
+///
+/// [`IdentityPreconditioner`]: crate::preconditioner::IdentityPreconditioner
+pub trait Solver<T>: Debug
+where
+	T: Scalar,
+{
+	/// Returns a human-readable name identifying the solver algorithm.
+	fn name(&self) -> &str;
+
+	/// Minimizes f: ℳ → ℝ on the given Riemannian manifold.
+	///
+	/// # Arguments
+	///
+	/// * `problem`            — the objective function and its derivatives
+	/// * `manifold`           — the Riemannian manifold ℳ
+	/// * `initial_point`      — starting point x₀ ∈ ℳ
+	/// * `preconditioner`     — P⁻¹ ≈ H⁻¹ applied in inner iterative solvers.
+	///   Pass `&mut IdentityPreconditioner` when no preconditioning is desired.
+	/// * `stopping_criterion` — convergence / budget limits
+	fn solve<M, P, Pre>(
+		&mut self,
+		problem: &P,
+		manifold: &M,
+		initial_point: &M::Point,
+		preconditioner: &mut Pre,
+		stopping_criterion: &StoppingCriterion<T>,
+	) -> SolverResult<T, M::Point>
+	where
+		M: Manifold<T>,
+		P: Problem<T, M>,
+		Pre: Preconditioner<T, M>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Result
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Comprehensive result of a Riemannian optimization run.
 #[derive(Debug, Clone)]
 pub struct SolverResult<T, P>
 where
@@ -107,7 +147,6 @@ impl<T, P> SolverResult<T, P>
 where
 	T: Scalar,
 {
-	/// Creates a new solver result.
 	pub fn new(
 		point: P,
 		value: T,
@@ -148,6 +187,10 @@ where
 		self
 	}
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Termination & stopping criteria
+// ════════════════════════════════════════════════════════════════════════════
 
 /// Mathematical and computational reasons for solver termination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,25 +275,4 @@ where
 		self.target_value = Some(target);
 		self
 	}
-}
-
-/// Universal interface for optimization solvers on Riemannian manifolds.
-pub trait Solver<T>: Debug
-where
-	T: Scalar,
-{
-	/// Returns a human-readable name identifying the solver algorithm.
-	fn name(&self) -> &str;
-
-	/// Minimizes the objective function f: ℳ → ℝ on the given Riemannian manifold.
-	fn solve<M, P>(
-		&mut self,
-		problem: &P,
-		manifold: &M,
-		initial_point: &M::Point,
-		stopping_criterion: &StoppingCriterion<T>,
-	) -> SolverResult<T, M::Point>
-	where
-		M: Manifold<T>,
-		P: Problem<T, M>;
 }

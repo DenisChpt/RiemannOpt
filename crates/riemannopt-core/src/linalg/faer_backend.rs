@@ -19,7 +19,13 @@ use faer::linalg::solvers::{DenseSolveCore, Solve};
 use faer::{Col, ColRef, Conj, Mat, MatRef, Side};
 
 use super::traits::{
-	DecompositionOps, LinAlgBackend, MatrixOps, MatrixView, VectorOps, VectorView,
+	AsElementWise,
+	DecompositionOps,
+	LinAlgBackend,
+	MatrixOps,
+	MatrixView,
+	VectorOps,
+	VectorView,
 };
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::householder;
@@ -651,8 +657,6 @@ macro_rules! impl_faer_matrix_ops {
 
 			#[inline]
 			fn mat_vec_axpy(&self, alpha: $t, x: &Self::Col, beta: $t, y: &mut Self::Col) {
-				// y = alpha * A * x + beta * y
-				// Use faer's SIMD-optimized matmul with as_mat() for zero-copy Col→MatRef
 				let accum = if beta == 0.0 {
 					faer::Accum::Replace
 				} else {
@@ -673,8 +677,6 @@ macro_rules! impl_faer_matrix_ops {
 
 			#[inline]
 			fn mat_t_vec_axpy(&self, alpha: $t, x: &Self::Col, beta: $t, y: &mut Self::Col) {
-				// y = alpha * A^T * x + beta * y
-				// Uses faer's native transpose view (stride swap, zero-alloc).
 				let accum = if beta == 0.0 {
 					faer::Accum::Replace
 				} else {
@@ -707,9 +709,6 @@ macro_rules! impl_faer_matrix_ops {
 
 			#[inline]
 			fn ger(&mut self, alpha: $t, x: &Self::Col, y: &Self::Col) {
-				// self += alpha * x * y^T  (rank-1 update)
-				// Uses faer's native matmul with column-as-matrix views.
-				// Rank-1: GEMM(m, n, 1) — always sequential for practical sizes.
 				let par = Policy::get_or_init().gemm(self.nrows(), self.ncols(), 1);
 				faer::linalg::matmul::matmul(
 					self.as_mut(),
@@ -766,30 +765,15 @@ macro_rules! impl_faer_matrix_ops {
 						par,
 					);
 				} else if beta == 1.0 {
-					faer::linalg::matmul::matmul(
-						self.as_mut(),
-						faer::Accum::Add,
-						a,
-						b,
-						alpha,
-						par,
-					);
+					faer::linalg::matmul::matmul(self.as_mut(), faer::Accum::Add, a, b, alpha, par);
 				} else {
 					*self *= faer::Scale(beta);
-					faer::linalg::matmul::matmul(
-						self.as_mut(),
-						faer::Accum::Add,
-						a,
-						b,
-						alpha,
-						par,
-					);
+					faer::linalg::matmul::matmul(self.as_mut(), faer::Accum::Add, a, b, alpha, par);
 				}
 			}
 
 			#[inline]
 			fn gemm_at(&mut self, alpha: $t, a: Self::View<'_>, b: Self::View<'_>, beta: $t) {
-				// Zero-cost transpose: stride swap on the view, no allocation.
 				let at = a.transpose();
 				let par = Policy::get_or_init().gemm_t(self.nrows(), self.ncols(), a.nrows());
 				if beta == 0.0 {
@@ -885,8 +869,6 @@ macro_rules! impl_faer_decomposition_ops {
 				let k = nrows.min(ncols);
 				let block_size = factor::recommended_block_size::<$t>(nrows, ncols);
 
-				// Allocate scratch for the global parallelism level so the
-				// buffer is large enough when Policy dispatches to Rayon.
 				let qr_req = factor::qr_in_place_scratch::<$t>(
 					nrows,
 					ncols,
@@ -921,9 +903,6 @@ macro_rules! impl_faer_decomposition_ops {
 
 				let mut stack = MemStack::new(scratch);
 
-				// 1. Factorize in-place: R in upper triangle,
-				//    Householder vectors in strict lower triangle,
-				//    block-reflector coefficients in h_factor.
 				factor::qr_in_place(
 					self.as_mut(),
 					h_factor.as_mut(),
@@ -932,7 +911,6 @@ macro_rules! impl_faer_decomposition_ops {
 					Default::default(),
 				);
 
-				// 2. Extract R (upper triangle of first k rows).
 				r.fill(0.0 as $t);
 				for j in 0..n {
 					let i_end = (j + 1).min(k);
@@ -941,7 +919,6 @@ macro_rules! impl_faer_decomposition_ops {
 					}
 				}
 
-				// 3. Reconstruct thin Q: identity → apply H₁H₂…Hₖ.
 				q.fill(0.0 as $t);
 				for i in 0..k {
 					q[(i, i)] = 1.0 as $t;
@@ -1045,6 +1022,61 @@ impl_faer_decomposition_ops!(f32);
 impl_faer_decomposition_ops!(f64);
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  AsElementWise for faer types (used by Jacobi preconditioner)
+// ═══════════════════════════════════════════════════════════════════════════
+
+macro_rules! impl_faer_as_element_wise_col {
+	($t:ty) => {
+		impl AsElementWise<$t> for Col<$t> {
+			#[inline]
+			fn ew_as_slice(&self) -> &[$t] {
+				self.as_ref().try_as_col_major().unwrap().as_slice()
+			}
+
+			#[inline]
+			fn ew_as_mut_slice(&mut self) -> &mut [$t] {
+				self.as_mut().try_as_col_major_mut().unwrap().as_slice_mut()
+			}
+
+			#[inline]
+			fn ew_div_assign(&mut self, other: &Self) {
+				faer::zip!(self.as_mut(), other.as_ref()).for_each(|faer::unzip!(s, o)| {
+					*s /= *o;
+				});
+			}
+		}
+	};
+}
+
+macro_rules! impl_faer_as_element_wise_mat {
+	($t:ty) => {
+		impl AsElementWise<$t> for Mat<$t> {
+			#[inline]
+			fn ew_as_slice(&self) -> &[$t] {
+				MatrixOps::as_slice(self)
+			}
+
+			#[inline]
+			fn ew_as_mut_slice(&mut self) -> &mut [$t] {
+				MatrixOps::as_mut_slice(self)
+			}
+
+			#[inline]
+			fn ew_div_assign(&mut self, other: &Self) {
+				faer::zip!(self.as_mut(), other.as_ref()).for_each(|faer::unzip!(s, o)| {
+					*s /= *o;
+				});
+			}
+		}
+	};
+}
+
+impl_faer_as_element_wise_col!(f32);
+impl_faer_as_element_wise_col!(f64);
+impl_faer_as_element_wise_mat!(f32);
+impl_faer_as_element_wise_mat!(f64);
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1071,7 +1103,6 @@ mod tests {
 	fn test_colref_view_dot() {
 		let a = <Col<f64> as VectorOps<f64>>::from_slice(&[1.0, 2.0, 3.0]);
 		let b = <Col<f64> as VectorOps<f64>>::from_slice(&[4.0, 5.0, 6.0]);
-		// Use views directly — zero allocation.
 		let ar = a.as_ref();
 		let br = b.as_ref();
 		assert!((VectorView::dot(&ar, &br) - 32.0).abs() < 1e-14);
@@ -1087,7 +1118,6 @@ mod tests {
 	#[test]
 	fn test_column_view_zero_alloc() {
 		let m = <Mat<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| (i + j * 3 + 1) as f64);
-		// column() now returns ColRef — no heap allocation.
 		let col0 = m.column(0);
 		assert!((VectorView::get(&col0, 0) - 1.0).abs() < 1e-14);
 		assert!((VectorView::get(&col0, 2) - 3.0).abs() < 1e-14);
@@ -1101,7 +1131,7 @@ mod tests {
 		let sub = m.columns(1, 2);
 		assert_eq!(MatrixView::nrows(&sub), 3);
 		assert_eq!(MatrixView::ncols(&sub), 2);
-		assert!((MatrixView::get(&sub, 0, 0) - 3.0).abs() < 1e-14); // col 1, row 0
+		assert!((MatrixView::get(&sub, 0, 0) - 3.0).abs() < 1e-14);
 	}
 
 	#[test]
@@ -1109,7 +1139,6 @@ mod tests {
 		let a = <Mat<f64> as MatrixOps<f64>>::identity(3);
 		let b = <Mat<f64> as MatrixOps<f64>>::from_fn(3, 2, |i, j| (i + j * 3 + 1) as f64);
 		let mut c = <Mat<f64> as MatrixOps<f64>>::zeros(3, 2);
-		// Pass views to gemm — zero-alloc operands.
 		c.gemm(1.0, a.as_view(), b.as_view(), 0.0);
 		assert!((MatrixView::get(&c, 0, 0) - 1.0).abs() < 1e-14);
 		assert!((MatrixView::get(&c, 2, 1) - 6.0).abs() < 1e-14);
@@ -1222,5 +1251,29 @@ mod tests {
 		let m = <M as MatrixOps<f64>>::identity(3);
 		assert_eq!(VectorView::len(&v), 5);
 		assert_eq!(MatrixView::nrows(&m), 3);
+	}
+
+	#[test]
+	fn test_as_element_wise_col() {
+		let mut v = <Col<f64> as VectorOps<f64>>::from_slice(&[2.0, 6.0, 12.0]);
+		let d = <Col<f64> as VectorOps<f64>>::from_slice(&[1.0, 2.0, 3.0]);
+		AsElementWise::ew_div_assign(&mut v, &d);
+		assert!((v[0] - 2.0).abs() < 1e-14);
+		assert!((v[1] - 3.0).abs() < 1e-14);
+		assert!((v[2] - 4.0).abs() < 1e-14);
+	}
+
+	#[test]
+	fn test_as_element_wise_mat() {
+		let mut m =
+			<Mat<f64> as MatrixOps<f64>>::from_fn(2, 2, |i, j| ((i + 1) * (j + 1) * 6) as f64);
+		let d = <Mat<f64> as MatrixOps<f64>>::from_fn(2, 2, |i, j| ((i + 1) * (j + 1)) as f64);
+		AsElementWise::ew_div_assign(&mut m, &d);
+		// All entries should be 6.0
+		for i in 0..2 {
+			for j in 0..2 {
+				assert!((MatrixView::get(&m, i, j) - 6.0).abs() < 1e-14);
+			}
+		}
 	}
 }

@@ -505,3 +505,51 @@ pub type VecOf<B, T> = <B as LinAlgBackend<T>>::Vector;
 
 /// Shorthand for the matrix type of a backend.
 pub type MatOf<B, T> = <B as LinAlgBackend<T>>::Matrix;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Element-wise slice access
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Element-wise operations via contiguous slice access.
+///
+/// Minimal trait for types backed by a contiguous `&[T]` / `&mut [T]`.
+/// Used by the Jacobi preconditioner for O(n) element-wise division,
+/// but intentionally lives in `linalg` because it describes a property
+/// of the *representation*, not the geometry or the preconditioner.
+///
+/// Both faer (`Col<T>`, `Mat<T>`) and nalgebra (`DVector<T>`, `DMatrix<T>`)
+/// satisfy this trivially via their existing `as_slice` / `as_mut_slice`.
+pub trait AsElementWise<T: RealScalar>: Clone + Debug + Send + Sync {
+	/// View as a contiguous slice.
+	fn ew_as_slice(&self) -> &[T];
+
+	/// View as a mutable contiguous slice.
+	fn ew_as_mut_slice(&mut self) -> &mut [T];
+
+	/// Element-wise divide in-place: `self[i] /= other[i]`.
+	#[inline]
+	fn ew_div_assign(&mut self, other: &Self) {
+		let dst = self.ew_as_mut_slice();
+		let src = other.ew_as_slice();
+		debug_assert_eq!(dst.len(), src.len());
+		for (d, s) in dst.iter_mut().zip(src.iter()) {
+			*d = *d / *s;
+		}
+	}
+
+	/// Fill all elements with `value`.
+	#[inline]
+	fn ew_fill(&mut self, value: T) {
+		self.ew_as_mut_slice().fill(value);
+	}
+
+	/// Clamp all elements to be at least `min`.
+	#[inline]
+	fn ew_clamp_min(&mut self, min: T) {
+		for v in self.ew_as_mut_slice().iter_mut() {
+			if *v < min {
+				*v = min;
+			}
+		}
+	}
+}
