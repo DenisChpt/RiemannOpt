@@ -209,55 +209,67 @@ where
 
 	/// Computes the logarithmic map log_x(y) → result.
 	///
-	/// Uses Taylor series for small angles to avoid θ/sin(θ) cancellation.
+	/// Uses `atan2` for angle computation (stable over all of [0, π])
+	/// and Taylor series for the θ/sin(θ) scaling near θ ≈ 0.
 	///
 	/// # Formula
 	///
 	/// δ = y − (x^T y)x  (exactly tangent to x)
+	/// θ = 2·atan2(‖x−y‖, ‖x+y‖)
 	/// - If θ < threshold: result ≈ (1 + θ²/6) · δ
 	/// - Otherwise: result = (θ / sin θ) · δ
-	///
-	/// where θ = arccos(x^T y).
 	///
 	/// Sets result to zero if x ≈ y. Panics (debug) if x ≈ −y.
 	#[inline]
 	pub fn log_map(&self, x: &B::Vector, y: &B::Vector, result: &mut B::Vector) {
 		let xy_inner = x.dot(y);
-		let clamped = <T as Float>::min(<T as Float>::max(xy_inner, -T::one()), T::one());
+		let two = <T as Scalar>::from_f64(2.0);
 		let threshold = T::SMALL_ANGLE_THRESHOLD;
 
+		// θ via atan2 — stable on the full [0, π] range
+		let norm_diff = Float::sqrt(Float::max(T::zero(), (T::one() - xy_inner) * two));
+		let norm_sum = Float::sqrt(Float::max(T::zero(), (T::one() + xy_inner) * two));
+		let theta = two * Float::atan2(norm_diff, norm_sum);
+
 		// Same point → zero tangent
-		if <T as Float>::abs(clamped - T::one()) < threshold {
+		if theta < threshold {
 			result.fill(T::zero());
 			return;
 		}
 
 		// Antipodal → undefined
 		debug_assert!(
-			<T as Float>::abs(clamped + T::one()) >= threshold,
-			"log_map: antipodal points (x^T y ≈ −1)"
+			Float::abs(theta - <T as Scalar>::from_f64(std::f64::consts::PI)) >= threshold,
+			"log_map: antipodal points (θ ≈ π)"
 		);
 
 		// δ = y − (x^T y)x  (exactly tangent)
 		result.copy_from(y);
 		result.axpy(-xy_inner, x, T::one());
 
-		let theta = <T as Float>::acos(clamped);
-		if theta < threshold {
-			// Taylor: θ/sin θ ≈ 1 + θ²/6
-			let sixth = <T as Scalar>::from_f64(1.0 / 6.0);
-			result.scale_mut(T::one() + theta * theta * sixth);
+		// Scale δ by θ/sin(θ), with Taylor fallback for tiny θ
+		// (the branch above already handled θ < threshold → zero,
+		//  so here threshold ≤ θ < π; Taylor kept for clarity)
+		let sixth = <T as Scalar>::from_f64(1.0 / 6.0);
+		let scale = if theta < <T as Scalar>::from_f64(1e-4) {
+			T::one() + theta * theta * sixth
 		} else {
-			result.scale_mut(theta / <T as Float>::sin(theta));
-		}
+			theta / Float::sin(theta)
+		};
+		result.scale_mut(scale);
 	}
 
-	/// Geodesic distance d(x, y) = arccos(x^T y).
+	/// Geodesic distance d(x, y) = 2·atan2(‖x−y‖, ‖x+y‖).
+	///
+	/// Computed from a single dot product (no allocation).
+	/// Stable over the full [0, π] range, unlike arccos.
 	#[inline]
 	pub fn geodesic_distance(&self, x: &B::Vector, y: &B::Vector) -> T {
-		let inner = x.dot(y);
-		let clamped = <T as Float>::min(<T as Float>::max(inner, -T::one()), T::one());
-		<T as Float>::acos(clamped)
+		let dot = x.dot(y);
+		let two = <T as Scalar>::from_f64(2.0);
+		let norm_diff = Float::sqrt(Float::max(T::zero(), (T::one() - dot) * two));
+		let norm_sum = Float::sqrt(Float::max(T::zero(), (T::one() + dot) * two));
+		two * Float::atan2(norm_diff, norm_sum)
 	}
 }
 

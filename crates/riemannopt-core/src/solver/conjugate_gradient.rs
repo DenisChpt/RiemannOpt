@@ -80,6 +80,8 @@ pub struct CGConfig<T: Scalar> {
 	pub ls_max_iterations: usize,
 	/// Initial step size for the first iteration (before adaptation).
 	pub initial_step_size: T,
+	/// Powell orthogonality threshold for adaptive restart (set to 0 to disable).
+	pub orth_value: T,
 }
 
 impl<T: Scalar> Default for CGConfig<T> {
@@ -94,6 +96,7 @@ impl<T: Scalar> Default for CGConfig<T> {
 			contraction_factor: <T as Scalar>::from_f64(0.5),
 			ls_max_iterations: 10,
 			initial_step_size: T::one(),
+			orth_value: <T as Scalar>::from_f64(0.1),
 		}
 	}
 }
@@ -277,21 +280,9 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 			// -- A. Compute Conjugate Direction --
 			let mut restarted = false;
 
-			if iter == 0
-				|| (self.config.restart_period > 0
-					&& iterations_since_restart >= self.config.restart_period)
-			{
-				// Restart: direction = −z (or −g when unpreconditioned)
-				if use_pre {
-					manifold.copy_tangent(&mut direction, &cg_z);
-				} else {
-					manifold.copy_tangent(&mut direction, &gradient);
-				}
-				manifold.scale_tangent(-T::one(), &mut direction);
-				restarted = true;
-			} else {
-				// 1. Transport previous gradient and direction to current
-				//    tangent space. Swap avoids a memcpy after each transport.
+			// ── Transport (always, as soon as iter > 0) ─────────────
+			let transported = iter > 0;
+			if transported {
 				manifold.parallel_transport(
 					&previous_point,
 					&current_point,
@@ -309,25 +300,46 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 					&mut man_ws,
 				);
 				std::mem::swap(&mut prev_direction, &mut scratch);
+			}
 
-				// 2. scratch = y_k = g_k − τ(g_{k-1})
+			// ── Restart decision ────────────────────────────────────
+			let powell_restart = if transported && self.config.orth_value > T::zero() {
+				let g_dot_g_prev =
+					manifold.inner_product(&current_point, &gradient, &prev_gradient, &mut man_ws);
+				Float::abs(g_dot_g_prev) / grad_norm_sq > self.config.orth_value
+			} else {
+				false
+			};
+
+			let periodic_restart = self.config.restart_period > 0
+				&& iterations_since_restart >= self.config.restart_period;
+
+			if iter == 0 || powell_restart || periodic_restart {
+				// Restart: direction = −z (or −g when unpreconditioned)
+				if use_pre {
+					manifold.copy_tangent(&mut direction, &cg_z);
+				} else {
+					manifold.copy_tangent(&mut direction, &gradient);
+				}
+				manifold.scale_tangent(-T::one(), &mut direction);
+				restarted = true;
+			} else {
+				// Transport is already done above.
+
+				// 1. scratch = y_k = g_k − τ(g_{k-1})
 				manifold.copy_tangent(&mut scratch, &gradient);
 				manifold.axpy_tangent(-T::one(), &prev_gradient, &mut scratch);
 
-				// 3. Compute β
+				// 2. Compute β
 				//
 				// Preconditioned variants replace g with z in numerator
 				// inner products and use ⟨g_prev, z_prev⟩ as denominator
 				// where applicable.
 				let mut beta = match self.config.method {
 					ConjugateGradientMethod::FletcherReeves => {
-						// Standard:      ⟨g, g⟩ / ⟨g_prev, g_prev⟩
-						// Preconditioned: ⟨g, z⟩ / ⟨g_prev, z_prev⟩
 						g_dot_z / prev_g_dot_z.max(T::epsilon())
 					}
 					ConjugateGradientMethod::PolakRibiere => {
-						// Standard:      ⟨g, y⟩ / ⟨g_prev, g_prev⟩
-						// Preconditioned: ⟨z, y⟩ / ⟨g_prev, z_prev⟩
 						let num = if use_pre {
 							manifold.inner_product(&current_point, &cg_z, &scratch, &mut man_ws)
 						} else {
@@ -341,8 +353,6 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 						}
 					}
 					ConjugateGradientMethod::HestenesStiefel => {
-						// Standard:      ⟨g, y⟩ / ⟨d_prev, y⟩
-						// Preconditioned: ⟨z, y⟩ / ⟨d_prev, y⟩
 						let num = if use_pre {
 							manifold.inner_product(&current_point, &cg_z, &scratch, &mut man_ws)
 						} else {
@@ -361,8 +371,6 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 						}
 					}
 					ConjugateGradientMethod::DaiYuan => {
-						// Standard:      ⟨g, g⟩ / ⟨d_prev, y⟩
-						// Preconditioned: ⟨g, z⟩ / ⟨d_prev, y⟩
 						let den = manifold.inner_product(
 							&current_point,
 							&prev_direction,
@@ -376,7 +384,6 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 						}
 					}
 					ConjugateGradientMethod::HagerZhang => {
-						// Preconditioned: replace ⟨g, ·⟩ with ⟨z, ·⟩
 						let diff_dot_d = manifold.inner_product(
 							&current_point,
 							&scratch,
@@ -430,15 +437,13 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 						}
 					}
 					ConjugateGradientMethod::LiuStorey => {
-						// Standard:      ⟨g, y⟩ / (−⟨g_prev, d_prev⟩)
-						// Preconditioned: ⟨z, y⟩ / (−⟨g_prev, d_prev⟩)
 						let num = if use_pre {
 							manifold.inner_product(&current_point, &cg_z, &scratch, &mut man_ws)
 						} else {
 							manifold.inner_product(&current_point, &gradient, &scratch, &mut man_ws)
 						};
 						let den = -manifold.inner_product(
-							&previous_point,
+							&current_point,
 							&prev_gradient,
 							&prev_direction,
 							&mut man_ws,
@@ -459,7 +464,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 					beta = beta.min(max_b);
 				}
 
-				// 4. d_k = β · τ(d_{k-1}) − z  (or − g when unpreconditioned)
+				// 3. d_k = β · τ(d_{k-1}) − z  (or − g when unpreconditioned)
 				manifold.copy_tangent(&mut direction, &prev_direction);
 				manifold.scale_tangent(beta, &mut direction);
 				if use_pre {
