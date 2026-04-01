@@ -21,6 +21,7 @@ pub mod manifold;
 pub mod problem;
 pub mod solver;
 pub mod types;
+pub mod preconditioner;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Top-level re-exports

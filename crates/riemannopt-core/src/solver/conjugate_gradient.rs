@@ -5,6 +5,25 @@
 //! This implementation extends classical CG methods to Riemannian manifolds
 //! using parallel transport.
 //!
+//! # Preconditioning
+//!
+//! All CG variants support preconditioning. Given z = P⁻¹g, the
+//! preconditioned recurrence replaces g with z in the β formulas:
+//!
+//! | Variant          | Standard β                        | Preconditioned β                      |
+//! |------------------|-----------------------------------|---------------------------------------|
+//! | Fletcher-Reeves  | ⟨g, g⟩ / ⟨g_prev, g_prev⟩        | ⟨g, z⟩ / ⟨g_prev, z_prev⟩            |
+//! | Polak-Ribière    | ⟨g, y⟩ / ⟨g_prev, g_prev⟩        | ⟨z, y⟩ / ⟨g_prev, z_prev⟩            |
+//! | Hestenes-Stiefel | ⟨g, y⟩ / ⟨d_prev, y⟩             | ⟨z, y⟩ / ⟨d_prev, y⟩                 |
+//! | Dai-Yuan         | ⟨g, g⟩ / ⟨d_prev, y⟩             | ⟨g, z⟩ / ⟨d_prev, y⟩                 |
+//!
+//! and the direction becomes d = −z + β·τ(d_prev) instead of d = −g + β·τ(d_prev).
+//!
+//! Passing [`IdentityPreconditioner`] recovers the original algorithm with
+//! zero overhead.
+//!
+//! [`IdentityPreconditioner`]: crate::preconditioner::IdentityPreconditioner
+//!
 //! # Line Search
 //!
 //! Uses an adaptive line search inspired by Manopt/Pymanopt:
@@ -24,6 +43,7 @@ use std::time::Instant;
 
 use crate::{
 	manifold::Manifold,
+	preconditioner::Preconditioner,
 	problem::Problem,
 	solver::{Solver, SolverResult, StoppingCriterion, TerminationReason},
 	types::Scalar,
@@ -53,9 +73,6 @@ pub struct CGConfig<T: Scalar> {
 	/// Sufficient decrease parameter (Armijo c₁).
 	///
 	/// Default: 0.5 (matches Pymanopt's AdaptiveLineSearcher).
-	/// This is more restrictive than the standard 1e-4, which forces
-	/// higher-quality steps that preserve CG conjugacy.
-	/// Use 1e-4 for L-BFGS or steepest descent.
 	pub sufficient_decrease: T,
 	/// Step size contraction factor (ρ).
 	pub contraction_factor: T,
@@ -167,18 +184,21 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 		}
 	}
 
-	fn solve<M, P>(
+	fn solve<M, P, Pre>(
 		&mut self,
 		problem: &P,
 		manifold: &M,
 		initial_point: &M::Point,
+		preconditioner: &mut Pre,
 		stopping_criterion: &StoppingCriterion<T>,
 	) -> SolverResult<T, M::Point>
 	where
 		M: Manifold<T>,
 		P: Problem<T, M>,
+		Pre: Preconditioner<T, M>,
 	{
 		let start_time = Instant::now();
+		let use_pre = !preconditioner.is_identity();
 
 		// ════════════════════════════════════════════════════════════════════
 		// 1. Memory Allocation (Cold Path)
@@ -193,9 +213,11 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 		let mut prev_direction = manifold.allocate_tangent();
 
 		let mut scratch = manifold.allocate_tangent();
+		let mut cg_z = manifold.allocate_tangent(); // P⁻¹g (unused when Identity)
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
 		let mut man_ws = manifold.create_workspace(&current_point);
+		let mut pre_ws = preconditioner.create_workspace(manifold, &current_point);
 
 		// ════════════════════════════════════════════════════════════════════
 		// 2. Initialization
@@ -224,11 +246,11 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 			termination = TerminationReason::Converged;
 		}
 
-		let mut prev_grad_norm_sq = T::zero();
+		// ⟨g_{k-1}, z_{k-1}⟩ from the previous iteration.
+		// When unpreconditioned, equals ⟨g_{k-1}, g_{k-1}⟩.
+		let mut prev_g_dot_z = T::zero();
 
 		// ── Adaptive line search state ───────────────────────────────────
-		// Tracks the previous accepted α to reuse as the next initial guess.
-		// `None` means first iteration (use 1/‖d‖ as initial step).
 		let mut ls_prev_alpha: Option<T> = None;
 
 		// ════════════════════════════════════════════════════════════════════
@@ -237,6 +259,21 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 		while termination == TerminationReason::MaxIterations && iter < max_iter {
 			let grad_norm_sq = grad_norm * grad_norm;
 
+			// ── Preconditioned gradient: z = P⁻¹g ───────────────────────
+			let g_dot_z = if use_pre {
+				preconditioner.apply(
+					manifold,
+					&current_point,
+					&gradient,
+					&mut cg_z,
+					&mut pre_ws,
+					&mut man_ws,
+				);
+				manifold.inner_product(&current_point, &gradient, &cg_z, &mut man_ws)
+			} else {
+				grad_norm_sq // ⟨g, g⟩ when z = g
+			};
+
 			// -- A. Compute Conjugate Direction --
 			let mut restarted = false;
 
@@ -244,8 +281,12 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				|| (self.config.restart_period > 0
 					&& iterations_since_restart >= self.config.restart_period)
 			{
-				// Restart: direction = −gradient
-				manifold.copy_tangent(&mut direction, &gradient);
+				// Restart: direction = −z (or −g when unpreconditioned)
+				if use_pre {
+					manifold.copy_tangent(&mut direction, &cg_z);
+				} else {
+					manifold.copy_tangent(&mut direction, &gradient);
+				}
 				manifold.scale_tangent(-T::one(), &mut direction);
 				restarted = true;
 			} else {
@@ -269,23 +310,30 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				);
 				std::mem::swap(&mut prev_direction, &mut scratch);
 
-				// 2. scratch = g_k − τ(g_{k-1})
+				// 2. scratch = y_k = g_k − τ(g_{k-1})
 				manifold.copy_tangent(&mut scratch, &gradient);
 				manifold.axpy_tangent(-T::one(), &prev_gradient, &mut scratch);
 
 				// 3. Compute β
+				//
+				// Preconditioned variants replace g with z in numerator
+				// inner products and use ⟨g_prev, z_prev⟩ as denominator
+				// where applicable.
 				let mut beta = match self.config.method {
 					ConjugateGradientMethod::FletcherReeves => {
-						grad_norm_sq / prev_grad_norm_sq.max(T::epsilon())
+						// Standard:      ⟨g, g⟩ / ⟨g_prev, g_prev⟩
+						// Preconditioned: ⟨g, z⟩ / ⟨g_prev, z_prev⟩
+						g_dot_z / prev_g_dot_z.max(T::epsilon())
 					}
 					ConjugateGradientMethod::PolakRibiere => {
-						let num = manifold.inner_product(
-							&current_point,
-							&gradient,
-							&scratch,
-							&mut man_ws,
-						);
-						let b = num / prev_grad_norm_sq.max(T::epsilon());
+						// Standard:      ⟨g, y⟩ / ⟨g_prev, g_prev⟩
+						// Preconditioned: ⟨z, y⟩ / ⟨g_prev, z_prev⟩
+						let num = if use_pre {
+							manifold.inner_product(&current_point, &cg_z, &scratch, &mut man_ws)
+						} else {
+							manifold.inner_product(&current_point, &gradient, &scratch, &mut man_ws)
+						};
+						let b = num / prev_g_dot_z.max(T::epsilon());
 						if self.config.use_pr_plus {
 							T::zero().max(b)
 						} else {
@@ -293,12 +341,13 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 						}
 					}
 					ConjugateGradientMethod::HestenesStiefel => {
-						let num = manifold.inner_product(
-							&current_point,
-							&gradient,
-							&scratch,
-							&mut man_ws,
-						);
+						// Standard:      ⟨g, y⟩ / ⟨d_prev, y⟩
+						// Preconditioned: ⟨z, y⟩ / ⟨d_prev, y⟩
+						let num = if use_pre {
+							manifold.inner_product(&current_point, &cg_z, &scratch, &mut man_ws)
+						} else {
+							manifold.inner_product(&current_point, &gradient, &scratch, &mut man_ws)
+						};
 						let den = manifold.inner_product(
 							&current_point,
 							&prev_direction,
@@ -312,6 +361,8 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 						}
 					}
 					ConjugateGradientMethod::DaiYuan => {
+						// Standard:      ⟨g, g⟩ / ⟨d_prev, y⟩
+						// Preconditioned: ⟨g, z⟩ / ⟨d_prev, y⟩
 						let den = manifold.inner_product(
 							&current_point,
 							&prev_direction,
@@ -319,12 +370,13 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 							&mut man_ws,
 						);
 						if den.abs() > T::epsilon() {
-							grad_norm_sq / den
+							g_dot_z / den
 						} else {
 							T::zero()
 						}
 					}
 					ConjugateGradientMethod::HagerZhang => {
+						// Preconditioned: replace ⟨g, ·⟩ with ⟨z, ·⟩
 						let diff_dot_d = manifold.inner_product(
 							&current_point,
 							&scratch,
@@ -340,30 +392,51 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 								&scratch,
 								&mut man_ws,
 							);
-							let grad_dot_d = manifold.inner_product(
-								&current_point,
-								&gradient,
-								&prev_direction,
-								&mut man_ws,
-							);
-							let grad_dot_diff = manifold.inner_product(
-								&current_point,
-								&gradient,
-								&scratch,
-								&mut man_ws,
-							);
+							let (z_or_g_dot_d, z_or_g_dot_diff) = if use_pre {
+								(
+									manifold.inner_product(
+										&current_point,
+										&cg_z,
+										&prev_direction,
+										&mut man_ws,
+									),
+									manifold.inner_product(
+										&current_point,
+										&cg_z,
+										&scratch,
+										&mut man_ws,
+									),
+								)
+							} else {
+								(
+									manifold.inner_product(
+										&current_point,
+										&gradient,
+										&prev_direction,
+										&mut man_ws,
+									),
+									manifold.inner_product(
+										&current_point,
+										&gradient,
+										&scratch,
+										&mut man_ws,
+									),
+								)
+							};
 							let two = T::one() + T::one();
-							let num = grad_dot_diff - two * diff_norm_sq * grad_dot_d / diff_dot_d;
+							let num =
+								z_or_g_dot_diff - two * diff_norm_sq * z_or_g_dot_d / diff_dot_d;
 							num / diff_dot_d
 						}
 					}
 					ConjugateGradientMethod::LiuStorey => {
-						let num = manifold.inner_product(
-							&current_point,
-							&gradient,
-							&scratch,
-							&mut man_ws,
-						);
+						// Standard:      ⟨g, y⟩ / (−⟨g_prev, d_prev⟩)
+						// Preconditioned: ⟨z, y⟩ / (−⟨g_prev, d_prev⟩)
+						let num = if use_pre {
+							manifold.inner_product(&current_point, &cg_z, &scratch, &mut man_ws)
+						} else {
+							manifold.inner_product(&current_point, &gradient, &scratch, &mut man_ws)
+						};
 						let den = -manifold.inner_product(
 							&previous_point,
 							&prev_gradient,
@@ -386,19 +459,28 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 					beta = beta.min(max_b);
 				}
 
-				// 4. d_k = β · τ(d_{k-1}) − g_k
+				// 4. d_k = β · τ(d_{k-1}) − z  (or − g when unpreconditioned)
 				manifold.copy_tangent(&mut direction, &prev_direction);
 				manifold.scale_tangent(beta, &mut direction);
-				manifold.axpy_tangent(-T::one(), &gradient, &mut direction);
+				if use_pre {
+					manifold.axpy_tangent(-T::one(), &cg_z, &mut direction);
+				} else {
+					manifold.axpy_tangent(-T::one(), &gradient, &mut direction);
+				}
 			}
 
 			// Ensure descent direction (⟨g, d⟩ < 0)
 			let mut dir_deriv =
 				manifold.inner_product(&current_point, &gradient, &direction, &mut man_ws);
 			if dir_deriv >= T::zero() {
-				manifold.copy_tangent(&mut direction, &gradient);
+				// Fallback to preconditioned steepest descent: d = −z
+				if use_pre {
+					manifold.copy_tangent(&mut direction, &cg_z);
+				} else {
+					manifold.copy_tangent(&mut direction, &gradient);
+				}
 				manifold.scale_tangent(-T::one(), &mut direction);
-				dir_deriv = -grad_norm_sq;
+				dir_deriv = -g_dot_z;
 				restarted = true;
 			}
 
@@ -409,10 +491,8 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 			// ══════════════════════════════════════════════════════════════
 			// B. Adaptive Line Search
 			// ══════════════════════════════════════════════════════════════
-			// Compute ‖d‖ for direction-invariant step sizing.
 			let dir_norm = manifold.norm(&current_point, &direction, &mut man_ws);
 
-			// Initial step: reuse previous α, or 1/‖d‖ on first iteration.
 			let mut alpha = match ls_prev_alpha {
 				Some(prev) => prev,
 				None => {
@@ -424,8 +504,6 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 				}
 			};
 
-			// Scale+shrink: scale direction once, shrink in-place per trial.
-			// One copy instead of one per trial.
 			manifold.copy_tangent(&mut scratch, &direction);
 			manifold.scale_tangent(alpha, &mut scratch);
 
@@ -446,15 +524,11 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 					break;
 				}
 
-				// Shrink in-place
 				manifold.scale_tangent(self.config.contraction_factor, &mut scratch);
 				alpha *= self.config.contraction_factor;
 			}
 
-			// If no decrease found at all, reject step.
 			if !ls_success {
-				// Check if we at least found SOME decrease (even if not
-				// satisfying the sufficient decrease condition).
 				let last_cost = problem.cost(&candidate_point, &mut prob_ws, &mut man_ws);
 				if last_cost < current_cost {
 					current_cost = last_cost;
@@ -465,10 +539,6 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 			}
 
 			// ── Adapt step size for next iteration ──────────────────────
-			// Strategy from Manopt/Pymanopt:
-			// - 2 evals (exactly 1 backtrack): we're in the right ballpark → keep α.
-			// - 1 eval or 3+ evals: either we were too conservative or α got
-			//   shrunk a lot → double α so we try further next time.
 			ls_prev_alpha = Some(if ls_evals == 2 { alpha } else { alpha + alpha });
 
 			// -- C. State Update --
@@ -477,7 +547,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 
 			std::mem::swap(&mut prev_gradient, &mut gradient);
 			std::mem::swap(&mut prev_direction, &mut direction);
-			prev_grad_norm_sq = grad_norm_sq;
+			prev_g_dot_z = g_dot_z;
 
 			let _new_cost = problem.cost_and_gradient(
 				manifold,
@@ -489,6 +559,23 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 			grad_evals += 1;
 
 			grad_norm = manifold.norm(&current_point, &gradient, &mut man_ws);
+
+			// Update preconditioner with new curvature pair.
+			// scratch still holds the accepted step (α·direction) from the
+			// line search. prev_gradient = g_old after the swap above.
+			if use_pre {
+				preconditioner.update(
+					manifold,
+					&previous_point, // x_old
+					&current_point,  // x_new
+					&scratch,        // step = α·d ∈ T_{x_old}
+					&prev_gradient,  // g_old (after swap)
+					&gradient,       // g_new
+					&mut pre_ws,
+					&mut man_ws,
+				);
+			}
+
 			iter += 1;
 			iterations_since_restart += 1;
 

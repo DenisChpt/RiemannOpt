@@ -8,6 +8,7 @@ mod problem;
 mod result;
 mod solver;
 mod stopping;
+mod preconditioner;
 
 /// Force all internal linear algebra to run on a single thread.
 #[pyfunction]
@@ -57,6 +58,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
 	m.add_function(wrap_pyfunction!(problem::rosenbrock, m)?)?;
 	m.add_function(wrap_pyfunction!(problem::brockett_cost, m)?)?;
 	m.add_function(wrap_pyfunction!(problem::procrustes, m)?)?;
+	
+	// Preconditioner
+	m.add_class::<preconditioner::PyPreconditioner>()?;
 
 	// Result + Stopping
 	m.add_class::<result::PySolverResult>()?;

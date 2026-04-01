@@ -51,6 +51,7 @@ pub use types::{CholeskyResult, EigenResult, QrResult, SvdResult};
 
 #[cfg(feature = "faer-backend")]
 pub use faer_backend::FaerBackend;
+pub use traits::AsElementWise;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Default backend selection via feature flags

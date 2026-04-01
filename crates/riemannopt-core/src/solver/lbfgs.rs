@@ -9,10 +9,7 @@ use std::fmt::Debug;
 use std::time::Instant;
 
 use crate::{
-	manifold::Manifold,
-	problem::Problem,
-	solver::{Solver, SolverResult, StoppingCriterion, TerminationReason},
-	types::Scalar,
+	manifold::Manifold, preconditioner::Preconditioner, problem::Problem, solver::{Solver, SolverResult, StoppingCriterion, TerminationReason}, types::Scalar
 };
 
 /// Storage for one iteration's L-BFGS data.
@@ -153,16 +150,18 @@ impl<T: Scalar> Solver<T> for LBFGS<T> {
 		"Riemannian L-BFGS"
 	}
 
-	fn solve<M, P>(
+	fn solve<M, P, Pre>(
 		&mut self,
 		problem: &P,
 		manifold: &M,
 		initial_point: &M::Point,
+		_: &mut Pre,
 		stopping_criterion: &StoppingCriterion<T>,
 	) -> SolverResult<T, M::Point>
 	where
 		M: Manifold<T>,
 		P: Problem<T, M>,
+		Pre: Preconditioner<T, M>
 	{
 		let start_time = Instant::now();
 

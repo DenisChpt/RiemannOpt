@@ -14,6 +14,22 @@
 //! When a step is rejected (ρ too small), the solver reuses cached tCG snapshots
 //! to warm-start the next subproblem solve, avoiding redundant Hessian-vector
 //! products since the base point — and therefore the Hessian — has not changed.
+//!
+//! # Preconditioning
+//!
+//! The tCG sub-solver supports preconditioning. When a preconditioner P ≈ H is
+//! provided, the iteration uses the preconditioned CG recurrence:
+//! ```text
+//!   z = P⁻¹ r,   β = ⟨r_new, z_new⟩ / ⟨r_old, z_old⟩,   p = −z + β·p
+//! ```
+//! which is mathematically equivalent to CG on P^{−½} H P^{−½} with condition
+//! number κ(P⁻¹H) ≪ κ(H).
+//!
+//! Passing [`IdentityPreconditioner`] recovers the original un-preconditioned
+//! algorithm with zero overhead — the compiler monomorphises the ZST away and
+//! the `is_identity()` check eliminates the `z` buffer usage at compile time.
+//!
+//! [`IdentityPreconditioner`]: crate::preconditioner::IdentityPreconditioner
 
 use num_traits::Float;
 use std::fmt::Debug;
@@ -21,6 +37,7 @@ use std::time::Instant;
 
 use crate::{
 	manifold::Manifold,
+	preconditioner::Preconditioner,
 	problem::Problem,
 	solver::{Solver, SolverResult, StoppingCriterion, TerminationReason},
 	types::Scalar,
@@ -109,8 +126,8 @@ struct TcgSnapshot<TV, T> {
 	r: TV,
 	/// Search direction
 	p: TV,
-	/// ⟨r, r⟩ cached to avoid a redundant inner product
-	r_norm_sq: T,
+	/// ⟨r, z⟩ where z = P⁻¹r. When unpreconditioned, z = r so this equals ⟨r, r⟩.
+	r_dot_z: T,
 	/// ‖s‖ for fast comparison against the trust region radius.
 	/// Monotonically non-decreasing (in exact arithmetic) across snapshots.
 	s_norm: T,
@@ -185,20 +202,29 @@ impl<T: Scalar> TrustRegion<T> {
 		(-b + sqrt_disc) / (<T as Scalar>::from_f64(2.0) * a)
 	}
 
-	/// Solves the trust region subproblem using Steihaug Truncated-CG (tCG).
+	/// Solves the trust region subproblem using preconditioned Steihaug tCG.
 	///
 	/// When `resume_from` is `Some(k)`, the solver restores its state from
 	/// `cache.snapshots[k]` and resumes the CG iteration from there, skipping
 	/// the first `k` Hessian-vector products that were already computed on a
 	/// previous call at the same base point.
 	///
-	/// All inner-loop updates use `axpy_tangent`, eliminating the `temp`
-	/// scratch buffer entirely. The s-next radius check uses a direct
-	/// axpy + revert pattern instead of copy-into-temp + check + copy-back.
+	/// # Preconditioning
+	///
+	/// When `use_pre` is `true`, the CG recurrence uses z = P⁻¹r:
+	///   β = ⟨r_new, z_new⟩ / ⟨r_old, z_old⟩,   p = −z + β·p
+	///
+	/// When `use_pre` is `false` (IdentityPreconditioner), z is never
+	/// touched and the recurrence is the standard:
+	///   β = ⟨r_new, r_new⟩ / ⟨r_old, r_old⟩,   p = −r + β·p
+	///
+	/// The `use_pre` flag is a compile-time constant after monomorphisation,
+	/// so the dead branches are eliminated entirely.
 	///
 	/// # Returns
 	/// `true` if the trust region boundary was hit.
-	fn solve_tcg<M, P>(
+	#[allow(clippy::too_many_arguments)]
+	fn solve_tcg<M, P, Pre>(
 		&self,
 		problem: &P,
 		manifold: &M,
@@ -208,16 +234,21 @@ impl<T: Scalar> TrustRegion<T> {
 		radius: T,
 		s: &mut M::TangentVector,
 		r: &mut M::TangentVector,
+		z: &mut M::TangentVector,
 		p: &mut M::TangentVector,
 		hp: &mut M::TangentVector,
 		cache: &mut TcgCache<M::TangentVector, T>,
 		resume_from: Option<usize>,
+		use_pre: bool,
+		preconditioner: &mut Pre,
+		pre_ws: &mut Pre::Workspace,
 		prob_ws: &mut P::Workspace,
 		man_ws: &mut M::Workspace,
 	) -> bool
 	where
 		M: Manifold<T>,
 		P: Problem<T, M>,
+		Pre: Preconditioner<T, M>,
 	{
 		let max_iter = self
 			.config
@@ -237,7 +268,7 @@ impl<T: Scalar> TrustRegion<T> {
 			);
 
 		// ── Initialisation or warm-start restore ─────────────────────────
-		let (start_iter, mut r_norm_sq) = match resume_from {
+		let (start_iter, mut r_dot_z) = match resume_from {
 			Some(k) if k < cache.len => {
 				let snap = &cache.snapshots[k];
 				manifold.copy_tangent(s, &snap.s);
@@ -245,16 +276,26 @@ impl<T: Scalar> TrustRegion<T> {
 				manifold.copy_tangent(p, &snap.p);
 				// Truncate: everything beyond k is invalid for the new radius.
 				cache.len = k + 1;
-				(k, snap.r_norm_sq)
+				(k, snap.r_dot_z)
 			}
 			_ => {
-				// Cold start
+				// Cold start: s = 0, r = grad, p = −P⁻¹r
 				manifold.scale_tangent(T::zero(), s);
 				manifold.copy_tangent(r, gradient);
-				manifold.copy_tangent(p, r);
-				manifold.scale_tangent(-T::one(), p);
+
+				let rdz = if use_pre {
+					preconditioner.apply(manifold, point, r, z, pre_ws, man_ws);
+					manifold.copy_tangent(p, z);
+					manifold.scale_tangent(-T::one(), p);
+					manifold.inner_product(point, r, z, man_ws)
+				} else {
+					manifold.copy_tangent(p, r);
+					manifold.scale_tangent(-T::one(), p);
+					manifold.inner_product(point, r, r, man_ws)
+				};
+
 				cache.len = 0;
-				(0, manifold.inner_product(point, r, r, man_ws))
+				(0, rdz)
 			}
 		};
 
@@ -265,7 +306,7 @@ impl<T: Scalar> TrustRegion<T> {
 				manifold.copy_tangent(&mut snap.s, s);
 				manifold.copy_tangent(&mut snap.r, r);
 				manifold.copy_tangent(&mut snap.p, p);
-				snap.r_norm_sq = r_norm_sq;
+				snap.r_dot_z = r_dot_z;
 				snap.s_norm = manifold.norm(point, s, man_ws);
 				cache.len = i + 1;
 			}
@@ -282,7 +323,7 @@ impl<T: Scalar> TrustRegion<T> {
 				return true;
 			}
 
-			let alpha = r_norm_sq / kappa_val;
+			let alpha = r_dot_z / kappa_val;
 
 			// ── s-next radius check ──────────────────────────────────
 			// Tentatively advance: s += α·p
@@ -302,18 +343,32 @@ impl<T: Scalar> TrustRegion<T> {
 			// r += α·hp
 			manifold.axpy_tangent(alpha, hp, r);
 
-			let r_next_norm_sq = manifold.inner_product(point, r, r, man_ws);
+			// ── Preconditioned residual & convergence check ──────────
+			let (r_next_norm_sq, r_dot_z_new) = if use_pre {
+				preconditioner.apply(manifold, point, r, z, pre_ws, man_ws);
+				let rr = manifold.inner_product(point, r, r, man_ws);
+				let rz = manifold.inner_product(point, r, z, man_ws);
+				(rr, rz)
+			} else {
+				let rr = manifold.inner_product(point, r, r, man_ws);
+				(rr, rr) // z = r ⟹ ⟨r, z⟩ = ⟨r, r⟩
+			};
+
 			if <T as Float>::sqrt(r_next_norm_sq) <= target_norm {
 				return false; // Interior convergence
 			}
 
-			let beta = r_next_norm_sq / r_norm_sq;
+			let beta = r_dot_z_new / r_dot_z;
 
-			// p = −r + β·p
+			// p = −z + β·p  (or −r + β·p when unpreconditioned)
 			manifold.scale_tangent(beta, p);
-			manifold.axpy_tangent(-T::one(), r, p);
+			if use_pre {
+				manifold.axpy_tangent(-T::one(), z, p);
+			} else {
+				manifold.axpy_tangent(-T::one(), r, p);
+			}
 
-			r_norm_sq = r_next_norm_sq;
+			r_dot_z = r_dot_z_new;
 		}
 
 		false
@@ -325,18 +380,21 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 		"Riemannian Trust Region"
 	}
 
-	fn solve<M, P>(
+	fn solve<M, P, Pre>(
 		&mut self,
 		problem: &P,
 		manifold: &M,
 		initial_point: &M::Point,
+		preconditioner: &mut Pre,
 		stopping_criterion: &StoppingCriterion<T>,
 	) -> SolverResult<T, M::Point>
 	where
 		M: Manifold<T>,
 		P: Problem<T, M>,
+		Pre: Preconditioner<T, M>,
 	{
 		let start_time = Instant::now();
+		let use_pre = !preconditioner.is_identity();
 
 		// ════════════════════════════════════════════════════════════════════
 		// 1. Memory Allocation (Cold Path)
@@ -347,16 +405,17 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 		let mut gradient = manifold.allocate_tangent();
 		let mut step_s = manifold.allocate_tangent();
 
-		// tCG buffers (no separate temp — axpy_tangent eliminates it)
+		// tCG buffers
 		let mut cg_r = manifold.allocate_tangent();
+		let mut cg_z = manifold.allocate_tangent(); // P⁻¹r (also reused as old_grad scratch)
 		let mut cg_p = manifold.allocate_tangent();
 		let mut cg_hp = manifold.allocate_tangent();
 
 		let mut prob_ws = problem.create_workspace(manifold, &current_point);
 		let mut man_ws = manifold.create_workspace(&current_point);
+		let mut pre_ws = preconditioner.create_workspace(manifold, &current_point);
 
 		// tCG snapshot cache for warm-starting rejected steps.
-		// Allocated once; O(snapshot_capacity × dimension) memory.
 		let max_cg = self
 			.config
 			.max_cg_iterations
@@ -369,7 +428,7 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 					s: manifold.allocate_tangent(),
 					r: manifold.allocate_tangent(),
 					p: manifold.allocate_tangent(),
-					r_norm_sq: T::zero(),
+					r_dot_z: T::zero(),
 					s_norm: T::zero(),
 				})
 				.collect(),
@@ -422,12 +481,9 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 			}
 
 			// -- Warm-start: find resume point from cache --
-			// The cache is only valid if the base point hasn't changed (i.e.
-			// the previous step was rejected). On acceptance, invalidate()
-			// sets len = 0, so find_resume_index returns None.
 			let resume = tcg_cache.find_resume_index(trust_radius);
 
-			// -- A. Solve Trust Region Subproblem (tCG) --
+			// -- A. Solve Trust Region Subproblem (preconditioned tCG) --
 			let boundary_hit = self.solve_tcg(
 				problem,
 				manifold,
@@ -437,10 +493,14 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 				trust_radius,
 				&mut step_s,
 				&mut cg_r,
+				&mut cg_z,
 				&mut cg_p,
 				&mut cg_hp,
 				&mut tcg_cache,
 				resume,
+				use_pre,
+				preconditioner,
+				&mut pre_ws,
 				&mut prob_ws,
 				&mut man_ws,
 			);
@@ -472,17 +532,18 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 				* T::epsilon()
 				* <T as Scalar>::from_f64(1e3);
 
-			let rho = if <T as Float>::abs(predicted_reduction) > reg {
-				actual_reduction / predicted_reduction
-			} else if actual_reduction >= T::zero() {
-				<T as Scalar>::from_f64(0.75)
-			} else {
-				T::zero()
-			};
+			let rho = (actual_reduction + reg) / (predicted_reduction + reg);
 
 			// -- E. Accept or Reject --
 			if rho >= self.config.acceptance_ratio {
+				// Save old gradient into cg_z (free between tCG calls)
+				// before it gets overwritten. Only needed for preconditioner update.
+				if use_pre {
+					manifold.copy_tangent(&mut cg_z, &gradient);
+				}
+
 				// Accept step: O(1) swap instead of memcpy.
+				// After swap: candidate_point holds the *old* base point.
 				std::mem::swap(&mut current_point, &mut candidate_point);
 				current_cost = trial_cost;
 
@@ -495,6 +556,22 @@ impl<T: Scalar> Solver<T> for TrustRegion<T> {
 				);
 				grad_evals += 1;
 				grad_norm = manifold.norm(&current_point, &gradient, &mut man_ws);
+
+				// Update preconditioner with the new curvature pair.
+				// candidate_point = old point (after swap above).
+				// cg_z = old gradient (saved above).
+				if use_pre {
+					preconditioner.update(
+						manifold,
+						&candidate_point, // x_old
+						&current_point,   // x_new
+						&step_s,          // step ∈ T_{x_old}
+						&cg_z,            // grad_old ∈ T_{x_old}
+						&gradient,        // grad_new ∈ T_{x_new}
+						&mut pre_ws,
+						&mut man_ws,
+					);
+				}
 
 				// Invalidate tCG cache: the base point has changed, so the
 				// Krylov subspace from the previous Hessian is stale.
