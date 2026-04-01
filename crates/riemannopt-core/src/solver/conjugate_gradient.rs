@@ -80,7 +80,12 @@ pub struct CGConfig<T: Scalar> {
 	pub ls_max_iterations: usize,
 	/// Initial step size for the first iteration (before adaptation).
 	pub initial_step_size: T,
-	/// Powell orthogonality threshold for adaptive restart (set to 0 to disable).
+	/// Powell orthogonality threshold for adaptive restart.
+	///
+	/// When `|⟨g_k, τ(g_{k-1})⟩| / ‖g_k‖²` exceeds this value, CG restarts
+	/// to steepest descent. Set to `T::infinity()` to disable (default).
+	/// Modified H-S already self-restarts via `max(0, β)`, so Powell restart
+	/// is rarely needed.
 	pub orth_value: T,
 }
 
@@ -96,7 +101,7 @@ impl<T: Scalar> Default for CGConfig<T> {
 			contraction_factor: <T as Scalar>::from_f64(0.5),
 			ls_max_iterations: 10,
 			initial_step_size: T::one(),
-			orth_value: <T as Scalar>::from_f64(0.1),
+			orth_value: T::infinity(),
 		}
 	}
 }
@@ -365,7 +370,7 @@ impl<T: Scalar> Solver<T> for ConjugateGradient<T> {
 							&mut man_ws,
 						);
 						if den.abs() > T::epsilon() {
-							num / den
+							T::zero().max(num / den)
 						} else {
 							T::zero()
 						}
